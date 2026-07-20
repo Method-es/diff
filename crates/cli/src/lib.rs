@@ -360,7 +360,7 @@ usage: dv review <list|show|create|delete|submit|wait> [options]
   delete <id>
   submit [<id>] --pr <number> [--verdict comment|approve|request-changes]
                [--body <text>] [--include-resolved]
-               submit a draft review to GitHub via `gh` (docs/phase-3-github.md)
+               submit a draft review to GitHub via `gh`
   wait [<id>] [--timeout <seconds>]
                block until review activity changes, then report it
                (exit 0 = changed, 3 = timeout)
