@@ -28,7 +28,7 @@ labels, "used to…") belongs in commit messages, never in comments.
 4. WSL repos behave exactly like local ones: native speed, live updates while the agent edits (§5).
 5. First-run onboarding and a re-runnable setup/doctor that install the WSL backend, put `dv` on PATH,
    install agent skills and check `gh` — per environment (§12).
-6. A per-user Windows installer (cargo-packager, as in the sibling app); macOS and Linux builds (§13).
+6. A per-user installer with delta auto-updates (Velopack); Linux builds; macOS kept compiling (§13).
 7. Hermetic automated testing: fixture repos, a fake `gh`, GUI e2e scenarios (§14).
 
 **Non-goals (v1):** LSP / go-to-definition, AI features inside dv, editing files, committing or any
@@ -88,16 +88,20 @@ Windows 10, when "transparency effects" is off, on Linux, and as a setting. macO
 scrim (DESIGN §3). Acrylic uses the undocumented composition API and can lag while dragging on some
 Windows builds — hence Mica as the default.
 
-### D9. Packaging: cargo-packager, as in the sibling app
-`cargo packager --release -p dv` with the config in `[package.metadata.packager]`, the same tool and
-version the sibling app ships with (0.11.8; see the sibling app's README "Installer" and
-the sibling app's `installer.nsi`). Formats: `nsis` per user (`installer-mode =
-"currentUser"`, installs to `%LOCALAPPDATA%\Programs\dv`, no admin) on Windows; `app` + `dmg` on
-macOS; `appimage` + `deb` on Linux. `before-packaging-command` builds without the automation feature.
-Updates, when wanted, use `cargo-packager-updater` against a JSON manifest on GitHub releases. Velopack
-was considered (stronger delta updates) but would be a second toolchain to learn next to the sibling app's
-working one. PATH and environment setup is *not* the installer's job — it is a setup step the app owns
-(§12); the NSIS template's post-install section runs `dv setup path --yes` once.
+### D9. Packaging and updates: Velopack
+- **Packages:** `vpk pack` produces a one-click per-user `Setup.exe` on Windows (no wizard, no
+  admin, installs under `%LOCALAPPDATA%\dv\`), a `.pkg` on macOS and an AppImage on Linux, plus the
+  full and delta update packages and a release feed, all from a build without the automation feature.
+  `vpk` is a .NET tool: the build machine needs the .NET SDK (not installed yet; only Phase 8 needs it).
+- **In the app:** the `velopack` crate. `VelopackApp::build().run()` is the first call in `main` of
+  both Windows binaries; its install/uninstall hooks run `dv setup path --yes` / remove the PATH entry,
+  so PATH stays app-owned (§12) and the installer has no logic of its own.
+- **Updates:** `UpdateManager` checks a release feed, downloads the delta in the background and
+  applies it on the next restart ("Restart to update" in the status bar). Until there is a release
+  workflow (§16 phase 9) the feed is a local folder of `vpk pack` output, so a locally built release is
+  picked up by the installed copy; later the same code points at GitHub Releases.
+- Chosen over cargo-packager (the sibling app's tool; a classic NSIS wizard and an updater that re-downloads the
+  whole installer and needs manifest signing keys) for delta updates and the simpler install flow.
 
 ### D10. Code signing: none
 The owner builds and installs locally, which SmartScreen doesn't challenge (it checks files carrying a
@@ -215,7 +219,7 @@ bringing dv to the front on the agent's working-tree review when the agent finis
 
 Direction: `dv` → `dv_ui` → {`dv_cli`, `dv_backend`, `dv_core`, `gpui-component`};
 `dv_cli` → {`dv_backend`, `dv_core`}; `dv_backend` → `dv_core`. A gpui import outside `dv_ui`, `dv`
-and `gpui_automation` is a build failure (CI checks with `cargo tree`).
+and `gpui_automation` is a build failure (`script/check` verifies it with `cargo tree`, §13.2).
 
 Rules: errors are `anyhow` in app/CLI code and `thiserror` enums in libraries; no `unwrap()`/`expect()`
 outside tests unless the message states the invariant; files stay under ~1,500 lines (split by
@@ -471,14 +475,27 @@ diagnostics". The repo banner for a dead WSL backend uses the same row.
 - **macOS:** `dv.app` containing one `dv` binary; the CLI is a symlink to it.
 - **Linux:** one `dv` binary (GUI + CLI + backend), plus the static musl build used inside WSL.
 
-### 13.2 Builds and CI
-GitHub Actions matrix: windows-latest, macos-latest (aarch64 + x86_64), ubuntu-latest (GUI build +
-musl x86_64/aarch64). Every PR: fmt, clippy (default and `--no-default-features`), tests, e2e
-scenarios on Windows and Linux. Tags: release build, `cargo packager` outputs, checksums. The Windows bundle
-embeds the musl builds it installs into distros, keyed by the same build hash (§5.2).
+### 13.2 Builds: local only
+**No GitHub Actions runs until phase 9** (owner's rule, 2026-10-04: a Windows gpui build is slow and
+burns paid minutes). Phase 0 deletes `.github/workflows/`; nothing is pushed expecting CI to check it.
+Every gate runs locally through one script, `script/check` (bash; also used by agents):
+
+1. `cargo fmt --all --check`
+2. `cargo clippy --workspace --all-targets -- -D warnings`, and again with `-p dv --no-default-features`
+   (the shipped shape, automation off)
+3. the gpui-boundary check (`cargo tree`, §4)
+4. `cargo test --workspace`
+5. the e2e scenarios (`cargo run -p gpui_automation --bin e2e -- tests/e2e`), background mode
+6. `--linux`: the same inside WSL Ubuntu with `CARGO_TARGET_DIR` on ext4 (the musl backend, the Linux
+   GUI build, and the backend loopback tests)
+
+macOS has no local machine: macOS-only code is kept compiling by `cargo check --target
+aarch64-apple-darwin` where that works without the SDK, and is otherwise unverified until a Mac or
+phase 9's CI is available. The Windows bundle embeds the musl builds it installs into distros, keyed by
+the same build hash (§5.2).
 
 ### 13.3 Install layout
-Windows per-user `%LOCALAPPDATA%\Programs\dv\` (NSIS), settings in `%APPDATA%\dv\`; macOS
+Windows per-user `%LOCALAPPDATA%\dv\` (Velopack), settings in `%APPDATA%\dv\`; macOS
 `/Applications/dv.app`, `~/Library/Application Support/dv/`; Linux AppImage or tarball,
 `$XDG_CONFIG_HOME/dv/`. Every data path honours `--data-dir` / `DV_DATA_DIR` (tests, §14).
 
@@ -500,7 +517,7 @@ switch is set.
   ("exactly these 5 comments were posted with `REQUEST_CHANGES`"). Error scenarios: 422 line-not-in-diff,
   auth failure, rate limit.
 - **Backend loopback** — `RemoteBackend` tests spawn the native `dv backend --stdio` locally (no WSL),
-  so the protocol, reconnect and watch paths run in CI on all three OSes.
+  so the protocol, reconnect and watch paths run locally on Windows and inside WSL, no distro setup needed.
 - **`gpui_automation` + `e2e` runner** — ported from the sibling app: JSONL scenarios in `tests/e2e/`, named
   targets (`.automation_target("file_list/src/routes/users.ts")`), frame-synced replies,
   `wait_for`/`assert` JSON-pointer checks, background runs that never take focus, per-scenario output
@@ -550,14 +567,16 @@ Each phase ends with its e2e scenarios green and a screenshot review against DES
 
 | Phase | Scope | Done when |
 |---|---|---|
-| 0 | Workspace on `gpui-pre`, crates per §4, CI matrix, `gpui_automation` + `e2e` ported, `FixtureRepo`, `mock_gh` skeleton, window with Mica/Acrylic/Opaque | an empty Glass shell screenshots in all three materials, light and dark |
+| 0 | Workspace on `gpui-pre`, crates per §4, `script/check` (§13.2) and `.github/workflows/` removed, `gpui_automation` + `e2e` ported, `FixtureRepo`, `mock_gh` skeleton, window with Mica/Acrylic/Opaque | an empty Glass shell screenshots in all three materials, light and dark |
 | 1 | `dv_core`: targets, git diff pipeline (§6 steps 1–3), event store (§7), `LocalBackend` | unit + fixture tests incl. CRLF/attributes/renames/binary |
 | 2 | Review screen: switcher, file list (viewed, totals), diff stream (split/unified, gaps, highlight), threads + composer, comments list | Workflow A steps 1–3 by keyboard, e2e |
 | 3 | CLI (§10) + skill + rounds/interdiff + relocation (§8) | Workflow A end to end with a scripted "agent" in an e2e scenario |
-| 4 | `dv backend`, `RemoteBackend`, WSL install + routing + watch (§5), CLI re-exec | loopback tests in CI; owner's live WSL check passes |
+| 4 | `dv backend`, `RemoteBackend`, WSL install + routing + watch (§5), CLI re-exec | loopback tests pass on Windows and in WSL (`script/check --linux`); owner's live WSL check passes |
 | 5 | GitHub: open PR, pull threads, submit sheet with validation and file-comment fallback (§9) | Workflow C against `mock_gh`; owner's live check |
-| 6 | Onboarding/setup/doctor (§12), packaging (§13, D9) | clean-machine install → onboarding → review, on Windows; macOS + Linux builds in CI |
+| 6 | Onboarding/setup/doctor (§12) | first run on a fresh data dir → onboarding → review, on Windows with a WSL distro |
 | 7 | Polish: settings, palette, light themes, empty states, performance pass on a 2,000-file PR | DESIGN review of every screen; perf budget (§17) met |
+| 8 | Packaging + updates with Velopack (D9), local feed; Linux AppImage built in WSL | install from `Setup.exe` → PATH set → a second local release updates the installed copy |
+| 9 | *(last, optional)* GitHub Actions: CI matrix incl. macOS, release workflow publishing to GitHub Releases, update feed switched over | owner asks for it |
 
 ---
 
@@ -572,6 +591,7 @@ Each phase ends with its e2e scenarios green and a screenshot review against DES
 - **GitHub API may gain unchanged-line comments** — when it does, §9.3's fallback becomes the normal
   path; keep validation behind one function.
 - **WSL on arm64** — build `aarch64-unknown-linux-musl` from day one; test is owner-only.
-- **Auto-update** (D9) is optional for a locally built tool; decide in Phase 6 whether it is worth the manifest plumbing.
+- **macOS is unverified** until a Mac or phase 9's CI exists (§13.2); keep platform code behind small
+  modules so the gap is contained.
 - Window material (D8) is available: `gpui-pre` 0.3.6 has `WindowBackgroundAppearance::{Blurred,
   MicaBackdrop, MicaAltBackdrop}` (`gpui-pre-windows/src/window.rs`), checked 2026-10-04.
