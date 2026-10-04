@@ -86,15 +86,18 @@ fn the_same_script_gives_the_same_commit_ids() {
 /// A file that only a `git init` template would put into `.git`.
 const TEMPLATE_MARKER: &str = "dv-template-marker";
 
-/// Checks a fixture commit's identity, its object id format and that no `git init` template was
-/// applied, in whatever environment this test process has. On its own that is the normal one;
-/// `inherited_git_variables_do_not_reach_the_fixture` runs it in a child process whose
-/// environment exports another identity, a template and SHA-256.
+/// Checks a fixture commit's identity, its object id format, that no `git init` template was
+/// applied, and that the fixture's `git diff` is git's plain one (default context, git's own
+/// diff, glob pathspecs), in whatever environment this test process has. On its own that is the
+/// normal one; `inherited_git_variables_do_not_reach_the_fixture` runs it in a child process
+/// whose environment exports another identity, a template, SHA-256, diff options, an external
+/// diff tool, literal pathspecs and an attribute source (which, naming `HEAD`, fails every git
+/// call that reads attributes before the first commit).
 #[test]
 #[ignore = "run in a hostile git environment by inherited_git_variables_do_not_reach_the_fixture"]
 fn fixture_commits_ignore_the_inherited_git_environment() {
     let repo = FixtureRepo::new();
-    repo.write("a.txt", "a\n");
+    repo.write("a.txt", "1\n2\n3\n4\n5\n6\n7\n");
     let oid = repo.commit("first");
     assert_eq!(oid.len(), 40, "SHA-1 object ids: {oid}");
     assert_eq!(
@@ -106,12 +109,25 @@ fn fixture_commits_ignore_the_inherited_git_environment() {
         !repo.path().join(".git").join(TEMPLATE_MARKER).exists(),
         "an inherited git init template was applied"
     );
+
+    repo.write("a.txt", "1\n2\n3\nfour\n5\n6\n7\n");
+    let diff = repo.git(&["diff", "--no-color"]);
+    assert!(
+        diff.contains("@@ -1,7 +1,7 @@\n 1\n 2\n 3\n-4\n+four\n"),
+        "git's own diff with three lines of context: {diff}"
+    );
+    assert_eq!(
+        repo.git(&["diff", "--name-only", "--", "*.txt"]),
+        "a.txt\n",
+        "a glob pathspec"
+    );
 }
 
 #[test]
 fn inherited_git_variables_do_not_reach_the_fixture() {
     // `git commit` exports GIT_AUTHOR_* to its hooks, and a shell or CI image can export any of
-    // these, so a test run from either must still produce the fixture's commits.
+    // these (difftastic's setup suggests `GIT_EXTERNAL_DIFF=difft`), so a test run from either
+    // must still produce the fixture's commits and diffs.
     let template = tempfile::tempdir().unwrap();
     std::fs::write(template.path().join(TEMPLATE_MARKER), "from a template\n").unwrap();
     let test = "fixture_repo::tests::fixture_commits_ignore_the_inherited_git_environment";
@@ -123,6 +139,10 @@ fn inherited_git_variables_do_not_reach_the_fixture() {
         .env("GIT_COMMITTER_EMAIL", "committer@inherited.invalid")
         .env("GIT_TEMPLATE_DIR", template.path())
         .env("GIT_DEFAULT_HASH", "sha256")
+        .env("GIT_DIFF_OPTS", "--unified=0")
+        .env("GIT_EXTERNAL_DIFF", "false")
+        .env("GIT_LITERAL_PATHSPECS", "1")
+        .env("GIT_ATTR_SOURCE", "HEAD")
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -317,6 +337,141 @@ fn paths_may_not_leave_the_repo() {
 }
 
 #[test]
+fn env_overlay_is_what_the_fixture_git_runs_with() {
+    let repo = FixtureRepo::new();
+    std::fs::write(
+        repo.home().join(".gitconfig"),
+        "[dv]\n\tprobe = from-fixture-home\n",
+    )
+    .unwrap();
+    let overlay = repo.env_overlay();
+    let value = |name: &str| {
+        overlay
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone())
+    };
+    assert_eq!(value("GIT_DIR"), Some(None), "inherited GIT_DIR is removed");
+    assert_eq!(
+        value("GIT_CONFIG_GLOBAL"),
+        Some(Some(repo.home().join(".gitconfig").into_os_string()))
+    );
+    assert_eq!(value("GIT_CONFIG_NOSYSTEM"), Some(Some("1".into())));
+    assert_eq!(value("GIT_ATTR_NOSYSTEM"), Some(Some("1".into())));
+
+    // A plain `git` with only the overlay applied sees the fixture's global config.
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(repo.path())
+        .args(["config", "--get", "dv.probe"]);
+    apply_env(&mut command, &overlay);
+    let output = command.output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "from-fixture-home\n"
+    );
+}
+
+#[test]
+fn env_overlay_dates_follow_the_commit_count() {
+    let repo = FixtureRepo::new();
+    let date = |repo: &FixtureRepo| {
+        repo.env_overlay()
+            .into_iter()
+            .find(|(key, _)| key == "GIT_COMMITTER_DATE")
+            .and_then(|(_, value)| value)
+            .unwrap()
+    };
+    assert_eq!(date(&repo), format!("{EPOCH} +0000").as_str());
+    repo.write("a.txt", "a\n");
+    repo.commit("first");
+    assert_eq!(date(&repo), format!("{} +0000", EPOCH + TICK_SECS).as_str());
+}
+
+#[test]
+fn add_worktree_makes_a_linked_worktree_beside_the_repo() {
+    let repo = FixtureRepo::new();
+    repo.write("a.txt", "a\n");
+    let base = repo.commit("base");
+    let worktree = repo.add_worktree("feature", "feat");
+    assert_eq!(worktree.parent().unwrap().file_name().unwrap(), "worktrees");
+    assert!(
+        worktree.join(".git").is_file(),
+        "a linked worktree's .git is a file"
+    );
+    assert_eq!(repo.git(&["rev-parse", "feat"]).trim(), base);
+    let listing = repo.git(&["worktree", "list", "--porcelain"]);
+    assert_eq!(listing.matches("worktree ").count(), 2, "{listing}");
+    assert!(listing.contains("branch refs/heads/feat"), "{listing}");
+}
+
+#[test]
+fn bare_clone_has_the_history_and_no_work_tree() {
+    let repo = FixtureRepo::new();
+    repo.write("a.txt", "a\n");
+    let base = repo.commit("base");
+    let bare = repo.bare_clone("bare.git");
+    let output = repo
+        .git_command()
+        .arg("-C")
+        .arg(&bare)
+        .args(["rev-parse", "--is-bare-repository", "main"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!("true\n{base}\n")
+    );
+}
+
+#[test]
+fn outside_dir_is_not_inside_any_repository() {
+    let repo = FixtureRepo::new();
+    let dir = repo.outside_dir("plain");
+    assert!(dir.is_dir());
+    assert!(!dir.starts_with(repo.path()));
+    let output = repo
+        .git_command()
+        .arg("-C")
+        .arg(&dir)
+        .args(["rev-parse", "--git-dir"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("not a git repository"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn names_beside_the_repo_are_plain_and_unique() {
+    let repo = FixtureRepo::new();
+    repo.outside_dir("taken");
+    for name in ["", "../x", "a/b", ".hidden", "repo", "home", "taken"] {
+        let message = panic_message(|| {
+            repo.outside_dir(name);
+        });
+        assert!(
+            message.contains("plain file names") || message.contains("already exists"),
+            "{name}: {message}"
+        );
+    }
+}
+
+#[test]
+fn new_sha256_uses_sha256_object_ids() {
+    let repo = FixtureRepo::new_sha256();
+    assert_eq!(repo.git(&["rev-parse", "--show-object-format"]), "sha256\n");
+    repo.write("a.txt", "a\n");
+    let oid = repo.commit("first");
+    assert_eq!(oid.len(), 64, "{oid}");
+}
+
+#[test]
 fn dropping_the_fixture_removes_it() {
     let repo = FixtureRepo::new();
     repo.write("a.txt", "a\n");
@@ -324,4 +479,62 @@ fn dropping_the_fixture_removes_it() {
     assert!(path.is_dir());
     drop(repo);
     assert!(!path.exists());
+}
+
+#[test]
+fn hash_blob_writes_the_object_and_returns_its_id() {
+    let repo = FixtureRepo::new();
+    let oid = repo.hash_blob("hello\n");
+    // git's well-known id for the blob "hello\n".
+    assert_eq!(oid, "ce013625030ba8dba906f756967f9e9ca394464a");
+    assert_eq!(repo.git(&["cat-file", "-p", &oid]), "hello\n");
+    let binary = repo.hash_blob([0u8, 1, 2, 255]);
+    assert_eq!(repo.git(&["cat-file", "-s", &binary]).trim(), "4");
+}
+
+#[test]
+fn stage_and_commit_staged_record_index_entries_the_work_tree_lacks() {
+    let repo = FixtureRepo::new();
+    repo.write("a.txt", "a\n");
+    let first = repo.commit("first");
+    let link = repo.hash_blob("target/path");
+    let gitlink = "1111111111111111111111111111111111111111";
+    repo.stage("120000", &link, "link")
+        .stage("160000", gitlink, "sub")
+        .stage("100755", &repo.hash_blob("#!/bin/sh\n"), "dir/run.sh");
+    let second = repo.commit_staged("plumbing");
+
+    assert_eq!(repo.git(&["rev-parse", "HEAD~1"]).trim(), first);
+    assert_eq!(repo.git(&["rev-parse", "HEAD"]).trim(), second);
+    let tree = repo.git(&["ls-tree", "-r", "HEAD"]);
+    assert!(
+        tree.contains(&format!("120000 blob {link}\tlink\n")),
+        "{tree}"
+    );
+    assert!(
+        tree.contains(&format!("160000 commit {gitlink}\tsub\n")),
+        "{tree}"
+    );
+    assert!(tree.contains("100755 blob "), "{tree}");
+    assert!(
+        !repo.path().join("link").exists(),
+        "the work tree is untouched"
+    );
+    // The commit got the next date in the sequence.
+    assert_eq!(
+        repo.git(&["log", "-1", "--format=%at"]).trim(),
+        (EPOCH + TICK_SECS).to_string()
+    );
+}
+
+#[test]
+fn stage_takes_names_the_os_cannot_create() {
+    let repo = FixtureRepo::new();
+    repo.write("a.txt", "a\n");
+    repo.commit("first");
+    let name = "q\"uote\tand tab.txt";
+    repo.stage("100644", &repo.hash_blob("x\n"), name);
+    repo.commit_staged("odd name");
+    let listed = repo.git(&["ls-tree", "-z", "--name-only", "HEAD"]);
+    assert!(listed.split('\0').any(|entry| entry == name), "{listed:?}");
 }

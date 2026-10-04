@@ -32,7 +32,10 @@ clap = { version = "4.5", features = ["derive", "env"] }
 dirs = "6"
 env_logger = "0.11"
 futures = "0.3"
+ignore = "0.4"
+imara-diff = "0.2"
 log = "0.4"
+notify = "8.2"
 parking_lot = "0.12"
 png = "0.18"
 pretty_assertions = "1.4"
@@ -41,6 +44,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tempfile = "3"
 thiserror = "2"
+ulid = "3"
 windows-sys = "0.61"
 x11rb = "0.13"
 

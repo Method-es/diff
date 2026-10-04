@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
-description = "The Backend interface, its local and remote implementations (docs/PLAN.md §5)"
+description = "The stdio protocol, the dv backend --stdio server loop, RemoteBackend and the distro install (docs/PLAN.md §5)"
 
 # gpui: never, not even transitively (`script/check` step 3).
 [lib]

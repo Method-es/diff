@@ -56,12 +56,27 @@ A review owns exactly one fixed target. There is no "open a repo and guess which
 Full model in §2.
 
 ### D4. git computes the diff
-Per file, dv runs `git diff --no-ext-diff --no-color -U<all> <old> <new> -- <path>` (with `-M` rename
-detection at the file-list level) and parses the result. With unlimited context the output *is* both
-complete, aligned files, so dv collapses unchanged runs into expandable gaps itself. This gives git's
-semantics for free: `core.autocrlf`, `.gitattributes` (eol, `-diff`, binary, textconv), rename detection,
-and the Myers algorithm GitHub uses. dv adds only intraline word ranges and syntax highlighting.
-(The first implementation diffed raw bytes itself and showed every edited CRLF file as fully rewritten.)
+Per file, dv runs `git diff --no-ext-diff --no-textconv --diff-algorithm=myers --indent-heuristic
+--submodule=short --ignore-submodules=untracked --no-color --src-prefix=a/ --dst-prefix=b/ -U<N> -M
+<old> <new> -- :(literal)<path>` (an untracked file: `git diff --no-index … -- /dev/null <path>`,
+where exit code 1 means "differs", and a file named `-`, which would mean stdin there, is passed as
+`./-`) and parses the result. `N` exceeds the file's line count — a file of `n` bytes has at most
+`n + 1` lines, so `N` comes from the size check (§6 step 2) — and with context larger than the file
+the output *is* both complete, aligned files, so dv collapses unchanged runs into expandable gaps
+itself. This gives git's semantics for free: `core.autocrlf`, `.gitattributes` (eol, `-diff`,
+`binary`, clean filters) and rename detection. `--no-textconv`, because comment anchors and GitHub's
+line numbers refer to the real file's lines, not converted text; `--diff-algorithm=myers` overrides
+a user's `diff.algorithm` and a driver's `diff.<driver>.algorithm` (which beats the git policy's
+`-c diff.algorithm=myers`, §5.1), so dv shows what GitHub shows; `--indent-heuristic` (git's
+default) overrides `diff.indentHeuristic=false`, which would mark a different run of a block that
+can slide than GitHub marks, and so move comment anchors off the lines GitHub shows as changed;
+`--submodule=short` keeps a gitlink's patch the `Subproject commit` lines dv reads whatever
+`diff.submodule` says, and `--ignore-submodules=untracked` (git's own default) keeps a
+`diff.ignoreSubmodules` or `.gitmodules` `ignore` setting from hiding a submodule bump; the fixed
+prefixes override `diff.noprefix` / `diff.mnemonicPrefix`. The file list (§6 step 1) carries the
+same pinned flags, so its totals match the hunks. Binary detection still follows `.gitattributes`.
+dv adds only intraline word ranges and syntax highlighting. (The first implementation diffed raw
+bytes itself and showed every edited CRLF file as fully rewritten.)
 
 ### D5. Reviews are append-only event logs
 `<git-common-dir>/dv/reviews/<id>.jsonl`, one JSON event per line, appended with a single `write` on a
@@ -129,15 +144,22 @@ Repo          a clone at a Location: Local(<path>) | Wsl{distro, path}
 
 | Target | Old side | New side | Moves? |
 |---|---|---|---|
-| `working` | `HEAD` | working tree incl. untracked (not ignored) | yes, live |
-| `staged` | `HEAD` | index | yes, live |
-| `branch <b> [vs <base>]` | `merge-base(<base>, <b>)` | `<b>`'s tip, plus the working tree when `<b>` is checked out | yes |
-| `commit <rev>` | `<rev>^` | `<rev>` | no |
+| `working` | `HEAD` (the empty tree on an unborn branch) | working tree incl. untracked (not ignored) | yes, live |
+| `staged` | `HEAD` (the empty tree on an unborn branch) | index | yes, live |
+| `branch <b> [vs <base>]` | `merge-base(<base>, <b>)` | `<b>`'s tip, or the working tree when `<b>` is checked out in this worktree | yes |
+| `commit <rev>` | `<rev>`'s first parent (the empty tree for a root commit) | `<rev>` | no |
 | `range <a>..<b>` / `<a>...<b>` | `<a>` / merge-base | `<b>` | no |
 | `pr <owner/repo#n>` | merge-base(base, head) | PR head | on push |
 
-A target stores its spec *and* the resolved oids at each round, so a review never silently changes
-meaning (the first implementation froze `base` but left `head` symbolic).
+`<base>` defaults to the repo's default branch: what `origin/HEAD` points at (`origin/main`), else a
+local `main`, else `master`. `<b>` is the ref its name stands for however it is spelled (`feat`,
+`heads/feat`, `refs/heads/feat`; a local branch before a tag of the same name, as `git switch`
+picks), and that one ref gives both the tip and the checked-out test. Unrelated histories (no merge
+base) are an error, not an empty diff.
+`dv_core::target::Target::resolve` turns a target into a `DiffSpec` of two sides — a commit id, the
+empty tree, the index or the working tree. A target stores its spec *and* the resolved oids at each
+round, so a review never silently changes meaning (the first implementation froze `base` but left
+`head` symbolic).
 
 ### 2.3 Rounds
 A round is the target as it stood when the reviewer last handed the review over.
@@ -151,11 +173,18 @@ A round is the target as it stood when the reviewer last handed the review over.
 
 ### 2.4 Status and invariants
 - **Local review:** `open` → `changes_requested` ⇄ `in_progress` (agent ran `dv review done` →
-  `ready`) → `approved` | `closed`. Never "submitted".
-- **PR review:** `draft` → `submitted` (read-only, owned by GitHub from then on). The next round is a new
-  draft review linked to the same PR.
+  `ready`) → `approved` | `closed`. Never "submitted". Any of `open`, `changes_requested`,
+  `in_progress` and `ready` may move to any other of `changes_requested`, `in_progress`, `ready`,
+  `approved` and `closed`; agents set `in_progress` and `ready`, the reviewer `changes_requested`,
+  `approved` and `closed`. Nothing returns to `open`.
+- **PR review:** `draft` → `submitted` (read-only, owned by GitHub from then on: every later event is
+  refused). The next round is a new draft review linked to the same PR. A draft may be abandoned
+  (`closed`).
+- `approved`, `closed` and `submitted` are final; every other status counts as open.
 - **At most one open review per target.** Opening a target resumes it; "New review" on a target that has
-  one asks "Resume or start fresh?".
+  one asks "Resume or start fresh?". `working` and `staged` targets are per worktree (each worktree has
+  its own changes); the others are the same target from every worktree, and a `pr` target is the same
+  PR whatever head it was fetched at (`dv_core::review::ops::open_review`).
 - A repo has many reviews; a PR has many reviews over time; local reviews need no PR.
 - **dv never mutates the user's repo.** Allowed writes: `git fetch`, `.git/dv/**`, `refs/dv/**` and the
   objects those refs need. No commit, checkout, stash, reset or index change, ever.
@@ -164,10 +193,13 @@ A round is the target as it stood when the reviewer last handed the review over.
 - **Anchor:** round, path (and old path for renames), side (old/new), line range, **plus the anchored
   lines' text and 3 lines of context either side** (§8).
 - **States:** `open` (waiting on the agent/author) → `addressed` (agent says done, with an optional note)
-  → `resolved` (reviewer confirmed) or back to `open` ("Reopen"). Only the reviewer resolves. Agents
-  address. Replies by anyone.
+  → `resolved` (reviewer confirmed) or back to `open` ("Reopen"). Only the reviewer resolves and
+  reopens. Agents (and the reviewer) address; addressing again replaces the note; a resolved thread is
+  reopened before it can be addressed. Replies by anyone. Only an item's author edits or deletes it
+  (a deletion is a tombstone).
 - **Authors:** `reviewer` (git identity), `agent` (`--author`, default from the skill: `claude-code`,
-  `codex`, …), `github` (pulled threads, read-only).
+  `codex`, …), `github` (pulled threads, read-only: only GitHub's own events change them, and a
+  `github` author changes no other thread).
 
 ### 2.6 Promotion (later, not v1)
 When a branch reviewed as `branch feat vs main` becomes PR #n, dv offers to carry open threads into the
@@ -210,8 +242,8 @@ bringing dv to the front on the agent's working-tree review when the agent finis
 
 | Crate | Kind | Role | gpui? |
 |---|---|---|---|
-| `dv_core` | lib | Location, Target, git runner, diff pipeline (§6), review events + fold (§7), anchors (§8), GitHub via `gh` (§9) | **never** |
-| `dv_backend` | lib | The `Backend` trait, its in-process impl, the stdio protocol (§5), server loop, client, distro install | never |
+| `dv_core` | lib | Location, the `Backend` trait and `LocalBackend` (§5.1), Target, git runner, diff pipeline (§6), review events + fold (§7), anchors (§8), GitHub via `gh` (§9) | **never** |
+| `dv_backend` | lib | The stdio protocol (§5), server loop, `RemoteBackend` client, distro install | never |
 | `dv_cli` | lib | clap command tree, JSON output DTOs, setup/doctor checks (§10, §12) | never |
 | `dv_ui` | lib | views + services (§11) | yes |
 | `dv` | bin | entry: GUI, CLI, and on Linux `dv backend`; on Windows also the console/GUI split (§13.1) | yes (GUI feature) |
@@ -232,19 +264,52 @@ responsibility, `mod.rs` / `render.rs` / `tests.rs` per view).
 ## 5. The backend
 
 ### 5.1 Interface
-One trait, two implementations, so everything above it is location-agnostic:
+One trait, `dv_core::backend::Backend`, two implementations, so everything above it is
+location-agnostic. The trait and `LocalBackend` live in `dv_core`, because the diff pipeline and the
+review store there are written against it; `dv_backend` (which depends on `dv_core`) holds the stdio
+protocol, the server loop, `RemoteBackend` and the distro install.
+
+A backend is bound to one worktree, opened from a `Location`: git runs in its root, worktree paths
+are relative to that root, store paths are relative to `<git-common-dir>/dv/` (§7). Every method
+blocks and takes and returns plain data, so the stdio protocol serialises calls 1:1:
 
 ```rust
-trait Backend: Send + Sync {
-    fn git(&self, args: &[&str], stdin: Option<&[u8]>) -> Result<Output>;      // C locale, no pager
-    fn read_file(&self, rel: &Path) -> Result<Option<Vec<u8>>>;
-    fn append_event(&self, review: &ReviewId, line: &[u8]) -> Result<()>;      // §7
-    fn read_reviews(&self) -> Result<Vec<(ReviewId, Vec<u8>)>>;
-    fn watch(&self, what: WatchSpec) -> Result<WatchHandle>;                  // worktree + .git/dv
-    fn info(&self) -> BackendInfo;                                             // version, os, git version
+pub trait Backend: Send + Sync {
+    fn repo(&self) -> &RepoInfo;     // location, toplevel, git dir, common dir, object format, git version
+    fn git(&self, args: &[&str], opts: &GitOpts) -> Result<GitOutput, BackendError>; // stdin, timeout, ok codes
+    fn worktree_read(&self, rel: &str) -> Result<Option<Vec<u8>>, BackendError>;
+    fn worktree_len(&self, rel: &str) -> Result<Option<u64>, BackendError>;
+    fn worktree_text_stats(&self, rel: &str) -> Result<Option<TextStats>, BackendError>; // size, lines, binary sniff (§6)
+    fn store_append(&self, rel: &str, line: &[u8]) -> Result<(), BackendError>;   // one write, O_APPEND (D5)
+    fn store_read(&self, rel: &str) -> Result<Option<Vec<u8>>, BackendError>;
+    fn store_list(&self, dir: &str) -> Result<Vec<String>, BackendError>;
+    fn store_write_atomic(&self, rel: &str, bytes: &[u8]) -> Result<(), BackendError>; // temp + rename
+    fn store_remove(&self, rel: &str) -> Result<bool, BackendError>;
+    fn watch(&self, spec: WatchSpec, sink: WatchSink) -> Result<WatchHandle, BackendError>; // §5.3
 }
 ```
 
+- **Paths** are validated before use: no absolute paths, no `..`, `.` or empty components, no
+  backslashes (separators on Windows); store paths use only `[A-Za-z0-9._-]` components that don't
+  start with `.`. Worktree reads see a file as git does: a symbolic link is never followed and
+  reads as its target path, which is what git stores and diffs for a link.
+- **Git invocation policy** (`dv_core::git::command`, the only place a git process is built):
+  `LC_ALL=C`, `--no-pager` and `GIT_PAGER=cat`, `GIT_TERMINAL_PROMPT=0`, `GIT_OPTIONAL_LOCKS=0`,
+  `-c core.quotepath=off -c color.ui=never -c color.diff=never -c diff.algorithm=myers
+  -c diff.autoRefreshIndex=false`, the inherited variables that point git elsewhere or change how
+  pathspecs and diffs are read (`GIT_DIR`, `GIT_INDEX_FILE`, `GIT_CONFIG_PARAMETERS`,
+  `GIT_LITERAL_PATHSPECS`, `GIT_DIFF_OPTS`, `GIT_ATTR_SOURCE`, …) removed, and `CREATE_NO_WINDOW` on
+  Windows. `color.diff` needs its own override because a configured `color.diff=always` beats
+  `color.ui`. A driver's `diff.<driver>.algorithm` beats `-c diff.algorithm`, and only flags beat a
+  `.gitmodules` `ignore` setting, so the diff commands also pin git's diff presentation with flags
+  (D4). `diff.autoRefreshIndex=false` because the worktree forms of `git diff` rewrite the index
+  after a stat refresh even under `GIT_OPTIONAL_LOCKS=0` (checked 2026-10, git 2.53), which would
+  break §2.4 and race an agent's `git add` for `index.lock`. Errors carry the arguments, exit code
+  and stderr; their `Display` is a one-line summary (DESIGN §4.4).
+- The user's own git configuration otherwise applies (autocrlf, attributes, excludes). Tests are
+  hermetic instead: `LocalBackendOptions::env` overlays the environment of every git the backend
+  spawns, and tests pass `FixtureRepo::env_overlay` (no global or system config or attributes, fixed
+  identity), so results don't depend on the developer's machine (§14.1).
 - `LocalBackend` — in-process: spawns `git` directly, `notify` for watching (local repos get live
   updates too, which the first implementation lacked).
 - `RemoteBackend` — JSON-lines RPC to `dv backend --stdio` in the distro; that server is a
@@ -262,26 +327,74 @@ trait Backend: Send + Sync {
   with backoff (1s, 2s, 5s, then manual Retry), watches resubscribe and fire one synthetic change.
 
 ### 5.3 Watching
-Worktree watch honours `.gitignore` (`ignore` crate walker for the initial set, filtered events after),
-coalesces for 150ms, and reports *paths*, so the UI refreshes only the affected files and the file list.
-`.git/dv/reviews/` is watched separately for review events.
+Worktree watch honours git's ignore rules — every `.gitignore` (nearest wins, nothing re-included
+inside an ignored directory), `info/exclude`, the global excludes file — through the `ignore` crate's
+matcher, loaded by a walk that skips ignored directories and re-read as `.gitignore` files change;
+tracked files that match a pattern still count, as they do for git. A removed path can't be asked
+whether it was a directory, so the watch remembers the ignored directories it has seen and drops the
+removal of `target/` under a `target/` pattern too. A symbolic link is one path and is never
+followed, by the OS watch or the watch's own listings, because git stores a link as its target path
+and never descends into one (nor does a `foo/` pattern match a link named `foo`). The git dir is
+dropped except `dv/`; a linked worktree's `<git-common-dir>/info/` lies outside its tree and is
+watched for `info/exclude` edits on its own. Events coalesce for 150ms and arrive as *paths*
+(`WatchEvent { worktree_paths, store_paths, rescan }`: relative, `/`-separated, de-duplicated), so
+the UI refreshes only the affected files and the file list; `rescan` means the OS may have dropped events (or a batch would list more than
+10,000 paths). A directory that appears is listed before its batch goes out, because inotify
+watches a new directory only after reporting it and a directory moved in brings its files without
+an event each. `<git-common-dir>/dv/` is watched separately when it lies outside the worktree (a
+linked worktree's common dir). Dropping the handle stops the watch before `drop` returns. The OS
+watch registers ignored directories too (inotify needs a watch per directory), so on Linux a huge
+`node_modules/` can exhaust the per-user limit; a watch of the worktree and the store then keeps
+watching the store and its handle says why the worktree isn't watched, so the UI falls back to
+refreshing the worktree itself instead of also losing review updates.
 
 ---
 
 ## 6. Diff pipeline
 
-1. **File list:** `git diff --name-status -z -M <old> <new>` (+ untracked via
-   `git ls-files --others --exclude-standard -z` for working/branch targets) and `--numstat` for every
-   file's +/− up front (the first implementation only counted files already opened).
-2. **Per file, on demand:** `git diff -U<all>` (D4) → parsed into aligned lines with hunk boundaries
-   and binary/too-large markers (cap: 2 MB or 20k lines per side, beyond which the file shows a
-   "Load anyway" row).
-3. **Intraline:** word-level ranges for paired changed lines (kept from the first implementation).
+1. **File list** (`dv_core::diff::file_list`): one `git diff --raw --numstat -z -M --no-abbrev
+   --no-ext-diff --no-textconv --diff-algorithm=myers --indent-heuristic --submodule=short
+   --ignore-submodules=untracked <old> <new>` call (D4's pinned flags) gives every file's status,
+   modes and object ids and its +/− up front (the first implementation only counted files already
+   opened), from one look at the working tree. Rename detection only: `-M` also overrides a
+   configured `diff.renames=copies`, so a copy lists as added, as on GitHub. A working tree new side
+   adds the untracked files (`git ls-files --others --exclude-standard -z`): + is the file's line
+   count, read where the file lives (`Backend::worktree_text_stats`, streamed), binary by the `diff`
+   attribute (`git check-attr`; `-diff`/`binary` → binary, `diff` → text, a driver name → that
+   driver's `diff.<driver>.binary` when set, as git decides) or else git's heuristic (a NUL in the
+   first 8000 bytes); a file git converts before it counts or sniffs is counted by git
+   (`git diff --no-index --numstat`), so it agrees with the same file staged: one whose `filter`
+   driver has a `clean` or `process` command (a git-lfs asset is a three-line text pointer to git,
+   whatever its bytes) or one with a `working-tree-encoding` (UTF-16, say); a filter driver without
+   a command converts nothing, as in git; an untracked symbolic link is one line, its target path; a
+   nested repository (`dir/`) lists as a submodule. A worktree-side entry that `--raw` lists as
+   modified with an unhashed new side but `--numstat` doesn't list is a stat-dirty file whose
+   content is unchanged (the git policy's `diff.autoRefreshIndex=false`, §5.1) and is dropped. The
+   list is sorted by path.
+2. **Per file, on demand** (`dv_core::diff::file_diff`): cheap checks first. An unmerged entry on an
+   index side is `Unmerged` (the index holds no single version); a submodule change (every side a
+   gitlink) is its gitlink ids (on a working tree side git's own `Subproject commit <oid>[-dirty]`
+   line). Then both sides' sizes (one `git cat-file --batch-check` for the blobs, the backend for a
+   working tree file git didn't hash or hashed only in memory, as rename detection does):
+   binary files (known from the list) are `Binary` with their sizes, whatever their size; over the
+   cap (2 MB or 20k lines per side — the list's +/− and the output's length catch most of it before
+   any line is built) is `TooLarge`, shown with a "Load anyway" row that diffs again without the
+   caps. Otherwise `git diff -U<N>` (D4) is parsed into aligned lines — hunk bodies read by their
+   header counts, never by what a line looks like, because a reviewed file may itself be a patch —
+   with each side's "no newline at end of file", and CRLF line endings stripped for display and
+   reported. Under `core.autocrlf` or `text eol=crlf` git compares the normalised LF form, so an
+   edited CRLF checkout is exactly its edited lines. A type change (file ↔ symlink, file ↔ gitlink)
+   prints as a deletion plus an addition of one path and becomes one diff.
+3. **Intraline:** word-level ranges for paired changed lines (kept from the first implementation:
+   the i-th removed line of a change block pairs with the i-th added one, token diff with
+   histogram, pairs over 10,000 token pairs or more than 70% rewritten left unmarked).
 4. **Highlight:** tree-sitter on both full sides, off the UI thread, producing **token kinds**, not
    colours. Colours resolve at paint time from the theme, so theme changes repaint without recomputing
    and cached rows never go stale. Rows appear unhighlighted first and colour in when ready.
 5. **Rows:** built lazily for the current view mode only; unchanged runs beyond the context setting
-   become gap rows that expand in 20-line steps or fully, from the already-loaded content (no refetch).
+   become gap rows that expand in 20-line steps from either edge or fully, from the already-loaded
+   content (no refetch; `dv_core::diff::{segments, expand_gap}`). A run shorter than two lines stays
+   shown, since its gap row would take the same space.
 6. **Interdiff (rounds):** the same pipeline between round n's snapshot and the current new side.
 7. **Stream:** the diff pane is one virtualised list over *all* files (file header rows pinned while
    scrolling), so `J`/`K` scroll to a file instead of swapping views.
@@ -290,24 +403,51 @@ coalesces for 150ms, and reports *paths*, so the UI refreshes only the affected 
 
 ## 7. Review store
 
+`dv_core::review`: `id`, `event`, `model` (the folded state), `fold`, `store` (`ReviewStore`) and
+`ops` (the checked changes the UI and the CLI call).
+
 - **Location:** `<git-common-dir>/dv/reviews/<id>.jsonl` (resolved with `git rev-parse
-  --git-common-dir`, never by hand). Reviews of a linked worktree record that worktree's path in the
-  target.
-- **Events (v1):** `created{target, author, at}`, `round_closed{n, new_oid, old_oid, verdict}`,
+  --git-common-dir`, never by hand), shared by every worktree of the repo. The `created` event records
+  the worktree root it was made in (`worktree`), which is what a `working` or `staged` target means.
+- **Events (v1):** `created{target, author, worktree}`, `round_closed{n, new_oid, old_oid, verdict?}`,
   `viewed{round, path, on}`, `thread_added{id, anchor, body, author}`, `reply_added{thread, id, body,
   author}`, `thread_state{thread, state, note?, author}`, `body_edited{target_id, body}`,
   `deleted{target_id}`, `pr_linked{owner, repo, number}`, `submitted{github_review_id, url, event}`,
-  `status{status}`. Each line carries `v`, `at` (ms) and a unique `eid`.
-- **Fold:** unknown event kinds are skipped (forward compatible); a line that fails to parse is
-  reported and skipped; a file that fails entirely is listed as `{id, error}` by `dv review list` —
-  one bad file never hides the others.
-- **Ids:** `r-<ulid>`, `t-<ulid>`, `c-<ulid>`; validated as `[a-z]-[0-9a-z]{26}` before any path is
-  built from one.
-- **Snapshots** of the fold are a cache only (`<id>.state.json`), rebuilt whenever the log is longer
-  than the snapshot's event count.
-- **Deletion** of a review removes its log and its `refs/dv/reviews/<id>/*`.
-
----
+  `status{status}`. Each line is `{"v":1, "eid", "at" (ms), "kind": …, …}`: the format version, a
+  unique event id and the time, beside the kind and its fields (snake_case). Optional fields are left
+  out when empty; unknown fields are ignored, so an optional addition needs no version bump.
+- **Writing:** one `store_append` per event (D5). A log whose last line lacks its newline ends in a
+  write a crash cut off; the next append first writes a lone newline, so the new event isn't glued
+  onto the torn line. Only `ReviewStore::create` writes `created`, as a log's first line.
+- **Fold:** the file order is the total order. Unknown event kinds and lines with a higher `v` are
+  skipped and counted (forward compatible); a line that fails to parse is reported with its line
+  number and skipped (a torn final line loses nothing before it). The fold checks every event against
+  the state it lands on with the rules of §2.4 and §2.5 — ids that exist and aren't deleted, allowed
+  status and thread-state moves, rounds closing in order, viewed rounds that exist, nothing after
+  `submitted`, an event id seen once — and skips one that doesn't apply with a warning. Writers don't
+  lock, so two may race on stale state (an agent addresses a thread the reviewer just resolved); the
+  fold is the final word. An event that changes nothing applies as a no-op. A log without a valid
+  `created` event is unreadable.
+- **Operations** (`review::ops`) load the review, run the fold's own check on the new event, add the
+  checks that need to know who is asking (§2.4's status rules, author-only edits and deletes), and
+  only then append, so an operation never writes an event the fold would skip on that state.
+- **List:** every `<review id>.jsonl` in `reviews/`, newest first; a log that fails to load is listed
+  as `{id, error}` — one bad file never hides the others — while one deleted between the listing and
+  its load is simply gone. Listing also removes snapshots whose log is gone, which a load racing a
+  delete writes back after the delete removed them.
+- **Ids:** `r-<ulid>`, `t-<ulid>`, `c-<ulid>`, `e-<ulid>` in lowercase Crockford base32 (no `i l o u`,
+  first digit `0`–`7`), validated by a strict parser before any path is built from one; `../x`,
+  uppercase and a wrong kind letter are refused.
+- **Snapshots** of the fold are a cache only (`<id>.state.json`): the folded state, its warnings and
+  the log's complete-line count (the event count), length and FNV-1a hash. A snapshot answers a load
+  only when all three match the log as it is now (checking them is far cheaper than parsing every
+  line, and catches a log that grew or was edited in place); otherwise the log is folded and the
+  snapshot rewritten atomically. Operations fold without rewriting it: their own append makes a
+  snapshot of the state they loaded stale at once. A snapshot that can't be read or written is
+  ignored.
+- **Deletion** of a review removes its log, its snapshot and its `refs/dv/reviews/<id>/*` (one
+  `git update-ref --stdin` over what `for-each-ref` lists), log first, and finishes an interrupted
+  delete when run again.
 
 ## 8. Anchoring and relocation
 

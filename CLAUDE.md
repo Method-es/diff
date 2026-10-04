@@ -27,8 +27,8 @@ WSL; macOS and Linux supported. Agents read and answer reviews through the `dv` 
 |---|---|---|
 | `dv` | bin: entry for the GUI, the CLI and (Linux) `dv backend --stdio`; automation host (`automation` feature, on by default) | yes |
 | `dv_ui` | views (`shell`, …) and services (`services::Settings`), the Glass theme (`theme`), window material (`appearance`, `platform`), assets, the `system` and `automation` seams (PLAN §11) | yes |
-| `dv_core` | locations, targets, git runner, diff pipeline, review event store, anchors, GitHub via `gh` (PLAN §6–§9) | **never** |
-| `dv_backend` | the `Backend` trait, `LocalBackend`, the stdio protocol, `RemoteBackend`, distro install (PLAN §5) | never |
+| `dv_core` | locations, the `Backend` trait and `LocalBackend` (PLAN §5.1), targets, git runner, diff pipeline, review event store, anchors, GitHub via `gh` (PLAN §6–§9) | **never** |
+| `dv_backend` | the stdio protocol, the `dv backend --stdio` server loop, `RemoteBackend`, distro install (PLAN §5) | never |
 | `dv_cli` | clap command tree, JSON DTOs, setup/doctor checks (PLAN §10, §12) | never |
 | `gpui_automation` | JSONL automation over stdio + the `e2e` runner bin (PLAN §14) | yes |
 | `mock_gh` | bin: fake `gh` for tests (PLAN §14.2) | never |

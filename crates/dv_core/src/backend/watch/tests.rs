@@ -1,0 +1,639 @@
+//! Watch tests against real OS watchers. OS watchers deliver late and duplicate events, so every
+//! negative assertion first waits for a sentinel write made after the paths under test, then for
+//! a second of quiet.
+
+use std::path::Path;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use dv_test_support::FixtureRepo;
+
+use crate::backend::{Backend, LocalBackend, WatchEvent, WatchHandle, WatchSpec};
+use crate::testing::{open, open_at};
+
+const QUIET: Duration = Duration::from_secs(1);
+const FIRES_WITHIN: Duration = Duration::from_secs(2);
+
+fn start(backend: &LocalBackend, spec: WatchSpec) -> (WatchHandle, Receiver<WatchEvent>) {
+    let (tx, rx) = mpsc::channel();
+    let handle = backend
+        .watch(
+            spec,
+            Box::new(move |event| {
+                let _ = tx.send(event);
+            }),
+        )
+        .unwrap();
+    (handle, rx)
+}
+
+/// Waits until an event satisfies `wanted` and returns every event seen up to and including it.
+fn wait_for(
+    rx: &Receiver<WatchEvent>,
+    within: Duration,
+    wanted: impl Fn(&WatchEvent) -> bool,
+) -> Vec<WatchEvent> {
+    let deadline = Instant::now() + within;
+    let mut seen = Vec::new();
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(event) => {
+                let done = wanted(&event);
+                seen.push(event);
+                if done {
+                    return seen;
+                }
+            }
+            Err(err) => panic!("no matching event within {within:?} ({err:?}); saw {seen:#?}"),
+        }
+    }
+}
+
+/// Collects events until [`QUIET`] passes without one.
+fn settle(rx: &Receiver<WatchEvent>) -> Vec<WatchEvent> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut seen = Vec::new();
+    loop {
+        match rx.recv_timeout(QUIET) {
+            Ok(event) => seen.push(event),
+            Err(RecvTimeoutError::Timeout) => return seen,
+            Err(RecvTimeoutError::Disconnected) => panic!("the watch stopped"),
+        }
+        assert!(Instant::now() < deadline, "events never settled: {seen:#?}");
+    }
+}
+
+fn worktree_paths(events: &[WatchEvent]) -> Vec<&str> {
+    events
+        .iter()
+        .flat_map(|event| event.worktree_paths.iter().map(String::as_str))
+        .collect()
+}
+
+fn has_worktree_path(path: &'static str) -> impl Fn(&WatchEvent) -> bool {
+    move |event| event.worktree_paths.iter().any(|p| p == path)
+}
+
+fn has_store_path(path: &'static str) -> impl Fn(&WatchEvent) -> bool {
+    move |event| event.store_paths.iter().any(|p| p == path)
+}
+
+fn committed(files: &[(&str, &str)]) -> FixtureRepo {
+    let repo = FixtureRepo::new();
+    repo.write("README.md", "readme\n");
+    for (path, contents) in files {
+        repo.write(path, contents);
+    }
+    repo.commit("base");
+    repo
+}
+
+/// Writes a small file at `rel` below `dir` (a worktree root), creating its parent directories.
+fn write_in(dir: &Path, rel: &str) {
+    let path = dir.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, "x\n").unwrap();
+}
+
+#[test]
+fn a_file_write_is_reported_within_two_seconds() {
+    let repo = committed(&[]);
+    let backend = open(&repo);
+    let (_handle, rx) = start(&backend, WatchSpec::ALL);
+    repo.write("src/new.txt", "new\n");
+    let events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("src/new.txt"));
+    let last = events.last().unwrap();
+    assert!(!last.rescan);
+    assert!(
+        last.worktree_paths.windows(2).all(|pair| pair[0] < pair[1]),
+        "sorted and de-duplicated: {last:?}"
+    );
+}
+
+#[test]
+fn files_written_straight_into_new_directories_are_reported() {
+    let repo = committed(&[]);
+    let backend = open(&repo);
+    let (_handle, rx) = start(&backend, WatchSpec::ALL);
+    settle(&rx);
+
+    // Each directory is new, so on inotify its watch is registered only after its own event.
+    repo.write("a/b/c/deep.txt", "x\n")
+        .write("a/b/sibling.txt", "x\n");
+    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("a/b/c/deep.txt"));
+    events.extend(settle(&rx));
+    let paths = worktree_paths(&events);
+    for expected in ["a", "a/b", "a/b/c", "a/b/c/deep.txt", "a/b/sibling.txt"] {
+        assert!(paths.contains(&expected), "{expected}: {paths:?}");
+    }
+}
+
+#[test]
+fn a_directory_moved_in_reports_its_contents_minus_ignored_ones() {
+    let repo = committed(&[(".gitignore", "*.log\n")]);
+    let staging = repo.outside_dir("staging");
+    let moved = staging.join("moved");
+    std::fs::create_dir_all(moved.join("sub")).unwrap();
+    for (path, contents) in [
+        ("a.txt", "a\n"),
+        ("sub/b.txt", "b\n"),
+        ("debug.log", "ignored by the root rules\n"),
+        (".gitignore", "secret.txt\n"),
+        ("secret.txt", "ignored by the rules it brings\n"),
+    ] {
+        std::fs::write(moved.join(path), contents).unwrap();
+    }
+    let backend = open(&repo);
+    let (_handle, rx) = start(&backend, WatchSpec::ALL);
+    settle(&rx);
+
+    std::fs::rename(&moved, repo.path().join("moved")).unwrap();
+    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("moved/sub/b.txt"));
+    events.extend(settle(&rx));
+    let paths = worktree_paths(&events);
+    for expected in ["moved", "moved/a.txt", "moved/sub", "moved/.gitignore"] {
+        assert!(paths.contains(&expected), "{expected}: {paths:?}");
+    }
+    for ignored in ["moved/debug.log", "moved/secret.txt"] {
+        assert!(!paths.contains(&ignored), "{ignored}: {paths:?}");
+    }
+}
+
+#[test]
+fn ignored_paths_and_the_git_dir_are_not_reported() {
+    let repo = committed(&[(".gitignore", "target/\nnode_modules/\n*.log\n")]);
+    let backend = open(&repo);
+    let (_handle, rx) = start(&backend, WatchSpec::ALL);
+    settle(&rx);
+
+    repo.write("target/x", "build output\n")
+        .write("target/debug/deep/y", "build output\n")
+        .write("node_modules/y", "dependency\n")
+        .write("debug.log", "log\n")
+        .config("dv.touch", "the git dir changes too");
+    repo.write("sentinel.txt", "after the rest\n");
+    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+    events.extend(settle(&rx));
+
+    let paths = worktree_paths(&events);
+    assert!(
+        paths.iter().all(|path| !path.starts_with("target")
+            && !path.starts_with("node_modules")
+            && !path.ends_with(".log")
+            && !path.starts_with(".git")),
+        "{paths:?}"
+    );
+    assert!(
+        events.iter().all(|event| event.store_paths.is_empty()),
+        "{events:#?}"
+    );
+}
+
+#[test]
+fn removing_an_ignored_directory_is_not_reported() {
+    // Directory-only patterns match only directories, and a removed path can't be asked what it
+    // was; a file named like such a pattern is no directory, so its removal still counts.
+    let repo = committed(&[(".gitignore", "target/\nnode_modules/\nout/\nbuild/\n")]);
+    repo.write("target/debug/x", "build output\n")
+        .write("node_modules/pkg/y", "dependency\n")
+        .write("build", "a file, not a directory\n");
+    let staging = repo.outside_dir("staging");
+    let backend = open(&repo);
+    let (_handle, rx) = start(&backend, WatchSpec::ALL);
+    // An ignored directory that appears while the watch runs.
+    repo.write("out/z", "build output\n");
+    settle(&rx);
+
+    repo.remove("target").remove("out").remove("build");
+    std::fs::rename(
+        repo.path().join("node_modules"),
+        staging.join("node_modules"),
+    )
+    .unwrap();
+    repo.write("sentinel.txt", "after the rest\n");
+    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+    events.extend(settle(&rx));
+    let paths = worktree_paths(&events);
+    assert!(paths.contains(&"build"), "{paths:?}");
+    for ignored in ["target", "node_modules", "out"] {
+        assert!(
+            paths.iter().all(|path| !path.starts_with(ignored)),
+            "{ignored}: {paths:?}"
+        );
+    }
+}
+
+#[test]
+fn store_writes_are_reported_as_store_paths() {
+    let repo = committed(&[]);
+    let backend = open(&repo);
+    let (_handle, rx) = start(&backend, WatchSpec::ALL);
+    settle(&rx);
+
+    backend
+        .store_append("reviews/r-1.jsonl", br#"{"kind":"created"}"#)
+        .unwrap();
+    let mut events = wait_for(&rx, FIRES_WITHIN, has_store_path("reviews/r-1.jsonl"));
+    backend
+        .store_write_atomic("reviews/r-1.state.json", b"{}")
+        .unwrap();
+    events.extend(wait_for(
+        &rx,
+        FIRES_WITHIN,
+        has_store_path("reviews/r-1.state.json"),
+    ));
+    events.extend(settle(&rx));
+
+    for event in &events {
+        assert!(
+            event.worktree_paths.is_empty(),
+            "store writes aren't worktree changes: {event:?}"
+        );
+        assert!(
+            event
+                .store_paths
+                .iter()
+                .all(|path| path.split('/').all(|part| !part.starts_with('.'))),
+            "temp files aren't reported: {event:?}"
+        );
+    }
+}
+
+#[test]
+fn a_store_only_watch_ignores_the_worktree() {
+    let repo = committed(&[]);
+    let backend = open(&repo);
+    let (_handle, rx) = start(&backend, WatchSpec::STORE);
+    repo.write("ignored-by-spec.txt", "x\n");
+    backend.store_append("reviews/r-2.jsonl", b"{}").unwrap();
+    let mut events = wait_for(&rx, FIRES_WITHIN, has_store_path("reviews/r-2.jsonl"));
+    events.extend(settle(&rx));
+    assert!(worktree_paths(&events).is_empty(), "{events:#?}");
+}
+
+#[test]
+fn a_linked_worktree_watches_the_shared_store() {
+    let repo = committed(&[]);
+    let worktree = repo.add_worktree("wt", "feat");
+    let linked = open_at(&repo, &worktree);
+    let (_handle, rx) = start(&linked, WatchSpec::ALL);
+
+    // Written through the main worktree's backend, into the common dir outside this worktree.
+    open(&repo)
+        .store_append("reviews/r-3.jsonl", b"{}")
+        .unwrap();
+    wait_for(&rx, FIRES_WITHIN, has_store_path("reviews/r-3.jsonl"));
+    std::fs::write(worktree.join("in-the-worktree.txt"), "x\n").unwrap();
+    wait_for(&rx, FIRES_WITHIN, has_worktree_path("in-the-worktree.txt"));
+}
+
+#[test]
+fn a_worktree_the_os_cant_watch_leaves_the_store_watched() {
+    // On Linux the usual cause is inotify's per-user watch limit; here the worktree is gone.
+    let repo = committed(&[]);
+    let worktree = repo.add_worktree("wt", "feat");
+    let linked = open_at(&repo, &worktree);
+    assert!(
+        linked
+            .watch(WatchSpec::ALL, Box::new(|_| {}))
+            .unwrap()
+            .worktree_error()
+            .is_none()
+    );
+    std::fs::remove_dir_all(&worktree).unwrap();
+
+    let (handle, rx) = start(&linked, WatchSpec::ALL);
+    assert!(handle.worktree_error().is_some(), "{handle:?}");
+    open(&repo)
+        .store_append("reviews/r-5.jsonl", b"{}")
+        .unwrap();
+    let mut events = wait_for(&rx, FIRES_WITHIN, has_store_path("reviews/r-5.jsonl"));
+    events.extend(settle(&rx));
+    assert!(worktree_paths(&events).is_empty(), "{events:#?}");
+    // A watch of the worktree alone has nothing to fall back on, so it fails.
+    assert!(matches!(
+        linked.watch(WatchSpec::WORKTREE, Box::new(|_| {})),
+        Err(crate::backend::BackendError::Watch { .. })
+    ));
+}
+
+#[test]
+fn dropping_the_handle_stops_events() {
+    let repo = committed(&[]);
+    let backend = open(&repo);
+    let (handle, rx) = start(&backend, WatchSpec::ALL);
+    repo.write("before.txt", "x\n");
+    wait_for(&rx, FIRES_WITHIN, has_worktree_path("before.txt"));
+
+    drop(handle);
+    // Everything delivered before the drop returned may still be queued.
+    while rx.try_recv().is_ok() {}
+    repo.write("after.txt", "x\n");
+    backend.store_append("reviews/r-4.jsonl", b"{}").unwrap();
+    // The sink was dropped with the watch thread, so the channel ends without another event.
+    assert_eq!(
+        rx.recv_timeout(QUIET).map(|event| format!("{event:?}")),
+        Err(RecvTimeoutError::Disconnected)
+    );
+}
+
+#[test]
+fn dropping_the_handle_from_inside_its_sink_stops_the_watch() {
+    // A sink may decide the watch is no longer needed and drop the handle itself, on the watch
+    // thread, which then must not join itself: the drop returns, and the watch stops once the
+    // sink does (`WatchHandle`'s contract). A self-join would hang, so the test waits with a
+    // bound instead of on the sink.
+    let repo = committed(&[]);
+    let backend = open(&repo);
+    let slot: Arc<Mutex<Option<WatchHandle>>> = Arc::default();
+    let (events_tx, events) = mpsc::channel();
+    let (dropped_tx, dropped) = mpsc::channel();
+    let handle = backend
+        .watch(WatchSpec::ALL, {
+            let slot = Arc::clone(&slot);
+            Box::new(move |event| {
+                let _ = events_tx.send(event);
+                let handle = slot.lock().unwrap().take();
+                if let Some(handle) = handle {
+                    drop(handle);
+                    let _ = dropped_tx.send(());
+                }
+            })
+        })
+        .unwrap();
+    *slot.lock().unwrap() = Some(handle);
+
+    repo.write("first.txt", "x\n");
+    dropped
+        .recv_timeout(FIRES_WITHIN)
+        .expect("the sink's drop of its own handle returned");
+    // Everything the sink saw up to the drop.
+    while events.try_recv().is_ok() {}
+    repo.write("after.txt", "x\n");
+    backend.store_append("reviews/r-6.jsonl", b"{}").unwrap();
+    // The watch thread ended after the sink returned and dropped the sink with it.
+    assert_eq!(
+        events.recv_timeout(QUIET).map(|event| format!("{event:?}")),
+        Err(RecvTimeoutError::Disconnected)
+    );
+}
+
+#[test]
+fn gitignore_edits_apply_to_later_events() {
+    let repo = committed(&[]);
+    let backend = open(&repo);
+    let (_handle, rx) = start(&backend, WatchSpec::ALL);
+    settle(&rx);
+
+    repo.write(".gitignore", "logs/\n");
+    wait_for(&rx, FIRES_WITHIN, has_worktree_path(".gitignore"));
+    repo.write("logs/a.txt", "x\n");
+    repo.write("sentinel.txt", "after the rest\n");
+    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+    events.extend(settle(&rx));
+    let paths = worktree_paths(&events);
+    assert!(
+        paths.iter().all(|path| !path.starts_with("logs")),
+        "{paths:?}"
+    );
+}
+
+#[test]
+fn nested_gitignores_and_re_includes_follow_git() {
+    let repo = committed(&[
+        (".gitignore", "*.gen\n"),
+        ("pkg/.gitignore", "!keep.gen\nout/\n"),
+    ]);
+    let backend = open(&repo);
+    let (_handle, rx) = start(&backend, WatchSpec::ALL);
+    settle(&rx);
+
+    repo.write("top.gen", "x\n")
+        .write("pkg/other.gen", "x\n")
+        .write("pkg/out/x.txt", "x\n")
+        .write("pkg/keep.gen", "x\n");
+    repo.write("sentinel.txt", "after the rest\n");
+    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+    events.extend(settle(&rx));
+    let paths = worktree_paths(&events);
+    assert!(
+        paths.contains(&"pkg/keep.gen"),
+        "re-included by the nearer file: {paths:?}"
+    );
+    for ignored in ["top.gen", "pkg/other.gen", "pkg/out", "pkg/out/x.txt"] {
+        assert!(!paths.contains(&ignored), "{ignored}: {paths:?}");
+    }
+}
+
+#[test]
+fn tracked_files_matching_an_ignore_rule_are_still_reported() {
+    let repo = FixtureRepo::new();
+    repo.write("build/keep.txt", "tracked\n");
+    repo.git(&["add", "-f", "build/keep.txt"]);
+    repo.write(".gitignore", "build/\n");
+    repo.commit("base");
+    let backend = open(&repo);
+    let (_handle, rx) = start(&backend, WatchSpec::ALL);
+    settle(&rx);
+
+    repo.write("build/keep.txt", "changed\n")
+        .write("build/untracked.txt", "x\n");
+    repo.write("sentinel.txt", "after the rest\n");
+    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+    events.extend(settle(&rx));
+    let paths = worktree_paths(&events);
+    assert!(paths.contains(&"build/keep.txt"), "{paths:?}");
+    assert!(!paths.contains(&"build/untracked.txt"), "{paths:?}");
+}
+
+#[test]
+fn info_exclude_and_the_global_excludes_file_apply() {
+    let repo = committed(&[]);
+    repo.write(".git/info/exclude", "secret/\n");
+    // The default global excludes file under the fixture's XDG_CONFIG_HOME.
+    let global = repo.home().join(".config").join("git");
+    std::fs::create_dir_all(&global).unwrap();
+    std::fs::write(global.join("ignore"), "*.tmp\n").unwrap();
+    let backend = open(&repo);
+    let (_handle, rx) = start(&backend, WatchSpec::ALL);
+    settle(&rx);
+
+    repo.write("secret/key.txt", "x\n")
+        .write("scratch.tmp", "x\n");
+    repo.write("sentinel.txt", "after the rest\n");
+    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+    events.extend(settle(&rx));
+    let paths = worktree_paths(&events);
+    assert!(
+        paths
+            .iter()
+            .all(|path| !path.starts_with("secret") && !path.ends_with(".tmp")),
+        "{paths:?}"
+    );
+}
+
+#[test]
+fn core_excludes_file_replaces_the_default_global_excludes_file() {
+    let repo = committed(&[]);
+    // `--path` expands the `~`.
+    std::fs::write(repo.home().join("my-ignore"), "*.ex\n").unwrap();
+    std::fs::write(
+        repo.home().join(".gitconfig"),
+        "[core]\n\texcludesFile = ~/my-ignore\n",
+    )
+    .unwrap();
+    // The default file under XDG_CONFIG_HOME, which git no longer reads.
+    let xdg = repo.home().join(".config").join("git");
+    std::fs::create_dir_all(&xdg).unwrap();
+    std::fs::write(xdg.join("ignore"), "*.xdg\n").unwrap();
+    let backend = open(&repo);
+    let (_handle, rx) = start(&backend, WatchSpec::ALL);
+    settle(&rx);
+
+    repo.write("a.ex", "x\n").write("b.xdg", "x\n");
+    repo.write("sentinel.txt", "after the rest\n");
+    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+    events.extend(settle(&rx));
+    let paths = worktree_paths(&events);
+    assert!(!paths.contains(&"a.ex"), "{paths:?}");
+    assert!(paths.contains(&"b.xdg"), "{paths:?}");
+    // git agrees.
+    let ignored = |path: &str| {
+        repo.git_command()
+            .args(["check-ignore", "-q", path])
+            .status()
+            .unwrap()
+            .success()
+    };
+    assert!(ignored("a.ex") && !ignored("b.xdg"));
+}
+
+#[test]
+fn info_exclude_edits_apply_to_later_events() {
+    // `<common-dir>/info/exclude` is shared by every worktree; a linked worktree's lies outside
+    // its own tree.
+    let repo = committed(&[]);
+    let worktree = repo.add_worktree("wt", "feat");
+    for (at, dir) in [
+        (repo.path().to_path_buf(), "late-main"),
+        (worktree, "late-wt"),
+    ] {
+        let backend = open_at(&repo, &at);
+        let (_handle, rx) = start(&backend, WatchSpec::ALL);
+        settle(&rx);
+
+        repo.write(".git/info/exclude", format!("{dir}/\n"));
+        // The edit is not a worktree change; its own event only reloads the rules.
+        settle(&rx);
+        write_in(&at, &format!("{dir}/x"));
+        write_in(&at, "sentinel.txt");
+        let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+        events.extend(settle(&rx));
+        let paths = worktree_paths(&events);
+        assert!(paths.iter().all(|path| !path.starts_with(dir)), "{paths:?}");
+    }
+}
+
+#[test]
+fn core_ignorecase_decides_whether_patterns_match_another_case() {
+    for (ignorecase, reported) in [("true", false), ("false", true)] {
+        let repo = committed(&[(".gitignore", "target/\n")]);
+        repo.config("core.ignorecase", ignorecase);
+        let backend = open(&repo);
+        let (_handle, rx) = start(&backend, WatchSpec::ALL);
+        settle(&rx);
+
+        repo.write("Target/x", "build output\n");
+        repo.write("sentinel.txt", "after the rest\n");
+        let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+        events.extend(settle(&rx));
+        let paths = worktree_paths(&events);
+        assert_eq!(
+            paths.contains(&"Target/x"),
+            reported,
+            "ignorecase={ignorecase}: {paths:?}"
+        );
+        // git agrees.
+        let ignored = repo
+            .git_command()
+            .args(["check-ignore", "-q", "Target/x"])
+            .status()
+            .unwrap()
+            .success();
+        assert_eq!(ignored, !reported, "ignorecase={ignorecase}");
+    }
+}
+
+/// Creates a symbolic link to a directory; `false` when the OS refuses (Windows without
+/// Developer Mode or the symlink privilege), which skips the calling test.
+fn symlink_dir(target: &Path, link: &Path) -> bool {
+    #[cfg(unix)]
+    let created = std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    let created = std::os::windows::fs::symlink_dir(target, link);
+    match created {
+        Ok(()) => true,
+        // ERROR_PRIVILEGE_NOT_HELD
+        Err(err) if cfg!(windows) && err.raw_os_error() == Some(1314) => {
+            eprintln!("skipped: can't create a symbolic link here ({err})");
+            false
+        }
+        Err(err) => panic!("linking {} to {}: {err}", link.display(), target.display()),
+    }
+}
+
+#[test]
+fn a_symbolic_link_to_a_directory_is_one_path_as_in_git() {
+    // git stores a link as its target path and never descends into it, and a directory-only
+    // pattern (`foo/`) doesn't match a link (PLAN §5.3).
+    let repo = committed(&[(".gitignore", "foo/\n")]);
+    let target = repo.outside_dir("target-tree");
+    std::fs::create_dir_all(target.join("sub").join("deeper")).unwrap();
+    std::fs::write(target.join("top.txt"), "t\n").unwrap();
+    std::fs::write(target.join("sub").join("deeper").join("f.txt"), "f\n").unwrap();
+    // A link that exists when the watch starts.
+    if !symlink_dir(&target, &repo.path().join("early")) {
+        return;
+    }
+    let backend = open(&repo);
+    let (_handle, rx) = start(&backend, WatchSpec::ALL);
+    settle(&rx);
+
+    // Links that appear while the watch runs, and a change inside their target.
+    assert!(symlink_dir(&target, &repo.path().join("sym")));
+    assert!(symlink_dir(&target, &repo.path().join("foo")));
+    std::fs::write(target.join("top.txt"), "changed through the target\n").unwrap();
+    repo.write("sentinel.txt", "after the rest\n");
+    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+    events.extend(settle(&rx));
+    let paths = worktree_paths(&events);
+    for link in ["sym", "foo"] {
+        assert!(paths.contains(&link), "{link}: {paths:?}");
+    }
+    for link in ["early/", "sym/", "foo/"] {
+        assert!(
+            paths.iter().all(|path| !path.starts_with(link)),
+            "{link}: {paths:?}"
+        );
+    }
+    // git agrees.
+    assert_eq!(
+        repo.git(&["status", "--porcelain", "-uall"]),
+        "?? early\n?? foo\n?? sentinel.txt\n?? sym\n"
+    );
+}
+
+#[test]
+fn an_oversized_batch_becomes_a_rescan() {
+    let mut batch = super::Batch::default();
+    batch
+        .worktree
+        .extend((0..=super::MAX_PATHS).map(|n| format!("f{n}")));
+    let event = batch.into_event().unwrap();
+    assert!(event.rescan);
+    assert!(event.worktree_paths.is_empty() && event.store_paths.is_empty());
+
+    assert_eq!(super::Batch::default().into_event(), None);
+}

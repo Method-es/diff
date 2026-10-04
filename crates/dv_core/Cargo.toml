@@ -9,3 +9,17 @@ description = "dv's headless domain logic (docs/PLAN.md §4)"
 # gpui: never, not even transitively (`script/check` step 3).
 [lib]
 path = "src/lib.rs"
+
+[dependencies]
+ignore.workspace = true
+imara-diff.workspace = true
+log.workspace = true
+notify.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+ulid.workspace = true
+
+[dev-dependencies]
+dv_test_support.workspace = true
