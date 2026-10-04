@@ -1,0 +1,6 @@
+{"scenario": {"window_size": "1440x900", "platforms": ["windows"], "description": "Windows caption buttons: 46 wide, the title bar's height inside its bottom hairline (one device pixel), flush right (DESIGN §4.1); macOS draws traffic lights instead"}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "settle"}
+{"cmd": "bounds", "target": "titlebar/close", "expect_result": [{"pointer": "/x", "equals": 1394}, {"pointer": "/y", "equals": 0}, {"pointer": "/w", "equals": 46}, {"pointer": "/h", "gte": 39}, {"pointer": "/h", "lte": 40}]}
+{"cmd": "bounds", "target": "titlebar/max", "expect_result": [{"pointer": "/x", "equals": 1348}, {"pointer": "/w", "equals": 46}, {"pointer": "/h", "gte": 39}, {"pointer": "/h", "lte": 40}]}
+{"cmd": "bounds", "target": "titlebar/min", "expect_result": [{"pointer": "/x", "equals": 1302}, {"pointer": "/w", "equals": 46}, {"pointer": "/h", "gte": 39}, {"pointer": "/h", "lte": 40}]}

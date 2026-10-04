@@ -1,0 +1,33 @@
+{"scenario": {"window_size": "1440x900", "description": "The empty Glass shell's regions sit where DESIGN §1.5 and §2 put them, at the default size, the minimum size and after a resize"}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "settle"}
+{"cmd": "state", "expect": [{"pointer": "/app", "equals": "dv"}, {"pointer": "/window/w", "equals": 1440}, {"pointer": "/window/h", "equals": 900}, {"pointer": "/shell/panel_visible", "equals": true}, {"pointer": "/shell/empty_state", "equals": "no_review"}]}
+
+// DESIGN §1.5: title bar 40, status bar 28. DESIGN §2: panel 280, the diff area takes the rest.
+{"cmd": "bounds", "target": "titlebar", "expect_result": [{"pointer": "/x", "equals": 0}, {"pointer": "/y", "equals": 0}, {"pointer": "/w", "equals": 1440}, {"pointer": "/h", "equals": 40}, {"pointer": "/count", "equals": 1}]}
+{"cmd": "bounds", "target": "shell/panel", "expect_result": [{"pointer": "/x", "equals": 0}, {"pointer": "/y", "equals": 40}, {"pointer": "/w", "equals": 280}, {"pointer": "/h", "equals": 832}]}
+{"cmd": "bounds", "target": "shell/main", "expect_result": [{"pointer": "/x", "equals": 280}, {"pointer": "/y", "equals": 40}, {"pointer": "/w", "equals": 1160}, {"pointer": "/h", "equals": 832}]}
+{"cmd": "bounds", "target": "statusbar", "expect_result": [{"pointer": "/x", "equals": 0}, {"pointer": "/y", "equals": 872}, {"pointer": "/w", "equals": 1440}, {"pointer": "/h", "equals": 28}]}
+
+// The title bar's pieces: the command field is centred on the window (DESIGN §2).
+{"cmd": "bounds", "target": "titlebar/command", "expect_result": [{"pointer": "/x", "equals": 570}, {"pointer": "/w", "equals": 300}, {"pointer": "/visible", "not_equals": null}]}
+{"cmd": "bounds", "target": "titlebar/mark", "expect_result": [{"pointer": "/visible", "not_equals": null}, {"pointer": "/x", "lte": 24}]}
+{"cmd": "bounds", "target": "titlebar/switcher", "expect_result": {"pointer": "/visible", "not_equals": null}}
+{"cmd": "bounds", "target": "shell/panel/header", "expect_result": {"pointer": "/visible", "not_equals": null}}
+{"cmd": "bounds", "target": "shell/main/empty", "expect_result": {"pointer": "/visible", "not_equals": null}}
+{"cmd": "bounds", "target": "statusbar/repo", "expect_result": [{"pointer": "/visible", "not_equals": null}, {"pointer": "/y", "gte": 872}]}
+{"cmd": "bounds", "target": "statusbar/material", "expect_result": [{"pointer": "/visible", "not_equals": null}, {"pointer": "/y", "gte": 872}]}
+{"cmd": "screenshot", "name": "shell-1440x900"}
+
+// At the minimum size (1100x700) the panel keeps its width and the diff area shrinks.
+{"cmd": "resize", "w": 1100, "h": 700}
+{"cmd": "bounds", "target": "titlebar", "expect_result": [{"pointer": "/w", "equals": 1100}, {"pointer": "/h", "equals": 40}]}
+{"cmd": "bounds", "target": "shell/panel", "expect_result": [{"pointer": "/w", "equals": 280}, {"pointer": "/h", "equals": 632}]}
+{"cmd": "bounds", "target": "shell/main", "expect_result": [{"pointer": "/x", "equals": 280}, {"pointer": "/w", "equals": 820}, {"pointer": "/h", "equals": 632}]}
+{"cmd": "bounds", "target": "statusbar", "expect_result": [{"pointer": "/y", "equals": 672}, {"pointer": "/h", "equals": 28}]}
+{"cmd": "bounds", "target": "titlebar/command", "expect_result": [{"pointer": "/x", "equals": 400}, {"pointer": "/w", "equals": 300}]}
+{"cmd": "screenshot", "name": "shell-1100x700"}
+
+// A smaller --window-size is raised to the minimum.
+{"restart": {"app_args": ["--window-size", "900x600"]}, "expect": [{"pointer": "/window/w", "equals": 1100}, {"pointer": "/window/h", "equals": 700}]}
+{"cmd": "bounds", "target": "shell/main", "expect_result": {"pointer": "/w", "equals": 820}}

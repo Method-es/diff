@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# Every local gate in one script (docs/PLAN.md §13.2). There is no CI: agents and the owner run
+# this before a change is committed. It stops at the first failing step with a non-zero exit.
+#
+#   script/check               steps 1-5
+#   script/check --fast        steps 1-4 (skips the e2e scenarios)
+#   script/check --foreground  also the foreground scenarios in tests/e2e/foreground (step 5)
+#   script/check --linux       also step 6: the headless crates' tests inside WSL Ubuntu
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+usage: script/check [--fast] [--foreground] [--linux]
+
+  1. cargo fmt --all --check
+  2. cargo clippy, default features and the shipped shape (-p dv --no-default-features)
+  3. gpui boundary: no gpui in the headless crates' dependency trees
+  4. cargo test --workspace
+  5. e2e scenarios in tests/e2e (background windows)          skipped with --fast
+     and tests/e2e/foreground (takes the focus; hands off)    only with --foreground
+  6. headless crates' tests inside WSL Ubuntu                 only with --linux
+EOF
+}
+
+fast=0
+foreground=0
+linux=0
+for arg in "$@"; do
+    case "$arg" in
+        --fast) fast=1 ;;
+        --foreground) foreground=1 ;;
+        --linux) linux=1 ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "script/check: unknown argument: $arg" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+if [[ "$fast" -eq 1 && "$foreground" -eq 1 ]]; then
+    echo "script/check: --fast skips the e2e step that --foreground adds to" >&2
+    exit 2
+fi
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+step() {
+    printf '\n==> [%s] %s\n' "$1" "$2"
+}
+
+# The crates that must never depend on gpui, even transitively (PLAN §4).
+headless_crates=(dv_core dv_backend dv_cli mock_gh dv_test_support)
+
+step 1 "cargo fmt --all --check"
+cargo fmt --all --check
+
+step 2 "cargo clippy --workspace --all-targets -- -D warnings"
+cargo clippy --workspace --all-targets -- -D warnings
+step 2 "cargo clippy -p dv --no-default-features --all-targets -- -D warnings  (the shipped shape)"
+cargo clippy -p dv --no-default-features --all-targets -- -D warnings
+
+step 3 "gpui boundary: ${headless_crates[*]}"
+boundary_ok=1
+for crate in "${headless_crates[@]}"; do
+    # Normal dependencies only (dev-dependencies may use gpui's test support), every feature and
+    # every target platform, one crate per line without tree drawing.
+    tree="$(cargo tree -p "$crate" -e normal --all-features --target all --prefix none)"
+    offenders="$(printf '%s\n' "$tree" | grep -E '^gpui' | sed 's/ (\*)$//' | sort -u || true)"
+    if [[ -n "$offenders" ]]; then
+        boundary_ok=0
+        echo "error: $crate depends on gpui:" >&2
+        printf '%s\n' "$offenders" | sed 's/^/  /' >&2
+        echo "  (cargo tree -p $crate -e normal --target all -i <name> shows the path to one)" >&2
+    else
+        echo "ok: $crate"
+    fi
+done
+if [[ "$boundary_ok" -ne 1 ]]; then
+    exit 1
+fi
+
+step 4 "cargo test --workspace"
+cargo test --workspace
+
+if [[ "$fast" -eq 1 ]]; then
+    step 5 "e2e scenarios: skipped (--fast)"
+else
+    shopt -s nullglob
+    scenarios=(tests/e2e/*.jsonl)
+    shopt -u nullglob
+    if [[ ${#scenarios[@]} -eq 0 ]]; then
+        step 5 "e2e scenarios: none in tests/e2e, nothing to run"
+    else
+        # An all-targets build (and `cargo test`, once a bin crate has integration tests) can
+        # relink the binaries with gpui's test support (leak detection and other test-only
+        # machinery), so the runner gets freshly built plain ones right before it starts them; the
+        # runner itself never builds anything.
+        step 5 "cargo build -p dv -p mock_gh  (plain binaries for the runner)"
+        cargo build -p dv -p mock_gh
+        step 5 "e2e scenarios: cargo run -p gpui_automation --bin e2e -- tests/e2e"
+        cargo run -p gpui_automation --bin e2e -- tests/e2e
+    fi
+    if [[ "$foreground" -eq 1 ]]; then
+        # These take the foreground for a few seconds each (tests/e2e/README.md, "Screenshots
+        # and window materials"), so only an explicit flag runs them.
+        step 5 "cargo build -p dv -p mock_gh  (plain binaries for the runner)"
+        cargo build -p dv -p mock_gh
+        step 5 "foreground e2e scenarios: cargo run -p gpui_automation --bin e2e -- tests/e2e/foreground"
+        cargo run -p gpui_automation --bin e2e -- tests/e2e/foreground
+    fi
+fi
+
+if [[ "$linux" -eq 1 ]]; then
+    linux_crates=(-p dv_core -p dv_test_support -p mock_gh)
+    if command -v wsl.exe > /dev/null 2>&1; then
+        # Inside Ubuntu, on the same checkout through /mnt, with the target dir on the distro's
+        # ext4 disk: building onto /mnt (9P) is many times slower. rustup installs the toolchain
+        # from rust-toolchain.toml on first use.
+        step 6 "WSL Ubuntu: cargo test ${linux_crates[*]}"
+        win_root="$(cygpath -w "$root" 2> /dev/null || echo "$root")"
+        MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu --cd "$win_root" --exec bash -lc \
+            "CARGO_TARGET_DIR=\"\$HOME/.cache/dv-target\" cargo test ${linux_crates[*]}"
+    elif [[ "$(uname -s)" == "Linux" ]]; then
+        step 6 "Linux: cargo test ${linux_crates[*]}"
+        cargo test "${linux_crates[@]}"
+    else
+        echo "script/check: --linux needs wsl.exe (Windows) or a Linux host" >&2
+        exit 1
+    fi
+fi
+
+printf '\nscript/check: all steps passed\n'

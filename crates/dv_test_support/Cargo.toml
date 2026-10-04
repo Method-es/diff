@@ -1,0 +1,16 @@
+[package]
+name = "dv_test_support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Fixture repos and other helpers shared by dv's tests (docs/PLAN.md §14.2)"
+
+# gpui: never, not even transitively (`script/check` step 3). Crates use it only as a
+# dev-dependency.
+[lib]
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+tempfile.workspace = true

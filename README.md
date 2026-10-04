@@ -1,22 +1,30 @@
 # dv
 
-A fast, native diff viewer and PR reviewer. Rust + [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui).
+A native desktop app (Rust +
+[GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui)) for reviewing diffs locally —
+above all a coding agent's work before it is committed — and for reviewing and submitting large
+GitHub PRs that github.com handles badly. Windows first with first-class WSL; macOS and Linux
+supported. Coding agents read and answer the review through the `dv` CLI.
 
-Born from the pain of reviewing large PRs on github.com: slow to load, hard
-to jump around, no code intelligence — and no good way to review an agent's
-work locally *before* pushing.
-
-- Local-first: review any diff in any repo, no PR required
-- Line & range comments, threads, resolution — GitHub-style
-- Submit reviews to GitHub (comment / approve / request changes) via `gh`
-- Agent-friendly: reviews are drivable by CLI, so coding agents can read
-  your comments, act on them, and resolve them
-- Windows (with first-class WSL support) and macOS
+dv is being rewritten. The plan is [docs/PLAN.md](docs/PLAN.md) and the visual spec is
+[docs/DESIGN.md](docs/DESIGN.md); the first implementation stays in `legacy/` as reference until the
+rewrite reaches parity.
 
 ## Building
 
+Needs Rust (the toolchain is pinned in `rust-toolchain.toml`; rustup installs it), `git`, and `gh`
+for GitHub features.
+
 ```
-cargo run -p dv
+cargo run -p dv          # build and launch
+script/check             # every local gate: fmt, clippy, tests, e2e scenarios
 ```
 
-First build compiles GPUI from the zed monorepo — expect it to take a while.
+The first build compiles GPUI and takes several minutes; incremental builds are fast.
+
+## Third-party assets
+
+Bundled in the binary from `assets/`: the [Geist](https://github.com/vercel/geist-font) and
+[JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) fonts (SIL Open Font License 1.1,
+`assets/fonts/*/OFL.txt`) and a few [Lucide](https://lucide.dev) icons (ISC,
+`assets/icons/LICENSE-LUCIDE`; `assets/icons/README.md` lists them).

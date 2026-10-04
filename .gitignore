@@ -1,7 +1,8 @@
 # build output
 /target
+/dist
 
-# reference clones of zed / gpui-component (see CLAUDE.md) — never committed
+# local reference clones — never committed
 /refs
 
 # local (per-machine) claude code overrides

@@ -1,0 +1,14 @@
+[package]
+name = "dv_backend"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "The Backend interface, its local and remote implementations (docs/PLAN.md §5)"
+
+# gpui: never, not even transitively (`script/check` step 3).
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+dv_core.workspace = true

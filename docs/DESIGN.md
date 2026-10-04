@@ -29,7 +29,8 @@ and none over Opaque. Solid tokens are the same in all three.
 | `ctrl` | `rgba(255,255,255,.06)` | `rgba(255,255,255,.055)` | `#1f1d29` | button fill |
 | `inputBg` | `rgba(0,0,0,.24)` | `rgba(0,0,0,.22)` | `#0f0e15` | text inputs |
 
-Solid: `fg #edecee`, `fg2 #c6c4d8`, `fg3 #9d9ab3` (lowest text tier; ≥4.5:1 on every surface),
+Solid: `fg #edecee`, `fg2 #c6c4d8`, `fg3 #9d9ab3` (lowest text tier; ≥4.5:1 on every surface's
+Opaque value; on Acrylic and Mica it also depends on the desktop behind the window, §6),
 `accent #a277ff` (fill) with `accentFg #15141b`, `accentText #c4a9ff` (accent as text),
 `green #61ffca`, `red #ff6767`, `yellow #ffca85`, `blue #82e2ff`; soft fills at 12–18% of each
 (`accentSoft`, `greenSoft`, `redSoft`, `yellowSoft`, `blueSoft`); `line rgba(255,255,255,.08)`,
@@ -62,7 +63,7 @@ views never hard-code a colour.
 ### 1.4 Typography
 - **UI:** Geist (bundled, OFL), fallback Segoe UI Variable / system-ui. 13px/18px body; 12px
   secondary; 11px keycaps and badges; 600 weight for titles and the primary button, 500 for controls,
-  400 for text. Only 400/500/600/700 are loaded.
+  400 for text. Only 400/500/600 are loaded; the boards' 700 wordmark is drawn at 600.
 - **Code:** JetBrains Mono (bundled), 12px on 20px rows; line numbers `fg3`, tabular.
 - Headings: sheet title 15px/600; onboarding title 20px/600.
 
@@ -219,3 +220,11 @@ Keycaps render with `kbd` style (11px mono, `line2` border).
   header pinned.
 - Board copy (file names, comment text, PR #482) is illustrative fixture content; the e2e fixtures
   (PLAN §14) reproduce it so screenshots compare 1:1.
+- The boards' wallpaper is light pastel, which flatters the translucent surfaces. On Windows,
+  gpui's Acrylic (`Blurred`) is an untinted blur of the desktop, so the token's alpha is the only
+  tint, while Mica gets the OS's own tint as well. Over a contrasting desktop, Acrylic's `panel`
+  and `chrome` text therefore drops below 4.5:1 (light Acrylic over a dark desktop: `fg3` on
+  `panel` ≈2.5:1, `fg2` on `chrome` ≈4.4:1); dark Acrylic over a light desktop fares worse. Mica,
+  the default, and Opaque hold. **Open:** keeping `fg3` at 4.5:1 over any desktop needs a
+  `panel`/`chrome` alpha of about .85, which removes most of the material; the alternative is to
+  accept it for the opt-in material. Until decided, the values stay the board's.

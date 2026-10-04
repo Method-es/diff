@@ -1,0 +1,72 @@
+//! dv's icons (DESIGN §1.6): the few Lucide glyphs the views use, the Windows caption glyphs and
+//! dv's mark, embedded from `assets/icons/` (its README names each file's source and licence).
+//!
+//! gpui paints `svg()` as a mask tinted with the text colour, so every icon is single-colour; an
+//! SVG's own `opacity` shades the mask (the mark's dimmed half). Draw one with
+//! `gpui::svg().path(icon.path())`; [`crate::Assets`] serves the bytes.
+
+macro_rules! dv_icons {
+    ($($variant:ident => $file:literal,)*) => {
+        /// An icon in `assets/icons/`.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        pub enum DvIcon {
+            $($variant,)*
+        }
+
+        impl DvIcon {
+            /// Every icon, in declaration order.
+            pub const ALL: &[DvIcon] = &[$(DvIcon::$variant,)*];
+
+            /// The asset path, e.g. `icons/folder.svg`.
+            pub const fn path(self) -> &'static str {
+                match self {
+                    $(DvIcon::$variant => concat!("icons/", $file, ".svg"),)*
+                }
+            }
+        }
+
+        /// Every icon file as `(asset path, bytes)`, for [`crate::Assets`].
+        pub(crate) const FILES: &[(&str, &[u8])] = &[
+            $((
+                concat!("icons/", $file, ".svg"),
+                include_bytes!(concat!("../../../assets/icons/", $file, ".svg")).as_slice(),
+            ),)*
+        ];
+    };
+}
+
+dv_icons! {
+    // dv's mark: two panes, the old side dimmed (title bar, DESIGN §4.1).
+    Mark => "dv-mark",
+    // Windows caption buttons (10 grid, 1px stroke).
+    WindowMinimize => "window-minimize",
+    WindowMaximize => "window-maximize",
+    WindowRestore => "window-restore",
+    WindowClose => "window-close",
+    // Lucide.
+    ChevronDown => "chevron-down",
+    Folder => "folder",
+    Search => "search",
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_icon_is_an_embedded_svg() {
+        assert_eq!(DvIcon::ALL.len(), FILES.len());
+        for (icon, (path, bytes)) in DvIcon::ALL.iter().zip(FILES) {
+            assert_eq!(icon.path(), *path);
+            let text = std::str::from_utf8(bytes).expect("an SVG is UTF-8 text");
+            assert!(
+                text.trim_start().starts_with("<svg"),
+                "{path} is not an SVG"
+            );
+            assert!(
+                !text.contains("fill=\"#") && !text.contains("stroke=\"#"),
+                "{path} hard-codes a colour; icons take the text colour (currentColor)"
+            );
+        }
+    }
+}

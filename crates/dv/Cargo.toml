@@ -1,0 +1,41 @@
+[package]
+name = "dv"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "dv: local diff and PR review (docs/PLAN.md)"
+
+[[bin]]
+name = "dv"
+path = "src/main.rs"
+
+[features]
+default = ["automation"]
+# `--automation`: the JSONL driver used by the e2e scenarios (docs/PLAN.md §14). Shipped builds
+# are built with `--no-default-features` and carry none of it (PLAN D9).
+automation = ["dep:gpui_automation", "dep:serde_json", "dv_ui/automation"]
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+dirs.workspace = true
+dv_ui.workspace = true
+env_logger.workspace = true
+gpui.workspace = true
+gpui_automation = { workspace = true, optional = true }
+gpui_platform.workspace = true
+log.workspace = true
+serde_json = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+# The fatal-error message box of a release build, which has no console (`fatal.rs`).
+windows-sys = { workspace = true, features = ["Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_platform = { workspace = true, features = ["x11"] }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+pretty_assertions.workspace = true
+tempfile.workspace = true

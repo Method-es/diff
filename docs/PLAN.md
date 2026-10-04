@@ -86,7 +86,9 @@ Windows 11: `MicaBackdrop` by default, `Blurred` (Acrylic) as a setting, `Opaque
 Windows 10, when "transparency effects" is off, on Linux, and as a setting. macOS: vibrancy via
 `Blurred`. GPUI only blurs what is *behind* the window; in-app overlays are opaque tinted layers over a
 scrim (DESIGN §3). Acrylic uses the undocumented composition API and can lag while dragging on some
-Windows builds — hence Mica as the default.
+Windows builds — hence Mica as the default. gpui sets Mica through `DWMWA_SYSTEMBACKDROP_TYPE`, which
+only build 22621+ has, so earlier Windows 11 builds (22000–22620) resolve Mica to Opaque too; a
+material the platform can't show always resolves to Opaque (`dv_ui::platform`).
 
 ### D9. Packaging and updates: Velopack
 - **Packages:** `vpk pack` produces a one-click per-user `Setup.exe` on Windows (no wizard, no
@@ -419,8 +421,9 @@ typed events, and `is_settled()` on every service for automation.
 
 **Services** (`dv_ui::services`): `Locations` (detected environments, backend connections),
 `Reviews` (index of reviews across known repos; fold + watch), `Diff` (per open review: file list,
-loaded files, highlight queue), `GitHub` (gh calls, PR cache), `Settings`, `System` (open URL, reveal,
-folder picker — recorded instead of performed under automation).
+loaded files, highlight queue), `GitHub` (gh calls, PR cache), `Settings`. The **system seam** (open
+URL, reveal, folder picker — recorded instead of performed under automation) is its own global,
+`dv_ui::system`, because automation swaps the whole thing for a recorder.
 
 **Views** (each its own entity and directory): `shell` (title bar, status bar, layout, window
 material), `switcher` (repos + reviews, `Ctrl O`), `palette` (`Ctrl K`: files, reviews, PRs, commands —
@@ -485,9 +488,13 @@ Every gate runs locally through one script, `script/check` (bash; also used by a
    (the shipped shape, automation off)
 3. the gpui-boundary check (`cargo tree`, §4)
 4. `cargo test --workspace`
-5. the e2e scenarios (`cargo run -p gpui_automation --bin e2e -- tests/e2e`), background mode
-6. `--linux`: the same inside WSL Ubuntu with `CARGO_TARGET_DIR` on ext4 (the musl backend, the Linux
-   GUI build, and the backend loopback tests)
+5. a plain `cargo build -p dv -p mock_gh` (step 4's test build links the binaries with gpui's test
+   support), then the e2e scenarios (`cargo run -p gpui_automation --bin e2e -- tests/e2e`),
+   background mode; `--fast` skips this step. `--foreground` also runs `tests/e2e/foreground/`,
+   the scenarios that must take the focus (screen captures of the window materials, §14.2)
+6. `--linux`: `cargo test` of the headless crates (`dv_core`, `dv_test_support`, `mock_gh`) inside
+   WSL Ubuntu with `CARGO_TARGET_DIR` on ext4; phase 4 adds the musl backend, the Linux GUI build
+   and the backend loopback tests
 
 macOS has no local machine: macOS-only code is kept compiling by `cargo check --target
 aarch64-apple-darwin` where that works without the SDK, and is otherwise unverified until a Mac or
@@ -521,8 +528,16 @@ switch is set.
 - **`gpui_automation` + `e2e` runner** — ported from the sibling app: JSONL scenarios in `tests/e2e/`, named
   targets (`.automation_target("file_list/src/routes/users.ts")`), frame-synced replies,
   `wait_for`/`assert` JSON-pointer checks, background runs that never take focus, per-scenario output
-  dir with numbered screenshots and `failure.png`. dv adds custom commands `seed_repo`, `open`,
-  `open_review`, `mock_gh`.
+  dir with numbered screenshots and `failure.png`. dv adds custom commands `set_setting` (window
+  material and mode), `seed_repo`, `open`, `open_review`. The runner wires `mock_gh` itself:
+  every launch gets `DV_GH` = `mock_gh` and `DV_DATA_DIR` = the scenario's data dir, a scenario
+  header's `gh` names the `mock_gh` scenario file (`DV_MOCK_GH`), and `{"gh_log": {}}` lines
+  assert on its call log (`DV_MOCK_GH_LOG`) (tests/e2e/README.md).
+- **Screenshots of the window material:** the default capture (`PrintWindow`) includes Mica but
+  not Acrylic's blur-behind, and a background window is inactive. A `screenshot` with `"source":
+  "screen"` copies the window from the desktop instead; it only works in front, so the scenarios
+  that use it live in `tests/e2e/foreground/` and run on demand (`script/check --foreground`),
+  never by default (tests/e2e/README.md, "Screenshots and window materials").
 - **View tests** with gpui's `TestAppContext`/`VisualTestContext` next to each view (`tests.rs`).
 - **CLI tests** run the built `dv` binary against fixture repos and `mock_gh`, from the agent's point
   of view.

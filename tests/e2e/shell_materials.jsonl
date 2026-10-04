@@ -1,0 +1,38 @@
+{"scenario": {"window_size": "1440x900", "platforms": ["windows"], "description": "The empty shell in every material and mode (PLAN D8, DESIGN §3), set through the settings service as the UI would, in a background run. Needs Windows 11 22H2+ with transparency effects on; window-source screenshots show Mica as the inactive window's fill and Acrylic's translucent surfaces over black (tests/e2e/README.md, Screenshots and window materials)"}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "settle"}
+// Every material resolves to itself only where the platform can show all three; elsewhere this line says why the rest fails.
+{"cmd": "state", "expect": {"pointer": "/settings/available_materials", "equals": ["mica", "acrylic", "opaque"]}}
+
+{"cmd": "set_setting", "key": "material", "value": "mica", "expect_result": {"pointer": "/settings/material", "equals": "mica"}}
+{"cmd": "set_setting", "key": "mode", "value": "dark", "expect_result": {"pointer": "/settings/mode", "equals": "dark"}}
+{"cmd": "settle", "expect": [{"pointer": "/settings/resolved_material", "equals": "mica"}, {"pointer": "/settings/resolved_mode", "equals": "dark"}, {"pointer": "/shell/window_material", "equals": "mica"}, {"pointer": "/settings/save_error", "equals": null}]}
+{"cmd": "screenshot", "name": "shell-mica-dark"}
+
+{"cmd": "set_setting", "key": "material", "value": "mica", "expect_result": {"pointer": "/settings/material", "equals": "mica"}}
+{"cmd": "set_setting", "key": "mode", "value": "light", "expect_result": {"pointer": "/settings/mode", "equals": "light"}}
+{"cmd": "settle", "expect": [{"pointer": "/settings/resolved_material", "equals": "mica"}, {"pointer": "/settings/resolved_mode", "equals": "light"}, {"pointer": "/shell/window_material", "equals": "mica"}, {"pointer": "/settings/save_error", "equals": null}]}
+{"cmd": "screenshot", "name": "shell-mica-light"}
+
+{"cmd": "set_setting", "key": "material", "value": "acrylic", "expect_result": {"pointer": "/settings/material", "equals": "acrylic"}}
+{"cmd": "set_setting", "key": "mode", "value": "dark", "expect_result": {"pointer": "/settings/mode", "equals": "dark"}}
+{"cmd": "settle", "expect": [{"pointer": "/settings/resolved_material", "equals": "acrylic"}, {"pointer": "/settings/resolved_mode", "equals": "dark"}, {"pointer": "/shell/window_material", "equals": "acrylic"}, {"pointer": "/settings/save_error", "equals": null}]}
+{"cmd": "screenshot", "name": "shell-acrylic-dark"}
+
+{"cmd": "set_setting", "key": "material", "value": "acrylic", "expect_result": {"pointer": "/settings/material", "equals": "acrylic"}}
+{"cmd": "set_setting", "key": "mode", "value": "light", "expect_result": {"pointer": "/settings/mode", "equals": "light"}}
+{"cmd": "settle", "expect": [{"pointer": "/settings/resolved_material", "equals": "acrylic"}, {"pointer": "/settings/resolved_mode", "equals": "light"}, {"pointer": "/shell/window_material", "equals": "acrylic"}, {"pointer": "/settings/save_error", "equals": null}]}
+{"cmd": "screenshot", "name": "shell-acrylic-light"}
+
+{"cmd": "set_setting", "key": "material", "value": "opaque", "expect_result": {"pointer": "/settings/material", "equals": "opaque"}}
+{"cmd": "set_setting", "key": "mode", "value": "dark", "expect_result": {"pointer": "/settings/mode", "equals": "dark"}}
+{"cmd": "settle", "expect": [{"pointer": "/settings/resolved_material", "equals": "opaque"}, {"pointer": "/settings/resolved_mode", "equals": "dark"}, {"pointer": "/shell/window_material", "equals": "opaque"}, {"pointer": "/settings/save_error", "equals": null}]}
+{"cmd": "screenshot", "name": "shell-opaque-dark"}
+
+{"cmd": "set_setting", "key": "material", "value": "opaque", "expect_result": {"pointer": "/settings/material", "equals": "opaque"}}
+{"cmd": "set_setting", "key": "mode", "value": "light", "expect_result": {"pointer": "/settings/mode", "equals": "light"}}
+{"cmd": "settle", "expect": [{"pointer": "/settings/resolved_material", "equals": "opaque"}, {"pointer": "/settings/resolved_mode", "equals": "light"}, {"pointer": "/shell/window_material", "equals": "opaque"}, {"pointer": "/settings/save_error", "equals": null}]}
+{"cmd": "screenshot", "name": "shell-opaque-light"}
+
+// The last choice was saved to settings.json: a restart comes back in it.
+{"restart": {}, "expect": [{"pointer": "/settings/material", "equals": "opaque"}, {"pointer": "/settings/mode", "equals": "light"}, {"pointer": "/shell/window_material", "equals": "opaque"}]}

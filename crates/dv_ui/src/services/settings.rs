@@ -1,0 +1,610 @@
+//! dv's settings (PLAN §11 `Settings`): the window material and the light/dark mode, kept in
+//! `<data dir>/settings.json` as `{"v": 1, "material": …, "mode": …}`.
+//!
+//! The default data dir is `%APPDATA%\dv` on Windows, which also holds the first
+//! implementation's `settings.json`, so reading is lenient: a missing key takes its default, an
+//! unreadable value is reported and replaced by its default, a file that isn't a JSON object is
+//! reported and ignored, and keys this version doesn't know are kept and written back unchanged
+//! (the first implementation's keys, a newer dv's). A change emits [`SettingsEvent::Changed`] at
+//! once and is written in the background through a temporary file and a rename, so a crash never
+//! leaves half a file; writes are ordered by generation, so the last change always wins, and
+//! whatever is still unwritten when the app quits is written synchronously then.
+
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use gpui::{AppContext as _, Context, EventEmitter, Subscription, Task};
+use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+
+use crate::theme::{Appearance, Material};
+
+/// The settings file in the data dir.
+pub const SETTINGS_FILE: &str = "settings.json";
+/// The `"v"` this version writes.
+pub const SETTINGS_VERSION: u64 = 1;
+
+/// Light or dark (DESIGN §1.1, §1.2), or whichever the OS uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    /// Follow the OS's light/dark setting, live.
+    #[default]
+    System,
+    Dark,
+    Light,
+}
+
+impl Mode {
+    pub const ALL: [Mode; 3] = [Self::System, Self::Dark, Self::Light];
+
+    /// `"system"`, `"dark"` or `"light"`, as settings and automation state spell it.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Dark => "dark",
+            Self::Light => "light",
+        }
+    }
+
+    /// The mode a [`key`](Self::key) names.
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.key() == key)
+    }
+
+    /// The palette this mode shows while the OS uses `system`.
+    pub fn resolve(self, system: Appearance) -> Appearance {
+        match self {
+            Self::System => system,
+            Self::Dark => Appearance::Dark,
+            Self::Light => Appearance::Light,
+        }
+    }
+}
+
+/// The settings file's contents.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettingsFile {
+    /// The material asked for; the platform may show Opaque instead (`crate::appearance`).
+    pub material: Material,
+    pub mode: Mode,
+    /// Keys this version doesn't know, written back as they were read.
+    extra: Map<String, Value>,
+}
+
+impl Default for SettingsFile {
+    fn default() -> Self {
+        Self {
+            material: Material::platform_default(),
+            mode: Mode::default(),
+            extra: Map::new(),
+        }
+    }
+}
+
+/// The file as written: `v` and the known keys first, then the kept ones.
+#[derive(Serialize)]
+struct Written<'a> {
+    v: u64,
+    material: Material,
+    mode: Mode,
+    #[serde(flatten)]
+    extra: &'a Map<String, Value>,
+}
+
+impl SettingsFile {
+    /// Reads `text` leniently (see the module docs): the settings, and a line for each thing
+    /// that couldn't be read.
+    pub fn parse(text: &str) -> (Self, Vec<String>) {
+        let mut problems = Vec::new();
+        let mut file = Self::default();
+        let mut object = match serde_json::from_str::<Value>(text) {
+            Ok(Value::Object(object)) => object,
+            Ok(_) => {
+                problems.push("the file isn't a JSON object; using the defaults".to_string());
+                return (file, problems);
+            }
+            Err(error) => {
+                problems.push(format!("the file isn't JSON ({error}); using the defaults"));
+                return (file, problems);
+            }
+        };
+        if let Some(v) = object.remove("v") {
+            match v.as_u64() {
+                Some(v) if v > SETTINGS_VERSION => problems.push(format!(
+                    "written by a newer dv (v {v}); reading the keys this version knows"
+                )),
+                Some(_) => {}
+                None => problems.push(format!("\"v\" is {v}, not a version number")),
+            }
+        }
+        if let Some(value) = object.remove("material") {
+            match serde_json::from_value(value.clone()) {
+                Ok(material) => file.material = material,
+                Err(_) => problems.push(format!(
+                    "\"material\" is {value}, not one of \"mica\", \"acrylic\", \"opaque\"; \
+                     using {:?}",
+                    file.material.key()
+                )),
+            }
+        }
+        if let Some(value) = object.remove("mode") {
+            match serde_json::from_value(value.clone()) {
+                Ok(mode) => file.mode = mode,
+                Err(_) => problems.push(format!(
+                    "\"mode\" is {value}, not one of \"system\", \"dark\", \"light\"; using \
+                     \"system\""
+                )),
+            }
+        }
+        file.extra = object;
+        (file, problems)
+    }
+
+    /// The file's text: pretty JSON with a trailing newline.
+    pub fn to_json(&self) -> String {
+        let written = Written {
+            v: SETTINGS_VERSION,
+            material: self.material,
+            mode: self.mode,
+            extra: &self.extra,
+        };
+        let mut text = serde_json::to_string_pretty(&written)
+            .unwrap_or_else(|error| unreachable!("settings always serialize: {error}"));
+        text.push('\n');
+        text
+    }
+
+    /// The keys kept from the file that this version doesn't know.
+    pub fn unknown_keys(&self) -> impl Iterator<Item = &str> {
+        self.extra.keys().map(String::as_str)
+    }
+}
+
+/// What [`load`] read.
+#[derive(Debug)]
+pub struct Loaded {
+    pub file: SettingsFile,
+    /// Set when a file exists at the path but couldn't be read or isn't a JSON object. Saving
+    /// over it would destroy whatever it holds (it may be another version's, or locked by
+    /// another process for a moment), so this session doesn't save; the text says why.
+    pub unsaveable: Option<String>,
+}
+
+/// Reads the settings at `path`: the defaults when there is no file, and when it can't be read
+/// or parsed (logged as a warning, like every problem inside it).
+pub fn load(path: &Path) -> Loaded {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Loaded {
+                file: SettingsFile::default(),
+                unsaveable: None,
+            };
+        }
+        Err(error) => {
+            log::warn!(
+                "couldn't read {}: {error}; using the default settings",
+                path.display()
+            );
+            return Loaded {
+                file: SettingsFile::default(),
+                unsaveable: Some(format!(
+                    "{} couldn't be read ({error}), so changes aren't saved this session",
+                    path.display()
+                )),
+            };
+        }
+    };
+    let unsaveable = match serde_json::from_str::<Value>(&text) {
+        Ok(Value::Object(_)) => None,
+        _ => Some(format!(
+            "{} isn't a settings file dv can read, so it's left as it is and changes aren't \
+             saved this session",
+            path.display()
+        )),
+    };
+    let (file, problems) = SettingsFile::parse(&text);
+    for problem in problems {
+        log::warn!("{}: {problem}", path.display());
+    }
+    Loaded { file, unsaveable }
+}
+
+/// Writes `contents` to `path` through a temporary file beside it and a rename, so readers see
+/// the old file or the new one, never part of one.
+pub fn write_atomically(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| SETTINGS_FILE.to_string());
+    let temp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    let written = (|| {
+        let mut file = std::fs::File::create(&temp)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
+}
+
+/// Writes snapshots of the settings, newest generation wins: a write older than one already on
+/// disk is skipped.
+#[derive(Clone)]
+struct Writer {
+    path: PathBuf,
+    written: Arc<Mutex<u64>>,
+}
+
+impl Writer {
+    /// Writes `json` as generation `generation`; `Ok(false)` when a newer one is already written.
+    fn write(&self, generation: u64, json: &str) -> std::io::Result<bool> {
+        let mut written = self.written.lock();
+        if generation <= *written {
+            return Ok(false);
+        }
+        write_atomically(&self.path, json.as_bytes())?;
+        *written = generation;
+        Ok(true)
+    }
+}
+
+/// What [`Settings`] tells its subscribers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsEvent {
+    /// A value changed.
+    Changed,
+}
+
+/// The settings service: the values views and `crate::appearance` read, saving as they change.
+pub struct Settings {
+    file: SettingsFile,
+    writer: Writer,
+    /// Bumped by every change; the writer keeps the newest.
+    generation: u64,
+    /// The newest generation a background write has tried (written, skipped or failed).
+    attempted: u64,
+    /// The background write in flight; a change while it runs is written after it.
+    saving: Option<Task<()>>,
+    /// The last write's failure, until a write succeeds.
+    last_error: Option<String>,
+    /// Why this session never saves, when the existing file couldn't be read ([`Loaded`]).
+    unsaveable: Option<String>,
+    _quit: Subscription,
+}
+
+impl EventEmitter<SettingsEvent> for Settings {}
+
+impl Settings {
+    /// Reads `path` (see [`load`]) synchronously, so the first frame already uses the settings.
+    pub fn load(path: PathBuf, cx: &mut Context<Self>) -> Self {
+        let Loaded { file, unsaveable } = load(&path);
+        let quit = cx.on_app_quit(|this: &mut Self, _cx| {
+            this.flush();
+            async {}
+        });
+        Self {
+            file,
+            writer: Writer {
+                path,
+                written: Arc::new(Mutex::new(0)),
+            },
+            generation: 0,
+            attempted: 0,
+            saving: None,
+            last_error: None,
+            unsaveable,
+            _quit: quit,
+        }
+    }
+
+    pub fn file(&self) -> &SettingsFile {
+        &self.file
+    }
+
+    pub fn material(&self) -> Material {
+        self.file.material
+    }
+
+    pub fn mode(&self) -> Mode {
+        self.file.mode
+    }
+
+    /// Where the settings are saved.
+    pub fn path(&self) -> &Path {
+        &self.writer.path
+    }
+
+    /// Why the last save failed, until one succeeds.
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+
+    /// No save is waiting or running (a failed one counts as done): automation's `settled`.
+    pub fn is_settled(&self) -> bool {
+        self.saving.is_none() && self.attempted >= self.generation
+    }
+
+    pub fn set_material(&mut self, material: Material, cx: &mut Context<Self>) {
+        if self.file.material != material {
+            self.file.material = material;
+            self.changed(cx);
+        }
+    }
+
+    pub fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
+        if self.file.mode != mode {
+            self.file.mode = mode;
+            self.changed(cx);
+        }
+    }
+
+    fn changed(&mut self, cx: &mut Context<Self>) {
+        self.generation += 1;
+        cx.emit(SettingsEvent::Changed);
+        cx.notify();
+        self.save(cx);
+    }
+
+    /// Starts writing the current values unless a write is running; that one starts the next
+    /// when it ends, if anything changed meanwhile.
+    fn save(&mut self, cx: &mut Context<Self>) {
+        if self.saving.is_some() {
+            return;
+        }
+        if let Some(reason) = &self.unsaveable {
+            self.attempted = self.generation;
+            self.last_error = Some(reason.clone());
+            cx.notify();
+            return;
+        }
+        let (writer, generation, json) =
+            (self.writer.clone(), self.generation, self.file.to_json());
+        let write = cx.background_spawn(async move { writer.write(generation, &json) });
+        self.saving = Some(cx.spawn(async move |this, cx| {
+            let result = write.await;
+            this.update(cx, |this, cx| {
+                this.saving = None;
+                this.attempted = generation;
+                match result {
+                    Ok(_) => this.last_error = None,
+                    Err(error) => {
+                        log::warn!(
+                            "couldn't save the settings to {}: {error}",
+                            this.writer.path.display()
+                        );
+                        this.last_error = Some(error.to_string());
+                    }
+                }
+                if this.attempted < this.generation {
+                    this.save(cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Writes whatever isn't written yet, on this thread (the app is quitting).
+    fn flush(&mut self) {
+        if self.unsaveable.is_some() || *self.writer.written.lock() >= self.generation {
+            return;
+        }
+        if let Err(error) = self.writer.write(self.generation, &self.file.to_json()) {
+            log::warn!(
+                "couldn't save the settings to {}: {error}",
+                self.writer.path.display()
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::TestAppContext;
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    #[test]
+    fn a_missing_or_empty_object_gives_the_defaults() {
+        let (file, problems) = SettingsFile::parse("{}");
+        assert_eq!(file, SettingsFile::default());
+        assert!(problems.is_empty());
+        assert_eq!(file.mode, Mode::System);
+        assert_eq!(file.material, Material::platform_default());
+    }
+
+    #[test]
+    fn the_first_implementations_file_keeps_its_keys() {
+        let old = r#"{
+          "theme": "Aura Dark",
+          "follow_os_appearance": false,
+          "sidebar_width": 277.33334,
+          "sidebar_filters": {"pr_open": true}
+        }"#;
+        let (mut file, problems) = SettingsFile::parse(old);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(file.mode, Mode::System);
+        file.material = Material::Acrylic;
+        file.mode = Mode::Light;
+        let written: Value = serde_json::from_str(&file.to_json()).unwrap();
+        assert_eq!(
+            written,
+            serde_json::json!({
+                "v": 1,
+                "material": "acrylic",
+                "mode": "light",
+                "theme": "Aura Dark",
+                "follow_os_appearance": false,
+                "sidebar_width": 277.33334,
+                "sidebar_filters": {"pr_open": true}
+            })
+        );
+        // And it reads back as written.
+        let (again, problems) = SettingsFile::parse(&file.to_json());
+        assert!(problems.is_empty());
+        assert_eq!(again, file);
+    }
+
+    #[test]
+    fn bad_values_fall_back_one_by_one() {
+        let (file, problems) =
+            SettingsFile::parse(r#"{"v": 1, "material": "glass", "mode": "light"}"#);
+        assert_eq!(file.material, Material::platform_default());
+        assert_eq!(file.mode, Mode::Light);
+        assert_eq!(problems.len(), 1);
+        assert!(
+            problems[0].contains("\"material\" is \"glass\""),
+            "{problems:?}"
+        );
+        assert_eq!(file.unknown_keys().count(), 0, "a known key is never kept");
+
+        let (file, problems) = SettingsFile::parse(r#"{"mode": 3, "v": "one"}"#);
+        assert_eq!(file.mode, Mode::System);
+        assert_eq!(problems.len(), 2, "{problems:?}");
+    }
+
+    #[test]
+    fn unreadable_files_give_the_defaults() {
+        for text in ["", "not json", "[1, 2]", "\"mica\""] {
+            let (file, problems) = SettingsFile::parse(text);
+            assert_eq!(file, SettingsFile::default(), "{text:?}");
+            assert_eq!(problems.len(), 1, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_newer_version_is_read_as_far_as_it_goes() {
+        let (file, problems) = SettingsFile::parse(r#"{"v": 7, "mode": "dark", "later_key": [1]}"#);
+        assert_eq!(file.mode, Mode::Dark);
+        assert_eq!(file.unknown_keys().collect::<Vec<_>>(), ["later_key"]);
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("newer dv"));
+    }
+
+    #[test]
+    fn modes_resolve_against_the_system() {
+        assert_eq!(Mode::System.resolve(Appearance::Light), Appearance::Light);
+        assert_eq!(Mode::System.resolve(Appearance::Dark), Appearance::Dark);
+        assert_eq!(Mode::Dark.resolve(Appearance::Light), Appearance::Dark);
+        assert_eq!(Mode::Light.resolve(Appearance::Dark), Appearance::Light);
+        for mode in Mode::ALL {
+            assert_eq!(Mode::from_key(mode.key()), Some(mode));
+        }
+        assert_eq!(Mode::from_key("auto"), None);
+    }
+
+    #[test]
+    fn atomic_writes_replace_the_file_and_leave_no_temporary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join(SETTINGS_FILE);
+        write_atomically(&path, b"{\"v\": 1}\n").unwrap();
+        write_atomically(&path, b"{\"v\": 1, \"mode\": \"dark\"}\n").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{\"v\": 1, \"mode\": \"dark\"}\n"
+        );
+        let names: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names, [SETTINGS_FILE]);
+    }
+
+    #[test]
+    fn the_writer_never_writes_an_older_generation_over_a_newer_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = Writer {
+            path: dir.path().join(SETTINGS_FILE),
+            written: Arc::new(Mutex::new(0)),
+        };
+        assert!(writer.write(2, "new").unwrap());
+        assert!(!writer.write(1, "old").unwrap());
+        assert_eq!(std::fs::read_to_string(&writer.path).unwrap(), "new");
+    }
+
+    #[gpui::test]
+    fn changes_are_saved_in_the_background(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SETTINGS_FILE);
+        std::fs::write(&path, r#"{"theme": "Aura Dark", "mode": "dark"}"#).unwrap();
+        let settings = cx.new(|cx| Settings::load(path.clone(), cx));
+        settings.read_with(cx, |settings, _| {
+            assert_eq!(settings.mode(), Mode::Dark);
+            assert!(settings.is_settled());
+        });
+
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let _subscription = cx.update(|cx| {
+            let events = events.clone();
+            cx.subscribe(&settings, move |_, event: &SettingsEvent, _| {
+                events.borrow_mut().push(*event)
+            })
+        });
+        settings.update(cx, |settings, cx| {
+            settings.set_material(Material::Opaque, cx);
+            settings.set_mode(Mode::Light, cx);
+            // Setting the same value again is no change.
+            settings.set_mode(Mode::Light, cx);
+            assert!(!settings.is_settled());
+        });
+        cx.run_until_parked();
+        assert_eq!(*events.borrow(), [SettingsEvent::Changed; 2]);
+        settings.read_with(cx, |settings, _| {
+            assert!(settings.is_settled());
+            assert_eq!(settings.last_error(), None);
+        });
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            saved,
+            serde_json::json!({"v": 1, "material": "opaque", "mode": "light", "theme": "Aura Dark"})
+        );
+    }
+
+    #[gpui::test]
+    fn a_file_dv_cant_read_is_never_saved_over(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SETTINGS_FILE);
+        let original = "settings = { mode = \"dark\" }\n";
+        std::fs::write(&path, original).unwrap();
+        let settings = cx.new(|cx| Settings::load(path.clone(), cx));
+        settings.update(cx, |settings, cx| settings.set_mode(Mode::Light, cx));
+        cx.run_until_parked();
+        settings.read_with(cx, |settings, _| {
+            assert_eq!(settings.mode(), Mode::Light);
+            assert!(settings.is_settled());
+            assert!(
+                settings
+                    .last_error()
+                    .is_some_and(|e| e.contains("left as it is")),
+                "{:?}",
+                settings.last_error()
+            );
+        });
+        cx.update(|cx| cx.quit());
+        cx.run_until_parked();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn a_path_that_exists_but_cant_be_read_is_unsaveable() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory where the file should be: reading it fails with something other than
+        // NotFound on every platform.
+        let path = dir.path().join(SETTINGS_FILE);
+        std::fs::create_dir(&path).unwrap();
+        let loaded = load(&path);
+        assert_eq!(loaded.file, SettingsFile::default());
+        assert!(loaded.unsaveable.is_some());
+        assert!(load(&dir.path().join("missing.json")).unsaveable.is_none());
+    }
+}

@@ -1,197 +1,154 @@
-# dv — local diff viewer / PR reviewer
+# dv
 
-Native GPUI (Rust) app for reviewing large diffs locally: fast diff browsing,
-line/range comments, GitHub review submission via `gh`, WSL-aware.
+Native desktop app (Rust + GPUI) for reviewing diffs locally, above all a coding agent's work before
+it is committed, and for reviewing and submitting large GitHub PRs. Windows first with first-class
+WSL; macOS and Linux supported. Agents read and answer reviews through the `dv` CLI.
+
+- Spec: `docs/PLAN.md` (decisions D1–D10, architecture, phases; cited as `PLAN §N` / `D<n>`) and
+  `docs/DESIGN.md` (the Glass tokens, layout, screens, keyboard map; cited as `DESIGN §N`). Read the
+  relevant sections before changing anything; when code and spec disagree, fix one of them in the
+  same change.
+- `legacy/` holds the first implementation: **read-only reference**. Never build it, never edit it,
+  never add it to the workspace. Code comes across only through the salvage list (PLAN §15): read
+  it, keep what is listed, rewrite the rest.
+- Reference app for patterns: the owner's sibling GPUI app (where it lives: CLAUDE.local.md), same GPUI stack. Its code may
+  be copied freely (`gpui_automation` came from there); never modify anything in that checkout.
+
+## Toolchain and platform
+
+- Rust 1.98.1 (pinned in `rust-toolchain.toml`), edition 2024, resolver 3.
+- Windows 11 is the primary platform. Linux is built and tested inside WSL Ubuntu (below). macOS is
+  kept compiling where cheap and is otherwise unverified (PLAN §13.2).
+- `git` and `gh` are on `PATH`. dv shells out to both and never links a git library (PLAN D4, D7).
+
+## Crates (`crates/`)
+
+| Crate | Role | gpui? |
+|---|---|---|
+| `dv` | bin: entry for the GUI, the CLI and (Linux) `dv backend --stdio`; automation host (`automation` feature, on by default) | yes |
+| `dv_ui` | views (`shell`, …) and services (`services::Settings`), the Glass theme (`theme`), window material (`appearance`, `platform`), assets, the `system` and `automation` seams (PLAN §11) | yes |
+| `dv_core` | locations, targets, git runner, diff pipeline, review event store, anchors, GitHub via `gh` (PLAN §6–§9) | **never** |
+| `dv_backend` | the `Backend` trait, `LocalBackend`, the stdio protocol, `RemoteBackend`, distro install (PLAN §5) | never |
+| `dv_cli` | clap command tree, JSON DTOs, setup/doctor checks (PLAN §10, §12) | never |
+| `gpui_automation` | JSONL automation over stdio + the `e2e` runner bin (PLAN §14) | yes |
+| `mock_gh` | bin: fake `gh` for tests (PLAN §14.2) | never |
+| `dv_test_support` | dev-only lib: `FixtureRepo` and shared test helpers (PLAN §14.2) | never |
+
+Direction: `dv` → `dv_ui` → {`dv_cli`, `dv_backend`, `dv_core`, `gpui-component`};
+`dv_cli` → {`dv_backend`, `dv_core`}; `dv_backend` → `dv_core`. `dv` and `dv_ui` reach
+`gpui_automation` only through their `automation` features. A gpui dependency in a "never" crate
+fails `script/check` (step 3, `cargo tree`), because those crates run headless: in the CLI, as the
+static musl backend inside WSL, and in fast tests.
+
+GPUI naming: `gpui` = crates.io `gpui-pre =0.3.6`, `gpui_platform` = `gpui-pre-platform =0.3.6`,
+components = `gpui-component =0.6.6` (PLAN D1). Don't guess APIs: grep the sources under
+`~/.cargo/registry/src/index.crates.io-*/gpui-pre-0.3.6/` and `gpui-component-0.6.6/`.
+
+## Rules
+
+- **Dependencies.** Declare every dependency once in the root `[workspace.dependencies]` (keep it
+  alphabetical) and use `foo.workspace = true` in crates. Exact pins for the gpui family; bump them
+  together, then build and run the e2e scenarios before keeping the new `Cargo.lock`.
+- **Licensing.** `gpui` and `gpui-component` are Apache-2.0; learn from and build on them freely.
+  Most other Zed crates (editor, project, worktree, …) are GPL/AGPL: read them for architecture,
+  never copy their code here.
+- **Errors.** `anyhow` in app/CLI code, `thiserror` enums in libraries. No `unwrap()`/`expect()`
+  outside tests unless the message states the invariant.
+- **Style.** rustfmt defaults (a hook runs `cargo fmt --all` after every edit); clippy clean with
+  `-D warnings` in both feature shapes. Files stay under ~1,500 lines, split by responsibility
+  (`mod.rs` / `render.rs` / `tests.rs` per view).
+- **Comments** say what something is and why, in the present tense, citing `PLAN §N` / `DESIGN §N`
+  for spec decisions. History (review findings, phase labels, "used to…") belongs in commit
+  messages, never in comments.
+- **The user's repo is read-only.** dv writes only `git fetch`, `.git/dv/**`, `refs/dv/**` and the
+  objects those refs need; no commit, checkout, stash, reset or index change, ever (PLAN §2.4).
+- **GitHub only through `gh`** (PLAN D7), with `GH_PROMPT_DISABLED=1` and the `DV_GH` override.
+  Tests and scenarios point `DV_GH` at `mock_gh`; nothing automated talks to GitHub. If `gh auth
+  status` fails, ask the owner to run `gh auth login`.
+- **No CI.** There are deliberately no GitHub Actions workflows until PLAN §16 phase 9 (a Windows
+  gpui build burns paid minutes). Don't add `.github/workflows/` and don't push expecting anything
+  to check the change; verify locally with `script/check`.
+- **Windows and the OS go through seams.** Every window opens through
+  `dv_ui::automation::open_window`, and nothing calls `App::activate`, `Window::activate_window`,
+  `Window::resize` or `Window::zoom_window` while `dv_ui::automation::is_background()` (each one
+  raises and activates the window on Windows). Every browser link, reveal-in-folder and folder
+  picker goes through `dv_ui::system` (`open_url`, `reveal`, `pick_folder`), never gpui's
+  `open_url` / `reveal_path` / `prompt_for_paths`: under automation it records the request
+  (`state.system`) instead of opening anything.
+- **Colours come from the theme.** Views read `cx.dv_theme()` (`dv_ui::theme`, DESIGN §1 tokens
+  for the appearance × material in use) and never hard-code a colour. Shared sizes (DESIGN §1.5:
+  control and bar heights, radii, the spacing scale, type) come from the theme too; a one-off
+  pixel value copied from the design board may stay inline next to the element it sizes.
+- **Live checks are the owner's.** `DV_LIVE_WSL=1` and `DV_LIVE_GH=1` (PLAN §14.3) touch a real
+  distro and the `kylekz/difftest` repo; no agent, script or scenario sets them.
 
 ## Commands
 
-```
-cargo build                                        # debug build
-cargo run -p dv                                    # launch the app
+```bash
+script/check                 # every gate (PLAN §13.2): fmt, clippy x2, gpui boundary, tests, e2e
+script/check --fast          # the same without the e2e scenarios
+script/check --foreground    # also tests/e2e/foreground: takes the focus for a few seconds
+script/check --linux         # also the headless crates' tests inside WSL Ubuntu
+
+cargo build                  # the dv binary (default member)
+cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo clippy -p dv --no-default-features --all-targets -- -D warnings
-#   ^ the SHIPPED build shape (automation feature off) — CI checks it and
-#     it drifts silently if only the default shape is linted locally
-cargo fmt --all                                    # also auto-runs via PostToolUse hook
-bash script/bundle-windows.sh                      # assemble dist/ (Windows bundle)
+cargo clippy -p dv --no-default-features --all-targets -- -D warnings   # the shipped shape
+cargo fmt --all
+cargo build -p dv -p mock_gh                           # the runner starts these; it doesn't build them
+cargo run -p gpui_automation --bin e2e -- tests/e2e    # background run; output in target/e2e/<scenario>/
+cargo test -p gpui_automation --test harness_e2e -- --ignored
+                             # the automation library's own e2e proof against its example harness
 ```
 
-The Windows bundle is TWO binaries: `dist/dv.exe` is the console launcher
-(built from `crates/cli`; runs the headless CLI in-console so the shell
-waits, forwards GUI launches to its neighbor) and `dist/dv-gui.exe` is the
-windowed app. `dv_cli::is_headless` is the single routing predicate both
-binaries share. WSL sidecars must sit in the same dir (see § WSL host).
+The clippy run without default features is the build that ships (automation off). It drifts
+silently if only the default shape is linted, so `script/check` runs both.
 
-First-ever build fetches the zed monorepo as a git dependency and compiles
-gpui — expect many minutes. Incremental builds are fast.
+Run `cargo build -p dv -p mock_gh` right before the e2e runner: a `cargo test` build relinks the
+binaries with gpui's test support, which the runner must not start. `script/check` does this itself.
 
-## Workspace layout
+## GUI runs
 
-- `crates/core` (`dv-core`) — headless domain logic: git access, diff model,
-  review store, eventually the agent-facing CLI. **No gpui imports here, ever.**
-  This crate is the seam for the future WSL host-process split.
-- `crates/app` (`dv`) — the GPUI UI binary.
+App windows open on the owner's real desktop.
 
-## Architecture principles (don't violate casually)
+- Run the app only through the e2e runner (background mode, the default: windows never take focus
+  and stay behind everything) or `--automation` scripts that end with `quit`. Never leave `dv.exe`
+  or `mock_gh.exe` running; if a run fails, kill what you started (`taskkill //F //IM dv.exe` from
+  bash). Scenarios that must take the focus (`tests/e2e/foreground/`) run only on demand.
+- Background screenshots show the window inactive and miss Acrylic's blur (translucent surfaces
+  come out over black); judge Acrylic and Mica's active tint from the foreground scenario's screen
+  captures (tests/e2e/README.md, "Screenshots and window materials").
+- Never point the app at the real data dir. `%APPDATA%\dv` holds the first implementation's files.
+  Every run uses `--data-dir` / `DV_DATA_DIR` under `target/` (the runner gives each scenario its
+  own); under `--automation` without one, dv uses a fresh temp dir (removed when it exits), never
+  the real one. dv reads that folder's `settings.json` leniently and keeps keys it doesn't know,
+  because the first implementation's file has the same name.
+- Verify UI by looking: read the PNGs a run writes and inspect them against DESIGN.md. `state` is
+  the assertion surface; screenshots are for style. The dev display runs at 150% scaling, so
+  screenshots are physical pixels (a 1440×900 window captures as ~2160×1350).
+- Exploratory runs (looking at something no scenario covers yet) are scratch scenarios outside
+  `tests/e2e`, e.g. `target/tmp/explore.jsonl`, run with the runner and their own `--out`.
+  `tests/e2e/README.md` documents the protocol, the scenario format, the runner and dv's `state`.
 
-1. **All repo operations shell out to `git`** (and later `gh`). Never link
-   libgit2/gix for repo access — subprocess routing is what makes WSL support
-   nearly free (`wsl.exe -d <distro> git ...` is the same code path).
-2. **dv-core stays headless and testable.** The UI consumes it through narrow
-   interfaces so a client/server split can land without a rewrite.
-3. **GitHub goes through the `gh` CLI** (auth/SSO/enterprise for free, no token
-   storage). Installed on this machine (2.96); if `gh auth status` fails, ask
-   the user to run `gh auth login`. Use `gh run list/view/watch` for CI.
+## WSL
 
-## GPUI / dependency policy
+- Build and test Linux code inside Ubuntu, never on Windows paths through `/mnt/d` for the target
+  dir: 9P makes the build itself punishingly slow. Keep the target dir on the distro's ext4 disk:
 
-- `gpui` must be declared with the **exact same git spec** gpui-component uses
-  internally (currently un-pinned zed main). A `rev =` on our side creates a
-  second, incompatible copy of gpui. Version pinning lives in the committed
-  `Cargo.lock`.
-- To upgrade: bump zed + gpui-component **together** (`cargo update -p gpui
-  -p gpui_platform -p gpui-component`), then build AND launch the app before
-  committing the new lockfile.
-- GPUI docs are sparse; read real source. Cargo checks zed out under
-  `~/.cargo/git/checkouts/`. For heavier reference work, clone into the
-  gitignored `refs/` dir:
-  `git clone --depth 1 https://github.com/zed-industries/zed refs/zed`
-  `git clone --depth 1 https://github.com/longbridge/gpui-component refs/gpui-component`
-- **Licensing — important:** `gpui` and `gpui-component` are Apache-2.0: build
-  on them, learn from them freely. Most *other* zed crates (editor, project,
-  worktree, …) are GPL/AGPL: read them for architecture, **never copy their
-  code into this repo**.
+  ```bash
+  wsl.exe -d Ubuntu --cd 'D:\Software\diff' --exec bash -lc \
+    'CARGO_TARGET_DIR=$HOME/.cache/dv-target cargo test -p dv_core'
+  ```
 
-## Visual verification (for agents)
+  `script/check --linux` runs the headless crates' tests this way. rustup installs the pinned
+  toolchain inside the distro on first use.
+- A WSL repo always goes through the Linux `dv` running as `dv backend --stdio` in the distro, one
+  `wsl.exe` child per distro; there is no per-command `wsl.exe` fallback (PLAN D6, §5).
 
-UI/style work must be verified by looking at the running app, not by
-assuming. The primary loop is **`dv --automation`** (JSON-over-stdio): write
-a command script, pipe it through the app, then Read the PNG it produced and
-actually inspect the image.
+## Disk
 
-```bash
-# bash (preferred — PowerShell > redirects write UTF-16); one JSON per line
-cat > cmds.jsonl <<'EOF'
-{"id":1,"cmd":"wait_ready","timeout_ms":20000}
-{"id":2,"cmd":"state"}
-{"id":3,"cmd":"action","name":"ToggleSplit"}
-{"id":4,"cmd":"select_file","index":2}
-{"id":5,"cmd":"wait_ready"}
-{"id":6,"cmd":"screenshot","path":"C:/path/to/shot.png"}
-{"id":7,"cmd":"quit"}
-EOF
-./target/debug/dv.exe <repo-path> --automation < cmds.jsonl > out.jsonl
-```
-
-Notes that save debugging time:
-- Use **forward slashes** in JSON paths (backslashes are JSON escapes).
-- Commands run strictly in order, each completing before the next; use
-  `wait_ready` after anything that loads (launch, `open`, select_file) so
-  one-shot scripts are deterministic. Stdin EOF quits the app (after the
-  in-flight command; waits are capped at 60s) — no orphan windows. End
-  scripts with an explicit `quit`: a trailing `wait`/`wait_ready` after
-  the last real command is now interrupted at stdin EOF rather than
-  padding shutdown.
-- `state` is the semantic dump (files, selection, view mode, row counts):
-  assert behavior there, reserve screenshots for style. `actions` lists
-  every dispatchable action name. `key`/`click` exercise real input paths
-  (click coords are logical px; `state` reports the scale factor).
-- The Open Repository folder picker is disabled under automation (a native
-  dialog would block the executor and wedge the channel); scripts use
-  `{"cmd":"open","path":"D:/some/repo"}` instead. A sidebar repo row's
-  "+" (create + open a fresh draft review) is
-  `{"cmd":"new_review","path":"D:/some/repo"}`.
-- `resize` is fire-and-forget (the OS applies it async) — poll `state`
-  until the size matches before asserting on it; `screenshot`'s built-in
-  settle delay usually covers it.
-- Screenshots are self-captures of the app's own window (PrintWindow by
-  PID) at physical resolution — immune to focus/wrong-window mixups.
-- A `click` immediately after a state-mutating command hit-tests the stale
-  frame (clicks the old UI); insert a `screenshot` (forces a draw + settle)
-  or a short `wait` before position-sensitive clicks.
-
-Fallback when automation can't answer it (window chrome, OS integration):
-launch `cargo run -p dv` in the background, use Windows-MCP full-desktop
-Screenshot (reliable), and kill with `Stop-Process -Name dv`. Ad-hoc
-per-window capture via PowerShell P/Invoke has repeatedly grabbed the wrong
-window — don't trust it.
-
-## Review CLI (for agents)
-
-`dv review <list|show|create|delete>` and `dv comment <add|reply|resolve|
-unresolve|list>` (`crates/app/src/cli.rs`) are the headless, agent-facing
-side of the review layer — no gpui, no window. `dv comment list --status
-open --json` is the canonical "what does the reviewer want from me" query.
-
-Global flags, anywhere after the subcommand: `--repo <path>` (default: cwd,
-also takes `\\wsl.localhost\<distro>\<path>`), `--wsl <distro>:<posix-path>`,
-`--json`. With no `--review <id>`, `comment add` targets the most recent
-draft review (auto-creating one if none exists); `reply`/`resolve`/
-`unresolve`/`comment list` search every review for the comment id instead.
-
-Always pass `--json` for machine parsing — it's a stable schema (`review`/
-`reviews`/`comment`/`comments`/`review_id`/`comment_id` keys). Errors print
-to stderr always, plus `{"error":"..."}` on stdout in `--json` mode. Exit
-codes: `0` success, `1` operation error (unknown id, no repo, store
-failure), `2` usage error (bad flags), `3` timeout (`review wait` only).
-
-`dv review wait [<id>] [--timeout <secs>]` blocks (no polling — it rides
-the store watcher) until review activity changes, then emits
-`{"wait":{"outcome":"changed","changes":[...]}}` (kinds: `created`/
-`deleted`/`updated` with `comments_added`/`status_changed`/
-`comments_updated`/`state_changed`) and exits 0; timeout emits
-`{"wait":{"outcome":"timeout"}}` and exits 3. `dv skill
-<install|show|path>` distributes the dv-review agent skill
-(`crates/cli/skill/SKILL.md`, embedded in the binary) to
-`~/.claude/skills/dv-review/` — that skill, not this file, is how agents
-in *reviewed* repos learn the workflow.
-
-`dv pr <list|view|create|fetch>` (`crates/app/src/cli/pr_cmd.rs`) wrap `gh`
-for GitHub PRs: `list`/`view <n>` emit `{"prs":[...]}`/`{"pr":{...}}`;
-`create --title <t> [--body][--base][--draft]` emits `{"pr":{"number","url"}}`;
-`fetch <n>` fetches the PR's head/base and emits `{"pr_range":{"number",
-"base_oid","head_oid","merge_base","range"}}` — `range` is the
-`merge_base..head_oid` diff range the GUI will reuse. `dv review submit
-[<id>] --pr <n> [--verdict comment|approve|request-changes] [--body]
-[--include-resolved]` maps local comments onto a GitHub review (validating
-every anchor and line-in-diff first, aborting with the full list of
-problems on any failure) and emits `{"submission":{"review_id","pr",
-"event","comments","url"}}`.
-
-## WSL host (dv-host)
-
-`crates/host` (`dv-host`) is a headless stdio server, spawned per WSL distro
-via `wsl.exe -d <distro> --exec`, that runs git/fs work distro-side instead
-of one `wsl.exe` per command. Only
-`RepoLocation::Wsl` repos ever route through it; local repos never touch
-`crates/core/src/remote/`.
-
-Dev loop — build inside Ubuntu (NOT under `/mnt/d/...`'s 9P; keep the target
-dir on ext4 or the build itself is punishingly slow):
-
-```
-wsl.exe -d Ubuntu --exec bash -lc "cd /mnt/d/Software/diff && \
-  CARGO_TARGET_DIR=\$HOME/.cache/dv-target cargo build -p dv-host"
-```
-
-then point dv at the freshly built binary and skip the sidecar/install flow
-and hash check entirely (the handshake itself — proto version — still
-validates):
-
-```
-DV_HOST_PATH=/home/kyle/.cache/dv-target/debug/dv-host cargo run -p dv
-```
-
-`DV_NO_HOST=1` force-disables host routing for the process regardless of
-`DV_HOST_PATH`/sidecar — the A/B lever for comparing against Stage-A
-(`wsl.exe`-per-command) behavior without a separate build.
-
-Without `DV_HOST_PATH`, `dv` looks for a `dv-host-linux-x64` sidecar next to
-`dv.exe` (`current_exe()`-adjacent — `DV_HOST_SIDECAR` overrides the search
-path, a test seam) and auto-installs it into
-`~/.local/share/dv/host/<sidecar-sha256-prefix>/` inside the distro (content
-hash, not a version string — see `crates/core/src/remote/install.rs`'s
-module doc for why), verified via a client-side sha256 + marker file. No
-sidecar next to `dv.exe` means this whole path is silently inert — today's
-per-command `wsl.exe` spawns keep working exactly as before.
+D: holds the checkout and every target dir. Check `df -h /d` before anything big (a fresh build,
+copying a target dir) and stop if D: would drop below 30 GB free. `target/debug/incremental` is the
+first thing to delete when space runs low. Never `cargo clean` without the owner's say-so (gpui
+takes many minutes to rebuild).
