@@ -63,6 +63,14 @@ pub enum Expand {
 /// unchanged runs become gaps. A diff without changes (no lines at all, or only context) is
 /// one gap, or nothing when it has no lines.
 pub fn segments(lines: &[DiffLine], context: usize) -> Vec<Segment> {
+    segments_showing(lines, context, &[])
+}
+
+/// [`segments`], with every line `also` marks (by index into `lines`) shown too, whatever its
+/// distance from a change: a file that loads again keeps the context the reviewer had open
+/// ([`remap_lines`](super::remap_lines) finds those lines in the new diff). Lines past the end
+/// of `also` follow the context rule alone.
+pub fn segments_showing(lines: &[DiffLine], context: usize, also: &[bool]) -> Vec<Segment> {
     // Distance from each line to the nearest change, in lines; every line between a change and
     // a context line is itself context, so this counts context lines.
     let mut distance = vec![usize::MAX; lines.len()];
@@ -85,12 +93,13 @@ pub fn segments(lines: &[DiffLine], context: usize) -> Vec<Segment> {
         }
     }
 
+    let visible = |i: usize| distance[i] <= context || also.get(i).copied().unwrap_or(false);
     let mut out = Vec::new();
     let mut start = 0;
     while start < lines.len() {
-        let shown = distance[start] <= context;
+        let shown = visible(start);
         let end = (start..lines.len())
-            .find(|&i| (distance[i] <= context) != shown)
+            .find(|&i| visible(i) != shown)
             .unwrap_or(lines.len());
         if shown || end - start < MIN_GAP {
             out.push(Segment::Lines(start..end));

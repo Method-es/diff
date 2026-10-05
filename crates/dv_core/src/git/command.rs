@@ -95,6 +95,12 @@ pub type EnvOverlay = [(OsString, Option<OsString>)];
 /// A `git` command running in `cwd` with `overlay` applied and then the policy (module docs).
 /// The caller adds the subcommand and its arguments.
 pub fn command(cwd: &Path, overlay: &EnvOverlay) -> Command {
+    command_with_index(cwd, overlay, None)
+}
+
+/// [`command`] using `index_file` as its index (`GIT_INDEX_FILE`), set after the policy removed
+/// any inherited one; `None` is the worktree's own index.
+fn command_with_index(cwd: &Path, overlay: &EnvOverlay, index_file: Option<&Path>) -> Command {
     let mut command = Command::new("git");
     command.current_dir(cwd);
     apply_overlay(&mut command, overlay);
@@ -103,6 +109,9 @@ pub fn command(cwd: &Path, overlay: &EnvOverlay) -> Command {
     }
     for (name, value) in POLICY_ENV {
         command.env(name, value);
+    }
+    if let Some(index_file) = index_file {
+        command.env("GIT_INDEX_FILE", index_file);
     }
     command.arg("--no-pager");
     for (key, value) in POLICY_CONFIG {
@@ -140,9 +149,30 @@ const DRAIN_GRACE: Duration = Duration::from_millis(100);
 /// running; if git has exited but a process it started still holds its output pipes open (an
 /// alias or hook that backgrounds a command), the call stops waiting for that process at the
 /// deadline (or [`DRAIN_GRACE`] after git exits, whichever is later).
+///
+/// `opts.index_file` is a store path only a backend can resolve; this runs with the worktree's
+/// own index and refuses a call that names another ([`run_with_index`] takes the resolved path).
 pub fn run(
     cwd: &Path,
     overlay: &EnvOverlay,
+    args: &[&str],
+    opts: &GitOpts,
+) -> Result<GitOutput, BackendError> {
+    if let Some(rel) = &opts.index_file {
+        return Err(BackendError::InvalidPath {
+            path: rel.clone(),
+            reason: "an index file is resolved by a backend",
+        });
+    }
+    run_with_index(cwd, overlay, None, args, opts)
+}
+
+/// [`run`] with `index_file`, already resolved from `opts.index_file` by the backend, as the
+/// call's index (`GIT_INDEX_FILE`).
+pub fn run_with_index(
+    cwd: &Path,
+    overlay: &EnvOverlay,
+    index_file: Option<&Path>,
     args: &[&str],
     opts: &GitOpts,
 ) -> Result<GitOutput, BackendError> {
@@ -150,7 +180,7 @@ pub fn run(
     let deadline = opts
         .timeout_ms
         .map(|ms| (Instant::now() + Duration::from_millis(ms), ms));
-    let mut command = command(cwd, overlay);
+    let mut command = command_with_index(cwd, overlay, index_file);
     command
         .args(args)
         .stdin(if opts.stdin.is_some() {

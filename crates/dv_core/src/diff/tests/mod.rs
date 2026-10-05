@@ -5,6 +5,7 @@ mod attributes;
 mod file;
 mod list;
 mod parse_records;
+mod rows;
 
 use dv_test_support::FixtureRepo;
 

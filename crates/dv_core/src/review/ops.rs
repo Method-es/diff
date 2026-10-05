@@ -18,11 +18,13 @@ use super::event::{Event, EventBody};
 use super::fold::{Folder, Outcome, Rejection};
 use super::id::{CommentId, ItemId, ReviewId, ThreadId};
 use super::model::{
-    Anchor, Author, AuthorKind, PrLink, Review, ReviewStatus, ThreadState, Verdict,
+    Anchor, Author, AuthorKind, PrLink, Review, ReviewStatus, ReviewSummary, Round, ThreadState,
+    Verdict,
 };
+use super::snapshot::{self, SnapshotError};
 use super::store::{ListEntry, ReviewStore, StoreError};
-use crate::git::Oid;
-use crate::target::Target;
+use crate::git::{GitRepo, Oid};
+use crate::target::{Side, Target, TargetError};
 
 /// Why an operation was refused.
 #[derive(Debug, thiserror::Error)]
@@ -37,6 +39,23 @@ pub enum OpError {
     NotAllowed { actor: AuthorKind, action: String },
     #[error("the {what} is empty")]
     Empty { what: &'static str },
+    /// The review is `approved`, `closed` or `submitted`: nothing more happens to it.
+    #[error("the review is {status}")]
+    Finished { status: ReviewStatus },
+    /// The review's target no longer resolves (a branch that was deleted, say).
+    #[error(transparent)]
+    Target(#[from] TargetError),
+    #[error("couldn't snapshot the round: {0}")]
+    Snapshot(#[from] SnapshotError),
+}
+
+/// What [`finish_round`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinishedRound {
+    /// The round that closed: its number, its two sides, its verdict and summary.
+    pub round: Round,
+    /// The review after the round closed and its status followed the verdict.
+    pub review: Review,
 }
 
 /// What [`open_review`] found or made.
@@ -64,11 +83,7 @@ pub fn open_review(store: &ReviewStore, target: Target, author: Author) -> Resul
             ListEntry::Ok(summary) => Some(*summary),
             ListEntry::Err { .. } => None,
         })
-        .filter(|summary| {
-            summary.status.is_open()
-                && same_target(&summary.target, &target)
-                && (!is_worktree_bound(&target) || summary.worktree == worktree)
-        })
+        .filter(|summary| summary.status.is_open() && is_review_of(summary, &target, worktree))
         .max_by_key(|summary| summary.updated_at);
     if let Some(summary) = existing {
         let review = store.load(&summary.id)?.review;
@@ -264,9 +279,110 @@ pub fn close_round(
             new_oid,
             old_oid,
             verdict,
+            body: None,
         },
     )?;
     Ok(n)
+}
+
+/// Finishes the round in progress of a local review (PLAN §2.3, §3 workflow A step 3; the
+/// "Finish round" sheet, DESIGN §4.2): resolves the target as it stands now, snapshots its new
+/// side at `refs/dv/reviews/<id>/<n>` ([`snapshot::take`]), appends `round_closed` with the
+/// resolved old side, the snapshot, the verdict and the summary `body`, then moves the status
+/// by the verdict: `request_changes` to `changes_requested`, `approve` to `approved`, none
+/// leaves it as it is.
+///
+/// Only the reviewer finishes a round, never of a finished review and never of a PR review,
+/// whose rounds close when it is submitted to GitHub (PLAN §2.3, §9.3); a local round's verdict
+/// approves or requests changes, never `comment`. Both events are checked before either is
+/// written, and the snapshot is taken before both, so a failed snapshot leaves the log as it
+/// was. Retrying after a failed append finds the round's ref already there: it is reused when
+/// the content is unchanged, and replaced otherwise, also when it holds the commit an earlier
+/// round closed at (a branch that hadn't moved), since the round it belongs to never closed
+/// ([`snapshot::take`]).
+pub fn finish_round(
+    store: &ReviewStore,
+    repo: &GitRepo,
+    review: &ReviewId,
+    verdict: Option<Verdict>,
+    body: Option<String>,
+    author: &Author,
+) -> Result<FinishedRound, OpError> {
+    let not_allowed = |action: &str| OpError::NotAllowed {
+        actor: author.kind,
+        action: action.to_string(),
+    };
+    if author.kind != AuthorKind::Reviewer {
+        return Err(not_allowed("finish a round"));
+    }
+    if verdict == Some(Verdict::Comment) {
+        return Err(not_allowed(
+            "finish a local round with a comment verdict (approve or request changes)",
+        ));
+    }
+    let loaded = store.load_for_update(review)?;
+    let state = loaded.review;
+    if state.status.is_final() {
+        return Err(OpError::Finished {
+            status: state.status,
+        });
+    }
+    if state.is_pr_review() {
+        return Err(not_allowed(
+            "finish a PR review's round here (it closes when submitted to GitHub)",
+        ));
+    }
+
+    let spec = state.target.resolve(repo)?;
+    let old_oid = match &spec.old {
+        Side::Commit(oid) => oid.clone(),
+        Side::EmptyTree => repo.empty_tree(),
+        // Targets resolve their old side to a tree; the snapshot refuses anything else.
+        Side::Index | Side::Worktree => {
+            return Err(SnapshotError::UnsupportedSide {
+                side: spec.old.to_string(),
+            }
+            .into());
+        }
+    };
+    // The round in progress never closed, so its ref holds at most the snapshot of an attempt
+    // whose events didn't land.
+    let n = state.current_round();
+    let new_oid = snapshot::take(repo, review, n, &spec, None)?;
+
+    let body = body
+        .map(|body| body.trim().to_string())
+        .filter(|body| !body.is_empty());
+    let round_closed = Event::new(EventBody::RoundClosed {
+        n,
+        new_oid,
+        old_oid,
+        verdict,
+        body,
+    });
+    let status = match verdict {
+        Some(Verdict::RequestChanges) => Some(ReviewStatus::ChangesRequested),
+        Some(Verdict::Approve) => Some(ReviewStatus::Approved),
+        Some(Verdict::Comment) | None => None,
+    };
+    let status = status.map(|status| Event::new(EventBody::Status { status }));
+    let mut folder = Folder::from_review(state);
+    folder.apply(&round_closed)?;
+    let status = match status {
+        Some(event) => (folder.apply(&event)? == Outcome::Changed).then_some(event),
+        None => None,
+    };
+    store.append_event(review, &round_closed)?;
+    if let Some(event) = &status {
+        store.append_event(review, event)?;
+    }
+    let review = folder.into_review();
+    let round = review
+        .rounds
+        .last()
+        .cloned()
+        .expect("applying round_closed appended the round");
+    Ok(FinishedRound { round, review })
 }
 
 /// Replaces a thread's opening comment or a reply. Only its author may.
@@ -363,6 +479,14 @@ fn check_body(body: &str, what: &'static str) -> Result<(), OpError> {
     } else {
         Ok(())
     }
+}
+
+/// Whether `summary` reviews `target` as opened from `worktree` (the worktree root, as
+/// `ReviewStore::worktree` names it), open or not: the rule [`open_review`] resumes by, which
+/// the switcher also uses to show a target's open review beside it.
+pub fn is_review_of(summary: &ReviewSummary, target: &Target, worktree: &str) -> bool {
+    same_target(&summary.target, target)
+        && (!is_worktree_bound(target) || summary.worktree == worktree)
 }
 
 /// Whether two targets are the same for "at most one open review per target": the same spec,

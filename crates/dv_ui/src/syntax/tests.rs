@@ -1,0 +1,299 @@
+use dv_core::diff::{DiffLine, LineKind, TextDiff};
+use pretty_assertions::assert_eq;
+
+use super::*;
+use crate::theme::{Appearance, DvColors, Material};
+
+#[test]
+fn capture_names_map_to_kinds() {
+    use TokenKind::*;
+    let table = [
+        ("keyword", Some(Keyword)),
+        ("keyword.return", Some(Keyword)),
+        ("keyword.function", Some(Keyword)),
+        ("conditional", Some(Keyword)),
+        ("repeat", Some(Keyword)),
+        ("include", Some(Keyword)),
+        ("storageclass", Some(Keyword)),
+        ("preproc", Some(Keyword)),
+        ("variable.builtin", Some(Keyword)),
+        ("variable.special", Some(Keyword)),
+        ("tag", Some(Keyword)),
+        ("tag.doctype", Some(Keyword)),
+        ("title", Some(Keyword)),
+        ("function", Some(Function)),
+        ("function.method", Some(Function)),
+        ("function.builtin", Some(Function)),
+        ("function.macro", Some(Function)),
+        ("method", Some(Function)),
+        ("method.call", Some(Function)),
+        ("link_text", Some(Function)),
+        ("string", Some(String)),
+        ("string.escape", Some(String)),
+        ("string.regex", Some(String)),
+        ("string.special", Some(String)),
+        ("character", Some(String)),
+        ("character.special", Some(String)),
+        ("escape", Some(String)),
+        ("text.literal", Some(String)),
+        ("text.code.span", Some(String)),
+        ("link_uri", Some(String)),
+        ("number", Some(Number)),
+        ("number.float", Some(Number)),
+        ("float", Some(Number)),
+        ("type", Some(Type)),
+        ("type.builtin", Some(Type)),
+        ("type.qualifier", Some(Type)),
+        ("constructor", Some(Type)),
+        ("constant", Some(Constant)),
+        ("constant.builtin", Some(Constant)),
+        ("constant.macro", Some(Constant)),
+        ("boolean", Some(Constant)),
+        ("label", Some(Constant)),
+        ("string.special.symbol", Some(Constant)),
+        ("property", Some(Property)),
+        ("property.definition", Some(Property)),
+        ("field", Some(Property)),
+        ("attribute", Some(Property)),
+        ("tag.attribute", Some(Property)),
+        ("variable.member", Some(Property)),
+        ("punctuation", Some(Punctuation)),
+        ("punctuation.bracket", Some(Punctuation)),
+        ("punctuation.delimiter", Some(Punctuation)),
+        ("punctuation.special", Some(Punctuation)),
+        ("operator", Some(Punctuation)),
+        ("delimiter", Some(Punctuation)),
+        ("tag.delimiter", Some(Punctuation)),
+        ("comment", Some(Comment)),
+        ("comment.doc", Some(Comment)),
+        ("comment.documentation", Some(Comment)),
+        ("variable", Some(Plain)),
+        ("variable.parameter", Some(Plain)),
+        ("parameter", Some(Plain)),
+        ("embedded", Some(Plain)),
+        ("module", Some(Plain)),
+        ("namespace", Some(Plain)),
+        ("emphasis.strong", Some(Plain)),
+        ("text.reference", Some(Plain)),
+        ("none", Some(Plain)),
+        ("spell", Some(Plain)),
+        // Private captures and names that say nothing about colour.
+        ("_function", None),
+        ("__name__", None),
+        ("clean", None),
+        ("error", None),
+        ("", None),
+    ];
+    for (name, kind) in table {
+        assert_eq!(kind_for_capture(name), kind, "{name:?}");
+    }
+}
+
+#[test]
+fn kinds_resolve_to_the_themes_syntax_colours() {
+    let colors = DvColors::new(Appearance::Dark, Material::Opaque);
+    let syntax = &colors.syntax;
+    assert_eq!(TokenKind::Keyword.color(syntax), syntax.keyword);
+    assert_eq!(TokenKind::Comment.color(syntax), colors.fg3);
+    assert_eq!(TokenKind::Plain.color(syntax), syntax.plain);
+    let light = DvColors::new(Appearance::Light, Material::Mica);
+    assert_eq!(TokenKind::Comment.color(&light.syntax), light.fg3);
+}
+
+#[test]
+fn every_kind_survives_the_style_round_trip() {
+    for kind in TokenKind::ALL {
+        assert_eq!(decode(&encode(kind)), kind, "{kind:?}");
+    }
+    assert_eq!(decode(&HighlightStyle::default()), TokenKind::Plain);
+    // A colour that isn't an encoded kind (another resolver's) is plain.
+    let foreign = HighlightStyle {
+        color: Some(Hsla {
+            h: 0.3,
+            s: 0.5,
+            l: 0.5,
+            a: 1.,
+        }),
+        ..Default::default()
+    };
+    assert_eq!(decode(&foreign), TokenKind::Plain);
+}
+
+#[test]
+fn languages_come_from_names_and_extensions() {
+    let table = [
+        ("src/main.rs", Some("rust")),
+        ("SRC/MAIN.RS", Some("rust")),
+        ("src/routes/users.ts", Some("typescript")),
+        ("web/App.tsx", Some("tsx")),
+        ("web/index.jsx", Some("javascript")),
+        ("lib/x.mjs", Some("javascript")),
+        ("package.json", Some("json")),
+        ("tool.py", Some("python")),
+        ("cmd/main.go", Some("go")),
+        ("include/x.h", Some("c")),
+        ("src/x.hpp", Some("cpp")),
+        ("App.cs", Some("csharp")),
+        ("style.scss", Some("css")),
+        ("index.html", Some("html")),
+        ("README.md", Some("markdown")),
+        ("Cargo.toml", Some("toml")),
+        ("Cargo.lock", Some("toml")),
+        (".github/ci.yml", Some("yaml")),
+        ("script/check.sh", Some("bash")),
+        ("home/.bashrc", Some("bash")),
+        ("Makefile", Some("make")),
+        ("sub/GNUmakefile", Some("make")),
+        ("CMakeLists.txt", Some("cmake")),
+        ("Gemfile", Some("ruby")),
+        ("lib/x.rb", Some("ruby")),
+        ("fix.patch", Some("diff")),
+        ("notes.txt", None),
+        ("LICENSE", None),
+        ("query.sql", None),
+        ("archive.tar.gz", None),
+        (".gitignore", None),
+    ];
+    for (path, language) in table {
+        assert_eq!(language_for_path(path), language, "{path}");
+    }
+}
+
+fn kinds(side: &SideHighlights, line: u32, text: &str) -> Vec<(String, TokenKind)> {
+    side.line(line)
+        .iter()
+        .map(|token| {
+            let range = token.range.start as usize..token.range.end as usize;
+            (text[range].to_string(), token.kind)
+        })
+        .collect()
+}
+
+#[test]
+fn rust_highlights_into_line_relative_kinds() {
+    let lines = [
+        "/// Says hello.",
+        "fn main() {",
+        "    let greeting = \"hi\";",
+        "    let n = 42;",
+        "}",
+    ];
+    let side = highlight_side("src/main.rs", &lines).expect("rust has a grammar");
+    assert_eq!(side.len(), 5);
+    assert!(
+        kinds(&side, 1, lines[0])
+            .iter()
+            .all(|(_, kind)| *kind == TokenKind::Comment),
+        "{:?}",
+        kinds(&side, 1, lines[0])
+    );
+    let main = kinds(&side, 2, lines[1]);
+    assert!(
+        main.contains(&("fn".into(), TokenKind::Keyword)),
+        "{main:?}"
+    );
+    assert!(
+        main.contains(&("main".into(), TokenKind::Function)),
+        "{main:?}"
+    );
+    let greeting = kinds(&side, 3, lines[2]);
+    assert!(
+        greeting.contains(&("let".into(), TokenKind::Keyword)),
+        "{greeting:?}"
+    );
+    assert!(
+        greeting
+            .iter()
+            .any(|(text, kind)| text.contains("hi") && *kind == TokenKind::String),
+        "{greeting:?}"
+    );
+    // Rust's query captures literals as `constant.builtin`.
+    let n = kinds(&side, 4, lines[3]);
+    assert!(n.contains(&("42".into(), TokenKind::Constant)), "{n:?}");
+    // Past the end and line 0 are empty, never a panic.
+    assert!(side.line(0).is_empty());
+    assert!(side.line(99).is_empty());
+}
+
+#[test]
+fn tokens_are_sorted_disjoint_and_inside_their_line() {
+    let lines = [
+        "/* a comment",
+        "   spanning lines */ const x: number = 1;",
+        "export function f(a: string) { return `t ${a}`; }",
+    ];
+    let side = highlight_side("x.ts", &lines).expect("typescript has a grammar");
+    for (index, line) in lines.iter().enumerate() {
+        let mut end = 0;
+        for token in side.line(index as u32 + 1) {
+            assert!(token.range.start >= end, "line {index}: {token:?}");
+            assert!(token.range.end as usize <= line.len(), "line {index}");
+            assert!(token.range.start < token.range.end);
+            assert_ne!(token.kind, TokenKind::Plain);
+            end = token.range.end;
+        }
+    }
+    assert!(
+        kinds(&side, 2, lines[1]).contains(&("1".to_string(), TokenKind::Number)),
+        "{:?}",
+        kinds(&side, 2, lines[1])
+    );
+    // The block comment's second line starts with its tail.
+    let second = kinds(&side, 2, lines[1]);
+    assert_eq!(
+        second.first(),
+        Some(&("   spanning lines */".to_string(), TokenKind::Comment)),
+        "{second:?}"
+    );
+}
+
+#[test]
+fn caps_and_unknown_languages_give_nothing() {
+    assert_eq!(highlight_side("notes.txt", &["fn main() {}"]), None);
+    assert_eq!(highlight_side::<&str>("src/main.rs", &[]), None);
+    let big = "x".repeat(1024);
+    let many: Vec<&str> = std::iter::repeat_n(big.as_str(), 2049).collect();
+    assert_eq!(highlight_side("src/main.rs", &many), None);
+
+    let long = format!("fn f() {{ let s = \"{}\"; }}", "y".repeat(MAX_LINE_BYTES));
+    let lines = ["fn a() {}", long.as_str(), "fn b() {}"];
+    let side = highlight_side("src/main.rs", &lines).expect("under the side cap");
+    assert!(
+        side.line(2).is_empty(),
+        "a line over the cap keeps no tokens"
+    );
+    assert!(!side.line(1).is_empty());
+    assert!(!side.line(3).is_empty());
+}
+
+fn line(kind: LineKind, old_no: Option<u32>, new_no: Option<u32>, text: &str) -> DiffLine {
+    DiffLine {
+        kind,
+        old_no,
+        new_no,
+        text: text.to_string(),
+        words: Vec::new(),
+    }
+}
+
+#[test]
+fn a_diff_highlights_each_side_under_its_own_name() {
+    let diff = TextDiff {
+        lines: vec![
+            line(LineKind::Context, Some(1), Some(1), "fn keep() {}"),
+            line(LineKind::Removed, Some(2), None, "fn gone() {}"),
+            line(LineKind::Added, None, Some(2), "fn added() {}"),
+        ],
+        ..TextDiff::empty()
+    };
+    // A rename from a name dv has no grammar for: only the new side highlights.
+    let highlights = highlight_diff("src/lib.rs", Some("src/lib.txt"), &diff);
+    assert_eq!(highlights.old, None);
+    let new = highlights.side(AnchorSide::New).expect("the new side");
+    assert_eq!(new.len(), 2);
+    assert!(kinds(new, 2, "fn added() {}").contains(&("added".into(), TokenKind::Function)));
+
+    let both = highlight_diff("src/lib.rs", None, &diff);
+    let old = both.side(AnchorSide::Old).expect("the old side");
+    assert!(kinds(old, 2, "fn gone() {}").contains(&("gone".into(), TokenKind::Function)));
+}

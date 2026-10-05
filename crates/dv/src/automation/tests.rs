@@ -1,0 +1,448 @@
+use std::time::{Duration, Instant};
+
+use dv_ui::platform::MaterialSupport;
+use dv_ui::services::ServicesConfig;
+use dv_ui::system::SystemShell;
+use gpui::{TestAppContext, VisualTestContext};
+use pretty_assertions::assert_eq;
+
+use super::repos::Step;
+use super::*;
+
+fn open(
+    cx: &mut TestAppContext,
+) -> (
+    tempfile::TempDir,
+    Entity<DvAutomation>,
+    &mut VisualTestContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().to_path_buf();
+    cx.update(|cx| {
+        dv_ui::init(cx).unwrap();
+        dv_ui::system::install(SystemShell::scripted(), cx);
+        dv_ui::services::init(ServicesConfig { data_dir }, cx);
+        dv_ui::appearance::init(MaterialSupport::ALL, cx);
+    });
+    let (shell, cx) = cx.add_window_view(Shell::new);
+    let host = cx.update(|_, cx| cx.new(|cx| DvAutomation::new(shell, cx)));
+    (dir, host, cx)
+}
+
+fn state(host: &Entity<DvAutomation>, cx: &mut VisualTestContext) -> Value {
+    cx.update(|window, cx| host.read(cx).state(window, cx))
+}
+
+fn settled(host: &Entity<DvAutomation>, cx: &mut VisualTestContext) -> bool {
+    cx.update(|_, cx| host.read(cx).settled(cx))
+}
+
+/// Runs a command that finishes later (`custom_task`) to its reply.
+fn run(
+    host: &Entity<DvAutomation>,
+    cmd: &str,
+    args: Value,
+    cx: &mut VisualTestContext,
+) -> Result<Value> {
+    let task =
+        cx.update(|window, cx| host.update(cx, |host, cx| host.custom_task(cmd, args, window, cx)));
+    let task = task.unwrap_or_else(|| panic!("{cmd} is a dv command"));
+    cx.run_until_parked();
+    cx.foreground_executor().block_test(task)
+}
+
+/// Lets real time pass (watch threads deliver from outside the test scheduler) until the host
+/// is settled and `done` holds.
+fn wait_until(
+    host: &Entity<DvAutomation>,
+    cx: &mut VisualTestContext,
+    what: &str,
+    done: impl Fn(&Value) -> bool,
+) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        cx.executor().advance_clock(Duration::from_millis(200));
+        cx.run_until_parked();
+        let state = state(host, cx);
+        if settled(host, cx) && done(&state) {
+            return state;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {what}: {state:#}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn setting_changes_parse() {
+    let parse = |args: Value| SettingChange::parse(&args);
+    assert_eq!(
+        parse(json!({"key": "material", "value": "acrylic"})).unwrap(),
+        SettingChange::Material(Material::Acrylic)
+    );
+    assert_eq!(
+        parse(json!({"key": "mode", "value": "light"})).unwrap(),
+        SettingChange::Mode(Mode::Light)
+    );
+    for (args, error) in [
+        (json!({}), "needs \"key\""),
+        (json!({"key": "material"}), "needs a string \"value\""),
+        (
+            json!({"key": "material", "value": "glass"}),
+            "material must be",
+        ),
+        (json!({"key": "mode", "value": "auto"}), "mode must be"),
+        (json!({"key": "theme", "value": "dark"}), "unknown setting"),
+    ] {
+        let message = parse(args.clone()).unwrap_err().to_string();
+        assert!(message.contains(error), "{args}: {message}");
+    }
+}
+
+#[test]
+fn steps_parse_strictly() {
+    let parse = |value: Value| Step::parse(&value);
+    assert_eq!(
+        parse(json!({"write": "a.txt", "text": "a\n"})).unwrap(),
+        Step::Write {
+            path: "a.txt".into(),
+            contents: b"a\n".to_vec()
+        }
+    );
+    assert_eq!(
+        parse(json!({"write": "b.bin", "bytes": [0, 255]})).unwrap(),
+        Step::Write {
+            path: "b.bin".into(),
+            contents: vec![0, 255]
+        }
+    );
+    assert_eq!(
+        parse(json!({"write": "big.txt", "text": "ab\n", "repeat": 3})).unwrap(),
+        Step::Write {
+            path: "big.txt".into(),
+            contents: b"ab\nab\nab\n".to_vec()
+        }
+    );
+    assert_eq!(
+        parse(json!({"rename": ["a", "b"]})).unwrap(),
+        Step::Rename("a".into(), "b".into())
+    );
+    assert_eq!(
+        parse(json!({"git": ["add", "a.txt"]})).unwrap(),
+        Step::Git(vec!["add".into(), "a.txt".into()])
+    );
+    assert_eq!(
+        parse(json!({"config": ["core.autocrlf", "true"]})).unwrap(),
+        Step::Config("core.autocrlf".into(), "true".into())
+    );
+    for (step, error) in [
+        (json!("write"), "is an object"),
+        (json!({}), "exactly one of"),
+        (json!({"write": "a", "commit": "m"}), "exactly one of"),
+        (json!({"write": "a"}), "needs a string \"text\""),
+        (json!({"write": "a", "bytes": [256]}), "numbers 0-255"),
+        (
+            json!({"write": "a", "text": "x", "repeat": 0}),
+            "a count from 1",
+        ),
+        (json!({"commit": "m", "text": "x"}), "unknown key \"text\""),
+        (json!({"rename": ["a"]}), "takes 2 strings"),
+        (json!({"git": []}), "at least one argument"),
+        (json!({"remove": 3}), "needs a string"),
+    ] {
+        let message = parse(step.clone()).unwrap_err().to_string();
+        assert!(message.contains(error), "{step}: {message}");
+    }
+}
+
+#[gpui::test]
+fn state_describes_the_empty_shell(cx: &mut TestAppContext) {
+    let (dir, host, cx) = open(cx);
+    let state = state(&host, cx);
+    assert_eq!(state["app"], "dv");
+    assert_eq!(state["data_dir"], dir.path().display().to_string());
+    assert_eq!(
+        state["shell"],
+        json!({
+            "panel_visible": true,
+            "panel_width": 280.0,
+            "empty_state": "no_review",
+            "window_material": Material::platform_default().key(),
+            "opening": false,
+            "banner": null,
+            "status": {"health": "idle", "location": "No repo", "review": null, "finish": false},
+        })
+    );
+    assert_eq!(
+        state["switcher"],
+        json!({"open": false, "query": null, "selected": null, "items": []})
+    );
+    assert_eq!(
+        state["source_picker"],
+        json!({"open": false, "selected": null, "items": []})
+    );
+    assert_eq!(
+        state["file_list"],
+        json!({"query": "", "shown": [], "current_file": null})
+    );
+    assert_eq!(state["settings"]["mode"], "system");
+    assert_eq!(
+        state["settings"]["available_materials"],
+        json!(["mica", "acrylic", "opaque"])
+    );
+    assert_eq!(state["system"], json!({"requests": [], "answers_left": 0}));
+    assert_eq!(state["repos"], json!([]));
+    assert_eq!(state["session"], Value::Null);
+    assert_eq!(state["comments_list"], Value::Null);
+    assert!(settled(&host, cx));
+}
+
+#[gpui::test]
+fn set_setting_changes_the_theme_and_saves(cx: &mut TestAppContext) {
+    let (dir, host, cx) = open(cx);
+    let reply = cx.update(|window, cx| {
+        host.update(cx, |host, cx| {
+            host.custom(
+                "set_setting",
+                json!({"key": "material", "value": "acrylic"}),
+                window,
+                cx,
+            )
+        })
+    });
+    let reply = reply.expect("a dv command").unwrap();
+    assert_eq!(reply["settings"]["material"], "acrylic");
+    assert_eq!(reply["settings"]["resolved_material"], "acrylic");
+    cx.update(|window, cx| {
+        host.update(cx, |host, cx| {
+            host.custom(
+                "set_setting",
+                json!({"key": "mode", "value": "light"}),
+                window,
+                cx,
+            )
+        })
+    })
+    .expect("a dv command")
+    .unwrap();
+    cx.run_until_parked();
+
+    let state = state(&host, cx);
+    assert_eq!(state["settings"]["resolved_mode"], "light");
+    assert_eq!(state["shell"]["window_material"], "acrylic");
+    assert!(settled(&host, cx));
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        saved,
+        json!({"v": 1, "material": "acrylic", "mode": "light"})
+    );
+
+    // Unknown commands are the driver's to report.
+    let unknown = cx.update(|window, cx| {
+        host.update(cx, |host, cx| host.custom("nope", json!({}), window, cx))
+    });
+    assert!(unknown.is_none());
+    let unknown = cx.update(|window, cx| {
+        host.update(cx, |host, cx| {
+            host.custom_task("nope", json!({}), window, cx)
+        })
+    });
+    assert!(unknown.is_none());
+}
+
+#[gpui::test]
+fn a_seeded_repo_opens_as_a_review_and_the_agent_answers(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let (dir, host, cx) = open(cx);
+    let seeded = run(
+        &host,
+        "seed_repo",
+        json!({"name": "api-server", "steps": [
+            {"write": "src/app.ts", "text": "export const a = 1;\nexport const b = 2;\n"},
+            {"write": "README.md", "text": "# api\n"},
+            {"commit": "base"},
+            {"write": "src/app.ts", "text": "export const a = 1;\nexport const b = 3;\n"},
+            {"write": "src/new.ts", "text": "export const c = 4;\n"},
+        ]}),
+        cx,
+    )
+    .unwrap();
+    let path = seeded["path"].as_str().unwrap().to_string();
+    assert!(std::path::Path::new(&path).starts_with(dir.path().join("repos")));
+    assert_eq!(seeded["commits"].as_array().unwrap().len(), 1);
+    let error = run(&host, "seed_repo", json!({"name": "api-server"}), cx).unwrap_err();
+    assert!(error.to_string().contains("already seeded"), "{error}");
+    let error = run(&host, "seed_repo", json!({"name": "../escape"}), cx).unwrap_err();
+    assert!(error.to_string().contains("plain file name"), "{error}");
+
+    // `open` adds the repo, computes its row and opens the switcher on it.
+    let opened = run(&host, "open", json!({"path": path}), cx).unwrap();
+    assert_eq!(opened["path"], path);
+    let state = wait_until(&host, cx, "the repo's row", |state| {
+        state["repos"][0]["working"].is_object()
+    });
+    assert_eq!(state["switcher"]["open"], true);
+    assert_eq!(state["switcher"]["selected"], "api-server/working");
+    assert_eq!(state["switcher"]["items"][0]["target"], "working");
+    assert_eq!(state["switcher"]["items"][0]["repo"], path);
+    assert_eq!(state["switcher"]["items"][0]["review"], Value::Null);
+    let repo = &state["repos"][0];
+    assert_eq!(repo["name"], "api-server");
+    assert_eq!(
+        repo["working"],
+        json!({"files": 2, "additions": 2, "deletions": 1})
+    );
+    assert_eq!(repo["reviews"], json!([]));
+
+    // `open_review` opens the working review and shows it.
+    let reply = run(&host, "open_review", json!({"path": path}), cx).unwrap();
+    assert_eq!(reply["created"], true);
+    let review_id = reply["review_id"].as_str().unwrap().to_string();
+    let state = wait_until(&host, cx, "the file list", |state| {
+        state["session"]["total"] == 2
+    });
+    let session = &state["session"];
+    assert_eq!(session["review_id"], review_id);
+    assert_eq!(session["target"], "working");
+    assert_eq!(session["target_label"], "working tree vs main");
+    assert_eq!(session["status"], "open");
+    assert_eq!(session["round"], 1);
+    assert_eq!(session["read_only"], false);
+    assert_eq!(session["files"][0]["path"], "src/app.ts");
+    assert_eq!(session["files"][0]["status"], "modified");
+    assert_eq!(session["files"][1]["status"], "untracked");
+    assert_eq!(state["shell"]["empty_state"], Value::Null);
+    assert_eq!(
+        state["switcher"]["open"], false,
+        "opening a review closes it"
+    );
+    assert_eq!(
+        state["file_list"],
+        json!({"query": "", "shown": ["src/app.ts", "src/new.ts"], "current_file": "src/app.ts"})
+    );
+    assert_eq!(session["current_file"], "src/app.ts");
+    assert_eq!(
+        state["shell"]["status"]["location"],
+        "Local · watching for changes"
+    );
+    let state = wait_until(&host, cx, "the review in the repo's row", |state| {
+        state["repos"][0]["reviews"]
+            .as_array()
+            .is_some_and(|r| r.len() == 1)
+    });
+    assert_eq!(
+        state["repos"][0]["reviews"][0]["target_label"],
+        "working tree vs main"
+    );
+    // Opening it again resumes it.
+    let again = run(&host, "open_review", json!({"path": path}), cx).unwrap();
+    assert_eq!(again, json!({"review_id": review_id, "created": false}));
+
+    // The reviewer comments through the session; the agent answers through review_op.
+    let session = cx.update(|_, cx| host.read(cx).shell.read(cx).session().cloned().unwrap());
+    session.update(cx, |session, cx| {
+        session.ensure_loaded(["src/app.ts".to_string()], cx)
+    });
+    wait_until(&host, cx, "the diff", |state| {
+        state["session"]["files"][0]["state"] == "loaded"
+    });
+    let anchor = session
+        .read_with(cx, |session, _| {
+            session.anchor_for("src/app.ts", dv_core::review::AnchorSide::New, 2, 2)
+        })
+        .unwrap();
+    let posted = session.update(cx, |session, cx| {
+        session.add_thread(anchor, "Why 3?".into(), cx)
+    });
+    cx.run_until_parked();
+    let thread = cx.foreground_executor().block_test(posted).unwrap();
+    let state = wait_until(&host, cx, "the thread", |state| {
+        state["session"]["threads"]
+            .as_array()
+            .is_some_and(|t| t.len() == 1)
+    });
+    assert_eq!(state["session"]["threads"][0]["state"], "open");
+    assert_eq!(state["session"]["threads"][0]["outdated"], false);
+    assert_eq!(state["session"]["files"][0]["open_threads"], 1);
+    assert_eq!(state["session"]["threads"][0]["round"], 1);
+    assert_eq!(state["session"]["composer"], Value::Null);
+    assert_eq!(state["session"]["sheet"], Value::Null);
+    assert_eq!(state["session"]["focused_thread"], Value::Null);
+    assert_eq!(
+        state["comments_list"],
+        json!({"show_resolved": false, "rows": [{
+            "id": thread, "state": "open", "outdated": false, "location": "src/app.ts:2",
+            "summary": "Why 3?", "snippet": null,
+        }]})
+    );
+
+    run(
+        &host,
+        "review_op",
+        json!({"op": "address", "thread": thread, "note": "Now 3 by design", "author": "claude-code"}),
+        cx,
+    )
+    .unwrap();
+    run(
+        &host,
+        "review_op",
+        json!({"op": "reply", "thread": thread, "body": "See the spec."}),
+        cx,
+    )
+    .unwrap();
+    let state = wait_until(&host, cx, "the agent's answer", |state| {
+        state["session"]["threads"][0]["replies"]
+            .as_array()
+            .is_some_and(|r| r.len() == 1)
+    });
+    let thread_state = &state["session"]["threads"][0];
+    assert_eq!(thread_state["state"], "addressed");
+    assert_eq!(thread_state["note"], "Now 3 by design");
+    assert_eq!(thread_state["replies"][0]["author"]["kind"], "agent");
+    let error = run(
+        &host,
+        "review_op",
+        json!({"op": "resolve", "thread": thread}),
+        cx,
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("\"reply\", \"address\" or \"done\""),
+        "{error}"
+    );
+
+    // The agent edits the repo: the session's list follows.
+    run(
+        &host,
+        "repo_edit",
+        json!({"name": "api-server", "steps": [{"remove": "src/new.ts"}]}),
+        cx,
+    )
+    .unwrap();
+    wait_until(&host, cx, "the list to drop the removed file", |state| {
+        state["session"]["total"] == 1
+    });
+}
+
+#[gpui::test]
+fn seeded_repos_are_found_again_after_a_restart(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("repos").join("kept");
+    let fixture = FixtureRepo::persistent(&path);
+    fixture.write("a.txt", "a\n");
+    fixture.commit("one");
+    drop(fixture);
+    let found = repos::reopen_seeded(dir.path());
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].0, "kept");
+    // A directory that isn't a seeded repo is passed over.
+    std::fs::create_dir_all(dir.path().join("repos").join("other")).unwrap();
+    assert_eq!(repos::reopen_seeded(dir.path()).len(), 1);
+    let _ = cx;
+}

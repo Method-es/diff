@@ -79,6 +79,10 @@ pub enum EventBody {
         /// `None` for a plain "Snapshot round".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         verdict: Option<Verdict>,
+        /// The reviewer's summary of the round, Markdown (the "Finish round" sheet's Summary,
+        /// DESIGN §4.2).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        body: Option<String>,
     },
     /// The reviewer marked `path` viewed (`on`) or not viewed in `round`.
     Viewed {

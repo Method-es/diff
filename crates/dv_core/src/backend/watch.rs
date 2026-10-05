@@ -16,9 +16,15 @@
 //!   and never descends into one: neither the OS watch (`notify` is told not to follow links)
 //!   nor the listing of a new directory enters a link to a directory, and a directory-only
 //!   pattern (`foo/`) doesn't match a link named `foo`.
-//! - The git dir is dropped, except the store, which maps to store paths. `<common-dir>/info/`
-//!   is watched for `info/exclude` edits on its own when it lies outside the worktree (a linked
-//!   worktree's).
+//! - The git dir is dropped, except the store, which maps to store paths, and, with
+//!   [`WatchSpec::git`], the git state, which sets [`WatchEvent::git_changed`]: this worktree's
+//!   `HEAD` and `index`, and the common dir's `packed-refs`, `refs/**` (dv's own `refs/dv/**`
+//!   aside) and `reftable/**`. Only final names count: git writes each through a `*.lock` it
+//!   renames into place, so a lock that is created and removed again changes nothing. The
+//!   directories holding these are watched on their own when the worktree's watch doesn't
+//!   cover them (a linked worktree's git dir and common dir, or a watch without the worktree).
+//!   `<common-dir>/info/` is watched for `info/exclude` edits on its own when it lies outside
+//!   the worktree (a linked worktree's).
 //! - Read-only access events are dropped (git reading files must not look like a change).
 //! - A directory that appears (created or moved in) is listed before its batch is delivered, and
 //!   everything in it that isn't ignored is reported too. inotify registers a new directory's
@@ -29,10 +35,10 @@
 //!   more than [`MAX_PATHS`] paths is delivered as a rescan.
 //!
 //! The OS watch of the worktree registers ignored directories too (inotify needs one watch per
-//! directory, so a huge `node_modules/` can exhaust the per-user limit on Linux). When it fails
-//! and the store was asked for as well, the watch runs for the store alone and the handle says
-//! why the worktree isn't watched ([`WatchHandle::worktree_error`]), rather than losing the
-//! store's notifications too.
+//! directory, so a huge `node_modules/` can exhaust the per-user limit on Linux). When it, or a
+//! watch of the git state, fails and the store was asked for as well, the watch runs for the
+//! store alone and the handle says why the rest isn't watched ([`WatchHandle::worktree_error`]),
+//! rather than losing the store's notifications too.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
@@ -129,22 +135,38 @@ pub(crate) fn start(
     let config = notify::Config::default().with_follow_symlinks(false);
     let mut watcher = notify::RecommendedWatcher::new(handler, config)
         .map_err(|err| watch_error(&roots.toplevel, err.to_string()))?;
+    // The live half: the worktree and the git state. When the OS refuses any of it and the
+    // store was asked for too, the watch keeps the store alone (module docs).
+    let mut live = Vec::new();
+    if spec.worktree {
+        live.push((roots.toplevel.clone(), RecursiveMode::Recursive));
+    }
+    if spec.git {
+        live.extend(git_state_dirs(&roots, spec.worktree));
+    }
     let mut worktree_error = None;
-    if spec.worktree
-        && let Err(err) = watcher.watch(&roots.toplevel, RecursiveMode::Recursive)
-    {
+    let mut registered: Vec<&Path> = Vec::new();
+    for (path, mode) in &live {
+        let Err(err) = watcher.watch(path, *mode) else {
+            registered.push(path);
+            continue;
+        };
         if !spec.store {
-            return Err(watch_error(&roots.toplevel, err.to_string()));
+            return Err(watch_error(path, err.to_string()));
         }
         log::warn!(
             "watching {} failed, watching the review store only: {err}",
-            roots.toplevel.display()
+            path.display()
         );
         // A recursive watch that failed partway (inotify's limit) may have registered part of
         // the tree; none of it is reported.
-        let _ = watcher.unwatch(&roots.toplevel);
-        worktree_error = Some(err.to_string());
+        for path in registered.drain(..).chain([path.as_path()]) {
+            let _ = watcher.unwatch(path);
+        }
+        worktree_error = Some(format!("{}: {err}", path.display()));
         spec.worktree = false;
+        spec.git = false;
+        break;
     }
     let info_dir = roots.common_dir.join("info");
     if spec.worktree
@@ -181,6 +203,60 @@ pub(crate) fn start(
         Some(message) => handle.with_worktree_error(message),
         None => handle,
     })
+}
+
+/// The directories to watch for the git state ([`WatchSpec::git`]) beyond what the worktree's
+/// recursive watch already covers (the git dir of an ordinary worktree lies inside it): the git
+/// dir itself for `HEAD` and `index`, the common dir for `packed-refs` (the same directory for
+/// the main worktree), and `refs/` and, in a reftable repository, `reftable/` with everything
+/// below them.
+fn git_state_dirs(roots: &Roots, worktree_watched: bool) -> Vec<(PathBuf, RecursiveMode)> {
+    let covered = |path: &Path| worktree_watched && path.starts_with(&roots.toplevel);
+    let mut dirs = Vec::new();
+    if !covered(&roots.git_dir) {
+        dirs.push((roots.git_dir.clone(), RecursiveMode::NonRecursive));
+    }
+    if roots.common_dir != roots.git_dir && !covered(&roots.common_dir) {
+        dirs.push((roots.common_dir.clone(), RecursiveMode::NonRecursive));
+    }
+    for name in ["refs", "reftable"] {
+        let dir = roots.common_dir.join(name);
+        if dir.is_dir() && !covered(&dir) {
+            dirs.push((dir, RecursiveMode::Recursive));
+        }
+    }
+    dirs
+}
+
+/// Whether `path` is part of the git state a watch with [`WatchSpec::git`] reports (module
+/// docs): this worktree's `HEAD` or `index`, or, in the common dir, `packed-refs`, a loose ref
+/// outside `refs/dv/` or a reftable file. A `*.lock` is a write in progress, not a change: git
+/// renames it to its final name when the write completes, and that name counts.
+fn is_git_state(roots: &Roots, path: &Path) -> bool {
+    if let Ok(rel) = path.strip_prefix(&roots.git_dir)
+        && (rel == Path::new("HEAD") || rel == Path::new("index"))
+    {
+        return true;
+    }
+    let Some(rel) = path
+        .strip_prefix(&roots.common_dir)
+        .ok()
+        .and_then(rel_string)
+    else {
+        return false;
+    };
+    if rel == "packed-refs" {
+        return true;
+    }
+    if rel.ends_with(".lock") {
+        return false;
+    }
+    match rel.split_once('/') {
+        // dv's own round snapshots (PLAN §2.3) move no target.
+        Some(("refs", below)) => below != "dv" && !below.starts_with("dv/"),
+        Some(("reftable", _)) => true,
+        _ => false,
+    }
 }
 
 /// Stops the watch when dropped: the OS watch first, then the thread, which is joined so that
@@ -263,6 +339,7 @@ fn run(
 struct Batch {
     worktree: BTreeSet<String>,
     store: BTreeSet<String>,
+    git_changed: bool,
     rescan: bool,
     /// Directories that appeared in this batch, listed before it is delivered.
     new_dirs: Vec<NewDir>,
@@ -284,16 +361,18 @@ impl Batch {
     fn into_event(self) -> Option<WatchEvent> {
         if self.worktree.len() + self.store.len() > MAX_PATHS {
             return Some(WatchEvent {
+                git_changed: self.git_changed,
                 rescan: true,
                 ..WatchEvent::default()
             });
         }
-        if self.worktree.is_empty() && self.store.is_empty() && !self.rescan {
+        if self.worktree.is_empty() && self.store.is_empty() && !self.git_changed && !self.rescan {
             return None;
         }
         Some(WatchEvent {
             worktree_paths: self.worktree.into_iter().collect(),
             store_paths: self.store.into_iter().collect(),
+            git_changed: self.git_changed,
             rescan: self.rescan,
         })
     }
@@ -359,6 +438,10 @@ impl Filter {
         }
         if path == self.info_exclude {
             self.rules.reload_info_exclude(&self.info_exclude);
+            return;
+        }
+        if self.spec.git && is_git_state(&self.roots, path) {
+            batch.git_changed = true;
             return;
         }
         if !self.spec.worktree
@@ -525,8 +608,10 @@ impl IgnoreRules {
 
     /// Reads the configuration through git (with the backend's environment, so the global
     /// excludes file is the one git itself would use), then every `.gitignore` outside ignored
-    /// directories, then the tracked-but-ignored files.
+    /// directories, then the tracked-but-ignored files. A stopped watch gives up between steps
+    /// (the rules are never used then), so dropping its handle waits for one git call at most.
     fn load(roots: &Roots, env: &EnvOverlay, stop: &AtomicBool) -> Self {
+        let stopped = || stop.load(Ordering::Relaxed);
         let git = |args: &[&str]| {
             let opts = GitOpts::new().with_ok_codes(&[0, 1]);
             match command::run(&roots.toplevel, env, args, &opts) {
@@ -539,9 +624,15 @@ impl IgnoreRules {
             }
         };
         let mut rules = Self::empty(&roots.toplevel);
+        if stopped() {
+            return rules;
+        }
         rules.case_insensitive = git(&["config", "--bool", "--get", "core.ignorecase"])
             .is_some_and(|value| value.trim() == "true");
         rules.reload_info_exclude(&roots.common_dir.join("info").join("exclude"));
+        if stopped() {
+            return rules;
+        }
         let global = git(&["config", "--path", "--get", "core.excludesFile"])
             .map(|value| value.trim_end_matches(['\r', '\n']).to_string())
             .filter(|value| !value.is_empty())
@@ -551,6 +642,9 @@ impl IgnoreRules {
             rules.global = rules.parse(&roots.toplevel, &global);
         }
         rules.load_tree("", stop, None);
+        if stopped() {
+            return rules;
+        }
         rules.tracked = git(&[
             "ls-files",
             "-z",

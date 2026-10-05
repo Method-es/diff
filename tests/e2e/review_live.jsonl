@@ -1,0 +1,85 @@
+{"scenario": {"window_size": "1440x900", "description": "A review open while the agent works: the agent saving the file being commented on leaves the composer and its keystrokes alone, its edits update the file list and the diffs live, a new file joins, a thread whose lines it rewrote turns outdated (its card heads its file with its original lines, the comments list flags it), and a commit of everything leaves the working tree clean with the outdated thread still listed. Screenshots of the outdated thread in dark Mica, dark Opaque and light."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "settle"}
+
+// Two edited files under review.
+{"cmd": "seed_repo", "name": "api-server", "steps": [{"write": "src/routes/users.ts", "text": "import { db } from \"../db\";\nimport type { User } from \"../types\";\n\nexport const users = Router();\n\nusers.get(\"/:id\", async (req, res) => {\n  const user = await db.users.find(req.params.id);\n  if (!user) return res.status(404).end();\n  res.json({ id: user.id, name: user.name });\n});\n"}, {"write": "src/lib/http.ts", "text": "export async function get(url: string) {\n\tconst response = await fetch(url, { signal: AbortSignal.timeout(5000) });\n\treturn response.json();\n}\n"}, {"commit": "base"}, {"write": "src/routes/users.ts", "text": "import { db } from \"../db\";\nimport { cache } from \"../lib/cache\";\nimport type { User } from \"../types\";\n\nexport const users = Router();\n\nexport async function fetchUser(id: string): Promise<User | null> {\n  const key = `user:${id}`;\n  const hit = cache.get<User>(key);\n  if (hit) return hit;\n  const user = await db.users.find(id);\n  if (user) cache.set(key, user, 60_000);\n  return user;\n}\n\nusers.get(\"/:id\", async (req, res) => {\n  const user = await fetchUser(req.params.id);\n  if (!user) return res.status(404).json({ error: \"not_found\" });\n  res.json({ id: user.id, name: user.name, email: user.email });\n});\n"}, {"write": "src/lib/http.ts", "text": "import { config } from \"../config\";\n\nexport async function get(url: string) {\n\tconst response = await fetch(url, { signal: AbortSignal.timeout(config.timeoutMs) });\n\treturn response.json();\n}\n"}]}
+{"cmd": "open_review", "path": "${data_dir}/repos/api-server"}
+{"cmd": "settle"}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 2}
+{"cmd": "settle", "expect": [{"pointer": "/session/files/0/path", "equals": "src/lib/http.ts"}, {"pointer": "/session/files/0/additions", "equals": 3}, {"pointer": "/session/files/1/path", "equals": "src/routes/users.ts"}]}
+
+// The reviewer comments on users.ts line 8 (the cache key).
+{"cmd": "keys", "keys": "j"}
+{"cmd": "settle", "expect": {"pointer": "/session/current_file", "equals": "src/routes/users.ts"}}
+{"cmd": "click", "target": "stream/line/src/routes/users.ts/new/8"}
+{"cmd": "key", "keystroke": "c", "expect": {"pointer": "/session/composer/start_line", "equals": 8}}
+{"cmd": "type", "text": "Normalise the id before it goes into the cache key."}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle", "expect": [{"pointer": "/session/threads", "len": 1}, {"pointer": "/session/threads/0/start_line", "equals": 8}, {"pointer": "/session/threads/0/outdated", "equals": false}]}
+{"cmd": "state", "save": {"thread": "/session/threads/0/id"}}
+
+// The agent saves users.ts while the reviewer writes a second comment on it: the file keeps
+// showing its diff until the new one lands, so the composer stays and no keystroke is lost.
+{"cmd": "click", "target": "stream/line/src/routes/users.ts/new/5"}
+{"cmd": "key", "keystroke": "c", "expect": {"pointer": "/session/composer/start_line", "equals": 5}}
+{"cmd": "type", "text": "start "}
+{"cmd": "repo_edit", "name": "api-server", "steps": [{"write": "src/routes/users.ts", "text": "import { db } from \"../db\";\nimport { cache } from \"../lib/cache\";\nimport type { User } from \"../types\";\n\nexport const users = Router();\n\nexport async function fetchUser(id: string): Promise<User | null> {\n  const key = `user:${id}`;\n  const hit = cache.get<User>(key);\n  if (hit) return hit;\n  const user = await db.users.find(id);\n  if (user) cache.set(key, user, 60_000);\n  return user;\n}\n\nusers.get(\"/:id\", async (req, res) => {\n  const user = await fetchUser(req.params.id);\n  if (!user) return res.status(404).json({ error: \"not_found\" });\n  res.json({ id: user.id, name: user.name, email: user.email });\n});\n// saved again\n"}]}
+{"cmd": "wait", "ms": 200}
+{"cmd": "type", "text": "a"}
+{"cmd": "wait", "ms": 40}
+{"cmd": "type", "text": "b"}
+{"cmd": "wait", "ms": 40}
+{"cmd": "type", "text": "c"}
+{"cmd": "wait", "ms": 40}
+{"cmd": "type", "text": "d"}
+{"cmd": "wait", "ms": 40}
+{"cmd": "type", "text": "e"}
+{"cmd": "wait", "ms": 40}
+{"cmd": "type", "text": "f"}
+{"cmd": "wait", "ms": 40}
+{"cmd": "type", "text": "g"}
+{"cmd": "wait", "ms": 40}
+{"cmd": "type", "text": "h"}
+{"cmd": "wait", "ms": 40}
+{"cmd": "type", "text": "i"}
+{"cmd": "wait", "ms": 40}
+{"cmd": "type", "text": "j"}
+{"cmd": "wait", "ms": 40}
+{"cmd": "wait_for", "pointer": "/session/files/1/additions", "equals": 14, "timeout_ms": 15000}
+{"cmd": "settle", "expect": [{"pointer": "/session/composer/text", "equals": "start abcdefghij"}, {"pointer": "/session/composer/start_line", "equals": 5}, {"pointer": "/session/threads/0/outdated", "equals": false}]}
+{"cmd": "key", "keystroke": "escape", "expect": {"pointer": "/session/composer", "equals": null}}
+
+// The agent edits http.ts: its totals and rows follow.
+{"cmd": "repo_edit", "name": "api-server", "steps": [{"write": "src/lib/http.ts", "text": "import { config } from \"../config\";\n\nexport async function get(url: string) {\n\tconst response = await fetch(url, { signal: AbortSignal.timeout(config.timeoutMs) });\n\tif (!response.ok) throw new Error(`GET ${url}: ${response.status}`);\n\treturn response.json();\n}\n"}]}
+{"cmd": "wait_for", "pointer": "/session/files/0/additions", "equals": 4, "timeout_ms": 15000}
+{"cmd": "settle", "expect": [{"pointer": "/session/files/0/state", "equals": "loaded"}, {"pointer": "/session/threads/0/outdated", "equals": false}]}
+// It adds a file.
+{"cmd": "repo_edit", "name": "api-server", "steps": [{"write": "src/lib/cache.ts", "text": "export const cache = new Map<string, unknown>();\n"}]}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 3, "timeout_ms": 15000}
+{"cmd": "settle", "expect": [{"pointer": "/session/files/0/path", "equals": "src/lib/cache.ts"}, {"pointer": "/session/files/0/status", "equals": "untracked"}]}
+
+// It rewrites the commented line: the thread is outdated, its card heads users.ts with the
+// line as it was, and the comments list flags it.
+{"cmd": "repo_edit", "name": "api-server", "steps": [{"write": "src/routes/users.ts", "text": "import { db } from \"../db\";\nimport { cache } from \"../lib/cache\";\nimport type { User } from \"../types\";\n\nexport const users = Router();\n\nexport async function fetchUser(id: string): Promise<User | null> {\n  const key = `user:${id.toLowerCase()}`;\n  const hit = cache.get<User>(key);\n  if (hit) return hit;\n  const user = await db.users.find(id);\n  if (user) cache.set(key, user, 60_000);\n  return user;\n}\n\nusers.get(\"/:id\", async (req, res) => {\n  const user = await fetchUser(req.params.id);\n  if (!user) return res.status(404).json({ error: \"not_found\" });\n  res.json({ id: user.id, name: user.name, email: user.email });\n});\n"}]}
+{"cmd": "wait_for", "pointer": "/session/threads/0/outdated", "equals": true, "timeout_ms": 15000}
+{"cmd": "settle", "expect": [{"pointer": "/comments_list/rows/0/id", "equals": "${thread}"}, {"pointer": "/comments_list/rows/0/outdated", "equals": true}, {"pointer": "/comments_list/rows/0/snippet", "equals": "const key = `user:${id}`;"}]}
+{"cmd": "query", "prefix": "comments_list/${thread}", "expect_result": {"pointer": "", "len": 1}}
+{"cmd": "click", "target": "comments_list/${thread}"}
+{"cmd": "settle", "expect": {"pointer": "/session/focused_thread", "equals": "${thread}"}}
+{"cmd": "query", "prefix": "thread/${thread}", "expect_result": {"pointer": "", "len": 3}}
+{"cmd": "screenshot", "name": "outdated-dark-mica"}
+{"cmd": "set_setting", "key": "material", "value": "opaque"}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "outdated-dark-opaque"}
+{"cmd": "set_setting", "key": "material", "value": "mica"}
+{"cmd": "set_setting", "key": "mode", "value": "light"}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "outdated-light"}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+
+// The agent commits everything: the working tree is clean, and the thread, its file gone from
+// the diff, stays in the comments list as outdated.
+{"cmd": "repo_edit", "name": "api-server", "steps": [{"commit": "cache users"}]}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 0, "timeout_ms": 15000}
+{"cmd": "settle", "expect": [{"pointer": "/shell/empty_state", "equals": "working_tree_clean"}, {"pointer": "/session/threads/0/outdated", "equals": true}, {"pointer": "/comments_list/rows", "len": 1}, {"pointer": "/comments_list/rows/0/outdated", "equals": true}]}

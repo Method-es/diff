@@ -58,6 +58,7 @@ fn every_kind_folds_into_the_state() {
             new_oid: oid('b'),
             old_oid: oid('a'),
             verdict: Some(Verdict::RequestChanges),
+            body: Some("Rename it.".to_string()),
         },
         EventBody::ThreadState {
             thread: thread.clone(),
@@ -102,6 +103,7 @@ fn every_kind_folds_into_the_state() {
             old_oid: oid('a'),
             new_oid: oid('b'),
             verdict: Some(Verdict::RequestChanges),
+            body: Some("Rename it.".to_string()),
             closed_at: 6,
         }]
     );
@@ -597,6 +599,7 @@ fn rounds_close_in_order_and_viewed_needs_an_existing_round() {
         new_oid: oid('b'),
         old_oid: oid('a'),
         verdict: None,
+        body: None,
     };
     let viewed = |round, path: &str, on| EventBody::Viewed {
         round,

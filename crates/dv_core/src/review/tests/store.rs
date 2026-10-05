@@ -512,6 +512,9 @@ impl Backend for DeletesOnRead {
     fn store_remove(&self, rel: &str) -> Result<bool, BackendError> {
         self.inner.store_remove(rel)
     }
+    fn copy_index_to_store(&self, rel: &str) -> Result<bool, BackendError> {
+        self.inner.copy_index_to_store(rel)
+    }
     fn watch(&self, spec: WatchSpec, sink: WatchSink) -> Result<WatchHandle, BackendError> {
         self.inner.watch(spec, sink)
     }

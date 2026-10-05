@@ -579,6 +579,9 @@ fn worktree_text_stats_stream_the_file() {
         fn store_remove(&self, rel: &str) -> Result<bool, BackendError> {
             self.0.store_remove(rel)
         }
+        fn copy_index_to_store(&self, rel: &str) -> Result<bool, BackendError> {
+            self.0.copy_index_to_store(rel)
+        }
         fn watch(&self, spec: WatchSpec, sink: WatchSink) -> Result<WatchHandle, BackendError> {
             self.0.watch(spec, sink)
         }

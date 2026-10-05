@@ -153,7 +153,18 @@ impl Backend for LocalBackend {
     }
 
     fn git(&self, args: &[&str], opts: &GitOpts) -> Result<GitOutput, BackendError> {
-        command::run(&self.toplevel, &self.options.env, args, opts)
+        let index_file = opts
+            .index_file
+            .as_deref()
+            .map(|rel| paths::store_path(&self.store_root, rel, false))
+            .transpose()?;
+        command::run_with_index(
+            &self.toplevel,
+            &self.options.env,
+            index_file.as_deref(),
+            args,
+            opts,
+        )
     }
 
     fn worktree_read(&self, rel: &str) -> Result<Option<Vec<u8>>, BackendError> {
@@ -307,6 +318,37 @@ impl Backend for LocalBackend {
             Err(err) if is_missing(&err) => Ok(false),
             Err(err) => Err(BackendError::io("removing", &path, err)),
         }
+    }
+
+    fn copy_index_to_store(&self, rel: &str) -> Result<bool, BackendError> {
+        let target = paths::store_path(&self.store_root, rel, false)?;
+        create_parent(&target)?;
+        let source = self.git_dir.join("index");
+        // One handle for the bytes and the time: git replaces the index by renaming a new file
+        // over it, so both come from the same version of it.
+        let mut file = match fs::File::open(&source) {
+            Ok(file) => file,
+            Err(err) if is_missing(&err) => return Ok(false),
+            Err(err) => return Err(BackendError::io("reading", &source, err)),
+        };
+        let metadata = file
+            .metadata()
+            .map_err(|err| BackendError::io("reading", &source, err))?;
+        let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
+        file.read_to_end(&mut bytes)
+            .map_err(|err| BackendError::io("reading", &source, err))?;
+        let mut copy =
+            fs::File::create(&target).map_err(|err| BackendError::io("creating", &target, err))?;
+        copy.write_all(&bytes)
+            .map_err(|err| BackendError::io("writing", &target, err))?;
+        // The copy keeps the index's time (trait docs): git's racy-entry check compares cached
+        // stat data against it.
+        let modified = metadata
+            .modified()
+            .map_err(|err| BackendError::io("reading", &source, err))?;
+        copy.set_modified(modified)
+            .map_err(|err| BackendError::io("writing", &target, err))?;
+        Ok(true)
     }
 
     fn watch(&self, spec: WatchSpec, sink: WatchSink) -> Result<WatchHandle, BackendError> {

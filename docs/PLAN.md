@@ -168,6 +168,34 @@ A round is the target as it stood when the reviewer last handed the review over.
   "Snapshot round"), dv snapshots the new side: a temporary index (`GIT_INDEX_FILE`) + `git add -A` +
   `write-tree` + `commit-tree`, stored at `refs/dv/reviews/<id>/<n>`. Round n+1 defaults to the interdiff
   *round n → now*, with a toggle to the full diff.
+- **Snapshot detail** (`dv_core::review::snapshot`): a commit side is kept as it is. For the index
+  and the working tree, the worktree's index file is copied byte for byte, modification time
+  included (git's racy-entry check compares against it), into the store (`tmp/index-<ulid>`,
+  `Backend::copy_index_to_store`; no index yet starts an empty one). The working tree then runs
+  `git add -A --ignore-errors` into the copy (tracked + untracked, ignores honoured, the same clean
+  filters and eol conversion `git diff` applies; unresolved conflicts stage as the files stand,
+  markers included; a nested repo without a commit, which git can't stage, is left out, but any
+  other file git can't read — one another program holds open without sharing — fails the round
+  with `SnapshotError::Unreadable` naming it, because the copy would keep a version the reviewer
+  wasn't shown),
+  and both run `write-tree` on it (an index with unresolved conflicts has no tree:
+  `SnapshotError::Unmerged`). Both calls pass `-c core.splitIndex=false` (a split index would
+  otherwise write a new shared index into the git dir) and `-c core.safecrlf=false`.
+  `commit-tree --no-gpg-sign` with `-c user.name=dv -c user.email=dv@dv.invalid` (works without a
+  configured identity; `GIT_AUTHOR_*`/`GIT_COMMITTER_*` variables still win), the old side's
+  commit as parent when it is one, message `dv review <id> round <n>`. The ref is created with
+  `git update-ref <ref> <new> <zero-oid>`, never blindly overwritten: a ref at the same commit, or
+  at a commit of the same tree and parent (an earlier attempt whose events never landed), is
+  reused; any other commit at the ref of the round in progress (such an attempt, made before the
+  content changed, or before a branch moved on from the commit the last round closed at) is
+  replaced with a compare-and-swap `git update-ref <ref> <new> <old>`; the ref of a closed round
+  is never replaced (`SnapshotError::RefExists`). The temp index and its `.lock` are removed
+  afterwards, also on failure, and each snapshot first sweeps `tmp/index-*` older than an hour
+  (by the ULID's time), which a dv killed mid-snapshot leaves. `review::ops::finish_round`
+  (reviewer only; not for a finished or a PR review; the
+  verdict is `approve`, `request_changes` or none) resolves the target, snapshots, then appends
+  `round_closed` (old side, snapshot, verdict, summary) and the verdict's status
+  (`changes_requested` / `approved`; none leaves it), both checked before either is written.
 - **PR targets:** each submitted GitHub review closes a round at the PR head it was submitted against.
   New commits on the PR offer "Start round n+1" (a new draft, interdiff since the last submitted head).
 
@@ -285,9 +313,15 @@ pub trait Backend: Send + Sync {
     fn store_list(&self, dir: &str) -> Result<Vec<String>, BackendError>;
     fn store_write_atomic(&self, rel: &str, bytes: &[u8]) -> Result<(), BackendError>; // temp + rename
     fn store_remove(&self, rel: &str) -> Result<bool, BackendError>;
+    fn copy_index_to_store(&self, rel: &str) -> Result<bool, BackendError>; // §2.3 snapshots
     fn watch(&self, spec: WatchSpec, sink: WatchSink) -> Result<WatchHandle, BackendError>; // §5.3
 }
 ```
+
+`GitOpts::index_file` names a store file (a store path, validated as one) that a single `git` call
+uses as its index: the backend resolves it under `<git-common-dir>/dv/` and exports it as
+`GIT_INDEX_FILE` after the policy has removed any inherited one. Round snapshots stage into a copy
+of the index this way (§2.3), so the user's index is never written.
 
 - **Paths** are validated before use: no absolute paths, no `..`, `.` or empty components, no
   backslashes (separators on Windows); store paths use only `[A-Za-z0-9._-]` components that don't
@@ -335,18 +369,26 @@ whether it was a directory, so the watch remembers the ignored directories it ha
 removal of `target/` under a `target/` pattern too. A symbolic link is one path and is never
 followed, by the OS watch or the watch's own listings, because git stores a link as its target path
 and never descends into one (nor does a `foo/` pattern match a link named `foo`). The git dir is
-dropped except `dv/`; a linked worktree's `<git-common-dir>/info/` lies outside its tree and is
-watched for `info/exclude` edits on its own. Events coalesce for 150ms and arrive as *paths*
-(`WatchEvent { worktree_paths, store_paths, rescan }`: relative, `/`-separated, de-duplicated), so
-the UI refreshes only the affected files and the file list; `rescan` means the OS may have dropped events (or a batch would list more than
-10,000 paths). A directory that appears is listed before its batch goes out, because inotify
-watches a new directory only after reporting it and a directory moved in brings its files without
-an event each. `<git-common-dir>/dv/` is watched separately when it lies outside the worktree (a
+dropped except `dv/` and the git state below; a linked worktree's `<git-common-dir>/info/` lies
+outside its tree and is watched for `info/exclude` edits on its own. **Git state** (`WatchSpec { worktree, store, git }`):
+with `git`, a batch sets `WatchEvent::git_changed` when this worktree's `HEAD` or `index`, or the
+common dir's `refs/**` (except `refs/dv/**`, dv's own snapshots), `packed-refs` or `reftable/**`
+change. A `working` target's old side moves when the agent commits without touching a worktree
+file, and a `staged` target lives in the index. Only final names count: git writes each through a
+`*.lock` renamed into place, so lock churn alone changes nothing. The directories holding them are
+watched on their own where the worktree's recursive watch doesn't cover them (a linked worktree's
+git dir and common dir, or a watch without the worktree); in a reftable repo a `refs/dv/` update
+can't be told apart and fires too. Events coalesce for 150ms and arrive as *paths*
+(`WatchEvent { worktree_paths, store_paths, git_changed, rescan }`: relative, `/`-separated,
+de-duplicated), so the UI refreshes only the affected files and the file list; `rescan` means the
+OS may have dropped events (or a batch would list more than 10,000 paths). A directory that appears
+is listed before its batch goes out, because inotify watches a new directory only after reporting
+it and a directory moved in brings its files without an event each. `<git-common-dir>/dv/` is watched separately when it lies outside the worktree (a
 linked worktree's common dir). Dropping the handle stops the watch before `drop` returns. The OS
 watch registers ignored directories too (inotify needs a watch per directory), so on Linux a huge
-`node_modules/` can exhaust the per-user limit; a watch of the worktree and the store then keeps
-watching the store and its handle says why the worktree isn't watched, so the UI falls back to
-refreshing the worktree itself instead of also losing review updates.
+`node_modules/` can exhaust the per-user limit; a watch that includes the store then keeps
+watching the store alone and its handle says why the worktree and the git state aren't watched,
+so the UI falls back to refreshing those itself instead of also losing review updates.
 
 ---
 
@@ -367,7 +409,8 @@ refreshing the worktree itself instead of also losing review updates.
    driver has a `clean` or `process` command (a git-lfs asset is a three-line text pointer to git,
    whatever its bytes) or one with a `working-tree-encoding` (UTF-16, say); a filter driver without
    a command converts nothing, as in git; an untracked symbolic link is one line, its target path; a
-   nested repository (`dir/`) lists as a submodule. A worktree-side entry that `--raw` lists as
+   nested repository (`dir/`) lists as a submodule with one addition, as `--numstat` counts the
+   gitlink it becomes once staged or snapshotted (§2.3). A worktree-side entry that `--raw` lists as
    modified with an unhashed new side but `--numstat` doesn't list is a stat-dirty file whose
    content is unchanged (the git policy's `diff.autoRefreshIndex=false`, §5.1) and is dropped. The
    list is sorted by path.
@@ -391,13 +434,42 @@ refreshing the worktree itself instead of also losing review updates.
 4. **Highlight:** tree-sitter on both full sides, off the UI thread, producing **token kinds**, not
    colours. Colours resolve at paint time from the theme, so theme changes repaint without recomputing
    and cached rows never go stale. Rows appear unhighlighted first and colour in when ready.
+   `dv_ui::syntax` runs gpui-component's highlighter (every grammar of its `tree-sitter-languages`
+   set except SQL, whose crate pins `cc` below the version gpui's build locks) once per loaded file
+   side, in the language its path names (extension or a well-known name such as `Makefile`; none:
+   plain). Capture names map to ten kinds — keyword, function, string, number, type, constant,
+   property, punctuation, comment, plain — through one table (`kind_for_capture`), and the
+   highlighter's style resolver encodes the kind so nothing colour-shaped is cached. Caps: a side
+   over 2 MB isn't highlighted, a line over 10,000 bytes keeps no tokens.
 5. **Rows:** built lazily for the current view mode only; unchanged runs beyond the context setting
    become gap rows that expand in 20-line steps from either edge or fully, from the already-loaded
    content (no refetch; `dv_core::diff::{segments, expand_gap}`). A run shorter than two lines stays
-   shown, since its gap row would take the same space.
+   shown, since its gap row would take the same space. A gap row also heads the run that follows
+   it with that run's `@@ -a,b +c,d @@` (`dv_core::diff::hunk_range`, git's header for the same
+   lines). In split view, within a run of changed lines the i-th removed line faces the i-th
+   added one (`dv_core::diff::split_rows`, the pairing intraline marks use).
 6. **Interdiff (rounds):** the same pipeline between round n's snapshot and the current new side.
 7. **Stream:** the diff pane is one virtualised list over *all* files (file header rows pinned while
-   scrolling), so `J`/`K` scroll to a file instead of swapping views.
+   scrolling), so `J`/`K` scroll to a file instead of swapping views. `dv_ui::diff_pane::rows`
+   builds each file's rows as plain data — header, code rows (one line, or one split pair), gap
+   rows, a notice instead of lines, the next-file footer, and the insertion points thread cards
+   and the composer take — and the gpui `list` holds one item per row, plus a spacer that lets the
+   last header reach the top (the viewport less the last file's rows, a card not measured yet
+   counted at the least a card can be, so the spacer is never short). A file's rows are rebuilt
+   when its diff lands, a gap expands, it collapses (viewed) or the view mode changes, and only
+   they are spliced; the list scrolls by item, so a file loading above the viewport moves
+   nothing, and rows rebuilt under the reading position keep it on the same line. A file whose
+   diff loads again with other lines (the agent saved it) has its lines followed into the new
+   diff by number (`dv_core::diff::remap_lines`: on a side whose text didn't change every line
+   keeps its number): the cursor, the selection, the composer's lines, the reading position, the
+   context the reviewer opened and the lines on screen stay with their lines. Every row but a
+   thread card, the composer and an opened failure banner has a fixed height, and those count as
+   last measured, so scrolling to a line, paging and the pinned header work from heights without
+   waiting for a layout. The composer's row carries its field's focus handle into the list, so a
+   field scrolled out of view keeps the keyboard; one left without a row (its file collapsed or
+   gone) hands the keyboard back to the stream. The stream asks
+   the session for the files in view plus two ahead and one behind; a code row shapes only the
+   columns in view, so a minified line costs no more than a short one.
 
 ---
 
@@ -409,7 +481,8 @@ refreshing the worktree itself instead of also losing review updates.
 - **Location:** `<git-common-dir>/dv/reviews/<id>.jsonl` (resolved with `git rev-parse
   --git-common-dir`, never by hand), shared by every worktree of the repo. The `created` event records
   the worktree root it was made in (`worktree`), which is what a `working` or `staged` target means.
-- **Events (v1):** `created{target, author, worktree}`, `round_closed{n, new_oid, old_oid, verdict?}`,
+- **Events (v1):** `created{target, author, worktree}`, `round_closed{n, new_oid, old_oid, verdict?,
+  body?}` (`body`: the round's summary, Markdown),
   `viewed{round, path, on}`, `thread_added{id, anchor, body, author}`, `reply_added{thread, id, body,
   author}`, `thread_state{thread, state, note?, author}`, `body_edited{target_id, body}`,
   `deleted{target_id}`, `pr_linked{owner, repo, number}`, `submitted{github_review_id, url, event}`,
@@ -457,6 +530,16 @@ On every refresh, each thread whose anchored text no longer matches at its recor
 3. else fuzzy match (anchored + context lines, normalised whitespace, similarity ≥ 0.8), best wins;
 4. else the thread is **outdated**: shown in the comments list with its original code snippet, not
    inline.
+
+Until relocation exists (phase 3), steps 1–3 are skipped: a thread whose anchored text doesn't
+stand at its recorded lines is outdated at once. The comments list flags it with its original
+first line, and its card heads its file in the stream with the lines it was written on (DESIGN
+§4.1), so it can still be answered and resolved; a thread whose file left the diff is in the
+comments list alone.
+
+A new thread's anchor comes from the selection and the side's full text
+(`dv_core::review::anchor_selection`: the lines' text and up to 3 lines of context either side);
+`Anchor::matches` says whether its text still stands at its recorded lines.
 
 Renames carry anchors via the old path. Relocation is display-only until the next event on the thread,
 which records the new anchor. `dv comment list --json` reports `anchor.current` (relocated) and
@@ -559,21 +642,86 @@ repaired. The skill teaches: `dv status` → `dv comment list --status open --js
 The sibling app's shape: per-view directories, a services layer of entities installed as a gpui `Global`,
 typed events, and `is_settled()` on every service for automation.
 
-**Services** (`dv_ui::services`): `Locations` (detected environments, backend connections),
-`Reviews` (index of reviews across known repos; fold + watch), `Diff` (per open review: file list,
-loaded files, highlight queue), `GitHub` (gh calls, PR cache), `Settings`. The **system seam** (open
-URL, reveal, folder picker — recorded instead of performed under automation) is its own global,
-`dv_ui::system`, because automation swaps the whole thing for a recorder.
+**Services** (`dv_ui::services`): `Locations` (one `Arc<dyn Backend>` per repo, opened off the UI
+thread and cached by the location asked for and its worktree root; an environment overlay can be
+registered for a path, which the automation host does for its seeded repos; a WSL location is
+`BackendError::Unavailable` until Phase 4 and never boots a distro), `Reviews` (the known repos and,
+per repo, its reviews (`ReviewStore::list`, an unreadable log a row of its own) and its uncommitted
+changes, computed in the background when a repo is added and when the switcher opens; it opens or
+resumes a target's review as the reviewer, whose name is the repo's `user.name`, or loads a review
+by id (the switcher's rows for reviews of other targets); a row records why a repo can't be opened
+at all and the worktree root its reviews name, so the switcher shows each target beside its open
+review by the rule `open_review` resumes by (`review::ops::is_review_of`); it watches nothing
+itself), `ReviewUi` (what the reviewer chose per review: split or unified), `GitHub` (gh calls, PR
+cache), `Settings` (material, mode, panel width). The **system seam**
+(open URL, reveal, folder picker, clipboard writes — recorded instead of performed under automation)
+is its own global, `dv_ui::system`, because automation swaps the whole thing for a recorder.
+
+**Data files** (the data dir, §13.3): `settings.json` (`material`, `mode`, `panel_width`),
+`known_repos.json` (`{"v": 1, "repos": [{"location", "added_at", "opened_at"}]}`, ms; deliberately
+not the first implementation's `repos.json`, which sits in the same default dir with another shape)
+and `review_ui.json` (`{"v": 1, "reviews": {"<review id>": {"view_mode": "split" | "unified"}}}`).
+Each is read leniently (unknown keys kept and written back), written atomically in the background,
+and never written over when it exists but couldn't be read (`dv_ui::services::persist`).
 
 **Views** (each its own entity and directory): `shell` (title bar, status bar, layout, window
 material), `switcher` (repos + reviews, `Ctrl O`), `palette` (`Ctrl K`: files, reviews, PRs, commands —
 the single fuzzy surface), `file_list`, `comments_list`, `diff_pane`, `thread` + `composer`, `submit`
 (sheet), `onboarding`, `settings`, `banner` (errors and backend state, inline, never over content).
 
-**Review session:** `ReviewSession` entity = one review, its target fixed for life, holding the `Diff`
-service handle and the folded review. Switching reviews swaps sessions (a small LRU of 3 may keep the
-last ones warm). A load generation counter on the session is the only stale-completion guard needed,
-because the target never mutates.
+**Review session:** `ReviewSession` entity (`dv_ui::session`) = one review, its target fixed for
+life: the repo and its store, the folded review, the resolved `DiffSpec`, the file list and each
+file's state (unloaded, loading, loaded with its diff and, once they land, its highlights, or
+failed), and the watch. The file list loads first; diffs load on demand (the stream asks for the
+files around its viewport, at most 4 in flight; "Load anyway" reloads one without caps). A live
+target (`working`, `staged`, a branch) watches the worktree when its new side is the working tree,
+the git state and the store (§5.3); others the store only. Worktree and git batches are coalesced
+again for 150 ms and refresh the spec and the list, keeping every loaded diff whose entry didn't
+change and isn't in the batch (a working tree side's object id becoming known or unknown, which
+`git add` alone does, is no change); the branch labels are read again only for a git batch, a
+rescan or a moved spec; an append to the review's own log reloads the fold. The watch starts with
+the session, and once it is registered whatever was read before it (the list, loaded diffs, the
+fold) is read again, since a change made before then is never reported; the same after every
+restart. A file that loads again keeps showing the diff it had until the new one lands, so its
+cards and an open composer stay put. Stopping a watch joins its thread, so the session drops
+handles on a thread of their own, never the UI's. A watch that can't cover the worktree leaves
+a notice and the session refreshes on window activation instead. Writes go through `review::ops`
+off the UI thread and reload the fold; a failed viewed toggle leaves a banner saying why. The shell holds the open
+session; switching reviews swaps sessions (a small LRU of 3 may keep the last ones warm). Every open
+goes through `Shell::open` — the switcher's rows, the source picker, automation's `open_review` —
+in the background: the main area shows that it is opening, a failure becomes its banner (with
+Retry), and resuming the review already open keeps its session. The shell hands the session to the
+panel's `file_list` and to the `diff_pane`; the file list highlights the stream's current file and
+asks the stream to show a file (`DiffPane::reveal_file` / `current_file`, the seam the stream
+implements; the current file is the cursor's while it is on screen, else the one at the top).
+The keyboard rests on the main area, which always renders with the diff pane's focus handle and
+the `DiffPane` key context, so the shell's keys and the stream's both work there (DESIGN §5).
+Overlays (the switcher, the source picker, the "Finish round" sheet) take the keyboard while open
+and give it back where it was (the main area when that place is gone, such as a filter the panel
+took away with it); a menu opens over the sheet rather than in its place, so its unsaved summary
+survives, and should the keyboard ever rest on an element no longer drawn, the shell's
+focus-lost listener hands it to the main area. Keys come from one table (`dv_ui::keymap`, actions
+in `dv_ui::actions`). Viewed toggles flip the state last asked for until the fold reads it back,
+one write per file at a time, so quick presses never ask for the same state twice. A load
+generation counter on the session is the only stale-completion guard needed, because the target
+never mutates: a list result applies only if no newer refresh started, and each file load carries a
+token a refresh replaces.
+
+Comment bodies render through `dv_ui::markdown` (gpui-component's `TextView` over the sanitiser of
+§15: no image or raw HTML survives to be fetched; links open through the system seam).
+
+**Threads, the composer and finishing a round.** The diff pane places the review's threads as
+rows of its stream (`diff_pane::rows`: an insert after the last line of a thread's range on its
+side, or an outdated card under the file's header, §8) and draws them with `dv_ui::thread`'s
+card; it also holds the one composer (a new thread under the selection, or a reply inside its
+card), the focused thread (`]`/`[`, `R`, `X`) and which resolved threads are open. Posting,
+replying, resolving and reopening are the session's `review::ops` writes; the pane counts them
+until their follow-up lands, for `settled`. `comments_list` (the panel, under the files) lists
+the waiting threads in stream order and builds "Copy as prompt" (`thread::prompt_markdown`)
+for the clipboard seam. `Ctrl Enter` opens `submit::FinishSheet`, an overlay the shell holds
+like the switcher, whose Submit is `ops::finish_round` (§2.3); while that runs the sheet can't be
+closed or submitted again, so its outcome (or failure) always shows in it. A review whose status is
+final is read-only — the shell's banner offers "Start a new review", which opens the target again (§2.4).
 
 Keyboard map and states: DESIGN §5.
 
@@ -658,7 +806,10 @@ switch is set.
 ### 14.2 Pieces
 - **`dv_test_support::FixtureRepo`** — builds real git repos in temp dirs from a short script: files,
   commits, branches, CRLF + `autocrlf=true`, `.gitattributes`, renames, binaries, a 50k-line file,
-  untracked files, worktrees.
+  untracked files, worktrees. `FixtureRepo::persistent(path)` builds one at a given path and keeps
+  it (its `HOME` and side directories in `<path>.fixture/`), for the automation host's seeded repos,
+  which outlive the call that built them; `FixtureRepo::reopen(path)` finds one again (a later
+  process, after a scenario's `restart`).
 - **`mock_gh`** — reads a scenario file (`argv` pattern → stdout/stderr/exit), serves responses
   recorded from `kylekz/difftest` (scrubbed), and appends every call + stdin to a log tests assert on
   ("exactly these 5 comments were posted with `REQUEST_CHANGES`"). Error scenarios: 422 line-not-in-diff,
@@ -669,7 +820,13 @@ switch is set.
   targets (`.automation_target("file_list/src/routes/users.ts")`), frame-synced replies,
   `wait_for`/`assert` JSON-pointer checks, background runs that never take focus, per-scenario output
   dir with numbered screenshots and `failure.png`. dv adds custom commands `set_setting` (window
-  material and mode), `seed_repo`, `open`, `open_review`. The runner wires `mock_gh` itself:
+  material and mode), `seed_repo` / `repo_edit` (fixture repos at `<data_dir>/repos/<name>`, built
+  and edited with `FixtureRepo` steps, a `write` step's `repeat` making a large file in one line;
+  their environment overlays are registered with `Locations`,
+  and found again with `FixtureRepo::reopen` after a restart, so scenarios never depend on the
+  owner's git configuration), `open` (adds a repo and opens the switcher on it, as `dv open`
+  will), `open_review` and `review_op` (an agent's reply, address or "done" through
+  `review::ops`, until the CLI exists). The runner wires `mock_gh` itself:
   every launch gets `DV_GH` = `mock_gh` and `DV_DATA_DIR` = the scenario's data dir, a scenario
   header's `gh` names the `mock_gh` scenario file (`DV_MOCK_GH`), and `{"gh_log": {}}` lines
   assert on its call log (`DV_MOCK_GH_LOG`) (tests/e2e/README.md).

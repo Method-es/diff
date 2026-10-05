@@ -1,6 +1,7 @@
 //! The diff pipeline's git half (docs/PLAN.md §6 steps 1–3, D4): the file list with every file's
-//! totals, per-file diffs parsed into aligned lines, intraline word ranges, and the collapse of
-//! unchanged runs into expandable gaps.
+//! totals, per-file diffs parsed into aligned lines, intraline word ranges, the collapse of
+//! unchanged runs into expandable gaps, and the pure helpers the stream's rows are built from
+//! ([`split_rows`], [`hunk_range`]).
 //!
 //! git computes every diff (PLAN D4), so `core.autocrlf`, `.gitattributes` (eol, `-diff`,
 //! `binary`) and rename detection behave exactly as they do in git. Per-file diffs run with
@@ -12,6 +13,8 @@ mod file;
 mod intraline;
 mod list;
 mod patch;
+mod remap;
+mod rows;
 
 use std::ops::Range;
 
@@ -21,10 +24,12 @@ use crate::backend::BackendError;
 use crate::git::{GitError, GitRepo, Oid};
 use crate::target::{DiffSpec, Side};
 
-pub use collapse::{EXPAND_STEP, Expand, MIN_GAP, Segment, expand_gap, segments};
+pub use collapse::{EXPAND_STEP, Expand, MIN_GAP, Segment, expand_gap, segments, segments_showing};
 pub use file::file_diff;
 pub use intraline::{diff_pair as intraline_pair, mark_intraline};
 pub use list::file_list;
+pub use remap::remap_lines;
+pub use rows::{HunkRange, SplitRow, hunk_range, split_rows};
 
 /// Per side, the byte size beyond which a file isn't diffed until the reviewer asks ("Load
 /// anyway", PLAN §6 step 2).

@@ -1,5 +1,6 @@
-//! dv's settings (PLAN §11 `Settings`): the window material and the light/dark mode, kept in
-//! `<data dir>/settings.json` as `{"v": 1, "material": …, "mode": …}`.
+//! dv's settings (PLAN §11 `Settings`): the window material, the light/dark mode and the panel's
+//! width, kept in `<data dir>/settings.json` as `{"v": 1, "material": …, "mode": …,
+//! "panel_width": …}` (`panel_width` only once it was changed).
 //!
 //! The default data dir is `%APPDATA%\dv` on Windows, which also holds the first
 //! implementation's `settings.json`, so reading is lenient: a missing key takes its default, an
@@ -8,23 +9,35 @@
 //! (the first implementation's keys, a newer dv's). A change emits [`SettingsEvent::Changed`] at
 //! once and is written in the background through a temporary file and a rename, so a crash never
 //! leaves half a file; writes are ordered by generation, so the last change always wins, and
-//! whatever is still unwritten when the app quits is written synchronously then.
+//! whatever is still unwritten when the app quits is written synchronously then
+//! ([`super::persist`]).
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use gpui::{AppContext as _, Context, EventEmitter, Subscription, Task};
-use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use super::persist::Writer;
 use crate::theme::{Appearance, Material};
 
 /// The settings file in the data dir.
 pub const SETTINGS_FILE: &str = "settings.json";
 /// The `"v"` this version writes.
 pub const SETTINGS_VERSION: u64 = 1;
+/// The panel's width when the reviewer never changed it (DESIGN §2).
+pub const PANEL_WIDTH_DEFAULT: f32 = 280.;
+/// The narrowest and widest the panel can be dragged (DESIGN §2).
+pub const PANEL_WIDTH_RANGE: (f32, f32) = (220., 420.);
+
+/// `width` within [`PANEL_WIDTH_RANGE`]; the default for anything that isn't a finite number.
+pub fn clamp_panel_width(width: f32) -> f32 {
+    if width.is_finite() {
+        width.clamp(PANEL_WIDTH_RANGE.0, PANEL_WIDTH_RANGE.1)
+    } else {
+        PANEL_WIDTH_DEFAULT
+    }
+}
 
 /// Light or dark (DESIGN §1.1, §1.2), or whichever the OS uses.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -70,6 +83,9 @@ pub struct SettingsFile {
     /// The material asked for; the platform may show Opaque instead (`crate::appearance`).
     pub material: Material,
     pub mode: Mode,
+    /// The panel's width in logical pixels, within [`PANEL_WIDTH_RANGE`]; `None` until the
+    /// reviewer resizes it ([`PANEL_WIDTH_DEFAULT`]).
+    pub panel_width: Option<f32>,
     /// Keys this version doesn't know, written back as they were read.
     extra: Map<String, Value>,
 }
@@ -79,6 +95,7 @@ impl Default for SettingsFile {
         Self {
             material: Material::platform_default(),
             mode: Mode::default(),
+            panel_width: None,
             extra: Map::new(),
         }
     }
@@ -90,6 +107,8 @@ struct Written<'a> {
     v: u64,
     material: Material,
     mode: Mode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    panel_width: Option<f32>,
     #[serde(flatten)]
     extra: &'a Map<String, Value>,
 }
@@ -139,6 +158,14 @@ impl SettingsFile {
                 )),
             }
         }
+        if let Some(value) = object.remove("panel_width") {
+            match value.as_f64() {
+                Some(width) => file.panel_width = Some(clamp_panel_width(width as f32)),
+                None => problems.push(format!(
+                    "\"panel_width\" is {value}, not a number; using {PANEL_WIDTH_DEFAULT}"
+                )),
+            }
+        }
         file.extra = object;
         (file, problems)
     }
@@ -149,6 +176,7 @@ impl SettingsFile {
             v: SETTINGS_VERSION,
             material: self.material,
             mode: self.mode,
+            panel_width: self.panel_width,
             extra: &self.extra,
         };
         let mut text = serde_json::to_string_pretty(&written)
@@ -213,50 +241,6 @@ pub fn load(path: &Path) -> Loaded {
     Loaded { file, unsaveable }
 }
 
-/// Writes `contents` to `path` through a temporary file beside it and a rename, so readers see
-/// the old file or the new one, never part of one.
-pub fn write_atomically(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    let dir = path.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir)?;
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| SETTINGS_FILE.to_string());
-    let temp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
-    let written = (|| {
-        let mut file = std::fs::File::create(&temp)?;
-        file.write_all(contents)?;
-        file.sync_all()?;
-        drop(file);
-        std::fs::rename(&temp, path)
-    })();
-    if written.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    written
-}
-
-/// Writes snapshots of the settings, newest generation wins: a write older than one already on
-/// disk is skipped.
-#[derive(Clone)]
-struct Writer {
-    path: PathBuf,
-    written: Arc<Mutex<u64>>,
-}
-
-impl Writer {
-    /// Writes `json` as generation `generation`; `Ok(false)` when a newer one is already written.
-    fn write(&self, generation: u64, json: &str) -> std::io::Result<bool> {
-        let mut written = self.written.lock();
-        if generation <= *written {
-            return Ok(false);
-        }
-        write_atomically(&self.path, json.as_bytes())?;
-        *written = generation;
-        Ok(true)
-    }
-}
-
 /// What [`Settings`] tells its subscribers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsEvent {
@@ -293,10 +277,7 @@ impl Settings {
         });
         Self {
             file,
-            writer: Writer {
-                path,
-                written: Arc::new(Mutex::new(0)),
-            },
+            writer: Writer::new(path),
             generation: 0,
             attempted: 0,
             saving: None,
@@ -318,9 +299,14 @@ impl Settings {
         self.file.mode
     }
 
+    /// The panel's width in logical pixels (DESIGN §2: 220–420, 280 until resized).
+    pub fn panel_width(&self) -> f32 {
+        self.file.panel_width.unwrap_or(PANEL_WIDTH_DEFAULT)
+    }
+
     /// Where the settings are saved.
     pub fn path(&self) -> &Path {
-        &self.writer.path
+        self.writer.path()
     }
 
     /// Why the last save failed, until one succeeds.
@@ -343,6 +329,16 @@ impl Settings {
     pub fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
         if self.file.mode != mode {
             self.file.mode = mode;
+            self.changed(cx);
+        }
+    }
+
+    /// Sets the panel's width, clamped to [`PANEL_WIDTH_RANGE`] (a drag past either end stops
+    /// there).
+    pub fn set_panel_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        let width = clamp_panel_width(width);
+        if self.file.panel_width != Some(width) {
+            self.file.panel_width = Some(width);
             self.changed(cx);
         }
     }
@@ -379,7 +375,7 @@ impl Settings {
                     Err(error) => {
                         log::warn!(
                             "couldn't save the settings to {}: {error}",
-                            this.writer.path.display()
+                            this.writer.path().display()
                         );
                         this.last_error = Some(error.to_string());
                     }
@@ -395,13 +391,13 @@ impl Settings {
 
     /// Writes whatever isn't written yet, on this thread (the app is quitting).
     fn flush(&mut self) {
-        if self.unsaveable.is_some() || *self.writer.written.lock() >= self.generation {
+        if self.unsaveable.is_some() || self.writer.written() >= self.generation {
             return;
         }
         if let Err(error) = self.writer.write(self.generation, &self.file.to_json()) {
             log::warn!(
                 "couldn't save the settings to {}: {error}",
-                self.writer.path.display()
+                self.writer.path().display()
             );
         }
     }
@@ -492,6 +488,35 @@ mod tests {
     }
 
     #[test]
+    fn the_panel_width_is_read_clamped_and_written_once_set() {
+        let (file, problems) = SettingsFile::parse("{}");
+        assert_eq!(file.panel_width, None);
+        assert!(problems.is_empty());
+        assert!(!file.to_json().contains("panel_width"));
+        let (file, problems) = SettingsFile::parse(r#"{"panel_width": 300.5}"#);
+        assert_eq!(file.panel_width, Some(300.5));
+        assert!(problems.is_empty());
+        for (text, width) in [
+            (r#"{"panel_width": 9000}"#, 420.),
+            (r#"{"panel_width": 10}"#, 220.),
+        ] {
+            assert_eq!(
+                SettingsFile::parse(text).0.panel_width,
+                Some(width),
+                "{text}"
+            );
+        }
+        let (file, problems) = SettingsFile::parse(r#"{"panel_width": "wide"}"#);
+        assert_eq!(file.panel_width, None);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        // The first implementation's `sidebar_width` is another key, kept as it is.
+        let (file, _) = SettingsFile::parse(r#"{"sidebar_width": 277.3}"#);
+        assert_eq!(file.panel_width, None);
+        assert_eq!(file.unknown_keys().collect::<Vec<_>>(), ["sidebar_width"]);
+        assert_eq!(clamp_panel_width(f32::NAN), PANEL_WIDTH_DEFAULT);
+    }
+
+    #[test]
     fn modes_resolve_against_the_system() {
         assert_eq!(Mode::System.resolve(Appearance::Light), Appearance::Light);
         assert_eq!(Mode::System.resolve(Appearance::Dark), Appearance::Dark);
@@ -501,35 +526,6 @@ mod tests {
             assert_eq!(Mode::from_key(mode.key()), Some(mode));
         }
         assert_eq!(Mode::from_key("auto"), None);
-    }
-
-    #[test]
-    fn atomic_writes_replace_the_file_and_leave_no_temporary() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nested").join(SETTINGS_FILE);
-        write_atomically(&path, b"{\"v\": 1}\n").unwrap();
-        write_atomically(&path, b"{\"v\": 1, \"mode\": \"dark\"}\n").unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "{\"v\": 1, \"mode\": \"dark\"}\n"
-        );
-        let names: Vec<_> = std::fs::read_dir(path.parent().unwrap())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect();
-        assert_eq!(names, [SETTINGS_FILE]);
-    }
-
-    #[test]
-    fn the_writer_never_writes_an_older_generation_over_a_newer_one() {
-        let dir = tempfile::tempdir().unwrap();
-        let writer = Writer {
-            path: dir.path().join(SETTINGS_FILE),
-            written: Arc::new(Mutex::new(0)),
-        };
-        assert!(writer.write(2, "new").unwrap());
-        assert!(!writer.write(1, "old").unwrap());
-        assert_eq!(std::fs::read_to_string(&writer.path).unwrap(), "new");
     }
 
     #[gpui::test]
@@ -555,10 +551,13 @@ mod tests {
             settings.set_mode(Mode::Light, cx);
             // Setting the same value again is no change.
             settings.set_mode(Mode::Light, cx);
+            settings.set_panel_width(1000., cx);
+            settings.set_panel_width(420., cx);
+            assert_eq!(settings.panel_width(), 420.);
             assert!(!settings.is_settled());
         });
         cx.run_until_parked();
-        assert_eq!(*events.borrow(), [SettingsEvent::Changed; 2]);
+        assert_eq!(*events.borrow(), [SettingsEvent::Changed; 3]);
         settings.read_with(cx, |settings, _| {
             assert!(settings.is_settled());
             assert_eq!(settings.last_error(), None);
@@ -566,7 +565,13 @@ mod tests {
         let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(
             saved,
-            serde_json::json!({"v": 1, "material": "opaque", "mode": "light", "theme": "Aura Dark"})
+            serde_json::json!({
+                "v": 1,
+                "material": "opaque",
+                "mode": "light",
+                "panel_width": 420.0,
+                "theme": "Aura Dark"
+            })
         );
     }
 

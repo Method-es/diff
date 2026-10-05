@@ -1,0 +1,720 @@
+//! The thread card and the composer as elements (DESIGN §4.1 "Thread card", the board's inline
+//! card: `thread` surface, a 32px header with the state chip, the anchor and the actions, then
+//! the comments with 22px avatars and a reply field).
+
+use std::rc::Rc;
+
+use dv_core::review::{Author, AuthorKind, Thread, ThreadState};
+use gpui::{
+    AnyElement, App, Div, ElementId, Entity, FontWeight, InteractiveElement as _, IntoElement,
+    MouseButton, ParentElement as _, RenderOnce, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window, div, prelude::FluentBuilder as _, px,
+};
+use gpui_component::input::{Textarea, TextareaState};
+
+use super::{anchor_label, first_line, initial, relative_time, role_word, state_label, state_note};
+use crate::actions::composer::{Cancel, Post};
+use crate::automation::AutomationTargetExt as _;
+use crate::components::{chip, icon, kbd, kbd_on_accent, primary_button, small_button};
+use crate::failure::Failure;
+use crate::icons::DvIcon;
+use crate::keymap;
+use crate::theme::{ActiveTheme as _, DvTheme, StyledText as _};
+
+type Handler = Rc<dyn Fn(&mut Window, &mut App)>;
+type StateHandler = Rc<dyn Fn(ThreadState, &mut Window, &mut App)>;
+
+/// A thread's card (see the module docs). The stream places it; the card fills its width.
+#[derive(IntoElement)]
+pub struct ThreadCard {
+    thread: Thread,
+    now: u64,
+    outdated: bool,
+    focused: bool,
+    collapsed: bool,
+    read_only: bool,
+    reply: Option<ComposerBox>,
+    error: Option<Failure>,
+    on_state: Option<StateHandler>,
+    on_toggle: Option<Handler>,
+    on_reply: Option<Handler>,
+    on_focus: Option<Handler>,
+}
+
+impl ThreadCard {
+    /// A card for `thread`, its times relative to `now` (ms since the epoch).
+    pub fn new(thread: Thread, now: u64) -> Self {
+        Self {
+            thread,
+            now,
+            outdated: false,
+            focused: false,
+            collapsed: false,
+            read_only: false,
+            reply: None,
+            error: None,
+            on_state: None,
+            on_toggle: None,
+            on_reply: None,
+            on_focus: None,
+        }
+    }
+
+    /// Its anchored text no longer stands at its lines: the yellow chip and the original lines.
+    pub fn outdated(mut self, outdated: bool) -> Self {
+        self.outdated = outdated;
+        self
+    }
+
+    /// The keyboard's thread (`]`/`[`): the accent ring, and `R` beside the reply field.
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    /// One line instead of the whole thread (a resolved thread until it is opened).
+    pub fn collapsed(mut self, collapsed: bool) -> Self {
+        self.collapsed = collapsed;
+        self
+    }
+
+    /// A finished review's card: the actions and the reply field show, disabled.
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
+    /// The reply composer, when it is open on this thread.
+    pub fn reply(mut self, reply: Option<ComposerBox>) -> Self {
+        self.reply = reply;
+        self
+    }
+
+    /// Why the reviewer's last Resolve or Reopen failed.
+    pub fn error(mut self, error: Option<Failure>) -> Self {
+        self.error = error;
+        self
+    }
+
+    /// Resolve and Reopen: the state the reviewer asked for.
+    pub fn on_state(mut self, f: impl Fn(ThreadState, &mut Window, &mut App) + 'static) -> Self {
+        self.on_state = Some(Rc::new(f));
+        self
+    }
+
+    /// The chevron of a resolved thread: collapse or open it.
+    pub fn on_toggle(mut self, f: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_toggle = Some(Rc::new(f));
+        self
+    }
+
+    /// A click on the reply field.
+    pub fn on_reply(mut self, f: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_reply = Some(Rc::new(f));
+        self
+    }
+
+    /// A click anywhere on the card: it becomes the focused thread.
+    pub fn on_focus(mut self, f: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_focus = Some(Rc::new(f));
+        self
+    }
+}
+
+impl RenderOnce for ThreadCard {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.dv_theme().clone();
+        let c = &theme.colors;
+        let name = format!("thread/{}", self.thread.id);
+        let anchor = &self.thread.anchor;
+        let anchor_text = anchor_label(anchor.side, anchor.start_line, anchor.end_line);
+        let resolved = self.thread.state == ThreadState::Resolved;
+
+        let header = div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(theme.spacing.md)
+            .h(px(32.))
+            .pl(theme.spacing.lg)
+            .pr(theme.spacing.sm)
+            .when(!self.collapsed, |this| {
+                this.border_b_1().border_color(c.line)
+            })
+            .child(state_chip(&self.thread, &theme))
+            .when(self.outdated, |this| {
+                this.child(
+                    chip(c.yellow, c.yellow_soft, &theme)
+                        .child(icon(DvIcon::TriangleAlert, px(12.), c.yellow))
+                        .child("Outdated"),
+                )
+            })
+            // The anchor (and a collapsed thread's first line) take only the room the chips and
+            // the actions leave, so in a narrow card they give way first, then the chip's agent
+            // name; the actions never do.
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap(theme.spacing.md)
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_spec(&theme.text.secondary)
+                            .text_color(c.fg3)
+                            .child(anchor_text),
+                    )
+                    .when(self.collapsed, |this| {
+                        this.child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_spec(&theme.text.secondary)
+                                .text_color(c.fg2)
+                                .child(first_line(&self.thread.body)),
+                        )
+                    }),
+            )
+            .children(self.actions(&name, &theme))
+            .when(resolved, |this| {
+                let toggle = self.on_toggle.clone();
+                let hover = c.control_hover;
+                this.child(
+                    div()
+                        .id(ElementId::Name(format!("{name}/toggle").into()))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(theme.sizes.control_height)
+                        .rounded(theme.radii.control)
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(hover))
+                        .child(icon(
+                            if self.collapsed {
+                                DvIcon::ChevronRight
+                            } else {
+                                DvIcon::ChevronDown
+                            },
+                            px(14.),
+                            c.fg2,
+                        ))
+                        .on_click(move |_, window, cx| {
+                            if let Some(toggle) = &toggle {
+                                toggle(window, cx);
+                            }
+                        })
+                        .automation_target(format!("{name}/toggle")),
+                )
+            });
+
+        let card = div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .rounded(theme.radii.card)
+            .border_1()
+            .border_color(if self.focused { c.accent_ring } else { c.line2 })
+            .bg(c.thread)
+            .shadow(theme.shadows.card.clone())
+            .overflow_hidden()
+            .text_spec(&theme.text.body)
+            .text_color(c.fg)
+            .when_some(self.on_focus.clone(), |this, focus| {
+                this.on_mouse_down(MouseButton::Left, move |_, window, cx| focus(window, cx))
+            })
+            .child(header)
+            .children(self.error.as_ref().map(|error| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme.spacing.sm)
+                    .px(theme.spacing.lg)
+                    .py(theme.spacing.sm)
+                    .border_b_1()
+                    .border_color(c.line)
+                    .text_spec(&theme.text.secondary)
+                    .text_color(c.red)
+                    .child(icon(DvIcon::TriangleAlert, px(13.), c.red))
+                    .child(div().flex_1().min_w_0().child(error.message.clone()))
+            }));
+        if self.collapsed {
+            return card.automation_target(name);
+        }
+
+        let note = (self.thread.state == ThreadState::Addressed)
+            .then(|| state_note(&self.thread))
+            .flatten()
+            .map(|note| {
+                div()
+                    .flex()
+                    .gap(theme.spacing.md)
+                    .px(theme.spacing.lg)
+                    .py(px(7.))
+                    .bg(c.blue_soft)
+                    .border_b_1()
+                    .border_color(c.line)
+                    .text_spec(&theme.text.secondary)
+                    .text_color(c.fg2)
+                    .child(div().pt(px(1.)).child(icon(DvIcon::Bot, px(13.), c.blue)))
+                    .child(div().flex_1().min_w_0().child(note.to_string()))
+            });
+        let snippet = self.outdated.then(|| {
+            div()
+                .mx(theme.spacing.lg)
+                .mt(px(10.))
+                .px(px(10.))
+                .py(theme.spacing.sm)
+                .rounded(theme.radii.control)
+                .bg(c.recess)
+                .font_family(theme.fonts.mono.clone())
+                .text_size(px(11.5))
+                .line_height(px(17.))
+                .text_color(c.fg2)
+                .children(anchor.text.iter().map(|line| {
+                    div()
+                        .whitespace_nowrap()
+                        .overflow_hidden()
+                        .child(line.replace('\t', "    "))
+                }))
+        });
+        let mut comments = vec![comment(
+            ElementId::Name(format!("{name}/body").into()),
+            &self.thread.author,
+            &self.thread.body,
+            self.thread.created_at,
+            self.now,
+            true,
+            &theme,
+            cx,
+        )];
+        for reply in self
+            .thread
+            .replies
+            .iter()
+            .filter(|reply| !reply.is_deleted())
+        {
+            comments.push(comment(
+                ElementId::Name(format!("{name}/{}", reply.id).into()),
+                &reply.author,
+                &reply.body,
+                reply.created_at,
+                self.now,
+                false,
+                &theme,
+                cx,
+            ));
+        }
+        let reply_row = div()
+            .flex()
+            .items_center()
+            .gap(theme.spacing.md)
+            .pt(theme.spacing.sm)
+            .pr(theme.spacing.lg)
+            .pb(px(10.))
+            .pl(px(44.));
+        let reply_row = match self.reply {
+            Some(composer) => reply_row.child(div().flex_1().min_w_0().child(composer)),
+            None => reply_row.child(self.reply_field(&name, &theme)),
+        };
+        card.children(note)
+            .children(snippet)
+            .children(comments)
+            .child(reply_row)
+            .automation_target(name)
+    }
+}
+
+impl ThreadCard {
+    /// Resolve and Reopen as the state allows (PLAN §2.5), disabled on a finished review.
+    fn actions(&self, name: &str, theme: &DvTheme) -> Vec<AnyElement> {
+        let wanted: &[(&str, &str, ThreadState)] = match self.thread.state {
+            ThreadState::Open => &[("resolve", "Resolve", ThreadState::Resolved)],
+            ThreadState::Addressed => &[
+                ("resolve", "Resolve", ThreadState::Resolved),
+                ("reopen", "Reopen", ThreadState::Open),
+            ],
+            ThreadState::Resolved => &[("reopen", "Reopen", ThreadState::Open)],
+        };
+        wanted
+            .iter()
+            .map(|&(key, label, state)| {
+                let button = small_button(
+                    ElementId::Name(format!("{name}/{key}").into()),
+                    label,
+                    theme,
+                );
+                let button = match (&self.on_state, self.read_only) {
+                    (Some(on_state), false) => {
+                        let on_state = on_state.clone();
+                        button.on_click(move |_, window, cx| on_state(state, window, cx))
+                    }
+                    _ => button.opacity(0.5).cursor_default(),
+                };
+                button
+                    .automation_target(format!("{name}/{key}"))
+                    .into_any_element()
+            })
+            .collect()
+    }
+
+    /// The reply field before it is opened: a quiet "Reply…" (with `R` on the focused thread)
+    /// that opens the reply composer.
+    fn reply_field(&self, name: &str, theme: &DvTheme) -> AnyElement {
+        let c = &theme.colors;
+        let on_reply = self.on_reply.clone().filter(|_| !self.read_only);
+        div()
+            .id(ElementId::Name(format!("{name}/reply").into()))
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .h(theme.sizes.control_height)
+            .px(px(10.))
+            .rounded(theme.radii.control)
+            .border_1()
+            .border_color(c.ctrl_line)
+            .bg(c.input_bg)
+            .text_color(c.fg3)
+            .child(div().flex_1().child(if self.read_only {
+                "Replies are closed on a finished review"
+            } else {
+                "Reply…"
+            }))
+            .when(self.focused && !self.read_only, |this| {
+                this.child(kbd(keymap::label("r"), theme))
+            })
+            .map(|this| match on_reply {
+                Some(on_reply) => this
+                    .cursor_text()
+                    .on_click(move |_, window, cx| on_reply(window, cx)),
+                None => this.opacity(0.6),
+            })
+            .automation_target(format!("{name}/reply"))
+            .into_any_element()
+    }
+}
+
+/// The chip that says where a thread stands: `open` with the accent ring dot, `addressed` in
+/// blue, `resolved` with a green check (DESIGN §4.1).
+fn state_chip(thread: &Thread, theme: &DvTheme) -> AnyElement {
+    let c = &theme.colors;
+    // "Addressed by claude-code" truncates once the anchor beside it has none left (the card's
+    // header).
+    let label = div().min_w_0().truncate().child(state_label(thread));
+    match thread.state {
+        ThreadState::Open => chip(c.accent_text, c.accent_soft, theme)
+            .child(
+                div()
+                    .size(px(7.))
+                    .rounded_full()
+                    .border(px(1.5))
+                    .border_color(c.accent),
+            )
+            .child(label),
+        ThreadState::Addressed => chip(c.blue, c.blue_soft, theme)
+            .child(icon(DvIcon::Check, px(11.), c.blue))
+            .child(label),
+        ThreadState::Resolved => chip(c.green, c.green_soft, theme)
+            .child(icon(DvIcon::CircleCheck, px(12.), c.green))
+            .child(label),
+    }
+    .min_w_0()
+    .flex_shrink_1()
+    .font_weight(FontWeight::SEMIBOLD)
+    .into_any_element()
+}
+
+/// One comment: the avatar, the author's name and role, the time, and the body as Markdown.
+#[allow(clippy::too_many_arguments)]
+fn comment(
+    id: ElementId,
+    author: &Author,
+    body: &str,
+    at: u64,
+    now: u64,
+    first: bool,
+    theme: &DvTheme,
+    cx: &App,
+) -> Div {
+    let c = &theme.colors;
+    let role = match author.kind {
+        AuthorKind::Reviewer => div()
+            .text_spec(&theme.text.secondary)
+            .text_color(c.fg3)
+            .child(role_word(author)),
+        AuthorKind::Agent | AuthorKind::Github => tag(role_word(author), theme),
+    };
+    div()
+        .flex()
+        .gap(px(10.))
+        .pt(if first { px(10.) } else { theme.spacing.md })
+        .px(theme.spacing.lg)
+        .pb(theme.spacing.xs)
+        .child(avatar(author, theme))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(theme.spacing.sm)
+                        .h(px(18.))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(SharedString::from(author.name.clone())),
+                        )
+                        .child(role)
+                        .child(
+                            div()
+                                .text_spec(&theme.text.secondary)
+                                .text_color(c.fg3)
+                                .child(relative_time(at, now)),
+                        ),
+                )
+                .child(
+                    crate::markdown::view(id, body, cx)
+                        .text_size(theme.text.body.size)
+                        .line_height(px(20.))
+                        .text_color(c.fg),
+                ),
+        )
+}
+
+/// A 22px avatar: a round initial for people (the reviewer, GitHub), a square with the bot
+/// glyph for an agent (the board's `avatarKyle` / `avatarAgent`).
+fn avatar(author: &Author, theme: &DvTheme) -> AnyElement {
+    let c = &theme.colors;
+    let base = div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(22.));
+    match author.kind {
+        AuthorKind::Agent => base
+            .rounded(theme.radii.control)
+            .bg(c.blue_soft)
+            .child(icon(DvIcon::Bot, px(13.), c.blue))
+            .into_any_element(),
+        AuthorKind::Reviewer | AuthorKind::Github => base
+            .rounded_full()
+            .bg(if author.kind == AuthorKind::Reviewer {
+                c.accent_soft
+            } else {
+                c.layer_strong
+            })
+            .text_color(if author.kind == AuthorKind::Reviewer {
+                c.accent_text
+            } else {
+                c.fg2
+            })
+            .text_size(px(11.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(initial(&author.name))
+            .into_any_element(),
+    }
+}
+
+/// The board's `agentTag`: 16 high, a `line2` outline, 11/500 in `fg2`.
+fn tag(text: &'static str, theme: &DvTheme) -> Div {
+    let c = &theme.colors;
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .h(px(16.))
+        .px(px(5.))
+        .rounded(theme.radii.small)
+        .border_1()
+        .border_color(c.line2)
+        .text_color(c.fg2)
+        .text_size(px(11.))
+        .font_weight(FontWeight::MEDIUM)
+        .child(text)
+}
+
+/// The composer (see the module docs): its field, why the last post failed, and Cancel /
+/// Comment. Standalone (a new thread) it is a card with its heading; `compact` (a reply) it is
+/// the field and the buttons alone.
+#[derive(IntoElement)]
+pub struct ComposerBox {
+    input: Entity<TextareaState>,
+    title: String,
+    action: &'static str,
+    posting: bool,
+    error: Option<Failure>,
+    compact: bool,
+    on_post: Handler,
+    on_cancel: Handler,
+}
+
+impl ComposerBox {
+    /// A composer over `input`, headed `title`, its primary button `action` ("Comment",
+    /// "Reply").
+    pub fn new(
+        input: Entity<TextareaState>,
+        title: String,
+        action: &'static str,
+        on_post: impl Fn(&mut Window, &mut App) + 'static,
+        on_cancel: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self {
+            input,
+            title,
+            action,
+            posting: false,
+            error: None,
+            compact: false,
+            on_post: Rc::new(on_post),
+            on_cancel: Rc::new(on_cancel),
+        }
+    }
+
+    /// A post is on its way: the button says so and takes no clicks.
+    pub fn posting(mut self, posting: bool) -> Self {
+        self.posting = posting;
+        self
+    }
+
+    pub fn error(mut self, error: Option<Failure>) -> Self {
+        self.error = error;
+        self
+    }
+
+    /// Inside a thread card: no heading, no card of its own.
+    pub fn compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
+        self
+    }
+}
+
+impl RenderOnce for ComposerBox {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.dv_theme().clone();
+        let c = &theme.colors;
+        let (on_post, on_cancel) = (self.on_post.clone(), self.on_cancel.clone());
+        // The field pads its own text (gpui-component's multi-line paddings).
+        let field = div()
+            .w_full()
+            .rounded(theme.radii.control)
+            .border_1()
+            .border_color(c.ctrl_line)
+            .bg(c.input_bg)
+            .child(
+                Textarea::new(&self.input)
+                    .appearance(false)
+                    .aria_label(if self.compact { "Reply" } else { "Comment" })
+                    .font_family(theme.fonts.ui.clone())
+                    .text_size(theme.text.body.size)
+                    .line_height(px(20.))
+                    .text_color(c.fg),
+            )
+            .automation_target("composer/input");
+        let error = self.error.map(|error| {
+            div()
+                .mt(theme.spacing.sm)
+                .flex()
+                .items_center()
+                .gap(theme.spacing.sm)
+                .text_spec(&theme.text.secondary)
+                .text_color(c.red)
+                .child(icon(DvIcon::TriangleAlert, px(13.), c.red))
+                .child(div().flex_1().min_w_0().child(error.message))
+        });
+        let post_handler = on_post.clone();
+        let footer = div()
+            .mt(theme.spacing.md)
+            .flex()
+            .items_center()
+            .gap(theme.spacing.md)
+            .child(
+                div()
+                    .flex_1()
+                    .text_spec(&theme.text.secondary)
+                    .text_color(c.fg3)
+                    .child("Markdown"),
+            )
+            .child(
+                small_button("composer-cancel", "Cancel", &theme)
+                    .child(kbd(keymap::label("escape"), &theme))
+                    .on_click({
+                        let on_cancel = on_cancel.clone();
+                        move |_, window, cx| on_cancel(window, cx)
+                    })
+                    .automation_target("composer/cancel"),
+            )
+            .child(
+                primary_button("composer-post", !self.posting, &theme)
+                    .h(theme.sizes.control_small_height)
+                    .px(theme.spacing.md)
+                    .text_spec(&theme.text.secondary)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(if self.posting {
+                        "Posting…"
+                    } else {
+                        self.action
+                    })
+                    .child(kbd_on_accent(keymap::label("secondary-enter"), &theme))
+                    .when(!self.posting, |this| {
+                        this.on_click(move |_, window, cx| post_handler(window, cx))
+                    })
+                    .automation_target("composer/post"),
+            );
+        let root = div()
+            .key_context(keymap::COMPOSER)
+            .on_action(move |_: &Post, window, cx| on_post(window, cx))
+            .on_action(move |_: &Cancel, window, cx| on_cancel(window, cx))
+            .w_full()
+            .flex()
+            .flex_col()
+            .text_spec(&theme.text.body)
+            .text_color(c.fg);
+        let root = if self.compact {
+            root.child(field).children(error).child(footer)
+        } else {
+            root.rounded(theme.radii.card)
+                .border_1()
+                .border_color(c.accent_ring)
+                .bg(c.thread)
+                .shadow(theme.shadows.card.clone())
+                .overflow_hidden()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(theme.spacing.md)
+                        .h(px(32.))
+                        .px(theme.spacing.lg)
+                        .border_b_1()
+                        .border_color(c.line)
+                        .text_spec(&theme.text.secondary)
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(c.fg2)
+                        .child(icon(DvIcon::MessageSquarePlus, px(13.), c.fg3))
+                        .child(self.title),
+                )
+                .child(
+                    div()
+                        .px(theme.spacing.lg)
+                        .pt(px(10.))
+                        .pb(px(10.))
+                        .child(field)
+                        .children(error)
+                        .child(footer),
+                )
+        };
+        root.automation_target("composer")
+    }
+}

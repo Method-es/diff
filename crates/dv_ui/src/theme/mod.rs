@@ -145,6 +145,7 @@ pub struct SyntaxColors {
     pub constant: Hsla,
     pub property: Hsla,
     pub punctuation: Hsla,
+    pub comment: Hsla,
     pub plain: Hsla,
 }
 
@@ -279,6 +280,7 @@ impl DvColors {
                 constant: c(x.constant),
                 property: c(x.property),
                 punctuation: c(x.punctuation),
+                comment: c(x.comment),
                 plain: c(x.plain),
             },
             window_background: if material.is_translucent() {

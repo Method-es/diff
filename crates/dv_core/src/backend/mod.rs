@@ -75,9 +75,20 @@ pub trait Backend: Send + Sync {
     /// Removes a store file; `false` when there was none.
     fn store_remove(&self, rel: &str) -> Result<bool, BackendError>;
 
+    /// Copies this worktree's index file (`<git-dir>/index`) byte for byte to the store file
+    /// `rel`, keeping its modification time, and creates `rel`'s parent directories either way.
+    /// `false` when the worktree has no index yet (a repo where nothing was ever staged); git
+    /// then starts an empty index at `rel` when a call names it ([`GitOpts::index_file`]).
+    ///
+    /// A round snapshot works on such a copy so the user's index is never written (PLAN §2.3,
+    /// §2.4). The modification time matters: git trusts an entry's cached stat data only when
+    /// the file was modified before the index was written, so a copy dated now would let a file
+    /// changed in the same instant as the last index write pass as unchanged.
+    fn copy_index_to_store(&self, rel: &str) -> Result<bool, BackendError>;
+
     /// Starts delivering change notifications to `sink` on a background thread (PLAN §5.3) until
-    /// the returned handle is dropped. A watch of the worktree and the store whose worktree half
-    /// the OS refuses still watches the store; [`WatchHandle::worktree_error`] says so.
+    /// the returned handle is dropped. A watch that includes the store, whose worktree or git
+    /// half the OS refuses, still watches the store; [`WatchHandle::worktree_error`] says so.
     fn watch(&self, spec: WatchSpec, sink: WatchSink) -> Result<WatchHandle, BackendError>;
 }
 
@@ -237,6 +248,13 @@ pub struct GitOpts {
     /// Exit codes that count as success (`[0]` by default; e.g. `[0, 1]` for `git diff
     /// --no-index`, which exits 1 when the files differ).
     pub ok_codes: Vec<i32>,
+    /// A store file (a store-relative path, validated like every store path) that this one
+    /// call uses as its index: the backend resolves it under `<git-common-dir>/dv/` and exports
+    /// it as `GIT_INDEX_FILE`, after the git policy has removed any inherited one. Round
+    /// snapshots stage into a copy of the index this way ([`Backend::copy_index_to_store`],
+    /// PLAN §2.3); `None` is the worktree's own index.
+    #[serde(default)]
+    pub index_file: Option<String>,
 }
 
 impl Default for GitOpts {
@@ -245,6 +263,7 @@ impl Default for GitOpts {
             stdin: None,
             timeout_ms: None,
             ok_codes: vec![0],
+            index_file: None,
         }
     }
 }
@@ -266,6 +285,11 @@ impl GitOpts {
 
     pub fn with_ok_codes(mut self, codes: &[i32]) -> Self {
         self.ok_codes = codes.to_vec();
+        self
+    }
+
+    pub fn with_index_file(mut self, rel: impl Into<String>) -> Self {
+        self.index_file = Some(rel.into());
         self
     }
 }
@@ -294,20 +318,34 @@ pub struct WatchSpec {
     pub worktree: bool,
     /// The review store, `<git-common-dir>/dv/`.
     pub store: bool,
+    /// The git state a target resolves against: this worktree's `HEAD` and index, and the
+    /// repo's refs (`refs/**` except `refs/dv/**`, `packed-refs`), reported as
+    /// [`WatchEvent::git_changed`] (PLAN §5.3). A `working` target's old side moves when the
+    /// agent commits without touching a worktree file, and a `staged` target lives in the index.
+    #[serde(default)]
+    pub git: bool,
 }
 
 impl WatchSpec {
     pub const ALL: Self = Self {
         worktree: true,
         store: true,
+        git: true,
     };
     pub const WORKTREE: Self = Self {
         worktree: true,
         store: false,
+        git: false,
     };
     pub const STORE: Self = Self {
         worktree: false,
         store: true,
+        git: false,
+    };
+    pub const GIT: Self = Self {
+        worktree: false,
+        store: false,
+        git: true,
     };
 }
 
@@ -319,6 +357,10 @@ pub struct WatchEvent {
     pub worktree_paths: Vec<String>,
     /// Store paths, relative to the store root (the same paths the `store_*` methods take).
     pub store_paths: Vec<String>,
+    /// The git state changed ([`WatchSpec::git`]): `HEAD` or the index was replaced, or a ref
+    /// outside `refs/dv/` moved. Only final names count; a `*.lock` that comes and goes doesn't.
+    #[serde(default)]
+    pub git_changed: bool,
     /// The OS reported that events may have been lost (a watcher buffer overflow, a watch
     /// error): consumers refresh everything instead of trusting the path lists.
     pub rescan: bool,
@@ -345,16 +387,17 @@ impl WatchHandle {
         }
     }
 
-    /// Marks a watch that asked for the worktree and the store but runs for the store alone,
-    /// because the OS couldn't watch the worktree (`message` says why).
+    /// Marks a watch that asked for the store and the worktree or git state but runs for the
+    /// store alone, because the OS couldn't watch the rest (`message` says why).
     pub fn with_worktree_error(mut self, message: String) -> Self {
         self.worktree_error = Some(message);
         self
     }
 
-    /// Why the worktree isn't watched, when a watch of the worktree and the store could only
-    /// watch the store (on Linux, typically inotify's per-user watch limit, PLAN §5.3). No
-    /// worktree paths arrive then; the caller refreshes the worktree some other way.
+    /// Why neither the worktree nor the git state is watched, when a watch that also asked for
+    /// the store could only watch the store (on Linux, typically inotify's per-user watch
+    /// limit, PLAN §5.3). No worktree paths and no `git_changed` arrive then; the caller
+    /// refreshes those some other way.
     pub fn worktree_error(&self) -> Option<&str> {
         self.worktree_error.as_deref()
     }

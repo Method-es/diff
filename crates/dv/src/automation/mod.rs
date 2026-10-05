@@ -1,0 +1,189 @@
+//! dv's automation host (PLAN §14): the `state` document e2e scenarios assert on, the `settled`
+//! predicate and dv's own commands. Built only with the `automation` feature and started only
+//! with `--automation` / `--automation-pipe`. `tests/e2e/README.md` "dv's `state`" documents
+//! every key and command; `gpui_automation` adds `window` and `windows` itself.
+//!
+//! `state` ([`state`]): `app`, `data_dir`, `settings`, `shell`, `system`, `repos` (the known
+//! repositories), `switcher` and `source_picker` (the title bar's overlays), `file_list` (the
+//! panel), `session` (the open review, or `null`) and `stream` (the diff stream, or `null`).
+//!
+//! Commands:
+//! - `set_setting {key, value}` changes `material` (`mica`, `acrylic`, `opaque`) or `mode`
+//!   (`system`, `dark`, `light`) through the settings service, exactly as the UI would: it saves
+//!   to the data dir and the window repaints in the new theme before the reply.
+//! - `seed_repo {name, steps}` builds a fixture repo at `<data_dir>/repos/<name>` and
+//!   `repo_edit {name, steps}` changes one ("the agent edits"; [`repos`]).
+//! - `open {path}`, `open_review {path, target?}` and `review_op {op, thread, …}` ([`commands`]).
+//!
+//! Seeded repos open with their fixture's environment ([`dv_ui::services::Locations`]'s
+//! overlay), never the owner's git configuration, and are found again after a restart.
+
+mod commands;
+mod repos;
+mod state;
+
+#[cfg(test)]
+mod tests;
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use anyhow::{Context as _, Result, anyhow, bail};
+use dv_test_support::FixtureRepo;
+use dv_ui::services::Mode;
+use dv_ui::{ActiveServices as _, Material, Shell};
+use gpui::{App, AppContext as _, Context, Entity, Task, Window};
+use gpui_automation::AutomationHost;
+use serde_json::{Value, json};
+
+/// A seeded fixture repo, shared with the background jobs that edit it.
+type Seeded = Arc<Mutex<FixtureRepo>>;
+
+/// The entity `gpui_automation` drives: the shell it describes and the repos it seeded.
+pub struct DvAutomation {
+    shell: Entity<Shell>,
+    seeded: HashMap<String, Seeded>,
+}
+
+impl DvAutomation {
+    /// A host over `shell`. Repos seeded by an earlier run on the same data dir (before a
+    /// `restart`) are found again and their environments registered, so they keep opening
+    /// with the fixture's configuration.
+    pub fn new(shell: Entity<Shell>, cx: &mut App) -> Self {
+        let mut host = Self {
+            shell,
+            seeded: HashMap::new(),
+        };
+        for (name, fixture) in repos::reopen_seeded(cx.services().data_dir()) {
+            host.register(name, fixture, cx);
+        }
+        host
+    }
+
+    /// Keeps `fixture` as the seeded repo `name` and has every backend opened for it use its
+    /// environment.
+    fn register(&mut self, name: String, fixture: FixtureRepo, cx: &mut App) {
+        let (path, env) = (fixture.path().to_path_buf(), fixture.env_overlay());
+        let locations = cx.services().locations.clone();
+        locations.update(cx, |locations, _| locations.register_env(path, env));
+        self.seeded.insert(name, Arc::new(Mutex::new(fixture)));
+    }
+}
+
+impl AutomationHost for DvAutomation {
+    fn state(&self, window: &Window, cx: &App) -> Value {
+        json!({
+            "app": "dv",
+            "data_dir": cx.services().data_dir().display().to_string(),
+            "settings": state::settings(cx),
+            "shell": state::shell(self.shell.read(cx), cx),
+            "system": state::system(cx),
+            "repos": state::repos(cx),
+            "switcher": state::switcher(self.shell.read(cx), cx),
+            "source_picker": state::source_picker(self.shell.read(cx), cx),
+            "file_list": state::file_list(self.shell.read(cx), cx),
+            "session": state::session(self.shell.read(cx), cx),
+            "stream": state::stream(self.shell.read(cx), window, cx),
+            "comments_list": state::comments_list(self.shell.read(cx), cx),
+        })
+    }
+
+    fn settled(&self, cx: &App) -> bool {
+        let shell = self.shell.read(cx);
+        cx.services().is_settled(cx)
+            && shell.is_settled(cx)
+            && shell.diff_pane().read(cx).is_settled()
+            && shell
+                .session()
+                .is_none_or(|session| session.read(cx).is_settled())
+    }
+
+    fn custom(
+        &mut self,
+        cmd: &str,
+        args: Value,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Result<Value>> {
+        match cmd {
+            "set_setting" => Some(set_setting(&args, cx)),
+            _ => None,
+        }
+    }
+
+    fn custom_task(
+        &mut self,
+        cmd: &str,
+        args: Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Task<Result<Value>>> {
+        let task = match cmd {
+            "seed_repo" => self.seed_repo(args, cx),
+            "repo_edit" => self.repo_edit(args, cx),
+            "open" => commands::open(self.shell.clone(), args, window, cx),
+            "open_review" => commands::open_review(self.shell.clone(), args, window, cx),
+            "review_op" => commands::review_op(self.shell.clone(), args, cx),
+            _ => return None,
+        };
+        Some(task.unwrap_or_else(|error| Task::ready(Err(error))))
+    }
+}
+
+/// A `set_setting` request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingChange {
+    Material(Material),
+    Mode(Mode),
+}
+
+impl SettingChange {
+    fn parse(args: &Value) -> Result<Self> {
+        let key = args
+            .get("key")
+            .and_then(Value::as_str)
+            .context("set_setting needs \"key\": \"material\" or \"mode\"")?;
+        let value = args
+            .get("value")
+            .and_then(Value::as_str)
+            .with_context(|| format!("set_setting {key:?} needs a string \"value\""))?;
+        match key {
+            "material" => Material::from_key(value)
+                .map(Self::Material)
+                .ok_or_else(|| {
+                    anyhow!("material must be \"mica\", \"acrylic\" or \"opaque\", not {value:?}")
+                }),
+            "mode" => Mode::from_key(value).map(Self::Mode).ok_or_else(|| {
+                anyhow!("mode must be \"system\", \"dark\" or \"light\", not {value:?}")
+            }),
+            other => bail!("unknown setting {other:?}; dv has \"material\" and \"mode\""),
+        }
+    }
+}
+
+/// `set_setting {key, value}`: the change through the settings service; replies with
+/// `state.settings` after it.
+fn set_setting(args: &Value, cx: &mut Context<DvAutomation>) -> Result<Value> {
+    let change = SettingChange::parse(args)?;
+    let settings = cx.services().settings.clone();
+    settings.update(cx, |settings, cx| match change {
+        SettingChange::Material(material) => settings.set_material(material, cx),
+        SettingChange::Mode(mode) => settings.set_mode(mode, cx),
+    });
+    Ok(json!({"settings": state::settings(cx)}))
+}
+
+/// Starts automation on the main window.
+pub fn start(
+    window: gpui::AnyWindowHandle,
+    shell: Entity<Shell>,
+    pipe: Option<String>,
+    cx: &mut App,
+) -> Result<()> {
+    let host = cx.new(|cx| DvAutomation::new(shell, cx));
+    let options = gpui_automation::Options {
+        pipe,
+        ..Default::default()
+    };
+    gpui_automation::start(window, host, cx, options)
+}

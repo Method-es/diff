@@ -1,0 +1,153 @@
+{"scenario": {"window_size": "1440x900", "description": "The diff stream (DESIGN §4.1): the board's api-server with a CRLF README under autocrlf, a binary, a file too large to show, a rename, an untracked file, a deletion and a long file with gaps; opened from the switcher by keyboard; J/K files, N/P change blocks, the cursor and a Shift selection, S split/unified, E/Shift E gaps, PageDown with the pinned header, the agent staging everything under the reader, V collapsing a viewed file, Load anyway, the sideways scroll, the file menu's Copy path and line-number clicks; screenshots in dark Mica, dark Opaque and light."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "settle"}
+
+// The board's fixture (DESIGN §6), with nine changes of every kind the stream shows differently.
+{"cmd": "seed_repo", "name": "api-server", "steps": [ {"config": ["core.autocrlf", "true"]}, {"write": "src/routes/users.ts", "text": "import { db } from \"../db\";\nimport type { User } from \"../types\";\n\nexport const users = Router();\n\nusers.get(\"/:id\", async (req, res) => {\n  const user = await db.users.find(req.params.id);\n  if (!user) return res.status(404).end();\n  res.json({ id: user.id, name: user.name });\n});\n"}, {"write": "src/lib/http.ts", "text": "export async function get(url: string) {\n\tconst response = await fetch(url, { signal: AbortSignal.timeout(5000) });\n\treturn response.json();\n}\n"}, {"write": "src/lib/legacy.ts", "text": "export const LEGACY = true;\nexport function old() {\n  return LEGACY;\n}\n"}, {"write": "src/db/schema.ts", "text": "export interface UserRow {\n  id: string;\n  name: string;\n}\n"}, {"write_crlf": "README.md", "text": "# api-server\n\nThe users API.\n\nRun it with npm start.\n"}, {"write": "assets/logo.png", "bytes": [137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1]}, {"write": "src/server.ts", "text": "import express from \"express\";\nimport { users } from \"./routes/users\";\n\nconst app = express();\nconst port = Number(process.env.PORT ?? 3000);\n\n// handler 1: keeps the request log short\n// handler 2: keeps the request log short\n// handler 3: keeps the request log short\n// handler 4: keeps the request log short\n// handler 5: keeps the request log short\n// handler 6: keeps the request log short\n// handler 7: keeps the request log short\n// handler 8: keeps the request log short\n// handler 9: keeps the request log short\n// handler 10: keeps the request log short\n// handler 11: keeps the request log short\n// handler 12: keeps the request log short\n// handler 13: keeps the request log short\n// handler 14: keeps the request log short\n// handler 15: keeps the request log short\n// handler 16: keeps the request log short\n// handler 17: keeps the request log short\n// handler 18: keeps the request log short\n// handler 19: keeps the request log short\n// handler 20: keeps the request log short\n// handler 21: keeps the request log short\n// handler 22: keeps the request log short\n// handler 23: keeps the request log short\n// handler 24: keeps the request log short\n// handler 25: keeps the request log short\n// handler 26: keeps the request log short\n// handler 27: keeps the request log short\n// handler 28: keeps the request log short\n// handler 29: keeps the request log short\n// handler 30: keeps the request log short\n// handler 31: keeps the request log short\n// handler 32: keeps the request log short\n// handler 33: keeps the request log short\n// handler 34: keeps the request log short\n// handler 35: keeps the request log short\n// handler 36: keeps the request log short\n// handler 37: keeps the request log short\n// handler 38: keeps the request log short\n// handler 39: keeps the request log short\n// handler 40: keeps the request log short\n// handler 41: keeps the request log short\n// handler 42: keeps the request log short\n// handler 43: keeps the request log short\n// handler 44: keeps the request log short\n// handler 45: keeps the request log short\n// handler 46: keeps the request log short\n// handler 47: keeps the request log short\n// handler 48: keeps the request log short\n// handler 49: keeps the request log short\n// handler 50: keeps the request log short\n// handler 51: keeps the request log short\n// handler 52: keeps the request log short\n// handler 53: keeps the request log short\n// handler 54: keeps the request log short\n// handler 55: keeps the request log short\n// handler 56: keeps the request log short\n// handler 57: keeps the request log short\n// handler 58: keeps the request log short\n// handler 59: keeps the request log short\n// handler 60: keeps the request log short\n// handler 61: keeps the request log short\n// handler 62: keeps the request log short\n// handler 63: keeps the request log short\n// handler 64: keeps the request log short\n// handler 65: keeps the request log short\n// handler 66: keeps the request log short\n// handler 67: keeps the request log short\n// handler 68: keeps the request log short\n// handler 69: keeps the request log short\n// handler 70: keeps the request log short\n// handler 71: keeps the request log short\n// handler 72: keeps the request log short\n// handler 73: keeps the request log short\n// handler 74: keeps the request log short\n// handler 75: keeps the request log short\n// handler 76: keeps the request log short\n// handler 77: keeps the request log short\n// handler 78: keeps the request log short\n// handler 79: keeps the request log short\n// handler 80: keeps the request log short\n// handler 81: keeps the request log short\n// handler 82: keeps the request log short\n// handler 83: keeps the request log short\n// handler 84: keeps the request log short\n// handler 85: keeps the request log short\n// handler 86: keeps the request log short\n// handler 87: keeps the request log short\n// handler 88: keeps the request log short\n// handler 89: keeps the request log short\n// handler 90: keeps the request log short\n// handler 91: keeps the request log short\n// handler 92: keeps the request log short\n// handler 93: keeps the request log short\n// handler 94: keeps the request log short\n// handler 95: keeps the request log short\n// handler 96: keeps the request log short\n// handler 97: keeps the request log short\n// handler 98: keeps the request log short\n// handler 99: keeps the request log short\n// handler 100: keeps the request log short\n// handler 101: keeps the request log short\n// handler 102: keeps the request log short\n// handler 103: keeps the request log short\n// handler 104: keeps the request log short\n// handler 105: keeps the request log short\n// handler 106: keeps the request log short\n// handler 107: keeps the request log short\n// handler 108: keeps the request log short\n// handler 109: keeps the request log short\n// handler 110: keeps the request log short\napp.use(\"/users\", users);\napp.listen(port);\n"}, {"write": "data/seed.sql", "text": "-- users seeded by the tests\n"}, {"commit": "base"}, {"write": "src/routes/users.ts", "text": "import { db } from \"../db\";\nimport { cache } from \"../lib/cache\";\nimport type { User } from \"../types\";\n\nexport const users = Router();\n\nexport async function fetchUser(id: string): Promise<User | null> {\n  const key = `user:${id.toLowerCase()}`;\n  const hit = cache.get<User>(key);\n  if (hit) return hit;\n  const user = await db.users.find(id);\n  if (user) cache.set(key, user, 60_000);\n  return user;\n}\n\nusers.get(\"/:id\", async (req, res) => {\n  const user = await fetchUser(req.params.id);\n  if (!user) return res.status(404).json({ error: \"not_found\" });\n  res.json({ id: user.id, name: user.name, email: user.email });\n});\n"}, {"write": "src/lib/cache.ts", "text": "const entries = new Map<string, { value: unknown; until: number }>();\n\nexport const cache = {\n  get<T>(key: string): T | undefined {\n    const entry = entries.get(key);\n    return entry && entry.until > Date.now() ? (entry.value as T) : undefined;\n  },\n  set(key: string, value: unknown, ttl: number) {\n    entries.set(key, { value, until: Date.now() + ttl });\n  },\n};\n"}, {"write": "src/lib/http.ts", "text": "import { config } from \"../config\";\n\nexport async function get(url: string) {\n\tconst response = await fetch(url, { signal: AbortSignal.timeout(config.timeoutMs) });\n\treturn response.json();\n}\n"}, {"remove": "src/lib/legacy.ts"}, {"git": ["mv", "src/db/schema.ts", "src/db/models.ts"]}, {"write_crlf": "README.md", "text": "# api-server\n\nThe users API, with a cache in front of the database.\n\nRun it with npm start.\n"}, {"write": "assets/logo.png", "bytes": [137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 2]}, {"write": "data/seed.sql", "text": "INSERT INTO users (id, name) VALUES (1, 'kyle');\n", "repeat": 25000}, {"write": "src/server.ts", "text": "import express from \"express\";\nimport { users } from \"./routes/users\";\nimport { logger } from \"./lib/logger\";\n\nconst app = express();\nconst port = Number(process.env.PORT ?? 8080);\n\n// handler 1: keeps the request log short\n// handler 2: keeps the request log short\n// handler 3: keeps the request log short\n// handler 4: keeps the request log short\n// handler 5: keeps the request log short\n// handler 6: keeps the request log short\n// handler 7: keeps the request log short\n// handler 8: keeps the request log short\n// handler 9: keeps the request log short\n// handler 10: keeps the request log short\n// handler 11: keeps the request log short\n// handler 12: keeps the request log short\n// handler 13: keeps the request log short\n// handler 14: keeps the request log short\n// handler 15: keeps the request log short\n// handler 16: keeps the request log short\n// handler 17: keeps the request log short\n// handler 18: keeps the request log short\n// handler 19: keeps the request log short\n// handler 20: keeps the request log short\n// handler 21: keeps the request log short\n// handler 22: keeps the request log short\n// handler 23: keeps the request log short\n// handler 24: keeps the request log short\n// handler 25: keeps the request log short\n// handler 26: keeps the request log short\n// handler 27: keeps the request log short\n// handler 28: keeps the request log short\n// handler 29: keeps the request log short\n// handler 30: keeps the request log short\n// handler 31: keeps the request log short\n// handler 32: keeps the request log short\n// handler 33: keeps the request log short\n// handler 34: keeps the request log short\n// handler 35: keeps the request log short\n// handler 36: keeps the request log short\n// handler 37: keeps the request log short\n// handler 38: keeps the request log short\n// handler 39: keeps the request log short\n// handler 40: keeps the request log short\n// handler 41: keeps the request log short\n// handler 42: keeps the request log short\n// handler 43: keeps the request log short\n// handler 44: keeps the request log short\n// handler 45: keeps the request log short\n// handler 46: keeps the request log short\n// handler 47: keeps the request log short\n// handler 48: keeps the request log short\n// handler 49: keeps the request log short\n// handler 50: keeps the request log short\n// handler 51: keeps the request log short\n// handler 52: keeps the request log short\n// handler 53: keeps the request log short\n// handler 54: keeps the request log short\n// handler 55: keeps the request log short\n// handler 56: keeps the request log short\n// handler 57: keeps the request log short\n// handler 58: keeps the request log short\n// handler 59: keeps the request log short\n// handler 60: logs every request with its duration and status code, so slow endpoints show up in the dashboard without anyone having to add timing by hand\n// handler 61: keeps the request log short\n// handler 62: keeps the request log short\n// handler 63: keeps the request log short\n// handler 64: keeps the request log short\n// handler 65: keeps the request log short\n// handler 66: keeps the request log short\n// handler 67: keeps the request log short\n// handler 68: keeps the request log short\n// handler 69: keeps the request log short\n// handler 70: keeps the request log short\n// handler 71: keeps the request log short\n// handler 72: keeps the request log short\n// handler 73: keeps the request log short\n// handler 74: keeps the request log short\n// handler 75: keeps the request log short\n// handler 76: keeps the request log short\n// handler 77: keeps the request log short\n// handler 78: keeps the request log short\n// handler 79: keeps the request log short\n// handler 80: keeps the request log short\n// handler 81: keeps the request log short\n// handler 82: keeps the request log short\n// handler 83: keeps the request log short\n// handler 84: keeps the request log short\n// handler 85: keeps the request log short\n// handler 86: keeps the request log short\n// handler 87: keeps the request log short\n// handler 88: keeps the request log short\n// handler 89: keeps the request log short\n// handler 90: keeps the request log short\n// handler 91: keeps the request log short\n// handler 92: keeps the request log short\n// handler 93: keeps the request log short\n// handler 94: keeps the request log short\n// handler 95: keeps the request log short\n// handler 96: keeps the request log short\n// handler 97: keeps the request log short\n// handler 98: keeps the request log short\n// handler 99: keeps the request log short\n// handler 100: keeps the request log short\n// handler 101: keeps the request log short\n// handler 102: keeps the request log short\n// handler 103: keeps the request log short\n// handler 104: keeps the request log short\n// handler 105: keeps the request log short\n// handler 106: keeps the request log short\n// handler 107: keeps the request log short\n// handler 108: keeps the request log short\n// handler 109: keeps the request log short\n// handler 110: keeps the request log short\napp.use(logger());\napp.use(\"/users\", users);\napp.listen(port, () => console.log(`listening on ${port}`));\n"}], "save": {"repo": "/path"}}
+
+// dv open, then Enter in the switcher opens the working review. Every file is listed; the ones in view load.
+{"cmd": "open", "path": "${repo}"}
+{"cmd": "wait_for", "pointer": "/repos/0/working/files", "equals": 9, "timeout_ms": 20000}
+{"cmd": "settle", "timeout_ms": 20000}
+{"cmd": "key", "keystroke": "enter"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"expect": [{"pointer": "/switcher/open", "equals": false}, {"pointer": "/session/total", "equals": 9}, {"pointer": "/session/view_mode", "equals": "split"}, {"pointer": "/session/current_file", "equals": "README.md"}, {"pointer": "/session/cursor", "equals": null}, {"pointer": "/stream/top_file", "equals": "README.md"}, {"pointer": "/stream/pinned_file", "equals": null}, {"pointer": "/stream/focused", "equals": true}]}
+{"expect": [{"pointer": "/session/files/0", "contains": {"path": "README.md", "state": "loaded", "kind": "text", "additions": 1, "deletions": 1}}, {"pointer": "/stream/files/1", "contains": {"path": "assets/logo.png", "notice": "binary"}}, {"pointer": "/stream/files/2", "contains": {"path": "data/seed.sql", "notice": "too_large"}}, {"pointer": "/stream/files/3", "contains": {"path": "src/db/models.ts", "notice": "no_content_change"}}, {"pointer": "/stream/files/0", "equals": {"path": "README.md", "collapsed": false, "rows": 7, "gaps": [], "notice": null}}]}
+{"cmd": "bounds", "target": "stream/file/README.md/header", "expect_result": [{"pointer": "/y", "equals": 40}, {"pointer": "/h", "equals": 68}]}
+{"cmd": "bounds", "target": "stream/line/README.md/new/3", "expect_result": [{"pointer": "/h", "equals": 20}, {"pointer": "/visible", "not_equals": null}]}
+{"cmd": "screenshot", "name": "stream-dark-mica"}
+{"cmd": "set_setting", "key": "material", "value": "opaque"}
+{"cmd": "screenshot", "name": "stream-dark-opaque"}
+{"cmd": "set_setting", "key": "material", "value": "mica"}
+
+// J and K show the next and previous file, its header at the top and the cursor on its first change.
+{"cmd": "keys", "keys": "j j j j"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"expect": [{"pointer": "/session/current_file", "equals": "src/lib/cache.ts"}, {"pointer": "/file_list/current_file", "equals": "src/lib/cache.ts"}, {"pointer": "/stream/top_file", "equals": "src/lib/cache.ts"}, {"pointer": "/session/cursor", "equals": {"path": "src/lib/cache.ts", "side": "new", "line": 1}}]}
+{"cmd": "key", "keystroke": "k", "expect": [{"pointer": "/session/current_file", "equals": "src/db/models.ts"}, {"pointer": "/session/cursor", "equals": null}]}
+
+// N and P move between change blocks, on into the next files.
+{"cmd": "keys", "keys": "n n n"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"expect": [{"pointer": "/session/cursor", "equals": {"path": "src/lib/http.ts", "side": "new", "line": 4}}, {"pointer": "/session/current_file", "equals": "src/lib/http.ts"}]}
+{"cmd": "key", "keystroke": "p", "expect": {"pointer": "/session/cursor", "equals": {"path": "src/lib/http.ts", "side": "new", "line": 1}}}
+
+// The cursor moves by line and switches sides.
+{"cmd": "keys", "keys": "down down down", "expect": {"pointer": "/session/cursor", "equals": {"path": "src/lib/http.ts", "side": "new", "line": 4}}}
+{"cmd": "key", "keystroke": "left", "expect": {"pointer": "/session/cursor", "equals": {"path": "src/lib/http.ts", "side": "old", "line": 2}}}
+{"cmd": "keys", "keys": "right up up up", "expect": {"pointer": "/session/cursor", "equals": {"path": "src/lib/http.ts", "side": "new", "line": 1}}}
+{"cmd": "screenshot", "name": "cursor-dark-mica"}
+{"cmd": "set_setting", "key": "material", "value": "opaque"}
+{"cmd": "screenshot", "name": "cursor-dark-opaque"}
+{"cmd": "set_setting", "key": "material", "value": "mica"}
+
+// S switches to unified (the review remembers it); Shift extends a selection, which keeps to one side; Esc clears it.
+{"cmd": "key", "keystroke": "s"}
+{"cmd": "settle"}
+{"expect": [{"pointer": "/session/view_mode", "equals": "unified"}, {"pointer": "/session/cursor", "equals": {"path": "src/lib/http.ts", "side": "new", "line": 1}}]}
+{"cmd": "keys", "keys": "shift-down shift-down shift-down", "expect": {"pointer": "/session/selection", "equals": {"path": "src/lib/http.ts", "side": "new", "start_line": 1, "end_line": 4}}}
+{"cmd": "screenshot", "name": "unified-selection-dark-mica"}
+{"cmd": "set_setting", "key": "material", "value": "opaque"}
+{"cmd": "screenshot", "name": "unified-selection-dark-opaque"}
+{"cmd": "set_setting", "key": "material", "value": "mica"}
+{"cmd": "key", "keystroke": "escape", "expect": [{"pointer": "/session/selection", "equals": null}, {"pointer": "/session/cursor/line", "equals": 4}]}
+{"cmd": "key", "keystroke": "s"}
+{"cmd": "settle", "expect": {"pointer": "/session/view_mode", "equals": "split"}}
+
+// A long file: gaps either side of its two changes, each heading the hunk that follows it.
+{"cmd": "keys", "keys": "j j j"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"expect": [{"pointer": "/session/current_file", "equals": "src/server.ts"}, {"pointer": "/session/cursor", "equals": {"path": "src/server.ts", "side": "new", "line": 3}}, {"pointer": "/stream/files/8/gaps", "equals": [54, 44]}]}
+{"cmd": "bounds", "target": "stream/gap/src/server.ts/0", "expect_result": [{"pointer": "/h", "equals": 28}, {"pointer": "/visible", "not_equals": null}]}
+{"cmd": "screenshot", "name": "gaps-dark-mica"}
+{"cmd": "set_setting", "key": "material", "value": "opaque"}
+{"cmd": "screenshot", "name": "gaps-dark-opaque"}
+{"cmd": "set_setting", "key": "material", "value": "mica"}
+// A gap row's "Expand 20" reveals a step from the side next to shown lines (the end of the file has them above).
+{"cmd": "click", "target": "stream/gap/src/server.ts/1/expand", "expect": {"pointer": "/stream/files/8/gaps", "equals": [54, 24]}}
+// E reveals one step of the gap nearest the cursor, towards it; Shift E all of it.
+{"cmd": "key", "keystroke": "e", "expect": [{"pointer": "/stream/files/8/gaps", "equals": [34, 24]}, {"pointer": "/session/cursor/line", "equals": 3}]}
+{"cmd": "key", "keystroke": "shift-e", "expect": {"pointer": "/stream/files/8/gaps", "equals": [24]}}
+{"cmd": "keys", "keys": "n n", "expect": {"pointer": "/session/cursor", "equals": {"path": "src/server.ts", "side": "new", "line": 67}}}
+{"cmd": "key", "keystroke": "shift-e", "expect": {"pointer": "/stream/files/8/gaps", "equals": []}}
+// The file's row in the panel shows it again from the top, the cursor on its first change.
+{"cmd": "click", "target": "file_list/src/server.ts", "expect": {"pointer": "/session/cursor/line", "equals": 3}}
+
+// PageDown scrolls a page and carries the cursor; the file's header stays pinned at the top.
+{"cmd": "key", "keystroke": "pagedown"}
+{"cmd": "settle"}
+{"expect": [{"pointer": "/stream/pinned_file", "equals": "src/server.ts"}, {"pointer": "/session/cursor/path", "equals": "src/server.ts"}, {"pointer": "/session/cursor/line", "gte": 30}]}
+{"cmd": "bounds", "target": "stream/pinned", "expect_result": [{"pointer": "/y", "equals": 40}, {"pointer": "/h", "equals": 68}]}
+{"cmd": "screenshot", "name": "pinned-dark-mica"}
+{"cmd": "set_setting", "key": "material", "value": "opaque"}
+{"cmd": "screenshot", "name": "pinned-dark-opaque"}
+{"cmd": "set_setting", "key": "material", "value": "mica"}
+// The agent stages everything while the reader is deep in server.ts: the same lines load
+// again, so its gaps stay open and the reading position stays where it was (PLAN §11).
+{"expect": {"pointer": "/session/files/4", "contains": {"path": "src/lib/cache.ts", "status": "untracked"}}}
+{"cmd": "repo_edit", "name": "api-server", "steps": [{"git": ["add", "-A"]}]}
+{"cmd": "wait_for", "pointer": "/session/files/4/status", "equals": "added", "timeout_ms": 15000}
+{"cmd": "settle", "expect": [{"pointer": "/stream/files/8/gaps", "equals": []}, {"pointer": "/stream/pinned_file", "equals": "src/server.ts"}, {"pointer": "/stream/top_file", "equals": "src/server.ts"}, {"pointer": "/session/cursor/path", "equals": "src/server.ts"}, {"pointer": "/session/cursor/line", "gte": 30}]}
+{"cmd": "key", "keystroke": "pageup", "expect": [{"pointer": "/session/cursor/line", "equals": 3}, {"pointer": "/stream/pinned_file", "equals": null}]}
+
+// Sideways: one offset for every row and both sides, stopping at the widest line in view.
+{"cmd": "scroll", "target": "stream", "dx": -200}
+{"cmd": "settle", "expect": {"pointer": "/stream/h_offset", "equals": 200}}
+{"cmd": "screenshot", "name": "sideways-dark-mica"}
+{"cmd": "set_setting", "key": "material", "value": "opaque"}
+{"cmd": "screenshot", "name": "sideways-dark-opaque"}
+{"cmd": "set_setting", "key": "material", "value": "mica"}
+{"cmd": "scroll", "target": "stream", "dx": 5000}
+{"cmd": "settle", "expect": {"pointer": "/stream/h_offset", "equals": 0}}
+
+// A click on a line number puts the cursor there; with Shift the selection reaches another.
+{"cmd": "click", "target": "stream/line/src/server.ts/new/5", "expect": [{"pointer": "/session/cursor", "equals": {"path": "src/server.ts", "side": "new", "line": 5}}, {"pointer": "/session/selection", "equals": null}]}
+{"cmd": "click", "target": "stream/line/src/server.ts/new/7", "modifiers": "shift", "expect": {"pointer": "/session/selection", "equals": {"path": "src/server.ts", "side": "new", "start_line": 5, "end_line": 7}}}
+
+// The file menu copies the path through the clipboard seam.
+{"cmd": "click", "target": "stream/file/src/server.ts/menu"}
+{"cmd": "bounds", "target": "stream/menu", "expect_result": {"pointer": "/visible", "not_equals": null}}
+{"cmd": "screenshot", "name": "menu-dark-mica"}
+{"cmd": "set_setting", "key": "material", "value": "opaque"}
+{"cmd": "screenshot", "name": "menu-dark-opaque"}
+{"cmd": "set_setting", "key": "material", "value": "mica"}
+{"cmd": "click", "target": "stream/menu/copy_path", "expect": {"pointer": "/system/requests", "contains": {"kind": "clipboard", "text": "src/server.ts"}}}
+
+// V marks the current file viewed: it collapses to its header, which stays at the top, and J goes on from it.
+{"cmd": "click", "target": "file_list/src/lib/http.ts", "expect": {"pointer": "/session/current_file", "equals": "src/lib/http.ts"}}
+{"cmd": "key", "keystroke": "v"}
+{"cmd": "wait_for", "pointer": "/session/files/5/viewed", "equals": true}
+{"cmd": "settle"}
+{"expect": [{"pointer": "/stream/files/5/collapsed", "equals": true}, {"pointer": "/stream/files/5/rows", "equals": 1}, {"pointer": "/session/current_file", "equals": "src/lib/http.ts"}, {"pointer": "/session/viewed", "equals": 1}]}
+{"cmd": "bounds", "target": "stream/file/src/lib/http.ts/header", "expect_result": [{"pointer": "/y", "equals": 40}, {"pointer": "/h", "equals": 44}]}
+{"cmd": "screenshot", "name": "viewed-dark-mica"}
+{"cmd": "set_setting", "key": "material", "value": "opaque"}
+{"cmd": "screenshot", "name": "viewed-dark-opaque"}
+{"cmd": "set_setting", "key": "material", "value": "mica"}
+{"cmd": "key", "keystroke": "j", "expect": {"pointer": "/session/current_file", "equals": "src/lib/legacy.ts"}}
+// K comes back to it; its chevron opens it again.
+{"cmd": "key", "keystroke": "k", "expect": {"pointer": "/session/current_file", "equals": "src/lib/http.ts"}}
+{"cmd": "click", "target": "stream/file/src/lib/http.ts/chevron", "expect": {"pointer": "/stream/files/5/collapsed", "equals": false}}
+
+// A file over the caps says so, and loads when asked.
+{"cmd": "click", "target": "file_list/data/seed.sql", "expect": {"pointer": "/session/current_file", "equals": "data/seed.sql"}}
+{"cmd": "settle"}
+{"cmd": "bounds", "target": "stream/notice/data/seed.sql/load_anyway", "expect_result": {"pointer": "/visible", "not_equals": null}}
+{"cmd": "screenshot", "name": "too-large-dark-mica"}
+{"cmd": "set_setting", "key": "material", "value": "opaque"}
+{"cmd": "screenshot", "name": "too-large-dark-opaque"}
+{"cmd": "set_setting", "key": "material", "value": "mica"}
+{"cmd": "click", "target": "stream/notice/data/seed.sql/load_anyway"}
+{"cmd": "wait_for", "pointer": "/session/files/2/kind", "equals": "text", "timeout_ms": 30000}
+{"cmd": "settle", "timeout_ms": 30000}
+{"expect": [{"pointer": "/stream/files/2/notice", "equals": null}, {"pointer": "/stream/files/2/rows", "gte": 25000}]}
+
+// And in light.
+{"cmd": "set_setting", "key": "mode", "value": "light"}
+{"cmd": "click", "target": "file_list/README.md"}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "stream-light"}
+{"cmd": "click", "target": "file_list/src/lib/http.ts"}
+{"cmd": "keys", "keys": "s shift-down shift-down"}
+{"cmd": "settle", "expect": {"pointer": "/session/selection/end_line", "equals": 3}}
+{"cmd": "screenshot", "name": "unified-selection-light"}

@@ -1,11 +1,14 @@
 //! Tests for the review store (docs/PLAN.md §7): ids, the log format, the fold's rules, the
 //! store on fixture repos, the checked operations and concurrent writers.
 
+mod anchor;
 mod concurrency;
 mod event;
 mod fold;
 mod id;
 mod ops;
+mod round;
+mod snapshot;
 mod store;
 
 use std::sync::Arc;

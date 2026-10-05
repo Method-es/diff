@@ -139,6 +139,8 @@ pub struct SyntaxTokens {
     pub constant: Rgba,
     pub property: Rgba,
     pub punctuation: Rgba,
+    /// Comments: `fg3`, the lowest text tier (DESIGN §1.1, §1.2).
+    pub comment: Rgba,
     pub plain: Rgba,
 }
 
@@ -247,6 +249,7 @@ pub const DARK: TokenSet = TokenSet {
         constant: hex(0x82e2ff),
         property: hex(0xf694ff),
         punctuation: hex(0xedecee),
+        comment: hex(0x9d9ab3),
         plain: hex(0xedecee),
     },
 };
@@ -348,6 +351,7 @@ pub const LIGHT: TokenSet = TokenSet {
         constant: hex(0x0b6687),
         property: hex(0x9a2694),
         punctuation: hex(0x3d3a48),
+        comment: hex(0x5e5a6f),
         plain: hex(0x1d1b26),
     },
 };

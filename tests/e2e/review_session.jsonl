@@ -1,0 +1,55 @@
+{"scenario": {"window_size": "1440x900", "description": "The review plumbing without its screens: a seeded repo is opened and listed, a working review opens and follows the agent's edits, a commit and a status change live; a WSL location is listed as unavailable; everything survives a restart."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"expect": [{"pointer": "/repos", "equals": []}, {"pointer": "/session", "equals": null}, {"pointer": "/shell/panel_width", "equals": 280}]}
+
+// The board's fixture in miniature: a modified file, an untracked one, a deletion.
+{"cmd": "seed_repo", "name": "api-server", "steps": [{"write": "src/routes/users.ts", "text": "export function list() {\n  return [];\n}\n"}, {"write": "src/db.ts", "text": "export const url = 'postgres://localhost';\n"}, {"write": "README.md", "text": "# api-server\n"}, {"commit": "base"}, {"write": "src/routes/users.ts", "text": "export function list(limit: number) {\n  return [].slice(0, limit);\n}\n"}, {"write": "src/routes/users.test.ts", "text": "import { list } from './users';\n"}, {"remove": "README.md"}], "save": {"repo": "/path"}, "expect_result": {"pointer": "/commits", "len": 1}}
+{"cmd": "seed_repo", "name": "api-server", "expect_error": "already seeded"}
+
+// `open` makes it a known repo; its row fills in from the background.
+{"cmd": "open", "path": "${repo}", "expect_result": {"pointer": "/path", "equals": "${repo}"}}
+{"cmd": "wait_for", "pointer": "/repos/0/working/files", "equals": 3, "timeout_ms": 20000}
+{"cmd": "settle", "timeout_ms": 20000}
+{"expect": [{"pointer": "/repos", "len": 1}, {"pointer": "/repos/0/name", "equals": "api-server"}, {"pointer": "/repos/0/path", "equals": "${repo}"}, {"pointer": "/repos/0/error", "equals": null}, {"pointer": "/repos/0/loading", "equals": false}, {"pointer": "/repos/0/working", "equals": {"files": 3, "additions": 3, "deletions": 3}}, {"pointer": "/repos/0/reviews", "equals": []}]}
+
+// The working review opens and lists the files; the stream asks for the ones in view, which load.
+{"cmd": "open_review", "path": "${repo}", "save": {"review": "/review_id"}, "expect_result": {"pointer": "/created", "equals": true}}
+// Named in full from the start, before its files are listed (DESIGN §4.1).
+{"cmd": "state", "expect": {"pointer": "/session/target_label", "equals": "working tree vs main"}}
+{"cmd": "settle", "timeout_ms": 20000}
+{"expect": [{"pointer": "/session/review_id", "equals": "${review}"}, {"pointer": "/session/target", "equals": "working"}, {"pointer": "/session/target_label", "equals": "working tree vs main"}, {"pointer": "/session/status", "equals": "open"}, {"pointer": "/session/round", "equals": 1}, {"pointer": "/session/read_only", "equals": false}, {"pointer": "/session/loading", "equals": false}, {"pointer": "/session/error", "equals": null}, {"pointer": "/session/watch_notice", "equals": null}, {"pointer": "/session/total", "equals": 3}, {"pointer": "/session/viewed", "equals": 0}, {"pointer": "/shell/empty_state", "equals": null}]}
+{"expect": [{"pointer": "/session/files/0", "equals": {"path": "README.md", "old_path": null, "status": "deleted", "additions": 0, "deletions": 1, "binary": false, "viewed": false, "open_threads": 0, "state": "loaded", "kind": "text", "highlighted": true}}, {"pointer": "/session/files/1/path", "equals": "src/routes/users.test.ts"}, {"pointer": "/session/files/1/status", "equals": "untracked"}, {"pointer": "/session/files/2/path", "equals": "src/routes/users.ts"}, {"pointer": "/session/files/2/status", "equals": "modified"}]}
+{"cmd": "wait_for", "pointer": "/repos/0/reviews/0/id", "equals": "${review}"}
+{"expect": [{"pointer": "/repos/0/reviews/0/target_label", "equals": "working tree vs main"}, {"pointer": "/repos/0/reviews/0/status", "equals": "open"}, {"pointer": "/repos/0/reviews/0/threads", "equals": {"open": 0, "addressed": 0, "resolved": 0}}]}
+{"cmd": "open_review", "path": "${repo}", "expect_result": {"pointer": "", "equals": {"review_id": "${review}", "created": false}}}
+
+// The agent edits: a new file appears live.
+{"cmd": "repo_edit", "name": "api-server", "steps": [{"write": "src/extra.ts", "text": "export const extra = true;\n"}]}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 4, "timeout_ms": 10000}
+// The agent commits it: HEAD moves without a worktree change, and the list shrinks.
+{"cmd": "repo_edit", "name": "api-server", "steps": [{"git": ["add", "src/extra.ts"]}, {"git": ["commit", "-q", "-m", "agent: extra"]}]}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 3, "timeout_ms": 10000}
+{"cmd": "settle"}
+{"expect": {"pointer": "/session/files", "contains": {"path": "src/routes/users.ts", "status": "modified"}}}
+
+// The agent says it's done: its append reaches the open review through the watch.
+{"cmd": "review_op", "op": "done", "expect_result": {"pointer": "/changed", "equals": true}}
+{"cmd": "wait_for", "pointer": "/session/status", "equals": "ready", "timeout_ms": 10000}
+{"cmd": "review_op", "op": "address", "thread": "t-00000000000000000000000000", "expect_error": "no thread"}
+
+// A WSL location is listed with why it can't be opened, and never crashes.
+{"cmd": "open", "path": "\\\\wsl.localhost\\Ubuntu\\home\\kyle\\web"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"expect": [{"pointer": "/repos", "len": 2}, {"pointer": "/repos", "contains": {"name": "web", "location": {"wsl": {"distro": "Ubuntu", "path": "/home/kyle/web"}}, "error": {"message": "Ubuntu:/home/kyle/web can't be opened: WSL support arrives later"}, "working": null, "reviews": []}}]}
+{"cmd": "open_review", "path": "\\\\wsl.localhost\\Ubuntu\\home\\kyle\\web", "expect_error": "can't be opened"}
+{"cmd": "open", "path": "${data_dir}/no-such-repo", "expect_error": "no such directory"}
+
+// After a restart the repos are still known and the seeded one still opens with its fixture's environment.
+{"restart": {}}
+{"cmd": "settle", "timeout_ms": 20000}
+{"expect": [{"pointer": "/repos", "len": 2}, {"pointer": "/session", "equals": null}]}
+{"cmd": "open_review", "path": "${repo}", "expect_result": {"pointer": "", "equals": {"review_id": "${review}", "created": false}}}
+{"cmd": "settle", "timeout_ms": 20000}
+{"expect": [{"pointer": "/session/status", "equals": "ready"}, {"pointer": "/session/total", "equals": 3}]}
+{"cmd": "repo_edit", "name": "api-server", "steps": [{"write": "src/after.ts", "text": "export {};\n"}], "expect_result": {"pointer": "/path", "equals": "${repo}"}}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 4, "timeout_ms": 10000}

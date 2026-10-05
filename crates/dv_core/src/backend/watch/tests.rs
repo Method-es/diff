@@ -625,6 +625,200 @@ fn a_symbolic_link_to_a_directory_is_one_path_as_in_git() {
     );
 }
 
+fn git_changed(event: &WatchEvent) -> bool {
+    event.git_changed
+}
+
+/// Runs git in `dir` (a linked worktree, say) with the fixture's environment.
+fn git_in(repo: &FixtureRepo, dir: &Path, args: &[&str]) {
+    let output = repo
+        .git_command()
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Creates and removes `rel` below `dir`: a lock git took and gave up again.
+fn lock_churn(dir: &Path, rel: &str) {
+    let path = dir.join(rel);
+    std::fs::write(&path, "in progress\n").unwrap();
+    std::fs::remove_file(&path).unwrap();
+}
+
+#[test]
+fn a_ref_move_without_a_worktree_change_fires_git_changed() {
+    let repo = committed(&[]);
+    let backend = open(&repo);
+    let (_handle, rx) = start(&backend, WatchSpec::ALL);
+    settle(&rx);
+
+    // A new branch, then a commit that changes no file: only refs move.
+    repo.branch("feature");
+    let mut events = wait_for(&rx, FIRES_WITHIN, git_changed);
+    events.extend(settle(&rx));
+    repo.git(&["commit", "-q", "--allow-empty", "-m", "nothing"]);
+    events.extend(wait_for(&rx, FIRES_WITHIN, git_changed));
+    events.extend(settle(&rx));
+    assert!(worktree_paths(&events).is_empty(), "{events:#?}");
+    assert!(
+        events.iter().all(|event| event.store_paths.is_empty()),
+        "{events:#?}"
+    );
+}
+
+#[test]
+fn staging_fires_git_changed() {
+    let repo = committed(&[]);
+    let backend = open(&repo);
+    let (_handle, rx) = start(&backend, WatchSpec::ALL);
+    repo.write("staged.txt", "x\n");
+    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("staged.txt"));
+    events.extend(settle(&rx));
+    assert!(!events.iter().any(git_changed), "{events:#?}");
+
+    repo.git(&["add", "staged.txt"]);
+    let events = wait_for(&rx, FIRES_WITHIN, git_changed);
+    assert!(worktree_paths(&events).is_empty(), "{events:#?}");
+}
+
+#[test]
+fn dv_refs_and_lock_churn_do_not_fire_git_changed() {
+    let repo = committed(&[]);
+    let backend = open(&repo);
+    let (_handle, rx) = start(&backend, WatchSpec::ALL);
+    settle(&rx);
+
+    // A round snapshot's ref (PLAN §2.3), created, moved and deleted.
+    let head = repo.git(&["rev-parse", "HEAD"]).trim().to_string();
+    repo.git(&["update-ref", "refs/dv/reviews/r-x/1", &head]);
+    let other = repo
+        .git(&["commit-tree", "-m", "other", &format!("{head}^{{tree}}")])
+        .trim()
+        .to_string();
+    repo.git(&["update-ref", "refs/dv/reviews/r-x/1", &other]);
+    repo.git(&["update-ref", "-d", "refs/dv/reviews/r-x/1"]);
+    // Locks that come and go without their final name changing.
+    let git_dir = repo.path().join(".git");
+    for lock in [
+        "index.lock",
+        "HEAD.lock",
+        "packed-refs.lock",
+        "refs/heads/main.lock",
+    ] {
+        lock_churn(&git_dir, lock);
+    }
+    repo.write("sentinel.txt", "after the rest\n");
+    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+    events.extend(settle(&rx));
+    assert!(!events.iter().any(git_changed), "{events:#?}");
+}
+
+#[test]
+fn a_git_only_watch_reports_the_git_state_alone() {
+    let repo = committed(&[]);
+    let backend = open(&repo);
+    let (_handle, rx) = start(&backend, WatchSpec::GIT);
+    repo.write("not-watched.txt", "x\n");
+    backend.store_append("reviews/r-7.jsonl", b"{}").unwrap();
+    repo.branch("feature");
+    let mut events = wait_for(&rx, FIRES_WITHIN, git_changed);
+    events.extend(settle(&rx));
+    for event in &events {
+        assert!(
+            event.worktree_paths.is_empty() && event.store_paths.is_empty(),
+            "{events:#?}"
+        );
+    }
+    // The file is untracked, so staging it changes the index.
+    repo.git(&["add", "not-watched.txt"]);
+    wait_for(&rx, FIRES_WITHIN, git_changed);
+}
+
+#[test]
+fn a_linked_worktree_reports_its_own_head_and_the_shared_refs() {
+    let repo = committed(&[]);
+    let worktree = repo.add_worktree("wt", "feat");
+    let linked = open_at(&repo, &worktree);
+    let (_handle, rx) = start(&linked, WatchSpec::ALL);
+    settle(&rx);
+
+    // Its own HEAD, in `.git/worktrees/wt/`.
+    git_in(&repo, &worktree, &["checkout", "-q", "--detach"]);
+    wait_for(&rx, FIRES_WITHIN, git_changed);
+    settle(&rx);
+    // A branch made from the main worktree, in the shared refs.
+    repo.branch("from-main");
+    wait_for(&rx, FIRES_WITHIN, git_changed);
+    settle(&rx);
+
+    // The main worktree's own HEAD and index are not this worktree's state.
+    repo.checkout("--detach");
+    repo.write("staged-in-main.txt", "x\n");
+    repo.git(&["add", "staged-in-main.txt"]);
+    write_in(&worktree, "sentinel.txt");
+    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+    events.extend(settle(&rx));
+    assert!(!events.iter().any(git_changed), "{events:#?}");
+}
+
+#[test]
+fn git_state_is_head_index_and_refs_outside_dv() {
+    let roots = |git_dir: &str| super::Roots {
+        toplevel: Path::new("/r").to_path_buf(),
+        git_dir: Path::new(git_dir).to_path_buf(),
+        common_dir: Path::new("/r/.git").to_path_buf(),
+        store_root: Path::new("/r/.git/dv").to_path_buf(),
+    };
+    let main = roots("/r/.git");
+    let linked = roots("/r/.git/worktrees/wt");
+    // (path, for the main worktree, for the linked one)
+    let cases = [
+        ("/r/.git/HEAD", true, false),
+        ("/r/.git/index", true, false),
+        ("/r/.git/worktrees/wt/HEAD", false, true),
+        ("/r/.git/worktrees/wt/index", false, true),
+        ("/r/.git/packed-refs", true, true),
+        ("/r/.git/refs/heads/main", true, true),
+        ("/r/.git/refs/remotes/origin/main", true, true),
+        ("/r/.git/refs/tags/v1", true, true),
+        ("/r/.git/refs/heads", true, true),
+        ("/r/.git/reftable/tables.list", true, true),
+        ("/r/.git/refs/dv", false, false),
+        ("/r/.git/refs/dv/reviews/r-x/1", false, false),
+        ("/r/.git/refs/dvx", true, true),
+        ("/r/.git/refs", false, false),
+        ("/r/.git/index.lock", false, false),
+        ("/r/.git/HEAD.lock", false, false),
+        ("/r/.git/packed-refs.lock", false, false),
+        ("/r/.git/refs/heads/main.lock", false, false),
+        ("/r/.git/reftable/tables.list.lock", false, false),
+        ("/r/.git/ORIG_HEAD", false, false),
+        ("/r/.git/FETCH_HEAD", false, false),
+        ("/r/.git/config", false, false),
+        ("/r/.git/logs/HEAD", false, false),
+        ("/r/.git/logs/refs/heads/main", false, false),
+        ("/r/.git/objects/ab/cdef", false, false),
+        ("/r/.git/worktrees/wt/refs/bisect/bad", false, false),
+        ("/r/src/HEAD", false, false),
+    ];
+    for (path, in_main, in_linked) in cases {
+        let path = Path::new(path);
+        assert_eq!(super::is_git_state(&main, path), in_main, "main: {path:?}");
+        assert_eq!(
+            super::is_git_state(&linked, path),
+            in_linked,
+            "linked: {path:?}"
+        );
+    }
+}
+
 #[test]
 fn an_oversized_batch_becomes_a_rescan() {
     let mut batch = super::Batch::default();
@@ -636,4 +830,15 @@ fn an_oversized_batch_becomes_a_rescan() {
     assert!(event.worktree_paths.is_empty() && event.store_paths.is_empty());
 
     assert_eq!(super::Batch::default().into_event(), None);
+    let git_only = super::Batch {
+        git_changed: true,
+        ..super::Batch::default()
+    };
+    assert_eq!(
+        git_only.into_event(),
+        Some(WatchEvent {
+            git_changed: true,
+            ..WatchEvent::default()
+        })
+    );
 }

@@ -121,7 +121,7 @@ impl Location {
             Location::Local(path) => Ok(Arc::new(LocalBackend::open(path)?)),
             Location::Wsl { .. } => Err(BackendError::Unavailable {
                 location: self.display_name(),
-                reason: "the WSL backend arrives in Phase 4".to_string(),
+                reason: "WSL support arrives later".to_string(),
             }),
         }
     }

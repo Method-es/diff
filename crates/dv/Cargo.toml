@@ -14,18 +14,30 @@ path = "src/main.rs"
 default = ["automation"]
 # `--automation`: the JSONL driver used by the e2e scenarios (docs/PLAN.md §14). Shipped builds
 # are built with `--no-default-features` and carry none of it (PLAN D9).
-automation = ["dep:gpui_automation", "dep:serde_json", "dv_ui/automation"]
+# It also seeds fixture repos for scenarios (`seed_repo`, PLAN §14.2) with `dv_test_support`,
+# which, like `dv_core`, never depends on gpui.
+automation = [
+    "dep:dv_core",
+    "dep:dv_test_support",
+    "dep:gpui_automation",
+    "dep:serde",
+    "dep:serde_json",
+    "dv_ui/automation",
+]
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 dirs.workspace = true
+dv_core = { workspace = true, optional = true }
+dv_test_support = { workspace = true, optional = true }
 dv_ui.workspace = true
 env_logger.workspace = true
 gpui.workspace = true
 gpui_automation = { workspace = true, optional = true }
 gpui_platform.workspace = true
 log.workspace = true
+serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]

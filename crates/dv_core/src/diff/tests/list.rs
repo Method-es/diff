@@ -146,7 +146,14 @@ fn an_untracked_nested_repository_is_listed_as_a_submodule() {
     repo.git(&["-C", "nested", "commit", "-q", "-m", "nested"]);
 
     let listed = Listed::of(&repo, Target::Working);
-    assert_eq!(listed.summary(), [("nested", FileStatus::Untracked, 0, 0)]);
+    // One addition, as git counts the gitlink it becomes once staged.
+    assert_eq!(listed.summary(), [("nested", FileStatus::Untracked, 1, 0)]);
+    repo.git(&["add", "nested"]);
+    assert_eq!(
+        Listed::of(&repo, Target::Working).summary(),
+        [("nested", FileStatus::Added, 1, 0)]
+    );
+    repo.git(&["rm", "-q", "--cached", "-f", "nested"]);
     let nested = listed.entry("nested");
     assert!(nested.is_submodule());
     assert_eq!(

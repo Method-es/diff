@@ -42,7 +42,8 @@ Diff: `addBg rgba(97,255,202,.085)`, `addGut .15`, `addWord .30`; `delBg rgba(25
 as well as hue.
 
 Syntax: `kw #a277ff`, `fn #ffca85`, `str #61ffca`, `num #61ffca`, `type #a277ff`, `cst #82e2ff`,
-`prop #f694ff`, `punc`/`plain #edecee`.
+`prop #f694ff`, `punc`/`plain #edecee`, `comment` = `fg3` (`#9d9ab3`). Highlighting produces these
+token kinds, never colours (PLAN §6 step 4); each paints in its token.
 
 ### 1.2 Light (new; "Aura Light")
 
@@ -51,7 +52,8 @@ Same token names. Key values: `fg #1d1b26`, `fg2 #46434f`, `fg3 #5e5a6f`; `accen
 `blue #0b6687`; `chrome` Acrylic `rgba(247,246,251,.58)` / Mica `rgba(239,238,244,.85)` / Opaque
 `#efeef4`; `code` `rgba(255,255,255,.93)` / `rgba(254,254,255,.975)` / `#fdfdfe`; `scrim
 rgba(36,32,58,.30)`; diff `addBg rgba(18,170,115,.10)`, `delBg rgba(225,45,70,.075)`. Syntax: `kw
-#6236d6`, `fn #8a4f00`, `str #0d7553`, `cst #0b6687`, `prop #9a2694`, `punc #3d3a48`, `plain #1d1b26`.
+#6236d6`, `fn #8a4f00`, `str #0d7553`, `cst #0b6687`, `prop #9a2694`, `punc #3d3a48`, `plain #1d1b26`,
+`comment` = `fg3` (`#5e5a6f`).
 Full set: the board's `tokens()`.
 
 ### 1.3 Other themes
@@ -99,7 +101,8 @@ geometry, bundled as SVG paths). No emoji anywhere.
 ```
 
 - Two columns only. Repos and reviews live behind the title-bar switcher (`Ctrl O`) and the palette;
-  they never take a permanent column. The panel is resizable 220–420 and collapsible (`Ctrl B`).
+  they never take a permanent column. The panel is resizable 220–420 (its width is remembered, in
+  `settings.json`) and collapsible (`Ctrl B`).
 - Split view gets ≈575px per side at 1440px; long lines clip with a fade and scroll horizontally
   together (`Shift`+wheel). Unified is offered and remembered per review.
 - The diff is one stream over all files (PLAN §6.7); the panel's file rows scroll the stream.
@@ -127,24 +130,116 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
 ## 4. Screens
 
 ### 4.1 Review (`GlassReview`)
-- **Title bar:** dv mark; switcher button "`api-server` · working tree vs main" with the location chip
-  (`Ubuntu`); source picker; centred command field (`Ctrl K`); `PRs Ctrl G`; overflow; caption
-  buttons (Windows) / traffic lights (macOS, left).
-- **Panel:** "Changes" with `viewed/total` and a thin progress track; filter input; file rows — viewed
-  checkbox, status letter (M/A/D/R, colour + letter, never colour alone), path with dimmed directory,
-  `+n −m`, open-comment badge. Then "Open comments" — one row per open thread (dot, `path:line`, first
-  line of the body), and "Copy as prompt".
-- **Diff:** pinned file header (status pill, path, totals, Split|Unified segmented control, "Viewed"
-  checkbox, prev/next file, overflow); side labels (`main` / `working tree`); hunk headers in `hunk`;
-  rows per §1.1; gaps as "··· 27 unchanged lines — Expand 20 · Expand all"; inline thread cards
-  between rows.
+- **Title bar:** dv mark; switcher button "`api-server` · working tree vs main" (the repo's name at
+  600, the target label with its "vs" in `fg3`) with the location chip (`Ubuntu`, WSL repos only) and
+  its `Ctrl O` keycap; source picker (`⇄ ▾`); centred command field (`Ctrl K`); `PRs Ctrl G`;
+  overflow; caption buttons (Windows) / traffic lights (macOS, left). The left group never runs under
+  the centred field: at narrow widths the target label truncates at its end, and once it has no room
+  left the repo's name does. With no review open the
+  button reads "No review open"; while one opens, "`repo` · opening…", then the full label at once
+  (the labels are read as the review opens, not after its files are listed).
+- **Switcher** (`Ctrl O`, or a click on its button): an overlay 560 wide hung 8px under the button,
+  over the scrim (which covers everything below the title bar; a click on it closes the switcher),
+  radius 12. A filter field (46 high, search glyph) has the keyboard: typing filters (every word must
+  appear in the repo's name, path or the row's label), `↑`/`↓` move the selection (wrapping), `Enter`
+  opens, `Esc` closes. Per known repo, most recently used first: a header — folder glyph, name at 600,
+  the location chip, the path in `fg3` (truncated at its start) — over one line: "uncommitted changes ·
+  7 files `+n −m`", "Working tree clean", a skeleton bar while it is computed, or why it can't be
+  opened (a triangle in `yellow` for an unreachable repo, "Ubuntu · WSL support arrives later"; in
+  `red` for a read error). Then its rows (30 high, indented): **Uncommitted changes**, **Staged
+  changes** and, with a branch other than the default checked out, **Branch `feat` vs `main`**, each
+  beside its open review (status chip, "round n", open-comment badge; "New review" on the selected row
+  without one), then the repo's other open reviews by their target label. Picking a row opens or
+  resumes that review (PLAN §2.4). A repo that can't be opened offers no rows. The footer holds **Open
+  folder…** (the system's folder picker; the folder's repo is added and selected) and the keys.
+  Opened over the "Finish round" sheet (§4.2), it and the source picker hang above the sheet, which
+  the scrim then covers too; closing them returns to the sheet as it was. Status
+  chips: `open`/`draft` accent, `ready` yellow, `changes_requested` red, `in_progress` ("Agent
+  working") blue, `approved`/`submitted` green, `closed` grey; always worded.
+- **Source picker** (`⇄ ▾`): a 340-wide menu under its button with the open review's repo's targets
+  (the switcher's three rows) and their open reviews; the current target is checked. `↑`/`↓`/`Enter`/
+  `Esc`; picking one opens or resumes its review.
+- **Panel:** "Changes", the file count and the review's `+n −m`; a thin progress track with "`viewed`
+  of `total` viewed"; filter input (`Enter` shows the first file left, `Esc` clears it; both hand the
+  keyboard back to the diff); file rows (28 high, radius 6) — viewed checkbox (16, accent filled with
+  a check when on; dimmed and inert on a finished review), status letter (M modified, A added, U
+  untracked, D deleted, R renamed, C copied, T type changed, `!` unmerged; colour + letter, never
+  colour alone), path with dimmed directory (truncated at its start; a viewed file's name dims to
+  `fg3`), open-comment badge, `+n −m`. The current file's row is `sel`, its name at 600; a click on a
+  row shows that file in the diff, a click on the checkbox toggles viewed. Then, under a hairline,
+  "Open comments" with the number of threads still waiting (open, and addressed but not yet
+  resolved) and "Copy as prompt" — one row per thread in stream order (an accent ring dot for
+  `open`, a blue dot and "addressed" for `addressed`, `path:line` in mono, the first line of the
+  comment as plain text — its Markdown dropped, a fenced block's first line of code, as in every
+  one-line summary of a comment; an outdated thread says "outdated" in `yellow` and shows its original first line in
+  mono), then "n resolved · show", which lists the resolved ones too; with none waiting, "No open
+  comments". A click on a row shows and focuses the thread in the diff; the focused thread's row
+  is `sel`. "Copy as prompt" puts the `open` threads on the clipboard as Markdown (`path:line`,
+  the thread id, the anchored code, the comment and its replies), for pasting to an agent; in a
+  panel narrower than 270 it is its copy glyph alone, with the words in a tooltip, so the header
+  never runs past the panel. The list grows to 240 high, then scrolls. The panel's right edge is a resize handle (a 2px accent line while hovered; a double click restores 280).
+- **Diff:** one stream over every file (PLAN §6.7). Each file starts with its header: a 44-high
+  `codeHead` bar — chevron, path (directory in `fg3`, name at 600; a renamed file shows
+  `old → new`), status pill, totals, a quiet "Loading…" once its diff takes longer than 300 ms,
+  Split|Unified segmented control with its `S` keycap, "Viewed" checkbox with `V`, previous / next
+  file, and `⋯` (a menu with Copy path and Reveal in folder) — over 24-high side labels (`main` /
+  `working tree`, one per column in split view, `main → working tree` in unified) when the file
+  shows lines. The header of the file being read stays pinned at the top while its rows scroll
+  under it, and the next file's header pushes it up. **Viewed files collapse to their header bar**
+  (as on GitHub), the chevron pointing right; the chevron opens one again (and collapses any).
+  Rows per §1.1: 20 high, a 44-wide line number (`fg3`) and a 16-wide `+`/`−` marker per side;
+  split view pairs the i-th removed line of a change with the i-th added one and fills a missing
+  side with `recess`; unified shows both numbers then the marker. Code is JetBrains Mono 12 with
+  syntax colours, intraline words on `addWord`/`delWord`, tabs as four spaces and no ligatures
+  (`=>` stays two characters). Long lines clip with a fade at the right edge and scroll sideways
+  together, one offset for every row and both sides (`Shift`+wheel, a trackpad); scrolled, the
+  left edge fades too. Gaps are one 28-high row on `hunk`: the next hunk's `@@ -a,b +c,d @@` in
+  `blue`, "··· 27 unchanged lines", "Expand 20 · Expand all" (a click reveals 20 lines next to
+  the hunk below, or above for the end of the file); the board's separate hunk header and
+  "Expand context below" bar are this one row. Files without lines show one notice row instead:
+  binary (sizes), too large ("Load anyway"), submodule (old → new commit, `dirty`), unresolved
+  conflict, no content change (mode change, rename without edits, empty file), skeleton rows
+  while loading, and a failed load's banner (§4.4: one line, Details, Retry, Copy diagnostics).
+  Each open file ends with the next-file footer. The **cursor** marks its line number in
+  `accentText` at 600 with a 2px accent bar, and its line on `sel`; a selection is `sel` over the
+  selected lines of one side. Inline thread cards go between rows.
 - **Thread card:** avatar (reviewer round, agent square with the agent's icon), name, agent tag, time,
   anchor (`new · line 31`), rendered markdown body, replies, state chip + actions, reply input. States
   and their chips: `open` (accent ring dot), `addressed` (blue "Addressed by agent — Resolve /
   Reopen"), `resolved` (green check, collapsed by default), `outdated` (yellow, shown with its
-  original snippet).
-- **Next-file footer:** "Next: `src/routes/users.test.ts`" + "Mark viewed and go next `V` `J`".
-- **Status bar:** location + backend state; review status and counts; `Ctrl Enter finish review`.
+  original snippet). The card (`thread`, radius 10, `line2` outline, the card shadow; the focused
+  thread's outline `accentRing`) sits under the last line of its range on its side: in split
+  view in that side's half over the line's tint, 62 in from the half's edge, the other half
+  `recess`; in unified view past both line numbers. Its 32-high header holds the state chip
+  ("Open", "Addressed by claude-code", "Resolved"), "Outdated" when it is, the anchor in `fg3`
+  and the reviewer's actions as small buttons (Resolve on an open thread, Resolve and Reopen on
+  an addressed one, Reopen and a chevron on a resolved one; in a narrow card the anchor, then the
+  chip's agent name, truncate, never the actions); an addressed thread's note follows
+  on `blueSoft` with the agent's glyph. A resolved thread collapses to that header with its
+  comment's first line until its chevron opens it (or while a reply to it is being written). An
+  outdated thread (its anchored text no
+  longer stands at its lines, PLAN §8) has no line to follow until relocation exists: its card
+  heads its file, under the header, with the lines it was written on in a `recess` block. The
+  reply field reads "Reply…" (with `R` on the focused thread) and opens the reply composer in
+  its place. On a finished review the actions and the field stay, disabled ("Replies are closed
+  on a finished review").
+- **Composer:** a card under the selected lines (or the cursor's line), outlined in
+  `accentRing`: "Comment on new · lines 12–14" with the comment glyph, a multi-line Markdown
+  field (3 rows, growing to 12; `Enter` is a newline), why the last post failed in `red`, and a
+  footer — "Markdown", Cancel with `Esc`, the primary "Comment" with `Ctrl Enter`. As a reply it
+  is the field and the footer alone, inside the card ("Reply"). It takes the keyboard while
+  open, also scrolled out of view (typing brings it back); posting or cancelling gives it back to
+  the diff, posting focuses the thread. Hidden by its file collapsing, it keeps its text and
+  gives the keyboard back to the diff (`C` opens the file and takes it up again); its file
+  leaving the diff drops it.
+- **Next-file footer:** "Next: `src/routes/users.test.ts`" + "Mark viewed and go next `V` `J`"
+  ("Go to next file `J`" once viewed; the last file says "Last file" with "Mark viewed `V`").
+- **Status bar:** a dot and the location with the backend's state — green "Local · watching for
+  changes", yellow "· refreshes when focused" (the watch can't follow the worktree), red "· refresh
+  failed" or "· can't be opened", `fg3` "No repo" / "· opening…"; then, after a `|`, the review's
+  status, round and thread counts ("Changes requested · round 2 · 3 open · 1 resolved", "no comments"
+  when there are none); at the right, `Ctrl Enter finish review` while the review can still be
+  finished.
 
 ### 4.2 Finish review / Submit (`GlassSubmit`)
 - Sheet, 980 wide, centred, over `scrim`. Header: "Finish review", `PR #482`, checks state, close.
@@ -155,7 +250,20 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   anchor it here", explanation, **Post as file comment** / **Skip this one**, with Undo after choosing.
 - Footer: "Posting as `kylekz` via gh", blocker text when something needs fixing, Cancel, **Submit
   review `Ctrl Enter`** (disabled until every comment is postable or skipped).
-- Local reviews use the same sheet titled "Finish round" with no GitHub rows.
+- Local reviews use the same sheet titled "Finish round" with no GitHub rows: "Finish round n"
+  over "`repo` · `working tree vs main` · 7 files `+n −m`"; the Summary (a 150-high field in
+  mono 12.5, "Markdown · optional", `Tab` to move between it and the verdicts); the Verdict as
+  two cards, **Approve** (`1`, "The work is done; the review closes") and **Request changes**
+  (`2`, "The agent has more to do; the round goes back to it"), Request changes chosen while a
+  thread is open, else Approve; on the right "Comments" — those opened this round and earlier
+  ones not yet resolved (with their round), each with its state glyph, `path:line` and first
+  line; the footer "Finishing round n as `name`", why the last attempt failed in `red`, Cancel
+  and the primary button named by the verdict with `Ctrl Enter`. The verdicts have the keyboard
+  when it opens (`↑`/`↓`, `1`/`2`); `Esc` closes it. While the round is being finished the
+  primary reads "Finishing…" and the sheet stays: `Esc`, Cancel (dimmed) and the close button do
+  nothing until the round lands, when it closes, or fails, when it shows why. It holds unsaved
+  text, so `Ctrl O` and the source picker open over it, not in its place. It hangs 92 below the
+  title bar in a 900-high window, less in a shorter one (24 at 700).
 
 ### 4.3 Onboarding (`GlassOnboarding`)
 - Whole client area is window material; a centred column of step cards (`layer`), "Set up dv" and
@@ -171,17 +279,28 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
 
 ### 4.4 States every view handles
 - **Loading:** skeleton rows in the panel and diff (no spinners over content) for up to 300 ms, then a
-  quiet progress line in the file header.
+  quiet progress line in the file header. While a review opens or lists its files, the main area
+  shows the file header's bar with "Opening the review…" / "Listing changes…" over skeleton bars; the
+  panel shows skeleton rows, then "Listing changes…". That is the first listing only: a refresh
+  keeps the list, the stream or the empty state on screen until it lands, and a file whose diff
+  loads again keeps showing the one it had (with the header's "Loading…" after 300 ms).
 - **Errors:** an inline banner at the top of the affected region — icon, one-line message, the
-  command that failed in a disclosure, a fix action, "Copy diagnostics". Never drawn over other
-  regions, never raw stderr as the headline (the first implementation painted git's stderr across
-  the sidebar).
+  command that failed in a disclosure ("Details"), a fix action, "Copy diagnostics". Never drawn over
+  other regions, never raw stderr as the headline (the first implementation painted git's stderr across
+  the sidebar). The banner is `redSoft` with a `red` outline at 35%, radius 6, 12 in from the
+  region's edges. A review that didn't open shows one at the top of the main area (Retry, Dismiss;
+  the review open before stays open); a refresh that failed shows one there too (Retry).
 - **Backend down (WSL):** status bar shows "Ubuntu · reconnecting…" → banner with **Retry** and
   **Open setup**.
-- **Empty:** no changes ("Working tree clean — nothing to review"), no reviews ("Pick a repo to start
-  a review"), no open comments.
+- **Empty:** no changes ("Working tree clean — nothing to review" for a `working` review, "No changes
+  — nothing to review" for other targets), no reviews ("Pick a repo to start a review"), no open
+  comments. The switcher with no known repo says "No repositories yet"; a filter that matches nothing
+  says so.
 - **Read-only (submitted PR review):** banner "Submitted to GitHub · view on GitHub", composer and
-  thread actions disabled, not hidden.
+  thread actions disabled, not hidden. A finished local review says "Approved · this review is
+  finished" (on `greenSoft` with a `green` outline at 35%; "Closed · …" in `fg2` on `layer`) with
+  **Start a new review**, which opens a fresh review of the same target; `C`, `R`, `X` and
+  `Ctrl Enter` do nothing on it.
 
 ---
 
@@ -189,24 +308,38 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
 
 | Key | Action |
 |---|---|
-| `J` / `K` | next / previous file |
-| `N` / `P` | next / previous hunk |
-| `]` / `[` | next / previous open comment |
-| `V` | toggle viewed on the current file (`V` then `J`: mark viewed and go next) |
-| `C` | comment on the selected lines (click/shift-click gutter to select) |
-| `R` | reply to the focused thread |
-| `E` | expand the nearest gap |
-| `S` | toggle split / unified |
-| `Ctrl Enter` | finish review / submit (in the composer: post comment) |
+| `J` / `K` | next / previous file: its header at the top, the cursor on its first change |
+| `N` / `P` | next / previous block of changed lines, on into the next files |
+| `]` / `[` | focus the next / previous thread that isn't resolved (open or addressed), scrolling to it, on into the next files |
+| `V` | toggle viewed on the current file (`V` then `J`: mark viewed and go next); each press flips the state the last one asked for, however fast they come |
+| `C` | comment on the selected lines, else the cursor's line, else (no cursor yet) the first line in view, where the cursor goes too (click a line number to put the cursor there, shift-click to select to it); a composer holding a draft takes the keyboard instead, wherever the cursor is |
+| `R` | reply to the focused thread (the reply composer opens in its card) |
+| `X` | resolve the focused thread, or reopen it when it is resolved |
+| `↑` / `↓` | move the cursor a line (the stream scrolls to keep it in view; it crosses into the next file) |
+| `Shift ↑` / `Shift ↓` | extend a selection from the cursor, within its file and side; a gap in the way opens a step towards the cursor rather than being selected unseen |
+| `←` / `→` | in split view, put the cursor on the old / new side (the new side until one is chosen, or a line number clicked). A file without lines on that side (a deletion, an addition) moves it to the other side while it is in that file only: the next file that has lines on the chosen side puts it back |
+| `PageUp` / `PageDown` | scroll a page, the cursor keeping its place on screen |
+| `E` / `Shift E` | expand the gap nearest the cursor by one step towards it / fully |
+| `S` | toggle split / unified (remembered per review) |
+| `Ctrl Enter` | finish review / submit: the "Finish round" sheet, while no text field has the keyboard (in the composer: post comment) |
 | `Ctrl K` | palette: files, reviews, PRs, commands |
-| `Ctrl O` | switch repo / review |
+| `Ctrl O` | switch repo / review (the switcher; again, or `Esc`, closes it) |
 | `Ctrl G` | open a PR |
 | `Ctrl B` | toggle panel |
 | `Ctrl ,` | settings |
-| `Esc` | close the top overlay, else clear selection |
+| `Esc` | close the top overlay, else the file menu, else cancel the composer, else clear the selection |
+| `↑` / `↓`, `Enter` | in the switcher and the source picker: move (wrapping), open |
+| `Enter` / `Esc` | in the file filter: show the first file left / clear the filter (both return to the diff) |
+| `Ctrl Enter` / `Esc` | in the composer: post / discard (both return to the diff; `Enter` is a newline) |
+| `↑` / `↓`, `1` / `2`, `Tab` | in the "Finish round" sheet: choose the verdict (Approve, Request changes) / move between the verdicts and the summary; `Ctrl Enter` finishes the round, `Esc` closes |
 
 macOS uses `Cmd` for every `Ctrl` above. Single-letter keys are inactive while a text field has focus.
 Keycaps render with `kbd` style (11px mono, `line2` border).
+
+The stream's keys work wherever the main area has the keyboard, which it does whenever no overlay
+or text field does (a click in the stream gives it back). The **current file** — the one the panel
+highlights, `V` marks and `J`/`K` step from — is the cursor's file while the cursor is on screen,
+else the file at the top of the viewport, whose header is the pinned one.
 
 ---
 
@@ -217,7 +350,19 @@ Keycaps render with `kbd` style (11px mono, `line2` border).
 - `GlassOnboarding` says "Installing dv-host 0.3.0"; the backend is the Linux `dv` itself (PLAN D6):
   "Installing dv 0.3.0 in Ubuntu".
 - Boards show one file at a time; the diff is a continuous stream (PLAN §6.7) with the same file
-  header pinned.
+  header pinned. The stream adds a chevron to the header (viewed files collapse, §4.1), shows the
+  side labels only over files that show lines, and makes the board's hunk header and its "Expand
+  context below" bar one gap row that heads the hunk after it.
+- `GlassReview` splits the title bar's label across two buttons (`api-server` / `⇄ working tree vs
+  main`), groups the panel's files under directory headings, and fills the status bar's left with key
+  hints. This file keeps the repo and target together on the switcher button with the source picker
+  as `⇄ ▾`, shows each file's full path with its directory dimmed, and gives the status bar the
+  location, the review and `Ctrl Enter finish review` (§4.1).
+- The board draws the inline thread card at radius 8 and has no composer, no outdated card and
+  no local sheet. This file uses the card radius (10, §1.5), adds the composer and the outdated
+  card heading its file (§4.1), titles the panel's section "Open comments" rather than the
+  board's capitals, and gives the local "Finish round" sheet a "Comments" column without the
+  include checkboxes and validation rows `GlassSubmit` shows for a PR (§4.2).
 - Board copy (file names, comment text, PR #482) is illustrative fixture content; the e2e fixtures
   (PLAN §14) reproduce it so screenshots compare 1:1.
 - The boards' wallpaper is light pastel, which flatters the translucent surfaces. On Windows,

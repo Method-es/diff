@@ -1,0 +1,401 @@
+//! Syntax highlighting for the diff stream (PLAN §6 step 4): tree-sitter, through
+//! gpui-component's highlighter, over each side's full text, producing **token kinds** rather
+//! than colours.
+//!
+//! A kind resolves to a colour only when a row paints ([`TokenKind::color`], from the theme's
+//! [`SyntaxColors`]), so a theme or mode change repaints without highlighting again, and a
+//! cached result never holds a stale colour. The highlighter's capture names (`keyword.return`,
+//! `function.method`, `string.escape`, …) map to kinds through one table
+//! ([`kind_for_capture`]); the highlighter reports styles, so the resolver hands it a style
+//! that encodes the kind and the result is decoded back, losslessly.
+//!
+//! Highlighting runs off the UI thread, once per loaded file side ([`highlight_side`]), and is
+//! capped: a side over [`MAX_HIGHLIGHT_BYTES`] isn't highlighted at all, and a line over
+//! [`MAX_LINE_BYTES`] keeps no tokens (one minified line would otherwise carry thousands of
+//! runs). The language comes from the path ([`language_for_path`]); a path dv has no grammar
+//! for is plain text.
+
+use std::ops::Range;
+
+use dv_core::diff::TextDiff;
+use dv_core::review::{AnchorSide, side_lines};
+use gpui::{HighlightStyle, Hsla};
+use gpui_component::Rope;
+use gpui_component::highlighter::SyntaxHighlighter;
+use gpui_component::input::HighlightStyleResolver;
+
+use crate::theme::SyntaxColors;
+
+/// A side larger than this (its lines and their newlines, in bytes) isn't highlighted: the
+/// same 2 MB as the diff pipeline's own cap (`dv_core::diff::MAX_FILE_BYTES`), which only
+/// "Load anyway" passes.
+pub const MAX_HIGHLIGHT_BYTES: usize = 2 * 1024 * 1024;
+
+/// A line longer than this, in bytes, keeps no tokens and paints plain.
+pub const MAX_LINE_BYTES: usize = 10_000;
+
+/// What a piece of code is, as far as colouring goes (DESIGN §1.1, §1.2 syntax tokens).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TokenKind {
+    Keyword,
+    Function,
+    String,
+    Number,
+    Type,
+    Constant,
+    Property,
+    Punctuation,
+    Comment,
+    Plain,
+}
+
+impl TokenKind {
+    /// Every kind, in the order [`TokenKind::index`] numbers them.
+    pub const ALL: [TokenKind; 10] = [
+        Self::Keyword,
+        Self::Function,
+        Self::String,
+        Self::Number,
+        Self::Type,
+        Self::Constant,
+        Self::Property,
+        Self::Punctuation,
+        Self::Comment,
+        Self::Plain,
+    ];
+
+    fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|kind| *kind == self)
+            .unwrap_or(Self::ALL.len() - 1)
+    }
+
+    /// `"keyword"`, `"function"`, …, as automation state and tests spell it.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Keyword => "keyword",
+            Self::Function => "function",
+            Self::String => "string",
+            Self::Number => "number",
+            Self::Type => "type",
+            Self::Constant => "constant",
+            Self::Property => "property",
+            Self::Punctuation => "punctuation",
+            Self::Comment => "comment",
+            Self::Plain => "plain",
+        }
+    }
+
+    /// The colour this kind paints in, from the installed theme's syntax tokens.
+    pub fn color(self, syntax: &SyntaxColors) -> Hsla {
+        match self {
+            Self::Keyword => syntax.keyword,
+            Self::Function => syntax.function,
+            Self::String => syntax.string,
+            Self::Number => syntax.number,
+            Self::Type => syntax.ty,
+            Self::Constant => syntax.constant,
+            Self::Property => syntax.property,
+            Self::Punctuation => syntax.punctuation,
+            Self::Comment => syntax.comment,
+            Self::Plain => syntax.plain,
+        }
+    }
+}
+
+/// The kind a tree-sitter capture name stands for; `None` for a name that says nothing about
+/// colour (a query's private `_name` captures, unknown names), which leaves the enclosing
+/// capture's kind in place.
+///
+/// A capture that names plain code explicitly (`variable`, `variable.parameter`, `embedded`,
+/// `module`) is [`TokenKind::Plain`], so a variable interpolated into a string paints plain,
+/// not as the string around it. The table, by the name's first segment unless the full name is
+/// listed:
+///
+/// | Kind | Names |
+/// |---|---|
+/// | Keyword | `keyword*`, `conditional`, `repeat`, `include`, `import`, `exception`, `storageclass`, `preproc`, `variable.builtin`, `variable.special` (`self`, `this`), `tag*` (markup tag names), `title` (Markdown headings) |
+/// | Function | `function*`, `method*`, `link_text` |
+/// | String | `string*`, `character*`, `escape`, `text.literal`, `text.code.span`, `text.uri`, `link_uri` |
+/// | Number | `number*`, `float` |
+/// | Type | `type*`, `constructor` |
+/// | Constant | `constant*`, `boolean`, `label`, `string.special.symbol` |
+/// | Property | `property*`, `field`, `attribute`, `tag.attribute`, `variable.member` |
+/// | Punctuation | `punctuation*`, `operator`, `delimiter`, `tag.delimiter` |
+/// | Comment | `comment*` |
+/// | Plain | `variable*` (others), `parameter`, `embedded`, `module*`, `namespace`, `emphasis*`, `text*` (others), `none`, `spell`, `nospell` |
+pub fn kind_for_capture(name: &str) -> Option<TokenKind> {
+    use TokenKind::*;
+    if name.is_empty() || name.starts_with('_') {
+        return None;
+    }
+    let exact = match name {
+        "boolean" | "label" | "string.special.symbol" => Some(Constant),
+        "constructor" => Some(Type),
+        "variable.builtin" | "variable.special" | "conditional" | "repeat" | "include"
+        | "import" | "exception" | "storageclass" | "preproc" | "title" => Some(Keyword),
+        "attribute" | "field" | "tag.attribute" | "variable.member" => Some(Property),
+        "operator" | "delimiter" | "tag.delimiter" => Some(Punctuation),
+        "escape" | "text.literal" | "text.code.span" | "text.uri" | "link_uri" => Some(String),
+        "float" => Some(Number),
+        "link_text" => Some(Function),
+        _ => None,
+    };
+    if exact.is_some() {
+        return exact;
+    }
+    let first = name.split('.').next().unwrap_or(name);
+    match first {
+        "keyword" | "tag" => Some(Keyword),
+        "function" | "method" => Some(Function),
+        "string" | "character" => Some(String),
+        "number" => Some(Number),
+        "type" => Some(Type),
+        "constant" => Some(Constant),
+        "property" => Some(Property),
+        "punctuation" => Some(Punctuation),
+        "comment" => Some(Comment),
+        "variable" | "parameter" | "embedded" | "module" | "namespace" | "emphasis" | "text"
+        | "none" | "spell" | "nospell" => Some(Plain),
+        _ => None,
+    }
+}
+
+/// The highlighter language for a repo path, from well-known file names and then the
+/// extension (case-insensitive); `None` for a path dv has no grammar for, which paints plain.
+/// Every name returned is one of the grammars the workspace enables for gpui-component.
+pub fn language_for_path(path: &str) -> Option<&'static str> {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let lower = name.to_ascii_lowercase();
+    let by_name = match lower.as_str() {
+        "makefile" | "gnumakefile" => Some("make"),
+        "cmakelists.txt" => Some("cmake"),
+        ".bashrc" | ".bash_profile" | ".bash_aliases" | ".bash_logout" | ".profile" | ".zshrc"
+        | ".zprofile" | ".zshenv" | "pkgbuild" => Some("bash"),
+        "gemfile" | "rakefile" | "guardfile" | "podfile" | "vagrantfile" | "brewfile" => {
+            Some("ruby")
+        }
+        "cargo.lock" | "pipfile" | "poetry.lock" | "uv.lock" => Some("toml"),
+        ".babelrc" | ".eslintrc" | ".prettierrc" | "flake.lock" => Some("json"),
+        _ => None,
+    };
+    if by_name.is_some() {
+        return by_name;
+    }
+    let (_, ext) = lower.rsplit_once('.')?;
+    Some(match ext {
+        "rs" => "rust",
+        "ts" | "mts" | "cts" => "typescript",
+        "tsx" => "tsx",
+        "js" | "mjs" | "cjs" | "jsx" => "javascript",
+        "json" | "jsonc" | "json5" => "json",
+        "py" | "pyi" | "pyw" => "python",
+        "go" => "go",
+        "c" | "h" => "c",
+        "cc" | "cpp" | "cxx" | "c++" | "hpp" | "hh" | "hxx" | "h++" | "ipp" | "inl" => "cpp",
+        "cs" => "csharp",
+        "css" | "scss" => "css",
+        "html" | "htm" | "xhtml" => "html",
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "lua" => "lua",
+        "md" | "markdown" | "mdx" => "markdown",
+        "php" | "phtml" => "php",
+        "proto" => "proto",
+        "rb" | "rake" | "gemspec" => "ruby",
+        "scala" | "sc" => "scala",
+        "svelte" => "svelte",
+        "swift" => "swift",
+        "toml" => "toml",
+        "yaml" | "yml" => "yaml",
+        "zig" => "zig",
+        "sh" | "bash" | "zsh" => "bash",
+        "ex" | "exs" => "elixir",
+        "erb" => "erb",
+        "ejs" => "ejs",
+        "graphql" | "gql" => "graphql",
+        "astro" => "astro",
+        "diff" | "patch" => "diff",
+        "cmake" => "cmake",
+        "mk" | "mak" => "make",
+        _ => return None,
+    })
+}
+
+/// One token on a line: a byte range of the line's text and its kind. Lines keep only their
+/// non-plain tokens, sorted and non-overlapping.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Token {
+    pub range: Range<u32>,
+    pub kind: TokenKind,
+}
+
+/// One side's tokens, line by line: `line(n)` is line `n`'s (1-based).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SideHighlights {
+    lines: Vec<Box<[Token]>>,
+}
+
+impl SideHighlights {
+    /// Line `n`'s tokens (1-based); empty past the end and for a line that paints plain.
+    pub fn line(&self, n: u32) -> &[Token] {
+        (n as usize)
+            .checked_sub(1)
+            .and_then(|index| self.lines.get(index))
+            .map(|tokens| &tokens[..])
+            .unwrap_or_default()
+    }
+
+    /// How many lines the side has.
+    pub fn len(&self) -> usize {
+        self.lines.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+}
+
+/// Both sides of one file's text diff, highlighted. A side is `None` when it has no lines,
+/// has no grammar or is over the cap.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FileHighlights {
+    pub old: Option<SideHighlights>,
+    pub new: Option<SideHighlights>,
+}
+
+impl FileHighlights {
+    /// The side `side`'s tokens.
+    pub fn side(&self, side: AnchorSide) -> Option<&SideHighlights> {
+        match side {
+            AnchorSide::Old => self.old.as_ref(),
+            AnchorSide::New => self.new.as_ref(),
+        }
+    }
+}
+
+/// Highlights both sides of `diff`, the old one as `old_path` (a renamed file's old name)
+/// and the new one as `path`. Blocking: runs on a background thread.
+pub fn highlight_diff(path: &str, old_path: Option<&str>, diff: &TextDiff) -> FileHighlights {
+    let old = side_lines(diff, AnchorSide::Old);
+    let new = side_lines(diff, AnchorSide::New);
+    FileHighlights {
+        old: highlight_side(old_path.unwrap_or(path), &old),
+        new: highlight_side(path, &new),
+    }
+}
+
+/// Highlights one side's full text, `lines[0]` being line 1 (without line endings), in the
+/// language `path` names. `None` when there is nothing to do: no lines, no grammar for the
+/// path, or more than [`MAX_HIGHLIGHT_BYTES`]. Blocking: runs on a background thread.
+pub fn highlight_side<S: AsRef<str>>(path: &str, lines: &[S]) -> Option<SideHighlights> {
+    let language = language_for_path(path)?;
+    if lines.is_empty() {
+        return None;
+    }
+    let len = lines
+        .iter()
+        .map(|line| line.as_ref().len() + 1)
+        .sum::<usize>();
+    if len > MAX_HIGHLIGHT_BYTES {
+        return None;
+    }
+    let mut text = String::with_capacity(len);
+    let mut starts = Vec::with_capacity(lines.len());
+    for line in lines {
+        starts.push(text.len());
+        text.push_str(line.as_ref());
+        text.push('\n');
+    }
+    let mut highlighter = SyntaxHighlighter::new(language);
+    highlighter.update(None, &Rope::from_str(&text), None);
+    let styles = highlighter.styles(&(0..text.len()), &KindResolver);
+    Some(bucket(&text, &starts, &styles))
+}
+
+/// Splits whole-text runs into line-relative tokens: plain runs and the newline between lines
+/// are dropped, a run across lines is cut at each line's end, and lines over
+/// [`MAX_LINE_BYTES`] keep nothing.
+fn bucket(
+    text: &str,
+    starts: &[usize],
+    styles: &[(Range<usize>, HighlightStyle)],
+) -> SideHighlights {
+    let mut lines: Vec<Vec<Token>> = vec![Vec::new(); starts.len()];
+    for (range, style) in styles {
+        let kind = decode(style);
+        if kind == TokenKind::Plain {
+            continue;
+        }
+        let mut pos = range.start;
+        while pos < range.end {
+            // The line holding `pos`: the last start at or before it.
+            let index = starts.partition_point(|&start| start <= pos) - 1;
+            let start = starts[index];
+            // The line's text ends before its newline.
+            let end = starts.get(index + 1).map_or(text.len(), |next| next - 1);
+            let cut = range.end.min(end);
+            if cut > pos && end - start <= MAX_LINE_BYTES {
+                let tokens = &mut lines[index];
+                let token = Token {
+                    range: (pos - start) as u32..(cut - start) as u32,
+                    kind,
+                };
+                match tokens.last_mut() {
+                    // Adjacent runs of one kind are one token.
+                    Some(last) if last.kind == kind && last.range.end == token.range.start => {
+                        last.range.end = token.range.end
+                    }
+                    _ => tokens.push(token),
+                }
+            }
+            pos = starts
+                .get(index + 1)
+                .copied()
+                .unwrap_or(text.len())
+                .max(pos + 1);
+        }
+    }
+    SideHighlights {
+        lines: lines.into_iter().map(Vec::into_boxed_slice).collect(),
+    }
+}
+
+/// Hands the highlighter a style per capture that carries the capture's kind in its colour's
+/// hue (the kind's index), which [`decode`] reads back. The highlighter only copies colours
+/// from one capture to the run it covers, never blends them, so nothing is lost.
+struct KindResolver;
+
+impl HighlightStyleResolver for KindResolver {
+    fn style(&self, name: &str) -> Option<HighlightStyle> {
+        kind_for_capture(name).map(encode)
+    }
+}
+
+fn encode(kind: TokenKind) -> HighlightStyle {
+    HighlightStyle {
+        color: Some(Hsla {
+            h: kind.index() as f32,
+            s: 0.,
+            l: 0.,
+            a: 1.,
+        }),
+        ..Default::default()
+    }
+}
+
+fn decode(style: &HighlightStyle) -> TokenKind {
+    style
+        .color
+        .and_then(|color| {
+            let index = color.h as usize;
+            (color.h == index as f32)
+                .then(|| TokenKind::ALL.get(index).copied())
+                .flatten()
+        })
+        .unwrap_or(TokenKind::Plain)
+}
+
+#[cfg(test)]
+mod tests;

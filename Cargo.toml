@@ -16,7 +16,45 @@ publish = false
 # Pinned exactly; bump all of these together.
 gpui = { package = "gpui-pre", version = "=0.3.6" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.6" }
-gpui-component = { version = "=0.6.6" }
+# The tree-sitter grammars `dv_ui::syntax` highlights diffs with (PLAN §6 step 4): every one of
+# gpui-component's `tree-sitter-languages` except SQL, whose grammar crate pins `cc` below the
+# 1.5 gpui's build already locks.
+gpui-component = { version = "=0.6.6", features = [
+    "tree-sitter-astro",
+    "tree-sitter-bash",
+    "tree-sitter-c",
+    "tree-sitter-cmake",
+    "tree-sitter-cpp",
+    "tree-sitter-csharp",
+    "tree-sitter-css",
+    "tree-sitter-diff",
+    "tree-sitter-ejs",
+    "tree-sitter-elixir",
+    "tree-sitter-erb",
+    "tree-sitter-go",
+    "tree-sitter-graphql",
+    "tree-sitter-html",
+    "tree-sitter-java",
+    "tree-sitter-javascript",
+    "tree-sitter-jsdoc",
+    "tree-sitter-kotlin",
+    "tree-sitter-lua",
+    "tree-sitter-make",
+    "tree-sitter-markdown",
+    "tree-sitter-php",
+    "tree-sitter-proto",
+    "tree-sitter-python",
+    "tree-sitter-ruby",
+    "tree-sitter-rust",
+    "tree-sitter-scala",
+    "tree-sitter-svelte",
+    "tree-sitter-swift",
+    "tree-sitter-toml",
+    "tree-sitter-tsx",
+    "tree-sitter-typescript",
+    "tree-sitter-yaml",
+    "tree-sitter-zig",
+] }
 
 # ---- internal crates (docs/PLAN.md §4)
 dv_backend = { path = "crates/dv_backend" }
@@ -35,6 +73,9 @@ futures = "0.3"
 ignore = "0.4"
 imara-diff = "0.2"
 log = "0.4"
+# The Markdown parser gpui-component's `TextView` uses; `dv_ui::markdown` sanitises comment bodies
+# with the same AST before they reach it (PLAN §15).
+markdown = "1.0.0"
 notify = "8.2"
 parking_lot = "0.12"
 png = "0.18"

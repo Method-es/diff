@@ -43,6 +43,11 @@ fn solid_tokens_match_design() {
     assert_eq!(css(dark.scrim), (0x06050a, 560));
     assert_eq!(css(dark.add_bg), (0x61ffca, 85));
     assert_eq!(css(dark.syntax.property), (0xf694ff, 1000));
+    // Comments are the lowest text tier in both appearances.
+    assert_eq!(dark.syntax.comment, dark.fg3);
+    let light = DvColors::new(Appearance::Light, Material::Mica);
+    assert_eq!(css(light.syntax.comment), (0x5e5a6f, 1000));
+    assert_eq!(light.syntax.comment, light.fg3);
     // Solid tokens don't depend on the material.
     let acrylic = DvColors::new(Appearance::Dark, Material::Acrylic);
     assert_eq!(dark.fg, acrylic.fg);

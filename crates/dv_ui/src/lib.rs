@@ -10,30 +10,56 @@
 //! [`system::install`], [`services::init`] and [`appearance::init`] (which resolves the settings'
 //! material and mode into the theme the first frame uses), then the main window with a
 //! [`shell::Shell`] as its root view, opened through [`automation::open_window`].
+//!
+//! An open review is a [`session::ReviewSession`] the shell holds and hands to the views around
+//! the stream: the [`switcher`] (and its source picker) in the title bar, the [`file_list`] and
+//! the [`comments_list`] in the panel, the [`diff_pane`] with its [`thread`] cards and composer,
+//! and the [`submit`] sheet that finishes a round. [`syntax`] highlights its diffs into token
+//! kinds and [`markdown`] renders its comment bodies, sanitised. [`keymap`] binds the
+//! [`actions`]; [`banner`] is how a region shows a failure.
 
+pub mod actions;
 pub mod appearance;
 pub mod assets;
 pub mod automation;
+pub mod banner;
+pub mod comments_list;
 pub mod components;
+pub mod diff_pane;
+pub mod failure;
+pub mod file_list;
 pub mod icons;
+pub mod keymap;
+pub mod markdown;
 pub mod platform;
 pub mod services;
+pub mod session;
 pub mod shell;
+pub mod submit;
+pub mod switcher;
+pub mod syntax;
 pub mod system;
+#[cfg(test)]
+mod test_support;
 pub mod theme;
+pub mod thread;
 
 pub use assets::Assets;
+pub use failure::Failure;
 pub use icons::DvIcon;
 pub use services::{ActiveServices, Services};
+pub use session::ReviewSession;
 pub use shell::Shell;
 pub use theme::{ActiveTheme, Appearance, DvTheme, Material};
 
 use gpui::App;
 
-/// Everything views need before the first window opens: gpui-component, the bundled fonts and a
-/// first theme. The app must have been built with [`Assets`] as its asset source.
+/// Everything views need before the first window opens: gpui-component, dv's key bindings (after
+/// gpui-component's, so dv's win within a context), the bundled fonts and a first theme. The app
+/// must have been built with [`Assets`] as its asset source.
 pub fn init(cx: &mut App) -> anyhow::Result<()> {
     gpui_component::init(cx);
+    keymap::init(cx)?;
     assets::load_fonts(cx)?;
     theme::apply(cx);
     Ok(())

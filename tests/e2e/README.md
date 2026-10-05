@@ -161,14 +161,19 @@ That is why it lives in `tests/e2e/foreground/` and runs only on demand.
 
 | Scenario | Covers |
 |---|---|
-| `shell_layout` | the empty shell's regions (title bar, panel, main area, status bar and their parts) at DESIGN §1.5/§2 sizes at 1440x900, at the 1100x700 minimum after a `resize`, and a smaller `--window-size` raised to the minimum |
+| `shell_layout` | the empty shell's regions (title bar, panel, main area, status bar and their parts; the status bar says "No repo" and nothing else) at DESIGN §1.5/§2 sizes at 1440x900, at the 1100x700 minimum after a `resize`, and a smaller `--window-size` raised to the minimum |
 | `shell_caption_buttons` | Windows only: the caption buttons' bounds |
 | `shell_materials` | Windows only: every material × mode through `set_setting`, the resolved values, a screenshot of each (`NN-shell-<material>-<mode>.png`, window source), and the last choice surviving a restart. Needs a machine that can show all three materials (Windows 11 22H2+, transparency effects on); its first assertion says so when it can't |
 | `foreground/shell_materials_foreground` | Windows only, foreground, on demand: the same six combinations as screen captures (`NN-shell-<material>-<mode>-screen.png`) |
+| `review_chrome` | the screen around the stream (DESIGN §4.1): `open` on a seeded repo (the board's `api-server`) opens the switcher on its uncommitted changes; typing filters, `↑`/`↓` wrap, `Enter` opens the working review; the file list (rows, current file, viewed checkboxes through the store, the filter and `Esc`), `Ctrl B`, the panel's resize and double-click reset, the source picker, the status bar, a WSL repo's switcher row and the main area's banner (Copy diagnostics through the clipboard seam, Dismiss), the title bar at 1100x700 (and with a long repository name), a repo whose `.git` went away while open (its switcher row says why and offers nothing to open); screenshots of the switcher, the review and the banner in dark Mica, dark Opaque and light |
+| `review_session` | the review plumbing without its screens: a seeded repo is `open`ed and listed with its uncommitted changes, its working review opens (named in full at once) and resumes, follows the agent's edits and commit live, and sees the agent's `review_op` through the watch; a WSL location is listed as unavailable; repos, review and seeded fixture survive a `restart` |
+| `review_screen` | the diff stream (DESIGN §4.1, §5): the board's `api-server` with a CRLF README under `core.autocrlf`, a binary, a file too large to show, a rename, an untracked file, a deletion and a long file with gaps, opened from the switcher by keyboard; `J`/`K`, `N`/`P`, the cursor (`↑`/`↓`, `←`/`→`), a `Shift` selection and `Esc`, `S` to unified and back, gap rows and `E`/`Shift E`, `PageDown` with the pinned header, the agent staging everything under the reader (the gaps stay open, the place stays), the sideways scroll, line-number clicks and shift-clicks, the file menu's Copy path, `V` collapsing a viewed file and its chevron, "Load anyway"; screenshots of each state in dark Mica, dark Opaque and light |
+| `review_workflow_a` | PLAN §3 workflow A steps 1–3 by keyboard alone (no clicks): `open` shows the seeded `api-server` with its seven uncommitted changes, `Enter` opens the working review, `V` marks a file viewed (the event read back from the store), `J` and `Shift ↓` select lines, `C` opens the composer (letters type, they don't move), `Ctrl Enter` posts, `Ctrl Enter` opens the Finish round sheet on Request changes (`↑`/`↓`, `Tab` into the summary and back, `Ctrl O` opening the switcher over it without losing the summary), `Ctrl Enter` finishes round 1 (snapshot, `changes_requested`, round 2, nothing viewed); then the agent's `review_op` address and reply show live (and an addressed card at 1100 wide keeps Resolve and Reopen whole), `]` focuses the thread, `R` replies, `X` resolves and reopens, and Approve leaves the review read-only (`C`, `Ctrl Enter`, `X` do nothing; the finished banner); screenshots of the composer, the sheet and the thread states (open, addressed, reply, resolved) in dark Mica, dark Opaque and light |
+| `review_live` | a review open while the agent works (`repo_edit`): the agent saving the file the reviewer is commenting on (the composer stays and every keystroke lands), an edit updates a file's totals and rows, a new file joins the list, a thread whose line the agent rewrote turns outdated (the comments list flags it with its original line; its card heads its file), and a commit of everything leaves the working tree clean with the thread still listed as outdated; screenshots of the outdated card in dark Mica, dark Opaque and light |
 
 ### dv's `state`
 
-`state` is the object dv's automation host (`crates/dv/src/automation.rs`,
+`state` is the object dv's automation host (`crates/dv/src/automation/`,
 the `dv` binary's `automation` feature) returns, plus the library's `window`
 and `windows` keys (Protocol, below). Its keys are listed here as they land;
 assert on them rather than on screenshots, which are for style.
@@ -183,26 +188,99 @@ assert on them rather than on screenshots, which are for style.
 | `settings.path` | the settings file, `<data_dir>/settings.json` |
 | `settings.save_error` | why the last save failed, or `null` |
 | `shell.panel_visible` | whether the left panel shows |
-| `shell.empty_state` | the main area's empty state (DESIGN §4.4): `"no_review"`, or `null` |
+| `shell.panel_width` | the panel's width in logical pixels (`settings.json`'s `panel_width`; 280 until resized, 220–420) |
+| `shell.empty_state` | the main area's empty state (DESIGN §4.4): `"no_review"`, `"working_tree_clean"` (a `working` review with no changes), `"no_changes"` (another target with none), or `null` |
+| `shell.opening` | a review is being opened (the switcher, the source picker or `open_review`) |
+| `shell.banner` | the main area's banner, `null` or `{message, detail}`: a review that didn't open (its Retry runs the open again) or a folder that isn't a repository |
+| `shell.status` | what the status bar says: `{health, location, review, finish}`; `health` is the dot's `"idle"`, `"live"`, `"degraded"` (refreshes when focused) or `"failing"`; `location` e.g. `"Local · watching for changes"`, `"No repo"`, `"Ubuntu · can't be opened"`; `review` e.g. `"Open · round 1 · no comments"` or `null`; `finish` whether `Ctrl Enter finish review` shows |
 | `shell.window_material` | the material last applied to the window (it follows `resolved_material` before the reply to the command that changed it) |
-| `system.requests` | what the app asked the OS to open, oldest first, recorded instead of performed: `{"kind": "open_url", "url"}`, `{"kind": "reveal", "path"}`, `{"kind": "pick_folder", "prompt"}` |
+| `system.requests` | what the app asked the OS to do, oldest first, recorded instead of performed: `{"kind": "open_url", "url"}`, `{"kind": "reveal", "path"}`, `{"kind": "pick_folder", "prompt"}`, `{"kind": "clipboard", "text"}` (nothing reaches the real clipboard) |
 | `system.answers_left` | folder-picker answers still queued |
+| `repos` | the known repositories (`<data_dir>/known_repos.json`), most recently used first: `{path, name, location, loading, error, working, reviews}`. `location` is the stored shape (`{"local": "D:\\…"}`, `{"wsl": {"distro", "path"}}`); `error` is `null` or `{message, detail}` (a WSL location's says it can't be opened); `working` is `{files, additions, deletions}` of the uncommitted changes, `null` until computed (on `open`, and when the switcher opens) or when it can't be; `reviews` newest first, each `{id, target, target_label, status, round, threads: {open, addressed, resolved}}`, or `{id, error}` for a log that doesn't load |
+| `switcher` | the switcher (`Ctrl O`): `{open, query, selected, items}`; closed it is `{open: false, query: null, selected: null, items: []}`. `items` are its pickable rows in order, each `{key, kind, target, label, repo, review}`: `key` names the row (`<repo>/working`, `<repo>/staged`, `<repo>/branch`, `<repo>/review/<id>`, `open_folder`; `<repo>` is the repo's name, its full path when two known repos share a name), `kind` is `"target"`, `"review"` or `"open_folder"`, `target` the target row's `"working"`/`"staged"`/`"branch"` (else `null`), `repo` its path, `review` its open review `{id, status, round, open_threads}` or `null`; `selected` is a `key` |
+| `source_picker` | the source picker (the title bar's `⇄ ▾`): `{open, selected, items: [{kind, label, review}]}`, `selected` a `kind` |
+| `file_list` | the panel's file list: `{query, shown, current_file}`; `shown` the paths the filter leaves, in list order; `current_file` the stream's current file (the highlighted row) |
+| `session` | the open review, or `null`: `review_id`, `repo` (the worktree root), `target` (stored shape: `"working"`, `"staged"`, `{"branch": {…}}`, …), `target_label` (`"working tree vs main"`), `status`, `round` (the one in progress; for a finished review the one that finished it, as the status bar says), `read_only` (approved, closed or submitted), `loading` (the file list is loading), `error` (`null` or `{message, detail}`), `viewed_error` (why the last viewed toggle failed, shown as `banner/viewed`; `null` once one lands or it is dismissed), `watch_notice` (why the worktree isn't watched, or `null`), `generation` (the load generation), `warnings` (problems in the log), `viewed` / `total` (files viewed this round / listed), `current_file` (the stream's current file: the cursor's while the cursor is on screen, else the file at the top), `view_mode` (`"split"` or `"unified"`, remembered per review in `<data_dir>/review_ui.json`), `cursor` (`null` or `{path, side, line}`: `side` `"old"`/`"new"`, `line` its number on that side), `selection` (`null` or `{path, side, start_line, end_line}`, one file and one side) |
+| `session.files` | sorted by path: `{path, old_path, status, additions, deletions, binary, viewed, open_threads, state, kind, highlighted}`; `status` is `added`, `modified`, `deleted`, `renamed`, `copied`, `type_changed`, `untracked` or `unmerged`; `state` is `unloaded`, `loading`, `loaded` or `failed` (diffs load when the stream asks for them); `kind` is the loaded diff's `text`, `binary`, `too_large`, `submodule` or `unmerged`, else `null`; `highlighted` once syntax kinds landed |
+| `session.threads` | live threads in the order they were added: `{id, path, side ("old"/"new"), start_line, end_line, state, note, author: {kind, name}, body, replies: [{id, author, body}], outdated, round}`; `outdated` is `false` when the anchored text stands at its lines in the loaded diff, `true` when it doesn't or the file left the diff, `null` while the file isn't loaded; `round` the round it was opened in |
+| `session.composer` | the open composer, or `null`: `{path, side, start_line, end_line, reply_to, text, posting, error}`; `reply_to` the thread a reply answers (`null` for a new thread), `text` as typed, `posting` while a post is on its way, `error` `null` or `{message, detail}` (why the last post failed) |
+| `session.focused_thread` | the keyboard's thread (`]`/`[`, a click on a card or a comments row, a new post), or `null` |
+| `session.sheet` | the "Finish round" sheet, or `null`: `{verdict, can_submit, submitting, tab, summary, error}`; `verdict` `"approve"` or `"request_changes"`, `tab` `"write"` or `"preview"`, `summary` as typed |
+| `session.rounds` | closed rounds: `{n, verdict, old_oid, new_oid, body}`; `new_oid` the snapshot at `refs/dv/reviews/<id>/<n>` |
+| `comments_list` | the panel's comments, or `null` with no review open: `{show_resolved, rows: [{id, state, outdated, location, summary, snippet}]}`, in stream order, the waiting (open, addressed) threads, then the resolved ones while `show_resolved`; `location` is `path:31` or `path:12–14`, `summary` the comment's first line as plain text (its Markdown dropped), `snippet` an outdated thread's first anchored line as it was (else `null`) |
+| `stream` | the diff stream, or `null` with no review open: `top_file` (the file at the top of the viewport), `pinned_file` (the file whose header is pinned at the top, `null` while a header sits there itself), `h_offset` (the sideways scroll in logical pixels, one for every row), `focused` (the main area has the keyboard, so the stream's keys work), `files` (in the session's order: `{path, collapsed, rows, gaps, notice}`; `collapsed` a viewed file shown as its header alone; `rows` the file's rows in the stream, header and footer included; `gaps` how many lines each gap row hides, top to bottom; `notice` what shows instead of lines: `loading`, `failed`, `binary`, `too_large`, `submodule`, `unmerged` or `no_content_change`, else `null`) |
 
-`settle` waits for the settings to be written as well as for a frame.
+`settle` waits for the settings and the known repos to be written, for every backend open,
+repo row refresh and review open (the shell's included) and any "Open folder…" to finish, and,
+with a review open, for its file list (and
+any refresh the watch scheduled), its fold reloads, its writes and the files asked for (and
+their highlighting) to land, for a post or a thread's Resolve/Reopen and a round being finished
+(the sheet's Submit) to be through, and for the stream to have worked out what its viewport shows after the last frame, as well as for a frame. A change the watch reports (an agent's
+edit or append) arrives later than any `settle` can know about, so scenarios `wait_for` it.
 
 dv's own commands:
 
 | Command | Arguments | Result |
 |---|---|---|
 | `set_setting` | `key`: `"material"` or `"mode"`; `value`: one of that key's values above | `{settings}` (as in `state`); the change goes through the settings service as the UI's would: it is saved to `<data_dir>/settings.json` and the window has repainted in the new theme and material before the reply |
+| `seed_repo` | `name` (a plain file name); `steps` (below) | `{path, commits}`: a fixture repo built at `<data_dir>/repos/<name>` (`FixtureRepo::persistent`; its home in `<name>.fixture/`), `steps` run on it, and its environment registered so dv opens it with the fixture's git configuration, never the machine's (`core.autocrlf=true` on the dev box). A repo seeded before a `restart` is found again at startup |
+| `repo_edit` | `name` (a seeded repo); `steps` | `{path, commits}`: more steps on it, as the agent editing and committing |
+| `open` | `path` (a local path anywhere inside a work tree, or `\\wsl.localhost\<distro>\<path>`) | `{path, location}`: like `dv open <path>`: its worktree root becomes a known repo, its row is computed and the switcher opens with its first row (`<repo>/working`) selected, so `Enter` opens the working review; a WSL location is known as given and its row says it can't be opened yet (the selection then stays on the open review's row); any other path that doesn't open is an error |
+| `open_review` | `path`; `target` (default `"working"`; a stored target such as `"staged"` or `{"branch": {"branch": "feat", "base": null}}`) | `{review_id, created}`: opens or resumes that target's review as the reviewer (the repo's `user.name`) and shows it, through the shell as the switcher would (a failure also becomes `shell.banner`); `settle` then waits for its file list |
+| `review_op` | `op`: `"reply"` (`thread`, `body`), `"address"` (`thread`, optional `note`) or `"done"` (status `ready`, as `dv review done`); `author` (the agent's name, `"agent"` by default) | the op's result (`{comment}`, `{changed}`): an agent's change to the open review through `dv_core::review::ops`, until the CLI exists; the review sees it through its watch, so `wait_for` the change |
+
+Steps for `seed_repo` and `repo_edit`, each one object, run in order (a failing step fails the
+command with the fixture's message):
+
+| Step | Does |
+|---|---|
+| `{"write": p, "text": t}`, `{"write": p, "bytes": [n, …]}` | writes a file, creating directories; `"repeat": n` (1 to 1,000,000) writes the text or bytes `n` times over, a large file in one step (`{"write": "seed.sql", "text": "INSERT …;\n", "repeat": 25000}`) |
+| `{"write_crlf": p, "text": t}` | writes a file with CRLF line endings |
+| `{"remove": p}` | deletes a file or a directory |
+| `{"rename": [a, b]}` | moves a file |
+| `{"commit": message}` | `git add -A` and commits, with the fixture's identity and dates |
+| `{"branch": b}` / `{"checkout": rev}` | creates a branch at `HEAD` / checks out a branch or revision |
+| `{"config": [key, value]}` | sets a key in the repo's `.git/config` (`["core.autocrlf", "true"]`) |
+| `{"attributes": text}` | replaces the root `.gitattributes` |
+| `{"git": [args…]}` | any other git command (`["add", "a.txt"]`, `["commit", "-q", "-m", "x"]`) |
 
 Named targets, at the default 1440x900: `titlebar` (0,0 1440x40), with
-`titlebar/mark`, `titlebar/switcher`, `titlebar/command` (300 wide, centred),
-`titlebar/min`, `titlebar/max`, `titlebar/close` (46 wide and 40 high less
-the title bar's one-device-pixel bottom hairline, Windows only);
-`shell/panel` (0,40 280x832) with `shell/panel/header`; `shell/main`
-(280,40 1160x832) with `shell/main/empty`; `statusbar` (0,872 1440x28) with
-`statusbar/repo` and `statusbar/material`.
+`titlebar/mark`, `titlebar/switcher`, `titlebar/source` (with a review open),
+`titlebar/command` (300 wide, centred), `titlebar/min`, `titlebar/max`,
+`titlebar/close` (46 wide and 40 high less the title bar's one-device-pixel
+bottom hairline, Windows only); `shell/panel` (0,40 280x832) with
+`shell/panel/header` and `shell/panel/resize` (the 8-wide handle on its right
+edge); `shell/main` (280,40 1160x832) with `shell/main/empty`,
+`shell/main/loading` and `stream`; `shell/scrim` under the top overlay (over the sheet too while a menu is open over it); `statusbar` (0,872 1440x28) with `statusbar/location`,
+`statusbar/review` and `statusbar/finish` (the last two with a review open).
+The switcher: `switcher` (560 wide, hung under its button), `switcher/filter`,
+`switcher/repo/<repo>`, `switcher/<key>` per row (`state.switcher.items`), and
+`switcher/empty`; the source picker: `source_picker` and
+`source_picker/<working|staged|branch>`. The file list: `file_list/filter`,
+`file_list/progress`, `file_list/<path>` (a 28-high row), `file_list/<path>/viewed`
+(its checkbox), `file_list/loading` and `file_list/note`. Banners:
+`banner/main` (a review that didn't open), `banner/session` (a failed
+refresh) and `banner/viewed` (a viewed toggle that failed), each with
+`/<action>` (`retry`, `dismiss`), `/details` (when there is a detail) and
+`/copy`; `banner/finished` over a finished review, with
+`banner/finished/new_review`. The comments: `comments_list`, `comments_list/copy`
+("Copy as prompt"), `comments_list/resolved` (show / hide the resolved threads) and
+`comments_list/<thread id>` (a row). Thread cards: `thread/<id>` with
+`/resolve`, `/reopen` (as the state offers them), `/toggle` (a resolved thread's
+chevron) and `/reply` (the reply field); the composer: `composer` with
+`/input`, `/cancel` and `/post`. The sheet: `sheet`, `sheet/summary`,
+`sheet/<write|preview>`, `sheet/verdict/<approve|request_changes>`,
+`sheet/cancel`, `sheet/close`, `sheet/submit` and `sheet/error`. The stream: `stream/file/<path>/header` (68 high with its
+side labels, 44 without: collapsed, or a notice instead of lines) and its parts
+`stream/file/<path>/<chevron|split|unified|viewed|prev|next|menu>`; the pinned
+copy `stream/pinned` with the same parts (`stream/pinned/viewed`, …);
+`stream/menu` and `stream/menu/<copy_path|reveal>` while the file menu is open;
+`stream/gap/<path>/<n>` (the file's n-th gap row from the top, 28 high) with
+`/expand` (shown when it hides more than 20 lines) and `/expand_all`;
+`stream/line/<path>/<old|new>/<n>` (a line number in view: a click puts the
+cursor on the line, a shift-click selects to it); `stream/notice/<path>` (with
+`/load_anyway` for a file too large, and a failed load's banner parts `/retry`,
+`/details` and `/copy`); `stream/footer/<path>` and its `/next`.
 
 ## Runner
 

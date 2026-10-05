@@ -1,63 +1,344 @@
 //! The custom title bar (DESIGN §2, §4.1): 40px of `chrome` holding dv's mark, the review
-//! switcher (`Ctrl O`), the centred command field (`Ctrl K`) and, on Windows, the caption
-//! buttons. The whole bar is a window drag region; its controls occlude it so they stay
-//! clickable.
+//! switcher button (`repo · working tree vs main`, a location chip for WSL, `Ctrl O`), the
+//! source picker, the centred command field (`Ctrl K`) and, on Windows, the caption buttons.
+//! The whole bar is a window drag region; its controls occlude it so they stay clickable.
+//!
+//! The switcher and the source picker hang under their buttons while open
+//! (`deferred(anchored())` in a zero-size box at the button's bottom-left corner, so they follow
+//! the layout), above everything else, an open sheet included. The left group never runs under the centred command field: at narrow widths the
+//! switcher's label truncates.
 //!
 //! The caption buttons are gpui `WindowControlArea`s, so Windows itself handles their clicks,
 //! hover and Snap Layouts on Maximize (the pattern of Zed's `platform_title_bar`). macOS draws
 //! its traffic lights over the left edge, which the bar leaves room for; Linux draws its own
 //! decorations.
 
+use dv_core::Location;
 use gpui::{
-    AnyElement, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, RenderOnce,
-    Role, StatefulInteractiveElement as _, Styled as _, Window, WindowControlArea, div,
-    prelude::FluentBuilder as _, px,
+    Anchor, AnyElement, Context, FontWeight, HighlightStyle, Hsla, InteractiveElement as _,
+    IntoElement, ParentElement as _, Pixels, RenderOnce, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, StyledText, Window, WindowControlArea, anchored,
+    deferred, div, point, prelude::FluentBuilder as _, px,
 };
 
+use super::Shell;
+use super::render::MENU_PRIORITY;
+use crate::actions::shell::ToggleSwitcher;
 use crate::automation::AutomationTargetExt as _;
-use crate::components::{icon, kbd};
+use crate::components::{icon, kbd, location_chip};
 use crate::icons::DvIcon;
+use crate::keymap;
 use crate::theme::{DvTheme, StyledText as _};
 
-/// The title bar of the main window in its no-review state.
-pub fn title_bar(theme: &DvTheme) -> AnyElement {
-    let c = &theme.colors;
-    let left_inset = if cfg!(target_os = "macos") {
-        theme.sizes.traffic_lights_inset
-    } else {
-        px(14.)
-    };
-    div()
-        .id("titlebar")
-        .relative()
-        .flex_none()
-        .flex()
-        .flex_row()
-        .items_center()
-        .w_full()
-        .h(theme.sizes.title_bar_height)
-        .bg(c.chrome)
-        .border_b_1()
-        .border_color(c.line)
-        .window_control_area(WindowControlArea::Drag)
-        .child(mark(left_inset, theme))
-        .child(div().flex_none().w(px(1.)).h(px(18.)).bg(c.line2))
-        .child(switcher(theme))
-        .child(div().ml(px(2.)).child(kbd("Ctrl O", theme)))
-        .child(div().flex_1())
-        .child(WindowControls::new(theme))
-        // Centred on the window, not between its neighbours. The wrapper has no hitbox, so the
-        // drag region still reaches everywhere but the field.
-        .child(
-            div()
-                .absolute()
-                .inset_0()
+/// What the switcher button names.
+enum SwitcherLabel {
+    Nothing,
+    /// A review opening: its repository.
+    Opening {
+        name: String,
+        distro: Option<String>,
+    },
+    /// The open review: its repository and its target ("working tree vs main").
+    Review {
+        name: String,
+        target: String,
+        distro: Option<String>,
+    },
+}
+
+fn distro(location: &Location) -> Option<String> {
+    match location {
+        Location::Wsl { distro, .. } => Some(distro.clone()),
+        Location::Local(_) => None,
+    }
+}
+
+impl Shell {
+    /// The title bar of the main window.
+    pub(super) fn render_title_bar(
+        &self,
+        window: &mut Window,
+        theme: &DvTheme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let c = &theme.colors;
+        let left_inset = if cfg!(target_os = "macos") {
+            theme.sizes.traffic_lights_inset
+        } else {
+            px(14.)
+        };
+        // The left group stops short of the centred command field.
+        let room = (window.viewport_size().width - theme.sizes.command_field_width) / 2. - px(12.);
+        let label = match (&self.session, &self.opening) {
+            (_, Some(opening)) => SwitcherLabel::Opening {
+                name: opening.location.short_name(),
+                distro: distro(&opening.location),
+            },
+            (Some(session), None) => {
+                let session = session.read(cx);
+                let location = &session.backend().repo().location;
+                SwitcherLabel::Review {
+                    name: location.short_name(),
+                    target: session.target_label(),
+                    distro: distro(location),
+                }
+            }
+            (None, None) => SwitcherLabel::Nothing,
+        };
+        let has_review = self.session.is_some();
+        div()
+            .id("titlebar")
+            .relative()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .w_full()
+            .h(theme.sizes.title_bar_height)
+            .bg(c.chrome)
+            .border_b_1()
+            .border_color(c.line)
+            .window_control_area(WindowControlArea::Drag)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .min_w_0()
+                    .max_w(room)
+                    .child(mark(left_inset, theme))
+                    .child(div().flex_none().w(px(1.)).h(px(18.)).bg(c.line2))
+                    .child(self.render_switcher_button(label, theme, cx))
+                    .child(
+                        div()
+                            .flex_none()
+                            .ml(px(2.))
+                            .child(kbd(keymap::label("secondary-o"), theme)),
+                    )
+                    .when(has_review, |this| {
+                        this.child(self.render_source_button(theme, cx))
+                    }),
+            )
+            .child(div().flex_1())
+            .child(WindowControls::new(theme))
+            // Centred on the window, not between its neighbours. The wrapper has no hitbox, so
+            // the drag region still reaches everywhere but the field.
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(command_field(theme)),
+            )
+            .automation_target("titlebar")
+    }
+
+    /// The switcher button (`Ctrl O`, PLAN §11 `switcher`), and the switcher under it while open.
+    fn render_switcher_button(
+        &self,
+        label: SwitcherLabel,
+        theme: &DvTheme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let c = &theme.colors;
+        let hover = c.control_hover;
+        let text: AnyElement = match label {
+            SwitcherLabel::Nothing => div()
+                .text_color(c.fg2)
+                .child("No review open")
+                .into_any_element(),
+            SwitcherLabel::Opening { name, distro } => div()
                 .flex()
                 .items_center()
-                .justify_center()
-                .child(command_field(theme)),
+                .gap(px(6.))
+                .min_w_0()
+                .overflow_hidden()
+                .child(repo_name(name))
+                .children(distro.map(|distro| location_chip(&distro, theme)))
+                .child(
+                    after_name()
+                        .child(div().flex_none().text_color(c.fg3).child("·"))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(c.fg3)
+                                .child("opening…"),
+                        ),
+                )
+                .into_any_element(),
+            SwitcherLabel::Review {
+                name,
+                target,
+                distro,
+            } => div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .min_w_0()
+                .overflow_hidden()
+                .child(repo_name(name))
+                .children(distro.map(|distro| location_chip(&distro, theme)))
+                .child(
+                    after_name()
+                        .child(div().flex_none().text_color(c.fg3).child("·"))
+                        .child(target_label(&target, c.fg2, c.fg3)),
+                )
+                .into_any_element(),
+        };
+        let open = self.switcher.as_ref().map(|overlay| overlay.view.clone());
+        div()
+            .relative()
+            .flex()
+            .min_w_0()
+            .ml(theme.spacing.sm)
+            .child(
+                div()
+                    .id("titlebar-switcher")
+                    .role(Role::Button)
+                    .aria_label("Switch repository or review (Ctrl O)")
+                    .flex()
+                    .items_center()
+                    .gap(px(7.))
+                    .min_w_0()
+                    .overflow_hidden()
+                    .h(theme.sizes.control_height)
+                    .px(theme.spacing.md)
+                    .rounded(theme.radii.control)
+                    .text_spec(&theme.text.control)
+                    .text_color(c.fg)
+                    // A control inside the drag region.
+                    .occlude()
+                    .cursor_pointer()
+                    .when(open.is_some(), |this| this.bg(c.control_hover))
+                    .hover(move |style| style.bg(hover))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.toggle_switcher(&ToggleSwitcher, window, cx)
+                    }))
+                    .child(icon(DvIcon::Folder, px(15.), c.fg2))
+                    .child(text)
+                    .child(icon(DvIcon::ChevronDown, px(12.), c.fg3))
+                    .automation_target("titlebar/switcher"),
+            )
+            .children(open.map(|view| hang(view.into_any_element())))
+            .into_any_element()
+    }
+
+    /// The source picker's button (DESIGN §2 `[source ▾]`), and the menu under it while open.
+    fn render_source_button(&self, theme: &DvTheme, cx: &mut Context<Self>) -> AnyElement {
+        let c = &theme.colors;
+        let hover = c.control_hover;
+        let open = self
+            .source_picker
+            .as_ref()
+            .map(|overlay| overlay.view.clone());
+        div()
+            .relative()
+            .flex_none()
+            .ml(theme.spacing.sm)
+            .child(
+                div()
+                    .id("titlebar-source")
+                    .role(Role::Button)
+                    .aria_label("Change what this review compares")
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .h(theme.sizes.control_height)
+                    .px(theme.spacing.md)
+                    .rounded(theme.radii.control)
+                    .occlude()
+                    .cursor_pointer()
+                    .when(open.is_some(), |this| this.bg(c.control_hover))
+                    .hover(move |style| style.bg(hover))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.source_picker.is_some() {
+                            this.close_menu(window, cx);
+                        } else {
+                            this.open_source_picker(window, cx);
+                        }
+                    }))
+                    .child(icon(DvIcon::ArrowLeftRight, px(15.), c.fg2))
+                    .child(icon(DvIcon::ChevronDown, px(12.), c.fg3))
+                    .automation_target("titlebar/source"),
+            )
+            .children(open.map(|view| hang(view.into_any_element())))
+            .into_any_element()
+    }
+}
+
+/// Hangs an overlay under its button: from a zero-size box at the button's bottom-left corner,
+/// 8px down (just clear of the title bar), kept inside the window.
+fn hang(overlay: AnyElement) -> AnyElement {
+    div()
+        .absolute()
+        .left_0()
+        .bottom_0()
+        .child(
+            deferred(
+                anchored()
+                    .anchor(Anchor::TopLeft)
+                    .offset(point(px(0.), px(8.)))
+                    .snap_to_window_with_margin(px(8.))
+                    .child(overlay),
+            )
+            .with_priority(MENU_PRIORITY),
         )
-        .automation_target("titlebar")
+        .into_any_element()
+}
+
+/// The repository's name in the switcher button: it truncates at its end once what follows it
+/// ([`after_name`]) has given up all its room, so nothing after the button (the keycap, the
+/// source picker) is ever drawn over it (DESIGN §4.1).
+fn repo_name(name: String) -> AnyElement {
+    div()
+        .min_w_0()
+        .truncate()
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(SharedString::from(name))
+        .into_any_element()
+}
+
+/// How much more readily what follows the name gives way than the name (whose factor is 1).
+/// Flex shrinking shares a shortfall by factor times size, so at this ratio the name's share
+/// rounds to nothing until the label has none left; a factor of 0 instead would leave the name
+/// unable to shrink at all (CSS flexbox §9.7 scales the shortfall by factors that sum below 1).
+const AFTER_NAME_SHRINK: f32 = 1e20;
+
+/// What follows the name ("· working tree vs main"): it truncates first, and the name only once
+/// it has no room left.
+fn after_name() -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .min_w_0()
+        .flex_shrink(AFTER_NAME_SHRINK)
+        .overflow_hidden()
+}
+
+/// A target label with its "vs" dimmed (`working tree vs main`), truncated at its end when the
+/// bar is narrow.
+fn target_label(label: &str, fg: Hsla, dim: Hsla) -> AnyElement {
+    let dimmed = label.find(" vs ").map(|at| at + 1..at + 3);
+    let text = StyledText::new(SharedString::from(label.to_string())).with_highlights(dimmed.map(
+        |range| {
+            (
+                range,
+                HighlightStyle {
+                    color: Some(dim),
+                    ..Default::default()
+                },
+            )
+        },
+    ));
+    div()
+        .min_w_0()
+        .truncate()
+        .text_color(fg)
+        .child(text)
+        .into_any_element()
 }
 
 /// dv's mark in the accent and the wordmark.
@@ -78,33 +359,6 @@ fn mark(left_inset: Pixels, theme: &DvTheme) -> AnyElement {
                 .child("dv"),
         )
         .automation_target("titlebar/mark")
-}
-
-/// The review switcher (`Ctrl O`, PLAN §11 `switcher`); it opens nothing yet.
-fn switcher(theme: &DvTheme) -> AnyElement {
-    let c = &theme.colors;
-    let hover = c.control_hover;
-    div()
-        .id("titlebar-switcher")
-        .role(Role::Button)
-        .aria_label("Switch repository or review (Ctrl O)")
-        .flex_none()
-        .flex()
-        .items_center()
-        .gap(px(7.))
-        .ml(theme.spacing.sm)
-        .h(theme.sizes.control_height)
-        .px(theme.spacing.md)
-        .rounded(theme.radii.control)
-        .text_spec(&theme.text.control)
-        .text_color(c.fg2)
-        // A control inside the drag region.
-        .occlude()
-        .hover(move |style| style.bg(hover))
-        .child(icon(DvIcon::Folder, px(15.), c.fg2))
-        .child("No review open")
-        .child(icon(DvIcon::ChevronDown, px(12.), c.fg3))
-        .automation_target("titlebar/switcher")
 }
 
 /// The command field (`Ctrl K`, PLAN §11 `palette`); it opens nothing yet.
@@ -136,7 +390,7 @@ fn command_field(theme: &DvTheme) -> AnyElement {
                 .whitespace_nowrap()
                 .child("Go to file, review or command"),
         )
-        .child(kbd("Ctrl K", theme))
+        .child(kbd(keymap::label("secondary-k"), theme))
         .automation_target("titlebar/command")
 }
 

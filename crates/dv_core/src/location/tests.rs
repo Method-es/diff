@@ -146,5 +146,8 @@ fn a_wsl_location_has_no_backend_yet() {
         matches!(&err, BackendError::Unavailable { location, .. } if location == "Ubuntu:/home/kyle/api"),
         "{err:?}"
     );
-    assert!(err.to_string().contains("Phase 4"), "{err}");
+    assert!(
+        err.to_string().contains("WSL support arrives later"),
+        "{err}"
+    );
 }

@@ -2,18 +2,32 @@
 //! the [`Services`] global by [`init`] before the first window opens. Views reach them through
 //! [`ActiveServices::services`].
 //!
-//! - [`Settings`] (`settings`): the window material and the light/dark mode, saved in the data
-//!   dir as they change.
+//! - [`Settings`] (`settings`): the window material, the light/dark mode and the panel's width,
+//!   saved in the data dir as they change.
+//! - [`Locations`] (`locations`): the one backend per repository, opened off the UI thread.
+//! - [`Reviews`] (`reviews`): the known repositories (`known_repos.json`) and, per repository,
+//!   its reviews and uncommitted changes, as the switcher lists them.
+//! - [`ReviewUi`] (`review_ui`): what the reviewer chose per review (`review_ui.json`: split or
+//!   unified).
 //!
-//! The `System` seam (opening URLs, revealing files, the folder picker) is the separate
-//! [`crate::system`] global, because automation swaps it for a recorder.
+//! An open review is a `crate::session::ReviewSession`, which the shell holds; it works through
+//! the same `Locations` backend. The `System` seam (opening URLs, revealing files, the folder
+//! picker, the clipboard) is the separate [`crate::system`] global, because automation swaps it
+//! for a recorder.
 
+pub mod locations;
+pub mod persist;
+pub mod review_ui;
+pub mod reviews;
 pub mod settings;
 
 use std::path::{Path, PathBuf};
 
 use gpui::{App, AppContext as _, Entity, Global};
 
+pub use locations::{EnvOverlay, Locations};
+pub use review_ui::{ReviewUi, ViewMode};
+pub use reviews::{Reviews, ReviewsEvent};
 pub use settings::{Mode, Settings, SettingsEvent, SettingsFile};
 
 /// What [`init`] needs from the binary.
@@ -26,6 +40,9 @@ pub struct ServicesConfig {
 /// The app's services.
 pub struct Services {
     pub settings: Entity<Settings>,
+    pub locations: Entity<Locations>,
+    pub reviews: Entity<Reviews>,
+    pub review_ui: Entity<ReviewUi>,
     data_dir: PathBuf,
 }
 
@@ -39,15 +56,28 @@ impl Services {
     /// Nothing is loading or waiting to be saved: automation's `settled`.
     pub fn is_settled(&self, cx: &App) -> bool {
         self.settings.read(cx).is_settled()
+            && self.locations.read(cx).is_settled()
+            && self.reviews.read(cx).is_settled(cx)
+            && self.review_ui.read(cx).is_settled(cx)
     }
 }
 
-/// Builds the services (reading the settings synchronously) and installs them as a global.
+/// Builds the services (reading the settings, the known repositories and the per-review
+/// choices synchronously) and installs them as a global.
 pub fn init(config: ServicesConfig, cx: &mut App) {
     let ServicesConfig { data_dir } = config;
     let path = data_dir.join(settings::SETTINGS_FILE);
     let settings = cx.new(|cx| Settings::load(path, cx));
-    cx.set_global(Services { settings, data_dir });
+    let locations = cx.new(|_| Locations::new());
+    let reviews = cx.new(|cx| Reviews::new(locations.clone(), &data_dir, cx));
+    let review_ui = cx.new(|cx| ReviewUi::new(&data_dir, cx));
+    cx.set_global(Services {
+        settings,
+        locations,
+        reviews,
+        review_ui,
+        data_dir,
+    });
 }
 
 /// Access to the installed [`Services`].

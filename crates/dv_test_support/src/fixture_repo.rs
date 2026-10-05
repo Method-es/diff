@@ -1,5 +1,5 @@
-//! `FixtureRepo`: a real git repository in a temp dir, built step by step through the `git` CLI
-//! (docs/PLAN.md §14.2).
+//! `FixtureRepo`: a real git repository in a temp dir (or a kept directory), built step by step
+//! through the `git` CLI (docs/PLAN.md §14.2).
 //!
 //! Fixtures are reproducible: every commit carries the same identity and a date derived from its
 //! position ([`EPOCH`] + n × [`TICK_SECS`]), so the same script yields the same commit ids on
@@ -77,7 +77,8 @@ const LOCAL_CONFIG: &[(&str, &str)] = &[
     ("gc.auto", "0"),
 ];
 
-/// A git repository in a temp dir, removed when the value is dropped.
+/// A git repository in a temp dir, removed when the value is dropped, or built at a given path
+/// and kept ([`FixtureRepo::persistent`]).
 ///
 /// Methods that change the repo return `&Self`, so a fixture reads as a short script:
 ///
@@ -93,10 +94,16 @@ const LOCAL_CONFIG: &[(&str, &str)] = &[
 pub struct FixtureRepo {
     /// Owns `<root>/repo` (the work tree), `<root>/home` (the fixture's `HOME`) and whatever else
     /// a test creates beside them ([`FixtureRepo::add_worktree`], [`FixtureRepo::bare_clone`],
-    /// [`FixtureRepo::outside_dir`]).
-    root: tempfile::TempDir,
-    /// `root`'s path in the form git reports it ([`real_path`]).
+    /// [`FixtureRepo::outside_dir`]); `None` for a persistent fixture, which nothing removes.
+    root: Option<tempfile::TempDir>,
+    /// Where the fixture's own directories go (`home`, and what a test creates beside the
+    /// repo), in the form git reports paths ([`real_path`]): the temp dir, or
+    /// `<work tree>.fixture` for a persistent fixture.
     base: PathBuf,
+    /// The directory git's repository discovery stops at (`GIT_CEILING_DIRECTORIES`), so no
+    /// git call made in or beside the fixture finds a repository above it: the temp dir, or a
+    /// persistent work tree's parent.
+    ceiling: PathBuf,
     path: PathBuf,
     home: PathBuf,
     /// Commits made so far; dates the next one.
@@ -115,6 +122,90 @@ impl FixtureRepo {
         Self::init(&["--object-format=sha256"])
     }
 
+    /// An empty repository (no commits) on branch `main` built at `path`, its work tree, and
+    /// kept when the value is dropped: for repos that outlive the code that built them, such as
+    /// the ones the automation host seeds for a scenario (PLAN §14.2), whose output directory the
+    /// e2e runner wipes before each run. `path` must not exist yet or be an empty directory.
+    ///
+    /// The fixture's own directories (its `HOME`, and what [`FixtureRepo::add_worktree`],
+    /// [`FixtureRepo::bare_clone`] and [`FixtureRepo::outside_dir`] create) go into
+    /// `<path>.fixture/` beside it, so the work tree holds the repository alone and keeps its
+    /// own name (`repos/api-server`, not `repos/api-server/repo`). Repository discovery stops
+    /// at `path`'s parent.
+    pub fn persistent(path: impl AsRef<Path>) -> Self {
+        let path = std::path::absolute(path.as_ref())
+            .unwrap_or_else(|err| panic!("{}: {err}", path.as_ref().display()));
+        let empty = match std::fs::read_dir(&path) {
+            Ok(mut entries) => entries.next().is_none(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+            Err(err) => panic!("reading {}: {err}", path.display()),
+        };
+        assert!(
+            empty,
+            "a persistent fixture is built in a new or empty directory, not {}",
+            path.display()
+        );
+        let name = path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or_else(|| panic!("{} has no UTF-8 file name", path.display()))
+            .to_string();
+        let parent = path
+            .parent()
+            .unwrap_or_else(|| panic!("{} has no parent directory", path.display()));
+        std::fs::create_dir_all(parent)
+            .unwrap_or_else(|err| panic!("creating {}: {err}", parent.display()));
+        let ceiling = real_path(parent);
+        let path = ceiling.join(&name);
+        let base = ceiling.join(format!("{name}.fixture"));
+        Self::build(None, base, ceiling, path, &[])
+    }
+
+    /// The persistent fixture [`FixtureRepo::persistent`] built at `path`, found again (by a
+    /// later process, such as the automation host after a restart): the same work tree,
+    /// `HOME` and environment. Commits continue the date sequence from the number of commits on
+    /// the fixture's branches and tags. Panics when `path` isn't such a fixture.
+    pub fn reopen(path: impl AsRef<Path>) -> Self {
+        let path = std::path::absolute(path.as_ref())
+            .unwrap_or_else(|err| panic!("{}: {err}", path.as_ref().display()));
+        let name = path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or_else(|| panic!("{} has no UTF-8 file name", path.display()))
+            .to_string();
+        let parent = path
+            .parent()
+            .unwrap_or_else(|| panic!("{} has no parent directory", path.display()));
+        let ceiling = real_path(parent);
+        let path = ceiling.join(&name);
+        let base = ceiling.join(format!("{name}.fixture"));
+        let home = base.join("home");
+        assert!(
+            path.join(".git").is_dir() && home.is_dir(),
+            "{} isn't a persistent fixture (no .git or no {})",
+            path.display(),
+            home.display()
+        );
+        let repo = Self {
+            root: None,
+            base,
+            ceiling,
+            path,
+            home,
+            commits: Cell::new(0),
+        };
+        let count = repo
+            .git_command()
+            .args(["rev-list", "--count", "--branches", "--tags"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8_lossy(&output.stdout).trim().parse().ok())
+            .unwrap_or(0);
+        repo.commits.set(count);
+        repo
+    }
+
     fn init(extra: &[&str]) -> Self {
         let root = tempfile::Builder::new()
             .prefix("dv-fixture-")
@@ -122,6 +213,17 @@ impl FixtureRepo {
             .unwrap_or_else(|err| panic!("creating a fixture temp dir: {err}"));
         let base = real_path(root.path());
         let path = base.join("repo");
+        Self::build(Some(root), base.clone(), base, path, extra)
+    }
+
+    /// Creates the work tree and `HOME`, and runs `git init` with `extra` arguments.
+    fn build(
+        root: Option<tempfile::TempDir>,
+        base: PathBuf,
+        ceiling: PathBuf,
+        path: PathBuf,
+        extra: &[&str],
+    ) -> Self {
         let home = base.join("home");
         for dir in [&path, &home] {
             std::fs::create_dir_all(dir)
@@ -130,6 +232,7 @@ impl FixtureRepo {
         let repo = Self {
             root,
             base,
+            ceiling,
             path,
             home,
             commits: Cell::new(0),
@@ -157,8 +260,8 @@ impl FixtureRepo {
     /// The environment changes every git the fixture runs gets, as `(name, Some(value))` to set
     /// and `(name, None)` to remove: none of the developer's system, global or XDG configuration
     /// (`HOME`, `XDG_CONFIG_HOME` and `GIT_CONFIG_GLOBAL` point into the fixture), no system
-    /// gitattributes, no repository discovery above the fixture's temp dir
-    /// (`GIT_CEILING_DIRECTORIES`), `LC_ALL=C`, the fixture identity and the next commit's dates,
+    /// gitattributes, no repository discovery above the fixture (`GIT_CEILING_DIRECTORIES`),
+    /// `LC_ALL=C`, the fixture identity and the next commit's dates,
     /// and none of the inherited variables that point git elsewhere or change what it prints
     /// ([`INHERITED_GIT_VARS`]).
     ///
@@ -185,7 +288,7 @@ impl FixtureRepo {
             ),
             set("GIT_CONFIG_NOSYSTEM", "1".as_ref()),
             set("GIT_ATTR_NOSYSTEM", "1".as_ref()),
-            set("GIT_CEILING_DIRECTORIES", self.base.as_os_str()),
+            set("GIT_CEILING_DIRECTORIES", self.ceiling.as_os_str()),
             set("GIT_TERMINAL_PROMPT", "0".as_ref()),
             set("GIT_MERGE_AUTOEDIT", "no".as_ref()),
             set("LC_ALL", "C".as_ref()),
@@ -366,7 +469,7 @@ impl FixtureRepo {
     }
 
     /// Adds a linked worktree (`git worktree add`) on a new branch `branch` created at `HEAD`,
-    /// at `<temp dir>/worktrees/<name>` beside the main work tree, and returns its path. Its git
+    /// at `<base>/worktrees/<name>` beside the main work tree, and returns its path. Its git
     /// dir is `.git/worktrees/<name>`; its common dir stays the main repo's `.git`.
     pub fn add_worktree(&self, name: &str, branch: &str) -> PathBuf {
         let path = self.beside("worktrees", name);
@@ -381,7 +484,7 @@ impl FixtureRepo {
         path
     }
 
-    /// Clones this repo as a bare repository to `<temp dir>/<name>` and returns its path.
+    /// Clones this repo as a bare repository to `<base>/<name>` and returns its path.
     pub fn bare_clone(&self, name: &str) -> PathBuf {
         let path = self.beside("", name);
         self.git(&[
@@ -394,8 +497,8 @@ impl FixtureRepo {
         path
     }
 
-    /// Creates an empty directory `<temp dir>/<name>` outside every repository (the fixture's
-    /// git calls and [`FixtureRepo::env_overlay`] stop repository discovery at the temp dir) and
+    /// Creates an empty directory `<base>/<name>` outside every repository (the fixture's
+    /// git calls and [`FixtureRepo::env_overlay`] stop repository discovery above it) and
     /// returns its path.
     pub fn outside_dir(&self, name: &str) -> PathBuf {
         let path = self.beside("", name);
@@ -404,7 +507,7 @@ impl FixtureRepo {
         path
     }
 
-    /// `<temp dir>/<group>/<name>` (`<temp dir>/<name>` for an empty group): a new entry beside
+    /// `<base>/<group>/<name>` (`<base>/<name>` for an empty group): a new entry beside
     /// the work tree. Panics on a name that isn't a plain file name, or one that is taken.
     fn beside(&self, group: &str, name: &str) -> PathBuf {
         let plain = !name.is_empty()
@@ -448,7 +551,8 @@ impl std::fmt::Debug for FixtureRepo {
         f.debug_struct("FixtureRepo")
             .field("path", &self.path)
             .field("commits", &self.commits.get())
-            .field("root", &self.root.path())
+            .field("base", &self.base)
+            .field("persistent", &self.root.is_none())
             .finish()
     }
 }
@@ -470,7 +574,7 @@ fn create_parent(path: &Path) {
     }
 }
 
-/// The temp dir with symlinks resolved where that keeps the path usable: macOS's `/var` is a
+/// A directory with symlinks resolved where that keeps the path usable: macOS's `/var` is a
 /// link to `/private/var`, and git reports the resolved form. Windows keeps the path as given,
 /// because resolving it produces a `\\?\` path many tools reject.
 fn real_path(path: &Path) -> PathBuf {

@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::review::ops::{
-    add_thread, close_round, delete_item, edit_body, link_pr, mark_viewed, open_review,
-    record_submission, reply, set_status, set_thread_state,
+    add_thread, close_round, delete_item, edit_body, is_review_of, link_pr, mark_viewed,
+    open_review, record_submission, reply, set_status, set_thread_state,
 };
 use crate::testing::open_at;
 
@@ -115,9 +115,17 @@ fn working_reviews_are_per_worktree_and_commit_reviews_are_shared() {
         rev: "HEAD".to_string(),
     };
     let from_main = open_review(&main, commit.clone(), reviewer()).unwrap();
-    let from_linked = open_review(&linked, commit, reviewer()).unwrap();
+    let from_linked = open_review(&linked, commit.clone(), reviewer()).unwrap();
     assert!(!from_linked.created, "the same commits from any worktree");
     assert_eq!(from_linked.review.id, from_main.review.id);
+
+    // The rule open_review resumes by, as the switcher asks it of a listed summary.
+    let summary = main_working.review.summary();
+    assert!(is_review_of(&summary, &Target::Working, main.worktree()));
+    assert!(!is_review_of(&summary, &Target::Working, linked.worktree()));
+    assert!(!is_review_of(&summary, &Target::Staged, main.worktree()));
+    let summary = from_main.review.summary();
+    assert!(is_review_of(&summary, &commit, linked.worktree()));
 }
 
 #[test]

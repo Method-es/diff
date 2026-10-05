@@ -16,6 +16,7 @@ fn one_of_each() -> Vec<EventBody> {
             new_oid: oid('b'),
             old_oid: oid('a'),
             verdict: Some(Verdict::RequestChanges),
+            body: Some("Two things before this lands.".to_string()),
         },
         EventBody::Viewed {
             round: 1,
@@ -221,4 +222,29 @@ fn newer_events_are_counted_not_reported() {
             status: ReviewStatus::Ready
         }
     );
+}
+
+#[test]
+fn a_round_closed_line_without_a_body_still_reads() {
+    // As written before rounds carried a summary: optional fields need no version bump (PLAN §7).
+    let line = format!(
+        r#"{{"v":1,"eid":"e-01j9z3k4m5n6p7q8r9s0t1v2w3","at":5,"kind":"round_closed","n":1,"new_oid":"{}","old_oid":"{}","verdict":"approve"}}"#,
+        oid('b'),
+        oid('a')
+    );
+    let parsed = parse_log(line.as_bytes());
+    assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+    assert_eq!(
+        parsed.events[0].body,
+        EventBody::RoundClosed {
+            n: 1,
+            new_oid: oid('b'),
+            old_oid: oid('a'),
+            verdict: Some(Verdict::Approve),
+            body: None,
+        }
+    );
+    // And an empty body is left out of the line.
+    let written = String::from_utf8(parsed.events[0].to_line().unwrap()).unwrap();
+    assert_eq!(written, line);
 }

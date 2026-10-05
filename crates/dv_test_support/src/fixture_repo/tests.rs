@@ -538,3 +538,96 @@ fn stage_takes_names_the_os_cannot_create() {
     let listed = repo.git(&["ls-tree", "-z", "--name-only", "HEAD"]);
     assert!(listed.split('\0').any(|entry| entry == name), "{listed:?}");
 }
+
+#[test]
+fn a_persistent_fixture_is_built_at_its_path_and_kept() {
+    // Inside another repository, as a scenario's data dir sits inside dv's own checkout.
+    let scratch = tempfile::tempdir().unwrap();
+    let init = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(scratch.path())
+        .status()
+        .unwrap();
+    assert!(init.success());
+    let path = scratch.path().join("repos").join("api-server");
+    let repo = FixtureRepo::persistent(&path);
+    repo.write("src/lib.rs", "fn a() {}\n");
+    let base = repo.commit("base");
+    assert_eq!(repo.path().file_name().unwrap(), "api-server");
+    // The fixture's own directories sit beside the work tree, never in it.
+    assert!(!repo.home().starts_with(repo.path()), "{repo:?}");
+    let outside = repo.outside_dir("plain");
+    assert!(!outside.starts_with(repo.path()), "{}", outside.display());
+    assert_eq!(repo.git(&["status", "--porcelain", "--ignored"]), "");
+    // Discovery stops above the work tree: a directory beside it is in no repository.
+    let output = repo
+        .git_command()
+        .arg("-C")
+        .arg(&outside)
+        .args(["rev-parse", "--git-dir"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+
+    drop(repo);
+    assert!(path.join(".git").is_dir(), "kept after the drop");
+    let head = std::fs::read_to_string(path.join(".git").join("refs/heads/main")).unwrap();
+    assert_eq!(head.trim(), base);
+}
+
+#[test]
+fn a_persistent_fixture_reopens_where_it_was_built() {
+    let scratch = tempfile::tempdir().unwrap();
+    let path = scratch.path().join("repos").join("api-server");
+    let repo = FixtureRepo::persistent(&path);
+    repo.write(
+        "a.txt", "a
+",
+    );
+    repo.commit("one");
+    let overlay = repo.env_overlay();
+    let home = repo.home().to_path_buf();
+    drop(repo);
+
+    let again = FixtureRepo::reopen(&path);
+    assert_eq!(again.home(), home);
+    assert_eq!(
+        again.env_overlay(),
+        overlay,
+        "the same environment, the same next date"
+    );
+    again.write(
+        "a.txt", "b
+",
+    );
+    again.commit("two");
+    let dates = again.git(&["log", "--format=%at"]);
+    let dates: Vec<i64> = dates.lines().map(|date| date.parse().unwrap()).collect();
+    assert_eq!(
+        dates,
+        [EPOCH + TICK_SECS, EPOCH],
+        "the dates continue the sequence"
+    );
+
+    let message = panic_message(|| {
+        FixtureRepo::reopen(scratch.path().join("repos").join("missing"));
+    });
+    assert!(message.contains("isn't a persistent fixture"), "{message}");
+}
+
+#[test]
+fn a_persistent_fixture_needs_a_new_or_empty_directory() {
+    let scratch = tempfile::tempdir().unwrap();
+    let empty = scratch.path().join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    FixtureRepo::persistent(&empty);
+    assert!(empty.join(".git").is_dir());
+
+    let taken = scratch.path().join("taken");
+    std::fs::create_dir_all(&taken).unwrap();
+    std::fs::write(taken.join("file.txt"), "x\n").unwrap();
+    let message = panic_message(|| {
+        FixtureRepo::persistent(&taken);
+    });
+    assert!(message.contains("new or empty directory"), "{message}");
+}

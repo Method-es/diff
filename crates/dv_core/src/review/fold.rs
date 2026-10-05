@@ -325,6 +325,7 @@ impl Folder {
                 new_oid,
                 old_oid,
                 verdict,
+                body,
             } => {
                 let expected = self.review.current_round();
                 if *n != expected {
@@ -335,6 +336,7 @@ impl Folder {
                     old_oid: old_oid.clone(),
                     new_oid: new_oid.clone(),
                     verdict: *verdict,
+                    body: body.clone(),
                     closed_at: at,
                 });
                 Outcome::Changed

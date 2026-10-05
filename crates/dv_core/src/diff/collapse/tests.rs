@@ -91,6 +91,35 @@ fn diffs_without_changes() {
 }
 
 #[test]
+fn lines_marked_shown_stay_out_of_gaps() {
+    let lines = lines(&format!("-{}+", ".".repeat(60)));
+    let mut also = vec![false; 62];
+    // A run the reviewer had open in the middle of the gap, and one line next to the context.
+    also[30..36].fill(true);
+    also[4] = true;
+    assert_eq!(
+        show(&segments_showing(&lines, 3, &also)),
+        ["L0..5", "G5..30^^", "L30..36", "G36..58^^", "L58..62"]
+    );
+    // A marked line that would leave a one-line gap takes that line along (MIN_GAP).
+    also[28] = true;
+    assert_eq!(
+        show(&segments_showing(&lines, 3, &also)),
+        ["L0..5", "G5..28^^", "L28..36", "G36..58^^", "L58..62"]
+    );
+    // Nothing marked, or a mask shorter than the lines: the context rule alone.
+    assert_eq!(segments_showing(&lines, 3, &[]), segments(&lines, 3));
+    assert_eq!(
+        show(&segments_showing(
+            &super::tests::lines("....."),
+            3,
+            &[false, true]
+        )),
+        ["L0..2", "G2..5^_"]
+    );
+}
+
+#[test]
 fn expanding_reveals_twenty_lines_from_either_edge() {
     let lines = lines(&format!("-{}+", ".".repeat(60)));
     let base = segments(&lines, 3);

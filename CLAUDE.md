@@ -25,8 +25,8 @@ WSL; macOS and Linux supported. Agents read and answer reviews through the `dv` 
 
 | Crate | Role | gpui? |
 |---|---|---|
-| `dv` | bin: entry for the GUI, the CLI and (Linux) `dv backend --stdio`; automation host (`automation` feature, on by default) | yes |
-| `dv_ui` | views (`shell`, …) and services (`services::Settings`), the Glass theme (`theme`), window material (`appearance`, `platform`), assets, the `system` and `automation` seams (PLAN §11) | yes |
+| `dv` | bin: entry for the GUI, the CLI and (Linux) `dv backend --stdio`; automation host (`automation` feature, on by default), which also seeds scenario repos with `dv_test_support` | yes |
+| `dv_ui` | views (`shell`, `switcher`, `file_list`, `comments_list`, `diff_pane`, `thread`, `submit`, …) and their keys (`keymap`, `actions`), services (`Settings`, `Locations`, `Reviews`, `ReviewUi`), the open review (`session::ReviewSession`), highlighting (`syntax`, token kinds) and comment Markdown (`markdown`, sanitised), the Glass theme (`theme`), window material (`appearance`, `platform`), assets, the `system` and `automation` seams (PLAN §11) | yes |
 | `dv_core` | locations, the `Backend` trait and `LocalBackend` (PLAN §5.1), targets, git runner, diff pipeline, review event store, anchors, GitHub via `gh` (PLAN §6–§9) | **never** |
 | `dv_backend` | the stdio protocol, the `dv backend --stdio` server loop, `RemoteBackend`, distro install (PLAN §5) | never |
 | `dv_cli` | clap command tree, JSON DTOs, setup/doctor checks (PLAN §10, §12) | never |
@@ -36,7 +36,8 @@ WSL; macOS and Linux supported. Agents read and answer reviews through the `dv` 
 
 Direction: `dv` → `dv_ui` → {`dv_cli`, `dv_backend`, `dv_core`, `gpui-component`};
 `dv_cli` → {`dv_backend`, `dv_core`}; `dv_backend` → `dv_core`. `dv` and `dv_ui` reach
-`gpui_automation` only through their `automation` features. A gpui dependency in a "never" crate
+`gpui_automation` only through their `automation` features; `dv`'s also brings `dv_core` and
+`dv_test_support` (both gpui-free) for the scenario repos it seeds, never in the shipped build. A gpui dependency in a "never" crate
 fails `script/check` (step 3, `cargo tree`), because those crates run headless: in the CLI, as the
 static musl backend inside WSL, and in fast tests.
 
@@ -71,10 +72,11 @@ components = `gpui-component =0.6.6` (PLAN D1). Don't guess APIs: grep the sourc
 - **Windows and the OS go through seams.** Every window opens through
   `dv_ui::automation::open_window`, and nothing calls `App::activate`, `Window::activate_window`,
   `Window::resize` or `Window::zoom_window` while `dv_ui::automation::is_background()` (each one
-  raises and activates the window on Windows). Every browser link, reveal-in-folder and folder
-  picker goes through `dv_ui::system` (`open_url`, `reveal`, `pick_folder`), never gpui's
-  `open_url` / `reveal_path` / `prompt_for_paths`: under automation it records the request
-  (`state.system`) instead of opening anything.
+  raises and activates the window on Windows). Every browser link, reveal-in-folder, folder
+  picker and clipboard write goes through `dv_ui::system` (`open_url`, `reveal`, `pick_folder`,
+  `write_clipboard`), never gpui's `open_url` / `reveal_path` / `prompt_for_paths` /
+  `write_to_clipboard`: under automation it records the request (`state.system`) instead of
+  opening anything, so a test run never replaces the owner's clipboard.
 - **Colours come from the theme.** Views read `cx.dv_theme()` (`dv_ui::theme`, DESIGN §1 tokens
   for the appearance × material in use) and never hard-code a colour. Shared sizes (DESIGN §1.5:
   control and bar heights, radii, the spacing scale, type) come from the theme too; a one-off
@@ -123,7 +125,9 @@ App windows open on the owner's real desktop.
   Every run uses `--data-dir` / `DV_DATA_DIR` under `target/` (the runner gives each scenario its
   own); under `--automation` without one, dv uses a fresh temp dir (removed when it exits), never
   the real one. dv reads that folder's `settings.json` leniently and keeps keys it doesn't know,
-  because the first implementation's file has the same name.
+  because the first implementation's file has the same name; dv's repo list is
+  `known_repos.json`, never the first implementation's `repos.json`, and its per-review choices
+  (split or unified) are `review_ui.json`.
 - Verify UI by looking: read the PNGs a run writes and inspect them against DESIGN.md. `state` is
   the assertion surface; screenshots are for style. The dev display runs at 150% scaling, so
   screenshots are physical pixels (a 1440×900 window captures as ~2160×1350).

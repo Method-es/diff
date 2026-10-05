@@ -246,7 +246,8 @@ pub(crate) fn join(
 /// command (a git-lfs asset is a three-line text pointer to git, whatever its bytes), or one with
 /// a `working-tree-encoding` (UTF-16, say). The same file staged is counted from its converted
 /// content by `--numstat`, so this keeps the two states in agreement. A nested repository
-/// (`ls-files` prints it as `dir/`) is listed as a submodule-like entry.
+/// (`ls-files` prints it as `dir/`) is listed as a submodule-like entry with one addition, as
+/// `--numstat` counts the gitlink it becomes once staged (or snapshotted, PLAN §2.3).
 fn untracked(repo: &GitRepo) -> Result<Vec<FileEntry>, DiffError> {
     let args = ["ls-files", "--others", "--exclude-standard", "-z"].map(String::from);
     let output = git(repo, &args, None)?;
@@ -321,7 +322,7 @@ fn untracked(repo: &GitRepo) -> Result<Vec<FileEntry>, DiffError> {
             path: path.trim_end_matches('/').to_string(),
             old_path: None,
             status: FileStatus::Untracked,
-            additions: 0,
+            additions: 1,
             deletions: 0,
             binary: false,
             old_mode: None,

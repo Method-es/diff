@@ -15,8 +15,11 @@
 {"cmd": "bounds", "target": "titlebar/switcher", "expect_result": {"pointer": "/visible", "not_equals": null}}
 {"cmd": "bounds", "target": "shell/panel/header", "expect_result": {"pointer": "/visible", "not_equals": null}}
 {"cmd": "bounds", "target": "shell/main/empty", "expect_result": {"pointer": "/visible", "not_equals": null}}
-{"cmd": "bounds", "target": "statusbar/repo", "expect_result": [{"pointer": "/visible", "not_equals": null}, {"pointer": "/y", "gte": 872}]}
-{"cmd": "bounds", "target": "statusbar/material", "expect_result": [{"pointer": "/visible", "not_equals": null}, {"pointer": "/y", "gte": 872}]}
+// The status bar says where the review lives; with none open, only that there is no repo.
+{"cmd": "bounds", "target": "statusbar/location", "expect_result": [{"pointer": "/visible", "not_equals": null}, {"pointer": "/x", "equals": 12}, {"pointer": "/y", "gte": 872}]}
+{"cmd": "bounds", "target": "statusbar/review", "expect_error": "no target"}
+{"cmd": "bounds", "target": "statusbar/finish", "expect_error": "no target"}
+{"expect": {"pointer": "/shell/status", "equals": {"health": "idle", "location": "No repo", "review": null, "finish": false}}}
 {"cmd": "screenshot", "name": "shell-1440x900"}
 
 // At the minimum size (1100x700) the panel keeps its width and the diff area shrinks.

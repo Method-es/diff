@@ -274,6 +274,9 @@ pub struct Round {
     pub new_oid: Oid,
     /// `None` for a plain "Snapshot round".
     pub verdict: Option<Verdict>,
+    /// The reviewer's summary of the round, Markdown; `None` when they wrote none.
+    #[serde(default)]
+    pub body: Option<String>,
     /// When the round closed, in ms since the Unix epoch.
     pub closed_at: u64,
 }
@@ -378,6 +381,17 @@ impl Review {
         u32::try_from(self.rounds.len())
             .unwrap_or(u32::MAX)
             .saturating_add(1)
+    }
+
+    /// The round a reader is shown the review in: the round in progress, or, once the review
+    /// is final and no round can follow, the last round it closed (round 1 when it ended
+    /// without closing one).
+    pub fn shown_round(&self) -> u32 {
+        if self.status.is_final() {
+            u32::try_from(self.rounds.len()).unwrap_or(u32::MAX).max(1)
+        } else {
+            self.current_round()
+        }
     }
 
     /// Whether this is a PR review, as opposed to a local one: its target is a pull request.

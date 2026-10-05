@@ -1,0 +1,133 @@
+{"scenario": {"window_size": "1440x900", "description": "The screen around the stream: dv open on a seeded repo opens the switcher with its uncommitted changes, the keyboard filters and opens the working review, the file list (current file, viewed checkbox, filter), Ctrl B and the panel's resize, the source picker, the status bar, a WSL repo's row and banner, a long repo name at the minimum width, a repo whose .git went away; screenshots in dark Mica, dark Opaque and light."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "settle"}
+{"expect": [{"pointer": "/switcher/open", "equals": false}, {"pointer": "/shell/empty_state", "equals": "no_review"}, {"pointer": "/shell/status/location", "equals": "No repo"}, {"pointer": "/file_list/shown", "equals": []}]}
+
+// The board's fixture: two routes, a new cache module, an http change, a migration, package.json and the README.
+{"cmd": "seed_repo", "name": "api-server", "steps": [{"write": "src/routes/users.ts", "text": "import { db } from \"../db\";\nimport type { User } from \"../types\";\n\nexport const users = Router();\n\nusers.get(\"/:id\", async (req, res) => {\n  const user = await db.users.find(req.params.id);\n  if (!user) return res.status(404).end();\n  res.json({ id: user.id, name: user.name });\n});\n"}, {"write": "src/routes/users.test.ts", "text": "import { users } from \"./users\";\n\ntest(\"GET /users/:id\", async () => {\n  expect(users).toBeDefined();\n});\n"}, {"write": "src/lib/http.ts", "text": "export async function get(url: string) {\n  const response = await fetch(url, { signal: AbortSignal.timeout(5000) });\n  return response.json();\n}\n"}, {"write": "package.json", "text": "{\n  \"name\": \"api-server\",\n  \"version\": \"1.4.0\"\n}\n"}, {"write": "README.md", "text": "# api-server\n\nThe users API.\n"}, {"commit": "base"}, {"write": "src/routes/users.ts", "text": "import { db } from \"../db\";\nimport { cache } from \"../lib/cache\";\nimport type { User } from \"../types\";\n\nexport const users = Router();\n\nexport async function fetchUser(id: string): Promise<User | null> {\n  const key = `user:${id.toLowerCase()}`;\n  const hit = cache.get<User>(key);\n  if (hit) return hit;\n  const user = await db.users.find(id);\n  if (user) cache.set(key, user, 60_000);\n  return user;\n}\n\nusers.get(\"/:id\", async (req, res) => {\n  const user = await fetchUser(req.params.id);\n  if (!user) return res.status(404).json({ error: \"not_found\" });\n  res.json({ id: user.id, name: user.name, email: user.email });\n});\n"}, {"write": "src/routes/users.test.ts", "text": "import { users } from \"./users\";\n\ntest(\"GET /users/:id\", async () => {\n  expect(users).toBeDefined();\n});\n\ntest(\"GET /users/:id caches by normalised id\", async () => {\n  expect(true).toBe(true);\n});\n"}, {"write": "src/lib/cache.ts", "text": "const entries = new Map<string, { value: unknown; until: number }>();\n\nexport const cache = {\n  get<T>(key: string): T | undefined {\n    const entry = entries.get(key);\n    return entry && entry.until > Date.now() ? (entry.value as T) : undefined;\n  },\n  set(key: string, value: unknown, ttl: number) {\n    entries.set(key, { value, until: Date.now() + ttl });\n  },\n};\n"}, {"write": "src/lib/http.ts", "text": "import { config } from \"../config\";\n\nexport async function get(url: string) {\n  const response = await fetch(url, { signal: AbortSignal.timeout(config.timeoutMs) });\n  return response.json();\n}\n"}, {"write": "src/db/migrations/0042_add_email.sql", "text": "ALTER TABLE users ADD COLUMN email TEXT;\n"}, {"write": "package.json", "text": "{\n  \"name\": \"api-server\",\n  \"version\": \"1.5.0\"\n}\n"}, {"write": "README.md", "text": "# api-server\n\nThe users API, with a cache in front of the database.\n"}], "save": {"repo": "/path"}}
+
+// `open` (dv open <path>) adds the repo and opens the switcher on its uncommitted changes.
+{"cmd": "open", "path": "${repo}", "expect_result": {"pointer": "/path", "equals": "${repo}"}}
+{"cmd": "wait_for", "pointer": "/repos/0/working/files", "equals": 7, "timeout_ms": 20000}
+{"cmd": "settle", "timeout_ms": 20000}
+{"expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/switcher/query", "equals": ""}, {"pointer": "/switcher/selected", "equals": "api-server/working"}, {"pointer": "/switcher/items/0", "equals": {"key": "api-server/working", "kind": "target", "target": "working", "label": "Uncommitted changes", "repo": "${repo}", "review": null}}, {"pointer": "/switcher/items/1/key", "equals": "api-server/staged"}, {"pointer": "/switcher/items/2/key", "equals": "open_folder"}, {"pointer": "/repos/0/working", "equals": {"files": 7, "additions": 34, "deletions": 6}}]}
+{"cmd": "bounds", "target": "switcher/repo/api-server", "expect_result": {"pointer": "/visible", "not_equals": null}}
+{"cmd": "bounds", "target": "switcher", "expect_result": [{"pointer": "/w", "equals": 560}, {"pointer": "/y", "gte": 40}, {"pointer": "/y", "lte": 46}]}
+{"cmd": "screenshot", "name": "switcher-dark-mica"}
+
+// Typing filters the rows; ↓/↑ move the selection and wrap.
+{"cmd": "type", "text": "stag", "expect": [{"pointer": "/switcher/query", "equals": "stag"}, {"pointer": "/switcher/items", "len": 2}, {"pointer": "/switcher/selected", "equals": "api-server/staged"}]}
+{"cmd": "keys", "keys": "backspace backspace backspace backspace", "expect": [{"pointer": "/switcher/items", "len": 3}, {"pointer": "/switcher/selected", "equals": "api-server/working"}]}
+{"cmd": "keys", "keys": "down down down", "expect": {"pointer": "/switcher/selected", "equals": "api-server/working"}}
+
+// Enter opens the working review: the file list, the stream's current file and the status bar follow.
+{"cmd": "key", "keystroke": "enter"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"expect": [{"pointer": "/switcher/open", "equals": false}, {"pointer": "/session/target", "equals": "working"}, {"pointer": "/session/target_label", "equals": "working tree vs main"}, {"pointer": "/session/total", "equals": 7}, {"pointer": "/session/viewed", "equals": 0}, {"pointer": "/shell/empty_state", "equals": null}, {"pointer": "/file_list/shown", "equals": ["README.md", "package.json", "src/db/migrations/0042_add_email.sql", "src/lib/cache.ts", "src/lib/http.ts", "src/routes/users.test.ts", "src/routes/users.ts"]}, {"pointer": "/file_list/current_file", "equals": "README.md"}, {"pointer": "/session/current_file", "equals": "README.md"}]}
+{"expect": [{"pointer": "/shell/status", "equals": {"health": "live", "location": "Local · watching for changes", "review": "Open · round 1 · no comments", "finish": true}}, {"pointer": "/session/files/2/status", "equals": "untracked"}, {"pointer": "/session/files/6", "contains": {"path": "src/routes/users.ts", "status": "modified", "additions": 13, "deletions": 3}}]}
+{"cmd": "bounds", "target": "statusbar/location", "expect_result": [{"pointer": "/visible", "not_equals": null}, {"pointer": "/y", "gte": 872}]}
+{"cmd": "bounds", "target": "statusbar/review", "expect_result": {"pointer": "/visible", "not_equals": null}}
+{"cmd": "bounds", "target": "statusbar/finish", "expect_result": {"pointer": "/visible", "not_equals": null}}
+{"cmd": "bounds", "target": "titlebar/source", "expect_result": {"pointer": "/visible", "not_equals": null}}
+
+// A row's click makes its file the stream's current one; its checkbox marks it viewed through the store.
+{"cmd": "click", "target": "file_list/src/routes/users.ts", "expect": {"pointer": "/file_list/current_file", "equals": "src/routes/users.ts"}}
+{"cmd": "bounds", "target": "file_list/src/routes/users.ts", "expect_result": [{"pointer": "/h", "equals": 28}, {"pointer": "/w", "gte": 267}, {"pointer": "/w", "lte": 268}]}
+{"cmd": "click", "target": "file_list/src/routes/users.ts/viewed"}
+{"cmd": "wait_for", "pointer": "/session/viewed", "equals": 1}
+{"cmd": "click", "target": "file_list/package.json/viewed"}
+{"cmd": "wait_for", "pointer": "/session/viewed", "equals": 2}
+{"cmd": "settle"}
+{"expect": [{"pointer": "/session/files/6/viewed", "equals": true}, {"pointer": "/session/files/1/viewed", "equals": true}, {"pointer": "/session/files/0/viewed", "equals": false}]}
+{"cmd": "screenshot", "name": "review-dark-mica"}
+
+// The filter narrows the rows; Esc in it clears it.
+{"cmd": "click", "target": "file_list/filter"}
+{"cmd": "type", "text": "routes", "expect": [{"pointer": "/file_list/query", "equals": "routes"}, {"pointer": "/file_list/shown", "equals": ["src/routes/users.test.ts", "src/routes/users.ts"]}]}
+{"cmd": "key", "keystroke": "escape", "expect": [{"pointer": "/file_list/query", "equals": ""}, {"pointer": "/file_list/shown", "len": 7}]}
+
+// Ctrl B hides the panel and gives the main area the width; again shows it.
+{"cmd": "key", "keystroke": "ctrl-b", "expect": {"pointer": "/shell/panel_visible", "equals": false}}
+{"cmd": "bounds", "target": "shell/main", "expect_result": [{"pointer": "/x", "equals": 0}, {"pointer": "/w", "equals": 1440}]}
+{"cmd": "key", "keystroke": "ctrl-b", "expect": {"pointer": "/shell/panel_visible", "equals": true}}
+
+// Dragging the panel's edge resizes it within 220–420 and saves the width; a double click restores 280.
+{"cmd": "drag", "from": "shell/panel/resize", "to": [340, 500]}
+{"cmd": "settle"}
+{"expect": {"pointer": "/shell/panel_width", "equals": 340}}
+{"cmd": "bounds", "target": "shell/panel", "expect_result": {"pointer": "/w", "equals": 340}}
+{"cmd": "drag", "from": "shell/panel/resize", "to": [900, 500]}
+{"cmd": "settle", "expect": {"pointer": "/shell/panel_width", "equals": 420}}
+{"cmd": "click", "target": "shell/panel/resize", "count": 2}
+{"cmd": "settle", "expect": {"pointer": "/shell/panel_width", "equals": 280}}
+
+// The source picker lists the repo's targets with the open review checked.
+{"cmd": "click", "target": "titlebar/source"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"expect": [{"pointer": "/source_picker/open", "equals": true}, {"pointer": "/source_picker/selected", "equals": "working"}, {"pointer": "/source_picker/items/0/label", "equals": "Uncommitted changes"}, {"pointer": "/source_picker/items/0/review/status", "equals": "open"}, {"pointer": "/source_picker/items/1/label", "equals": "Staged changes"}]}
+{"cmd": "key", "keystroke": "escape", "expect": {"pointer": "/source_picker/open", "equals": false}}
+
+// A WSL repo is listed with why it can't be opened, and opening it shows a banner over the main area only.
+{"cmd": "open", "path": "\\\\wsl.localhost\\Ubuntu\\home\\kyle\\web"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/repos", "contains": {"name": "web", "error": {"message": "Ubuntu:/home/kyle/web can't be opened: WSL support arrives later"}, "working": null}}, {"pointer": "/switcher/selected", "equals": "api-server/working"}]}
+{"cmd": "bounds", "target": "switcher/repo/web", "expect_result": {"pointer": "/visible", "not_equals": null}}
+{"cmd": "screenshot", "name": "switcher-wsl-dark-mica"}
+{"cmd": "key", "keystroke": "escape", "expect": {"pointer": "/switcher/open", "equals": false}}
+{"cmd": "open_review", "path": "\\\\wsl.localhost\\Ubuntu\\home\\kyle\\web", "expect_error": "WSL support arrives later"}
+{"cmd": "settle"}
+{"expect": [{"pointer": "/shell/banner/message", "equals": "Ubuntu:/home/kyle/web can't be opened: WSL support arrives later"}, {"pointer": "/session/target", "equals": "working"}]}
+{"cmd": "bounds", "target": "banner/main", "expect_result": [{"pointer": "/x", "gte": 280}, {"pointer": "/y", "gte": 40}, {"pointer": "/y", "lte": 60}]}
+{"cmd": "bounds", "target": "banner/main/retry", "expect_result": {"pointer": "/visible", "not_equals": null}}
+{"cmd": "click", "target": "banner/main/copy"}
+{"expect": {"pointer": "/system/requests", "contains": {"kind": "clipboard", "text": "Ubuntu:/home/kyle/web can't be opened: WSL support arrives later"}}}
+{"cmd": "screenshot", "name": "banner-dark-mica"}
+
+// The same screen over Opaque, and in light.
+{"cmd": "set_setting", "key": "material", "value": "opaque"}
+{"cmd": "screenshot", "name": "review-dark-opaque"}
+{"cmd": "click", "target": "titlebar/switcher", "expect": {"pointer": "/switcher/open", "equals": true}}
+{"cmd": "settle", "timeout_ms": 20000}
+{"cmd": "screenshot", "name": "switcher-dark-opaque"}
+{"cmd": "key", "keystroke": "escape"}
+{"cmd": "set_setting", "key": "material", "value": "mica"}
+{"cmd": "set_setting", "key": "mode", "value": "light"}
+{"cmd": "screenshot", "name": "review-light"}
+{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"cmd": "screenshot", "name": "switcher-light"}
+// A click on the scrim closes it.
+{"cmd": "click", "target": "shell/scrim", "expect": {"pointer": "/switcher/open", "equals": false}}
+
+// Dismiss takes the banner away.
+{"cmd": "click", "target": "banner/main/dismiss", "expect": {"pointer": "/shell/banner", "equals": null}}
+
+// At the minimum size the title bar's left group stops short of the centred command field.
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "resize", "w": 1100, "h": 700}
+{"cmd": "bounds", "target": "titlebar/command", "expect_result": [{"pointer": "/x", "equals": 400}]}
+{"cmd": "bounds", "target": "titlebar/source", "expect_result": {"pointer": "/x", "lte": 360}}
+{"cmd": "screenshot", "name": "review-1100x700"}
+
+// A long repository name: the target label gives way first, then the name truncates; the
+// keycap and the source picker are never drawn over it (DESIGN §4.1).
+{"cmd": "seed_repo", "name": "customer-portal-frontend-service", "steps": [{"write": "a.txt", "text": "a\n"}, {"commit": "base"}, {"write": "a.txt", "text": "b\n"}], "save": {"long": "/path"}}
+{"cmd": "open_review", "path": "${long}"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"cmd": "bounds", "target": "titlebar/source", "expect_result": {"pointer": "/x", "lte": 360}}
+{"cmd": "screenshot", "name": "long-name-1100x700"}
+
+// A repository whose .git goes away while its review is open: the switcher says why and
+// offers no rows to open there (DESIGN §4.1), rather than a review that would write a store
+// into a folder that is no longer a repository.
+{"cmd": "seed_repo", "name": "gone", "steps": [{"write": "a.txt", "text": "a\n"}, {"commit": "base"}, {"write": "a.txt", "text": "b\n"}]}
+{"cmd": "open_review", "path": "${data_dir}/repos/gone"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"cmd": "repo_edit", "name": "gone", "steps": [{"remove": ".git"}]}
+{"cmd": "settle", "timeout_ms": 20000}
+{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"expect": [{"pointer": "/repos/0/name", "equals": "gone"}, {"pointer": "/repos/0/error", "not_equals": null}, {"pointer": "/repos/0/working", "equals": null}, {"pointer": "/switcher/items/0/key", "equals": "customer-portal-frontend-service/working"}]}
+{"cmd": "query", "prefix": "switcher/gone/", "expect_result": {"pointer": "", "len": 0}}
+{"cmd": "screenshot", "name": "switcher-gone-dark-mica"}
+{"cmd": "key", "keystroke": "escape", "expect": {"pointer": "/switcher/open", "equals": false}}
