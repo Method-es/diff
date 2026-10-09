@@ -123,7 +123,7 @@ fn unseen_round(review: &ReviewId, round: u32) -> CliError {
             "the reviewer finished round {round} while you were working, so the review wasn't \
              handed back: read round {round}'s summary (the `body` of the last of `rounds` in \
              `dv review show {review} --json`) and its open threads (`dv comment list --status \
-             open --json`), act on them, then run `dv review done {review} --round {round}`"
+             open`), act on them, then run `dv review done {review} --round {round}`"
         ),
     )
 }

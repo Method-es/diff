@@ -38,10 +38,16 @@
 //! `outdated`, `path` (its file in the current diff, else where it was
 //! written), `side` (`old` or `new`), `anchor: {original: {round, path, side, start_line,
 //! end_line}, current: {path, side, start_line, end_line} | null}`, `code` (the lines it was
-//! written on, as they were), `current_code` (the lines at `anchor.current` now, or `null`),
+//! written on, as they were), `code_context` (`{before, after}`: up to three lines that stood
+//! around `code` then; only when `anchor.current` is `null`), `current_code` (the lines at
+//! `anchor.current` now, or `null`), `excerpt` (the review's diff around `anchor.current` now,
+//! the rows `dv comment show` prints, PLAN §10.3; `null` exactly when `anchor.current` is),
 //! `body` (Markdown), `author: {kind, name}`, `created_at`, `note` (the last state change's
 //! note), `replies: [{id, author, body, created_at}]`. Act on `anchor.current`, never on the
 //! original line numbers.
+//!
+//! Within a schema a document only grows: readers ignore keys they don't know; a key removed,
+//! renamed or retyped, or a value whose meaning changes, is a new schema number (PLAN §10.3).
 
 use dv_core::label::Labels;
 use dv_core::review::{
@@ -348,8 +354,26 @@ pub struct Located {
     pub placement: Placement,
     /// The listed file's path, when the thread's file is in the current diff.
     pub file: Option<String>,
-    /// Its lines now and their text, when the code was found.
-    pub current: Option<(CurrentAnchorDto, String)>,
+    /// Its code now, when it was found.
+    pub current: Option<CurrentCode>,
+}
+
+/// A thread's code as it stands now: its lines, their text and the excerpt of the diff around
+/// them, taken together from one diff so the three never disagree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentCode {
+    pub anchor: CurrentAnchorDto,
+    pub code: String,
+    /// The excerpt's rows as printed, one per line (`dv_core::review::excerpt_lines`).
+    pub excerpt: String,
+}
+
+/// The lines that stood around a thread's code when it was written: its first anchor's
+/// context, up to `dv_core::review::ANCHOR_CONTEXT` lines either side.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct CodeContextDto {
+    pub before: Vec<String>,
+    pub after: Vec<String>,
 }
 
 /// A thread (module docs).
@@ -365,8 +389,14 @@ pub struct ThreadDto {
     pub anchor: AnchorDto,
     /// The lines the thread was written on, as they were then.
     pub code: String,
+    /// The lines around `code` when it was written; only when `anchor.current` is `null`, since
+    /// `excerpt` shows what surrounds the code otherwise.
+    pub code_context: Option<CodeContextDto>,
     /// The lines at `anchor.current` now.
     pub current_code: Option<String>,
+    /// The review's diff around `anchor.current` now, as the text output prints it (PLAN
+    /// §10.3); `null` exactly when `anchor.current` is.
+    pub excerpt: Option<String>,
     pub body: String,
     pub author: AuthorDto,
     pub created_at: u64,
@@ -378,10 +408,11 @@ pub struct ThreadDto {
 impl ThreadDto {
     pub fn new(review: &Review, thread: &Thread, located: &Located) -> Self {
         let original = thread.first_anchor();
-        let (current, current_code) = match &located.current {
-            Some((anchor, code)) => (Some(anchor.clone()), Some(code.clone())),
-            None => (None, None),
-        };
+        let current = located.current.as_ref();
+        let code_context = current.is_none().then(|| CodeContextDto {
+            before: original.context_before.clone(),
+            after: original.context_after.clone(),
+        });
         let outdated = located.placement.is_outdated();
         Self {
             id: thread.id.to_string(),
@@ -401,10 +432,12 @@ impl ThreadDto {
             side: side_str(thread.anchor.side),
             anchor: AnchorDto {
                 original: original.into(),
-                current,
+                current: current.map(|current| current.anchor.clone()),
             },
             code: original.text.join("\n"),
-            current_code,
+            code_context,
+            current_code: current.map(|current| current.code.clone()),
+            excerpt: current.map(|current| current.excerpt.clone()),
             body: thread.body.clone(),
             author: (&thread.author).into(),
             created_at: thread.created_at,

@@ -102,17 +102,11 @@ fn show_text(review: &ReviewDto) -> Vec<String> {
             format::first_line(&note.note)
         ));
     }
-    for round in &review.rounds {
-        let summary = round
-            .body
-            .as_deref()
-            .map(|body| format!(": {}", format::first_line(body)))
-            .unwrap_or_default();
-        lines.push(format!(
-            "round {} closed: {}{summary}",
-            round.n,
-            round.verdict.unwrap_or("no verdict")
-        ));
+    // Earlier rounds on a line each; the last with its summary in full, the one the agent acts
+    // on.
+    if let Some((last, earlier)) = review.rounds.split_last() {
+        lines.extend(earlier.iter().map(format::round_line));
+        lines.extend(format::round_summary(last));
     }
     lines
 }

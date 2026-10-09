@@ -314,7 +314,7 @@ PR's draft review, re-anchored against the PR diff.
 2. The reviewer picks **Review** → a `working` review opens (or resumes).
 3. They read, mark files viewed (`V`), comment (select lines, `C`), then **Request changes**
    (`Ctrl Enter`). Round 1 is snapshotted; status `changes_requested`.
-4. The agent (blocked in `dv review wait`) wakes, runs `dv comment list --status open --json`, fixes,
+4. The agent (blocked in `dv review wait`) wakes, runs `dv comment list --status open`, fixes,
    `dv comment reply` / `dv comment address <id> --note …`, then `dv review done`.
 5. dv shows round 2 as *round 1 → now*, addressed threads first with **Resolve** / **Reopen**.
 6. **Approve** closes the review. The reviewer (or the agent, told by the skill) commits.
@@ -982,8 +982,8 @@ dv review submit [<id>] --verdict approve|request-changes [--body <t> | --body-f
                                            reviewer (`comment`: PR reviews, phase 5)
 dv review close | delete <id>              reviewer
 
-dv comment list [--status open|addressed|resolved|outdated]… [--file <p>]
-dv comment show <id>                       thread, anchor (current + original), anchored code
+dv comment list [--status open|addressed|resolved|outdated]… [--file <p>] [--oneline]
+dv comment show <id>                       the thread with the diff around its code now
 dv comment add --file <p> --lines N[:M] [--side old|new] (--body <t> | --body-file <f|->)
 dv comment reply <id> (--body <t> | --body-file <f|->)
 dv comment address <id> [--note <t> | --note-file <f|->]
@@ -1035,7 +1035,9 @@ Global flags: `--repo <path>` (also `\\wsl.localhost\<distro>\<path>`), `--wsl <
   `branch` review's the one with the branch checked out), whichever worktree the command runs in
   (a home worktree that is gone is exit 1, `target`), reading each anchored side's full text through `file_diff`
   without caps, so the CLI says what the GUI shows (a target that no longer resolves, such as a
-  deleted branch, is exit 1, `target`, with git's words; `review submit` too). `--status outdated` keeps the threads whose code can't
+  deleted branch, is exit 1, `target`, with git's words; `review submit` too). A thread found
+  there carries the excerpt of that same diff around its lines (`review::excerpt`, §10.3), with
+  no further git call. `--status outdated` keeps the threads whose code can't
   be found; `--file` matches a thread's file in the current diff, where its code is now, or any
   path it was written on. A `--file` (here and in `comment add`) is a path from the worktree
   root; an absolute one inside the worktree the review was made in, or the one the command runs
@@ -1059,7 +1061,7 @@ Global flags: `--repo <path>` (also `\\wsl.localhost\<distro>\<path>`), `--wsl <
     closed one; an older one, or none when the reviewer finished the last round while the agent
     was working (§2.4), is exit 1 `unseen_round`, nothing written, with what to do: read round
     n's summary (the `body` of the last of `rounds` in `dv review show <id> --json`) and its
-    open threads (`dv comment list --status open --json`), then `dv review done <id> --round
+    open threads (`dv comment list --status open`), then `dv review done <id> --round
     <n>`; one that hasn't closed is exit 2. The event is conditional on the closed rounds
     (`if_round`), and a round that closed between the check and the append makes it a no-op,
     reported as `finished` when that round finished the review, else `unseen_round`.
@@ -1103,10 +1105,13 @@ Global flags: `--repo <path>` (also `\\wsl.localhost\<distro>\<path>`), `--wsl <
   can't be watched). A review deleted meanwhile is exit 1 (`not_found`); `--timeout`
   (seconds, fractions allowed) running out is exit 3. It prints why it returned: `{"schema": 1,
   "outcome": <the status>, "review": …, "round": <the last closed round> | null, "threads":
-  {open, addressed, resolved}}`, or `{"schema": 1, "outcome": "timeout"}`; the text ends with what
-  to do next ("1 open thread: run `dv comment list --status open`, …"; with no open thread, the
-  round's summary or the reviewer's replies, since a reviewer may request changes in the
-  summary alone; on a timeout, "run `dv review wait <id>` again", naming the review). A
+  {open, addressed, resolved}}`, or `{"schema": 1, "outcome": "timeout"}`; the text is the
+  review's line, the last closed round (`round 1 closed: request_changes`) with its summary in
+  full, indented (§10.3), and what to do next ("1 open thread: run `dv comment list --status
+  open`, …, then `dv review done <id> --round <n>`", naming the review and the round; with no
+  open thread, the round's summary or the reviewer's replies, since a reviewer may request
+  changes in the summary alone; on a timeout, "run `dv review wait <id>` again", naming the
+  review). A
   finished review is no
   longer in context (§10.2), so a wait that may start after the verdict names the review (the
   skill passes the id `dv status` gave).
@@ -1190,15 +1195,20 @@ doesn't. A deleted thread is not found.
   text changed there, `review::shows_edited`; or `outdated`), `outdated`, `path` (its file
   in the current diff), `side`, `anchor: {original: {round, path, side, start_line, end_line},
   current: {path, side, start_line, end_line} | null}`, `code` (the lines it was written on, as
-  they were), `current_code` (the lines at `anchor.current` now), `body`, `author: {kind,
-  name}`, `created_at`, `note` (the last state change's), `replies: [{id, author, body,
-  created_at}]`. The writes print: `review new` `{created, review}`; `review done` and `close`
+  they were), `code_context` (`{before, after}`: up to `ANCHOR_CONTEXT` lines that stood around
+  `code` then, from its first anchor; non-null exactly when `anchor.current` is `null`),
+  `current_code` (the lines at `anchor.current` now), `excerpt` (the review's diff around
+  `anchor.current` now, the rows the text prints, below, joined by `\n`; non-null exactly when
+  `anchor.current` is), `body`, `author: {kind, name}`, `created_at`, `note` (the last state
+  change's), `replies: [{id, author, body, created_at}]`. The writes print: `review new` `{created, review}`; `review done` and `close`
   `{changed, review}`; `review submit` `{review, round}`; `review delete` `{deleted}`; `comment
   add` `{thread}`; `comment reply` `{reply, thread}`; `comment address | resolve | reopen`
   `{changed, thread}`; `setup agents` `{agents: [{agent, path, action: installed | updated |
   unchanged | skipped, reason}]}`; `setup wsl` `{distro, arch, build, installed, linked,
   path}`;
   `review wait` as in §10.1.
+- Within a schema a document only grows: readers ignore keys they don't know; a key removed,
+  renamed or retyped, or a value whose meaning changes, is a new schema number.
 - Exit codes: `0` ok, `1` operation error, `2` usage / ambiguous review, `3` wait timeout, `4` backend
   unavailable (the repository's WSL distro can't be reached: WSL, the distro or this app's Linux
   build unavailable, §10.4), `5` GitHub error (with `gh`'s message). A command run inside a
@@ -1219,7 +1229,46 @@ doesn't. A deleted thread is not found.
   `path:12`, `path:14-16 (moved from 12-14)` or `path (outdated, was 12)`, and a thread on the old
   side says so first (`path:12 (old)`, `path:14 (old, moved from 12)`), as the GUI names it
   (DESIGN §4.1). The candidates of an `ambiguous_review` / `no_review` error follow the message,
-  one per line: `id  label  status  round n  worktree`.
+  one per line: `id  label  status  round n  worktree`. No line ends in whitespace.
+- **A thread's block** (`comment list`, one per thread after the review's line, each after a
+  blank line; `comment show`: the review's line, a blank line, the block; `comment list
+  --oneline`: one `id  state  place  <the comment's first line>` per thread instead):
+  - The header `id  state  place`, the place as above.
+  - The excerpt (`dv_core::review::excerpt`), one row per line: `>` on a commented line or a
+    space, the line's number on the review's new side now (right-aligned to the widest; blank
+    on a removed line), a space, `+` / `-` / a space, ` |`, then a space and the line, its
+    whitespace at the end left out (an empty line, or one of only whitespace, ends at `|`; the
+    JSON `excerpt` is these same rows). Every number printed beside code is a line as it is now; old numbers
+    appear only as words in the header. The window is `ANCHOR_CONTEXT` (3) lines of the
+    thread's side before and after its lines, plus every row of the other side between them;
+    an old-side thread's `>` rows are its old lines (a removed one unnumbered). A run of more
+    than 8 other-side rows keeps its first and last 3 with `⋮ N more removed lines` (`added`
+    for an old-side thread) between. A commented span of more than 24 lines of the thread's
+    side keeps its first and last 10 of them, with the other side's rows among those kept, and
+    hides the rows from just after the 10th to just before the last 10th: `⋮ N lines` between
+    (N of the thread's side), or `⋮ N lines, M removed` (`added` for an old-side thread) when
+    the hidden rows hold M of the other side too; so a 20-line range with removed rows among
+    them is shown whole. A line is cut at 240 characters, ending in `…`. A scope
+    row leads: the nearest line of the thread's side above the window that starts with an
+    ASCII letter, `_` or `$` (git's default hunk-header rule, language-blind), followed by a
+    lone `⋮` when lines lie between; it is left out when such a line already stands in the
+    window above the commented lines.
+  - When the code changed since the comment (`current_code` isn't `code`: edited, or found by a
+    fuzzy match), `as commented in round N:` follows, with the lines as written as `> | line`,
+    unnumbered; over 24 of them, the first and last 10 with `  ⋮ N lines` between, the span
+    rule above.
+  - An outdated thread has no excerpt: only `as commented in round N (not found in the file
+    now):`, then `code_context.before` as `  | line`, the code as `> | line` (bounded by the
+    same span rule), and `code_context.after`, unnumbered: lines to search for. These rows, too,
+    end without whitespace.
+  - Who wrote what: `<kind> <name>, round <n>:` above the comment, `<kind> <name>:` above each
+    reply, `<state> note:` above the last state change's note, all at column 0; every body is
+    indented 4 spaces, each line's whitespace at its end left out and its blank lines left
+    empty, so nothing anyone wrote reaches column 0,
+    where it could pass for a header or a code row.
+- A closed round, where `review wait` and `review show` print it: `round N closed: <verdict>`,
+  then its summary in full, indented 4 the same way (`review show` prints earlier rounds on one
+  line each, `round N closed: <verdict>: <the summary's first line>`).
 
 ### 10.4 WSL routing
 Inside a distro, `dv` is the native Linux binary and runs every command itself; it never starts
@@ -1284,10 +1333,12 @@ The `dv-review` skill is `crates/dv_cli/skill/SKILL.md`, embedded in the binary
 `dv status --json` (keep `current.id`; no current review and none clearly the one asked about:
 tell the user, never guess or start one) → read the round's summary (`current.rounds`' last
 `body`, `round.body` in the wait's output: a reviewer may ask for more there than in the
-threads) → `dv comment list --status open --json`, and `--status addressed` for the reviewer's
-replies on threads already addressed → for each thread, `dv comment show <id> --json` again
-before the fix (line numbers go stale once the agent edits that file) and act on
-`anchor.current` / `current_code` → fix → `dv comment reply <id> --body-file -` (a quoted heredoc
+threads) → `dv comment list --status open`, read as text (each thread's block, §10.3: the
+diff around its code now, every number a line as it is now, what each row's marks mean), and
+`--status addressed` for the reviewer's replies on threads already addressed → for each
+thread, `dv comment show <id>` again before the fix only when the agent has edited that file
+since it listed it (its numbers go stale then), acting on the numbered rows (`anchor.current`
+/ `current_code` / `excerpt` in `--json`) and never on a header's old numbers → fix → `dv comment reply <id> --body-file -` (a quoted heredoc
 in a POSIX shell, a PowerShell here-string piped in, both shown in the loop) → `dv comment address
 <id> --note '…'` → once every open thread is answered and the summary acted on, `dv review done
 <id> --round <n> --note-file -` (a Markdown list piped in; the id, because a review approved
@@ -1302,7 +1353,8 @@ they replied (`review wait`'s text sets such questions apart from the threads to
 is the files on disk (work in its `worktree`), a `branch` one too in whichever worktree has the
 branch checked out (its tip when none has), a `staged` one what is staged (fixes show only once staged: ask the user before `git
 add`), and a `commit` or `range` one fixed history (tell the user rather than hand back). Its
-rules: `--json` when parsing, `--author <agent>` on every write, `<agent>` being the agent's own
+rules: threads read as dv prints them, `--json` when parsing (`status`, `review show`,
+`review wait`, whose ids and round numbers the agent keeps), `--author <agent>` on every write, `<agent>` being the agent's own
 name, which every example writes as that placeholder (Claude Code is recognised by `CLAUDECODE`
 anyway), never `resolve` or `reopen`, no `dv review new` unless the
 user asks, text through `--body-file -` / `--note-file -` and a short note inline only in single

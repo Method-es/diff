@@ -9,6 +9,8 @@
 //! - [`anchor`]: anchors built from a selection of a side's lines (PLAN §2.5).
 //! - [`relocate`]: relocation and placement — where a thread shows once its file moved on
 //!   (PLAN §8).
+//! - [`excerpt`]: the rows of the diff around a thread's lines now, as the CLI prints them
+//!   (PLAN §10.3).
 //! - [`identity`]: the reviewer's name (PLAN §2.5).
 //! - [`home`]: the worktree a review's target resolves in, whichever worktree reads it
 //!   (PLAN §2.2, §2.4).
@@ -20,6 +22,7 @@
 
 pub mod anchor;
 pub mod event;
+pub mod excerpt;
 pub mod fold;
 pub mod home;
 pub mod id;
@@ -32,6 +35,7 @@ pub mod store;
 
 pub use anchor::{ANCHOR_CONTEXT, AnchorError, AnchorPlace, anchor_selection, side_lines};
 pub use event::{EVENT_VERSION, Event, EventBody, LogWarning, ParsedLog, parse_log};
+pub use excerpt::{ExcerptGap, ExcerptRow, excerpt, excerpt_lines};
 pub use fold::{FoldError, Folded, Outcome, Rejection, fold};
 pub use home::{Home, HomeError, Worktrees, home, same_worktree};
 pub use id::{CommentId, EventId, InvalidId, ItemId, ReviewId, ThreadId};

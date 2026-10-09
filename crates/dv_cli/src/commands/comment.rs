@@ -1,6 +1,7 @@
 //! `dv comment list` and `dv comment show` (docs/PLAN.md §10.1, §8): threads with where their
 //! code stands in the review's current diff, so an agent acts on `anchor.current`, never on a
-//! stale line number.
+//! stale line number. The text prints each thread as a block with the diff around its code now
+//! (`format::thread_block`, PLAN §10.3); `--oneline` lists one line per thread.
 
 use std::collections::HashSet;
 
@@ -9,17 +10,18 @@ use dv_core::review::{Thread, ThreadState};
 use super::format;
 use crate::args::{CommentListArgs, GlobalArgs, ThreadStatusArg};
 use crate::context::Context;
-use crate::dto::{CommentListDoc, CommentShowDoc, ThreadDto};
+use crate::dto::{CommentListDoc, CommentShowDoc, ReviewDto, ThreadDto};
 use crate::error::{CliError, Exit};
 use crate::output;
 use crate::placement;
 use crate::repo::Repo;
 use crate::select;
 
-/// `dv comment list [--status …] [--file <p>]`: the review's live threads in the order they
-/// were opened; `--status` keeps those in any of the states named (`outdated`: whose code
-/// can't be found now), `--file` those on that file (its current path, or the one the thread
-/// was written on).
+/// `dv comment list [--status …] [--file <p>] [--oneline]`: the review's live threads in the
+/// order they were opened; `--status` keeps those in any of the states named (`outdated`: whose
+/// code can't be found now), `--file` those on that file (its current path, or the one the
+/// thread was written on). The text is the review's line, then each thread's block, or with
+/// `--oneline` each thread's header and its comment's first line.
 pub(crate) fn list(
     global: &GlobalArgs,
     args: &CommentListArgs,
@@ -74,30 +76,38 @@ pub(crate) fn list(
         output::json(ctx, &doc)?;
         return Ok(Exit::Ok);
     }
-    let mut lines: Vec<String> = doc
-        .threads
-        .iter()
-        .map(|thread| {
-            format!(
-                "{}  {}  {}  {}",
-                thread.id,
-                thread.state,
-                format::location(thread),
-                format::first_line(&thread.body)
-            )
-        })
-        .collect();
-    if lines.is_empty() {
+    if doc.threads.is_empty() {
         let filtered = !states.is_empty() || file.is_some();
-        lines.push(
-            if filtered {
-                "no matching threads"
-            } else {
-                "no threads"
-            }
-            .to_string(),
-        );
+        let none = if filtered {
+            "no matching threads"
+        } else {
+            "no threads"
+        };
+        output::text(ctx, &[none.to_string()])?;
+        return Ok(Exit::Ok);
     }
+    let lines: Vec<String> = if args.oneline {
+        doc.threads
+            .iter()
+            .map(|thread| {
+                format!(
+                    "{}  {}",
+                    format::thread_line(thread),
+                    format::first_line(&thread.body)
+                )
+            })
+            .collect()
+    } else {
+        let mut lines = vec![format::review_line(&ReviewDto::new(
+            &review,
+            &repo.labels(),
+        ))];
+        for thread in &doc.threads {
+            lines.push(String::new());
+            lines.extend(format::thread_block(thread));
+        }
+        lines
+    };
     output::text(ctx, &lines)?;
     Ok(Exit::Ok)
 }
@@ -114,58 +124,12 @@ pub(crate) fn show(global: &GlobalArgs, id: &str, ctx: &mut Context) -> Result<E
     if global.json {
         output::json(ctx, &doc)?;
     } else {
-        output::text(ctx, &show_text(&doc.thread))?;
+        let mut lines = vec![
+            format::review_line(&ReviewDto::new(&review, &repo.labels())),
+            String::new(),
+        ];
+        lines.extend(format::thread_block(&doc.thread));
+        output::text(ctx, &lines)?;
     }
     Ok(Exit::Ok)
-}
-
-fn show_text(thread: &ThreadDto) -> Vec<String> {
-    let original = &thread.anchor.original;
-    let mut lines = vec![
-        format!(
-            "{}  {}  {}",
-            thread.id,
-            thread.state,
-            format::location(thread)
-        ),
-        format!("review: {}", thread.review_id),
-        format!(
-            "written on: {} side of {}, line {} (round {})",
-            original.side,
-            original.path,
-            format::lines(original.start_line, original.end_line),
-            original.round
-        ),
-        format!("by: {} {}", thread.author.kind, thread.author.name),
-        "code:".to_string(),
-    ];
-    lines.extend(numbered(&thread.code, original.start_line));
-    if let (Some(current), Some(code)) = (&thread.anchor.current, &thread.current_code)
-        && code != &thread.code
-    {
-        lines.push("code now:".to_string());
-        lines.extend(numbered(code, current.start_line));
-    }
-    lines.push("comment:".to_string());
-    lines.extend(format::indented(&thread.body, "  "));
-    for reply in &thread.replies {
-        lines.push(format!(
-            "reply from {} {}:",
-            reply.author.kind, reply.author.name
-        ));
-        lines.extend(format::indented(&reply.body, "  "));
-    }
-    if let Some(note) = &thread.note {
-        lines.push(format!("{} note:", thread.state));
-        lines.extend(format::indented(note, "  "));
-    }
-    lines
-}
-
-/// `code`'s lines numbered from `start`: `  12 | text`.
-fn numbered(code: &str, start: u32) -> Vec<String> {
-    code.split('\n')
-        .enumerate()
-        .map(|(i, line)| format!("  {} | {line}", start as usize + i))
-        .collect()
 }

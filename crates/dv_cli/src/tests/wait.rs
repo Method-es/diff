@@ -71,11 +71,14 @@ fn wait_returns_at_once_when_the_agent_has_something_to_do() {
                  resolved",
                 review.id
             ),
-            "round 1 closed: request_changes: One thing.".to_string(),
-            "changes requested, 1 open thread: do what the round's summary asks (`round.body` \
-             in --json), run `dv comment list --status open`, fix, reply and address each, then \
-             `dv review done`"
-                .to_string(),
+            "round 1 closed: request_changes".to_string(),
+            "    One thing.".to_string(),
+            format!(
+                "changes requested, 1 open thread: do what the round's summary asks, run `dv \
+                 comment list --status open`, fix, reply and address each, then `dv review done \
+                 {} --round 1`",
+                review.id
+            ),
         ]
     );
 
@@ -377,11 +380,16 @@ fn a_round_with_no_open_thread_still_says_what_to_do() {
     let ran = fixture.run(&["review", "wait"]);
     assert_eq!(ran.exit, Exit::Ok, "{}", ran.stderr);
     assert_eq!(
-        ran.lines().last().copied(),
-        Some(
-            "changes requested, 0 open threads: do what the round's summary asks (`round.body` \
-             in --json), then `dv review done`"
-        )
+        ran.lines()[1..],
+        [
+            "round 1 closed: request_changes".to_string(),
+            "    Add a test for square.".to_string(),
+            format!(
+                "changes requested, 0 open threads: do what the round's summary asks, then `dv \
+                 review done {} --round 1`",
+                review.id
+            ),
+        ]
     );
     let json = fixture.run(&["review", "wait", "--json"]).ok_json();
     assert_eq!(json["round"]["body"], "Add a test for square.");
@@ -393,11 +401,15 @@ fn a_round_with_no_open_thread_still_says_what_to_do() {
     fixture.finish(&review.id, Verdict::RequestChanges);
     let ran = fixture.run(&["review", "wait"]);
     assert_eq!(
-        ran.lines().last().copied(),
-        Some(
-            "changes requested, 0 open threads: read the reviewer's replies (`dv comment list \
-             --json`), act on them, then `dv review done`"
-        )
+        ran.lines()[1..],
+        [
+            "round 1 closed: request_changes".to_string(),
+            format!(
+                "changes requested, 0 open threads: read the reviewer's replies (`dv comment \
+                 list`), act on them, then `dv review done {} --round 1`",
+                review.id
+            ),
+        ]
     );
 }
 
@@ -431,9 +443,12 @@ fn an_agents_own_question_is_not_counted_among_the_threads_to_address() {
     };
     assert_eq!(
         hint(&fixture),
-        "changes requested, 1 open thread: run `dv comment list --status open`, fix, reply and \
-         address each, then `dv review done`; 1 more open thread is an agent's question still \
-         waiting for the reviewer: leave it open"
+        format!(
+            "changes requested, 1 open thread: run `dv comment list --status open`, fix, reply \
+             and address each, then `dv review done {} --round 1`; 1 more open thread is an \
+             agent's question still waiting for the reviewer: leave it open",
+            review.id
+        )
     );
     // The JSON counts every open thread.
     let json = fixture
@@ -453,7 +468,10 @@ fn an_agents_own_question_is_not_counted_among_the_threads_to_address() {
     .unwrap();
     assert_eq!(
         hint(&fixture),
-        "changes requested, 2 open threads: run `dv comment list --status open`, fix, reply and \
-         address each, then `dv review done`"
+        format!(
+            "changes requested, 2 open threads: run `dv comment list --status open`, fix, reply \
+             and address each, then `dv review done {} --round 1`",
+            review.id
+        )
     );
 }

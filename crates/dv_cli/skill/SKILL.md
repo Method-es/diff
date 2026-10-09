@@ -16,12 +16,19 @@ approves.
 
 ## Rules
 
-- Pass `--json` whenever you read the output: one JSON document on stdout, `"schema": 1`.
+- Read threads as dv prints them (`dv comment list`, `dv comment show`, without `--json`): that
+  text is written for you. Pass `--json` to `dv status`, `dv review show` and `dv review wait`,
+  whose ids and round numbers you keep: one JSON document on stdout, `"schema": 1`.
 - Pass `--author <agent>` on every command that writes, `<agent>` being your own name:
   `claude-code` for Claude Code, `codex` for Codex. Claude Code is recognised without it; say it
   anyway. The commands below write `<agent>` where your name goes.
-- Act on `anchor.current` and `current_code`, never on the line numbers a comment was written
-  on, nor on line numbers you read before your last edit to that file: the file has moved on.
+- A number in front of a line of a thread's code is that line's number now. Act on those, never
+  on the numbers in a thread's header ("moved from", "was", or the number of a thread marked
+  `(old)`, which counts the file as it was before the change), nor on numbers you read before
+  your last edit to that file: the file has moved on. In `--json` the same rows are `excerpt`:
+  act on `anchor.current`, `current_code` and `excerpt`, never on `anchor.original`. For a
+  thread whose `side` is `old`, `anchor.current` counts the file as it was before the change, not
+  the file now: find its place by the numbered rows around its `>` rows in `excerpt`.
 - Never run `dv comment resolve` or `dv comment reopen`: they are the reviewer's.
 - If you disagree with a comment, reply with your reasons and still address the thread, with a
   note saying that you left the code as it is.
@@ -65,43 +72,52 @@ tell which, stop and tell the user; don't guess, and don't start a review.
    and may ask for more than the threads do. Then the threads waiting for you:
 
 ```sh
-dv comment list --status open --json
+dv comment list --status open
 ```
 
-Each thread has `id`, `body` (the comment that opened it, Markdown), its `author` and
-`replies`. `anchor.current` is where the commented code is now (`path`, `side`, `start_line`,
-`end_line`) and `current_code` its text. `side` `new` is the review's new side: the file on disk for a `working`
-review, what is staged for a `staged` one (see `target.kind` above); `old` is the file as it
-was before the change. `code` is what the comment was written on. When `anchor.current` is
-`null` the code is gone (`outdated`): judge from `code` and the comment.
+Each thread prints as a block: its header (`<thread-id>  <state>  <path>:<lines>`, with `(moved
+from …)`, `(outdated, was …)` or `(old)` after it), the review's diff around its code now, then
+the comment that opened it under its author (`reviewer <name>, round <n>:`), each reply under
+its own author, and an `addressed note:` when there is one. A diff row is `<number> <mark> |
+<line>`: the number is the line's number now on the review's new side (the file on disk for a
+`working` review, what is staged for a `staged` one); mark `+` is a line the change added, `-`
+one it removed (no number: it isn't there now), a blank mark an unchanged line; `>` in front
+marks the lines the comment is on, and `⋮` lines left out. A thread marked `(old)` is on the
+file as it was: place it by the numbered rows around its `>` rows. `as commented in round <n>:`
+follows when the code has changed since the comment. When the code can't be found any more
+(`outdated`), only that is shown, with the lines that stood around it: judge from it and the
+comment, and find the place by those lines.
 
-A thread whose `author.kind` is `agent` is a question an agent asked the reviewer (`dv comment
-add`, below), not a request. While the reviewer hasn't replied to it, it waits for them: leave
-it open, don't address it. Once they have replied, act on the reply as on any comment.
+A thread opened by an agent (`agent <name>, round <n>:`; `author.kind` `agent` in `--json`) is
+a question an agent asked the reviewer (`dv comment add`, below), not a request. While the
+reviewer hasn't replied to it, it waits for them: leave it open, don't address it. Once they
+have replied, act on the reply as on any comment.
 
 A thread you addressed in an earlier round stays `addressed` when the reviewer only replies to
-it; read the `replies` of those as well:
+it; read the replies on those as well:
 
 ```sh
-dv comment list --status addressed --json
+dv comment list --status addressed
 ```
 
 3. For each thread that asks something of you, fix the code, then say what you did and mark the
-   thread addressed. Once you have edited a file, the line numbers you listed for it are stale:
-   before each fix, read the thread again for its `anchor.current` (or find the code by its
-   `current_code`):
+   thread addressed. Once you have edited a file, the numbers you listed for it are stale: before
+   you fix a thread in a file you have edited since you listed it, show it again (or find its
+   code by its text):
 
 ```sh
-dv comment show <thread-id> --json
+dv comment show <thread-id>
 dv comment reply <thread-id> --author <agent> --body-file - <<'EOF'
 Moved the cache lookup into `getUser` and covered the miss path with a test.
 EOF
 dv comment address <thread-id> --author <agent> --note 'Cache lookup moved into getUser'
 ```
 
-In PowerShell, pipe a here-string instead of the heredoc (in Windows PowerShell 5.1, set
-`$OutputEncoding = [System.Text.UTF8Encoding]::new()` first, or text that isn't ASCII arrives
-mangled):
+In PowerShell, pipe a here-string instead of the heredoc. In Windows PowerShell 5.1, set
+`$OutputEncoding = [System.Text.UTF8Encoding]::new()` before you pipe anything to dv, or text
+that isn't ASCII arrives mangled; and set `[Console]::OutputEncoding =
+[System.Text.UTF8Encoding]::new()` before you read dv's output (best before step 1), or `⋮`
+and any other text that isn't ASCII comes out garbled:
 
 ```powershell
 @'
@@ -164,8 +180,9 @@ lines as they were).
 ## Exit codes
 
 - `0`: done.
-- `1`: the operation failed; the JSON error's `code` says why (`not_found`, `not_allowed`,
-  `rejected`, …). `finished`: the review is approved or closed and takes no more changes.
+- `1`: the operation failed. With `--json`, the JSON error's `code` says why (`not_found`,
+  `not_allowed`, `rejected`, …); without it, there is no code, only `dv: <message>` on stderr,
+  which says the same in words. `finished`: the review is approved or closed and takes no more changes.
   `unseen_round` (from `dv review done`): the reviewer finished a round you haven't read; read
   it, then run step 4 again with that round's number.
 - `2`: the command line is wrong, or it doesn't say which review. With `ambiguous_review`,
@@ -176,5 +193,5 @@ lines as they were).
 - `4`: dv couldn't reach the WSL distro the repository is in (WSL, the distro or dv's Linux
   build is missing; the message says which): tell the user.
 
-Errors go to stderr; with `--json`, stdout also carries `{"schema": 1, "error": {"code",
-"message"}}`.
+Errors go to stderr as `dv: <message>`; only with `--json` does stdout also carry `{"schema":
+1, "error": {"code", "message"}}`, the one place an error's `code` appears.

@@ -174,7 +174,31 @@ fn show_prints_the_review_with_its_rounds() {
             "round: 2".to_string(),
             "threads: 1 open, 0 addressed, 0 resolved".to_string(),
             format!("worktree: {root}"),
-            "round 1 closed: request_changes: Two things.".to_string(),
+            "round 1 closed: request_changes".to_string(),
+            "    Two things.".to_string(),
+            "    See the threads.".to_string(),
+        ]
+    );
+
+    // A later round: the earlier keep their first line, the last shows its summary in full.
+    ops::finish_round(
+        &fixture.store(),
+        &fixture.git(),
+        &review.id,
+        Some(Verdict::RequestChanges),
+        Some("Almost.\n\n- one more test".into()),
+        &reviewer(),
+    )
+    .unwrap();
+    let ran = fixture.run(&["review", "show"]);
+    assert_eq!(
+        ran.lines()[5..],
+        [
+            "round 1 closed: request_changes: Two things.",
+            "round 2 closed: request_changes",
+            "    Almost.",
+            "",
+            "    - one more test",
         ]
     );
 }

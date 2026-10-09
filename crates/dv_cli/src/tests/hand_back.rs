@@ -37,7 +37,7 @@ fn done_refuses_a_round_finished_while_the_agent_worked() {
         "the reviewer finished round 2 while you were working",
         "the `body` of the last of `rounds`",
         &format!("`dv review show {id} --json`"),
-        "`dv comment list --status open --json`",
+        "`dv comment list --status open`",
         &format!("`dv review done {id} --round 2`"),
     ] {
         assert!(message.contains(part), "{part:?} in {message}");

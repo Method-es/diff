@@ -2,7 +2,9 @@
 //! the review's target resolved now (all changes, never an interdiff) in its home worktree
 //! (`Repo::for_review`, PLAN §2.2), its file list, and the full text of each side a
 //! thread is anchored on (`file_diff` without caps), handed to
-//! `dv_core::review::place_thread`, the one function the GUI places threads with too.
+//! `dv_core::review::place_thread`, the one function the GUI places threads with too. A thread
+//! found there carries the excerpt of that same diff around its lines (`dv_core::review::excerpt`,
+//! PLAN §10.3).
 //!
 //! A write on a thread (`reply`, `address`, `resolve`, `reopen`) records where relocation found
 //! it ([`Sides::relocated`], PLAN §8), and `comment add` anchors on a side's text read the same
@@ -13,13 +15,13 @@ use std::collections::HashMap;
 use dv_core::diff::{DiffLimits, FileDiff, FileEntry, file_diff, file_list};
 use dv_core::git::GitRepo;
 use dv_core::review::{
-    Anchor, AnchorPlace, AnchorSide, Placement, Review, SideText, Thread, anchored_entry,
-    place_thread, relocated_anchor, side_lines,
+    Anchor, AnchorPlace, AnchorSide, Placement, Review, SideText, Thread, anchored_entry, excerpt,
+    excerpt_lines, place_thread, relocated_anchor, side_lines,
 };
 use dv_core::target::DiffSpec;
 
 use crate::context::Context;
-use crate::dto::{CurrentAnchorDto, Located, side_str};
+use crate::dto::{CurrentAnchorDto, CurrentCode, Located, side_str};
 use crate::error::CliError;
 use crate::repo::Repo;
 
@@ -97,27 +99,11 @@ impl Sides {
         };
         let placement = place_thread(thread, &self.entries, |entry, _| text(entry));
         let file = placement.file().map(str::to_string);
-        let entry = anchored_entry(&thread.anchor, &self.entries);
-        let current = match (placement.lines(&thread.anchor), entry) {
-            (Some((start, end)), Some(entry)) => match text(entry) {
-                SideText::Lines(lines) => {
-                    let code = lines
-                        .get((start as usize).saturating_sub(1)..end as usize)
-                        .map(|lines| lines.join("\n"))
-                        .unwrap_or_default();
-                    let place = AnchorPlace::for_entry(entry, side, self.round);
-                    Some((
-                        CurrentAnchorDto {
-                            path: place.path,
-                            side: side_str(side),
-                            start_line: start,
-                            end_line: end,
-                        },
-                        code,
-                    ))
-                }
-                SideText::Pending | SideText::Unavailable => None,
-            },
+        let current = match (
+            placement.lines(&thread.anchor),
+            anchored_entry(&thread.anchor, &self.entries),
+        ) {
+            (Some((start, end)), Some(entry)) => self.current_code(entry, side, start, end),
             _ => None,
         };
         Located {
@@ -129,6 +115,36 @@ impl Sides {
             file,
             current,
         }
+    }
+
+    /// Lines `start..=end` of `side` of the listed `entry` now: where they are, their text and
+    /// the excerpt of the diff around them (PLAN §10.3), all from the one diff read, so the
+    /// excerpt never disagrees with the anchor. `None` when the file's diff isn't read or isn't
+    /// text.
+    fn current_code(
+        &self,
+        entry: &FileEntry,
+        side: AnchorSide,
+        start: u32,
+        end: u32,
+    ) -> Option<CurrentCode> {
+        let text = self.diffs.get(&entry.path).and_then(FileDiff::as_text)?;
+        let rows = excerpt(text, side, start, end)?;
+        let code = side_lines(text, side)
+            .get((start as usize).saturating_sub(1)..end as usize)
+            .map(|lines| lines.join("\n"))
+            .unwrap_or_default();
+        let place = AnchorPlace::for_entry(entry, side, self.round);
+        Some(CurrentCode {
+            anchor: CurrentAnchorDto {
+                path: place.path,
+                side: side_str(side),
+                start_line: start,
+                end_line: end,
+            },
+            code,
+            excerpt: excerpt_lines(text, &rows).join("\n"),
+        })
     }
 
     /// The anchor a write on `thread` records (PLAN §8): its anchor re-taken where relocation

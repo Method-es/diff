@@ -363,11 +363,10 @@ pub struct Body {
 /// `dv comment …`.
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum CommentCommand {
-    /// The review's threads, each with where it stands now
+    /// The review's threads, each with the diff around its code now
     List(CommentListArgs),
 
-    /// One thread: its anchor (current and original), the anchored code, the comment and
-    /// replies
+    /// One thread, with the diff around its code now, the comment and the replies
     Show(ThreadIdArg),
 
     /// Comment on lines of a file in the review
@@ -396,6 +395,10 @@ pub struct CommentListArgs {
     /// Only threads on this file (its path from the repository root)
     #[arg(long, value_name = "PATH")]
     pub file: Option<String>,
+
+    /// One line per thread: its id, state, place and the first line of its comment
+    #[arg(long)]
+    pub oneline: bool,
 }
 
 /// A thread state as `dv comment list --status` names it; `outdated` is where a thread stands

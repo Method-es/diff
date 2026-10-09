@@ -1,6 +1,7 @@
 //! Where the CLI says a thread is, in the cases that need more than a moved line (docs/PLAN.md
 //! §8, §10.1): a file renamed without an edit, old-side threads in the text output, notes as
-//! text, and a review whose worktree is another repository's now.
+//! text, a review whose worktree is another repository's now, and the excerpt that stands
+//! exactly where a thread's code does (§10.3).
 
 use dv_core::review::{AnchorSide, ThreadState, ops};
 use dv_core::target::Target;
@@ -74,7 +75,7 @@ fn an_old_side_thread_says_so_in_the_text_output() {
     .unwrap();
     let new = fixture.thread(&review, "src/app.ts", 10, 10, "Why a cache?");
 
-    let ran = fixture.run(&["comment", "list"]);
+    let ran = fixture.run(&["comment", "list", "--oneline"]);
     assert_eq!(ran.exit, Exit::Ok, "{}", ran.stderr);
     let line = |id: &ThreadId| {
         ran.lines()
@@ -231,4 +232,111 @@ fn a_line_edited_where_it_stands_is_edited_not_unchanged() {
     assert_eq!(listed["anchor"]["current"]["start_line"], 5);
     assert_eq!(listed["current_code"], "  id: string | number;");
     assert_ne!(listed["code"], listed["current_code"]);
+    assert_eq!(listed["code_context"], serde_json::Value::Null);
+    assert_eq!(
+        listed["excerpt"],
+        [
+            " 2   | import { log } from \"./log\";",
+            " 3   |",
+            " 4   | export interface User {",
+            "   - |   id: string;",
+            ">5 + |   id: string | number;",
+            " 6   |   name: string;",
+            " 7   | }",
+            " 8   |",
+        ]
+        .join("\n")
+    );
+    // The text says what the line was when commented on.
+    let ran = fixture.run(&["comment", "list"]);
+    assert_eq!(
+        ran.lines()[11..],
+        [
+            "as commented in round 1:",
+            "> |   id: string;",
+            "reviewer dv fixture, round 1:",
+            "    Is the id a string?",
+        ]
+    );
+}
+
+/// `excerpt` stands exactly when `anchor.current` does, and comes from the same diff: its `>`
+/// rows are the current lines' text, numbered as `anchor.current` says on the new side.
+/// `code_context` stands exactly when they don't (PLAN §10.3).
+#[test]
+fn an_excerpt_stands_exactly_where_the_code_does() {
+    let fixture = Fixture::new();
+    fixture.repo.write("src/logo.txt", "logo\n");
+    fixture.repo.commit("logo");
+    let review = fixture.review(Target::Working);
+    fixture.thread(&review, "src/app.ts", 4, 7, "Add an email.");
+    fixture.thread(&review, "src/app.ts", 10, 10, "Why a cache?");
+    fixture.thread(&review, "src/app.ts", 17, 19, "Trim earlier.");
+    let old = fixture.anchor("src/app.ts", AnchorSide::Old, 10, 10);
+    ops::add_thread(&fixture.store(), &review.id, old, "Was fine.", reviewer()).unwrap();
+    fixture.repo.write("src/logo.txt", "logo, bigger\n");
+    fixture.thread(&review, "src/logo.txt", 1, 1, "Sharper?");
+    // The agent moves the code down, deletes formatName and makes the logo binary.
+    let mut lines = edited_lines();
+    lines.drain(16..19);
+    lines.insert(0, "// cache first".to_string());
+    fixture.edit_app(&lines);
+    fixture.repo.write("src/logo.txt", b"\x89PNG\0\0\x01");
+
+    let json = fixture.run(&["comment", "list", "--json"]).ok_json();
+    let threads = json["threads"].as_array().unwrap();
+    let placements: Vec<&str> = threads
+        .iter()
+        .map(|thread| thread["placement"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        placements,
+        ["moved", "moved", "outdated", "unchanged", "outdated"]
+    );
+    for thread in threads {
+        let current = &thread["anchor"]["current"];
+        assert_eq!(thread["excerpt"].is_null(), current.is_null(), "{thread}");
+        assert_eq!(
+            thread["code_context"].is_null(),
+            !current.is_null(),
+            "{thread}"
+        );
+        let Some(excerpt) = thread["excerpt"].as_str() else {
+            continue;
+        };
+        let marked: Vec<&str> = excerpt.lines().filter(|row| row.starts_with('>')).collect();
+        let code: Vec<&str> = marked
+            .iter()
+            .map(|row| {
+                let text = row.split_once(" |").unwrap().1;
+                text.strip_prefix(' ').unwrap_or(text)
+            })
+            .collect();
+        // Rows end without whitespace, so compare with each current line trimmed at its end.
+        let current_code: Vec<&str> = thread["current_code"]
+            .as_str()
+            .unwrap()
+            .split('\n')
+            .map(str::trim_end)
+            .collect();
+        assert_eq!(code, current_code, "{thread}");
+        if thread["side"] == "new" {
+            let numbers: Vec<u64> = marked
+                .iter()
+                .map(|row| row[1..].split_whitespace().next().unwrap().parse().unwrap())
+                .collect();
+            let (start, end) = (
+                current["start_line"].as_u64().unwrap(),
+                current["end_line"].as_u64().unwrap(),
+            );
+            assert_eq!(numbers, (start..=end).collect::<Vec<_>>(), "{thread}");
+        }
+    }
+    // The binary file's thread has no text to stand in: what stood around it when written.
+    let binary = &threads[4];
+    assert_eq!(binary["path"], "src/logo.txt");
+    assert_eq!(
+        binary["code_context"],
+        serde_json::json!({"before": [], "after": []})
+    );
 }

@@ -4,6 +4,7 @@
 mod anchor;
 mod concurrency;
 mod event;
+mod excerpt;
 mod fold;
 mod hand_back;
 mod home;

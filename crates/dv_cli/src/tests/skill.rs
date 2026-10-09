@@ -168,9 +168,9 @@ fn every_command_the_skill_shows_parses() {
         lines,
         [
             "dv status --json",
-            "dv comment list --status open --json",
-            "dv comment list --status addressed --json",
-            "dv comment show <thread-id> --json",
+            "dv comment list --status open",
+            "dv comment list --status addressed",
+            "dv comment show <thread-id>",
             "dv comment reply <thread-id> --author <agent> --body-file -",
             "dv comment address <thread-id> --author <agent> --note 'Cache lookup moved into getUser'",
             "dv comment reply <thread-id> --author <agent> --body-file -",
@@ -212,6 +212,18 @@ fn the_loop_the_skill_teaches_runs() {
         ran
     };
     let run = |index: usize, thread: &str| run_with(index, thread, "claude-code", 0);
+    // The same command with `--json`, where the test reads values the text prints too.
+    let run_json = |index: usize, thread: &str| {
+        let shown = &shown[index];
+        let mut args = args(shown, thread, review.id.as_str(), "claude-code", 0);
+        args.push("--json".to_string());
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let ran = fixture.run_stdin(&args, &shown.stdin);
+        assert_eq!(ran.exit, Exit::Ok, "{} --json: {}", shown.line, ran.stderr);
+        ran.json()
+    };
+    // The thread's code row as the text prints it: its line now, marked.
+    let commented_row = format!(">10 + | {}", edited_lines()[9]);
     let note = || {
         fixture
             .load(&review.id)
@@ -225,15 +237,34 @@ fn the_loop_the_skill_teaches_runs() {
     assert_eq!(json["current"]["id"], review.id.as_str());
     let worked_on = json["current"]["rounds"][0]["n"].as_u64().unwrap() as u32;
     assert_eq!(worked_on, 1);
-    // 2. The open threads; the agent takes the id from here. Nothing addressed yet.
-    let json = run(1, "").json();
+    // 2. The open threads, as text: the review's line, then each thread's block, whose header
+    // starts with the id the agent takes, and whose `>` row is the line commented on, numbered
+    // as it is now. Nothing addressed yet.
+    let listed = run(1, "");
+    let lines = listed.lines();
+    assert!(
+        lines[0].starts_with(review.id.as_str()),
+        "{}",
+        listed.stdout
+    );
+    let thread = lines[2].split_whitespace().next().unwrap().to_string();
+    assert_eq!(lines[2], format!("{thread}  open  src/app.ts:10"));
+    assert!(lines.contains(&commented_row.as_str()), "{}", listed.stdout);
+    assert_eq!(lines.last().copied(), Some("    Why a cache?"));
+    let json = run_json(1, "");
     assert_eq!(json["threads"].as_array().unwrap().len(), 1);
-    let thread = json["threads"][0]["id"].as_str().unwrap().to_string();
+    assert_eq!(json["threads"][0]["id"], thread.as_str());
     assert_eq!(json["threads"][0]["current_code"], edited_lines()[9]);
     let id = ThreadId::parse(&thread).unwrap();
-    assert_eq!(run(2, "").json()["threads"], serde_json::json!([]));
+    assert_eq!(run(2, "").lines(), ["no matching threads"]);
     // 3. Read it again, reply and address.
-    let json = run(3, &thread).json();
+    let shown_again = run(3, &thread);
+    assert!(
+        shown_again.lines().contains(&commented_row.as_str()),
+        "{}",
+        shown_again.stdout
+    );
+    let json = run_json(3, &thread);
     assert_eq!(json["thread"]["anchor"]["current"]["start_line"], 10);
     run(4, &thread);
     run(5, &thread);
@@ -307,8 +338,16 @@ fn the_loop_the_skill_teaches_runs() {
     assert_eq!(json["threads"]["open"], 0);
     let worked_on = json["round"]["n"].as_u64().unwrap() as u32;
     assert_eq!(worked_on, 3);
-    assert_eq!(run(1, "").json()["threads"], serde_json::json!([]));
-    let json = run(2, "").json();
+    assert_eq!(run(1, "").lines(), ["no matching threads"]);
+    let addressed = run(2, "");
+    let lines = addressed.lines();
+    assert_eq!(lines[2], format!("{thread}  addressed  src/app.ts:10"));
+    let at = lines
+        .iter()
+        .rposition(|line| *line == "reviewer dv fixture:")
+        .unwrap_or_else(|| panic!("the reviewer's reply in {}", addressed.stdout));
+    assert_eq!(lines[at + 1], "    Also cover the hit path.");
+    let json = run_json(2, "");
     assert_eq!(json["threads"][0]["id"], thread.as_str());
     let replies = json["threads"][0]["replies"].as_array().unwrap().clone();
     assert_eq!(replies.last().unwrap()["body"], "Also cover the hit path.");

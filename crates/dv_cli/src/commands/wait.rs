@@ -236,44 +236,43 @@ fn waiting_questions(review: &Review) -> u32 {
     u32::try_from(count).unwrap_or(u32::MAX)
 }
 
-/// What a woken wait says, ending with what to do next; `questions` of the open threads are
-/// agents' questions still waiting for the reviewer ([`waiting_questions`]).
+/// What a woken wait says: the review's line, the last closed round with its summary in full,
+/// and what to do next; `questions` of the open threads are agents' questions still waiting for
+/// the reviewer ([`waiting_questions`]).
 fn woke_text(doc: &WaitDoc, questions: u32) -> Vec<String> {
     let review = &doc.review;
     let mut lines = vec![format::review_line(review)];
     if let Some(round) = &doc.round {
-        let summary = round
-            .body
-            .as_deref()
-            .map(|body| format!(": {}", format::first_line(body)))
-            .unwrap_or_default();
-        lines.push(format!(
-            "round {} closed: {}{summary}",
-            round.n,
-            round.verdict.unwrap_or("no verdict")
-        ));
+        lines.extend(format::round_summary(round));
     }
     let summary = doc.round.as_ref().is_some_and(|round| round.body.is_some());
+    // The hand-back names the review and the round worked on, as the skill's step 4 does.
+    let done = match &doc.round {
+        Some(round) => format!("`dv review done {} --round {}`", review.id, round.n),
+        None => format!("`dv review done {}`", review.id),
+    };
     lines.push(match review.status {
         "changes_requested" => {
             let open = doc.threads.open.saturating_sub(questions);
             let threads = if open == 1 { "thread" } else { "threads" };
             let hint = match (open, summary) {
                 // A reviewer may request changes in the round's summary alone (PLAN §10.5).
-                (0, true) => "changes requested, 0 open threads: do what the round's summary \
-                     asks (`round.body` in --json), then `dv review done`"
-                    .to_string(),
-                (0, false) => "changes requested, 0 open threads: read the reviewer's replies \
-                     (`dv comment list --json`), act on them, then `dv review done`"
-                    .to_string(),
+                (0, true) => format!(
+                    "changes requested, 0 open threads: do what the round's summary asks, then \
+                     {done}"
+                ),
+                (0, false) => format!(
+                    "changes requested, 0 open threads: read the reviewer's replies (`dv \
+                     comment list`), act on them, then {done}"
+                ),
                 (_, true) => format!(
-                    "changes requested, {open} open {threads}: do what the round's summary asks \
-                     (`round.body` in --json), run `dv comment list --status open`, fix, reply \
-                     and address each, then `dv review done`"
+                    "changes requested, {open} open {threads}: do what the round's summary \
+                     asks, run `dv comment list --status open`, fix, reply and address each, \
+                     then {done}"
                 ),
                 (_, false) => format!(
                     "changes requested, {open} open {threads}: run `dv comment list --status \
-                     open`, fix, reply and address each, then `dv review done`"
+                     open`, fix, reply and address each, then {done}"
                 ),
             };
             match questions {

@@ -1,8 +1,15 @@
-//! The text output's lines (docs/PLAN.md §10.3): short, stable, no colour. Fields are
-//! separated by two spaces, so a line splits cleanly on runs of whitespace except within a
-//! label or a comment's summary, which come last or between fixed words.
+//! The text output's lines (docs/PLAN.md §10.3): short, stable, no colour, no trailing
+//! whitespace. Fields are separated by two spaces, so a line splits cleanly on runs of
+//! whitespace except within a label or a comment's summary, which come last or between fixed
+//! words. Whatever a person or an agent wrote (a comment, a reply, a note, a round's summary) is
+//! indented by [`BODY_INDENT`], so it never reaches column 0, where headers and code rows stand.
 
-use crate::dto::{ReviewDto, ThreadCountsDto, ThreadDto};
+use dv_core::review::excerpt::{code_row, hidden_span};
+
+use crate::dto::{ReviewDto, RoundDto, ThreadCountsDto, ThreadDto};
+
+/// What every line someone wrote starts with.
+pub(crate) const BODY_INDENT: &str = "    ";
 
 /// `r-…  working tree vs main  changes_requested  round 2  1 open, 0 addressed, 2 resolved`.
 pub(crate) fn review_line(review: &ReviewDto) -> String {
@@ -21,6 +28,107 @@ pub(crate) fn counts(counts: &ThreadCountsDto) -> String {
     format!(
         "{} open, {} addressed, {} resolved",
         counts.open, counts.addressed, counts.resolved
+    )
+}
+
+/// A thread's header line: `t-…  open  src/a.ts:12`.
+pub(crate) fn thread_line(thread: &ThreadDto) -> String {
+    format!("{}  {}  {}", thread.id, thread.state, location(thread))
+}
+
+/// A thread as `dv comment list` and `dv comment show` print it (PLAN §10.3): its header
+/// ([`thread_line`]); the excerpt of the diff around its code now, then, when that code changed
+/// since the comment, `as commented in round N:` and the lines as written; or, when its code
+/// can't be found, only those lines between the ones that stood around them. Then the comment
+/// under `<kind> <name>, round <n>:`, each reply under `<kind> <name>:` and the last state
+/// change's note under `<state> note:`, each body indented.
+pub(crate) fn thread_block(thread: &ThreadDto) -> Vec<String> {
+    let round = thread.anchor.original.round;
+    let mut lines = vec![thread_line(thread)];
+    match &thread.excerpt {
+        Some(excerpt) => {
+            lines.extend(excerpt.split('\n').map(str::to_string));
+            if thread.current_code.as_deref() != Some(thread.code.as_str()) {
+                lines.push(format!("as commented in round {round}:"));
+                lines.extend(commented_code(&thread.code));
+            }
+        }
+        None => {
+            lines.push(format!(
+                "as commented in round {round} (not found in the file now):"
+            ));
+            let (before, after) = match &thread.code_context {
+                Some(context) => (context.before.as_slice(), context.after.as_slice()),
+                None => (&[][..], &[][..]),
+            };
+            lines.extend(before.iter().map(|line| unnumbered(' ', line)));
+            lines.extend(commented_code(&thread.code));
+            lines.extend(after.iter().map(|line| unnumbered(' ', line)));
+        }
+    }
+    lines.push(format!(
+        "{} {}, round {round}:",
+        thread.author.kind, thread.author.name
+    ));
+    lines.extend(indented(&thread.body));
+    for reply in &thread.replies {
+        lines.push(format!("{} {}:", reply.author.kind, reply.author.name));
+        lines.extend(indented(&reply.body));
+    }
+    if let Some(note) = &thread.note {
+        lines.push(format!("{} note:", thread.state));
+        lines.extend(indented(note));
+    }
+    lines
+}
+
+/// A line of code without a number: `> | text`, `  | text`; an empty one ends at `|`.
+fn unnumbered(mark: char, line: &str) -> String {
+    code_row(&format!("{mark} |"), line)
+}
+
+/// `code`, the lines a thread was written on, unnumbered and marked `>`; over
+/// `dv_core::review::excerpt::RANGE_MAX` lines, its first and last `RANGE_KEEP` with `  ⋮ N
+/// lines` between, the excerpt's rule for a long commented span (PLAN §10.3).
+fn commented_code(code: &str) -> Vec<String> {
+    let lines: Vec<&str> = code.split('\n').collect();
+    let hidden = hidden_span(lines.len()).unwrap_or(lines.len()..lines.len());
+    let mut rows: Vec<String> = lines[..hidden.start]
+        .iter()
+        .map(|line| unnumbered('>', line))
+        .collect();
+    if !hidden.is_empty() {
+        rows.push(format!("  ⋮ {} lines", hidden.len()));
+    }
+    rows.extend(lines[hidden.end..].iter().map(|line| unnumbered('>', line)));
+    rows
+}
+
+/// A closed round: `round 1 closed: request_changes`, then the reviewer's summary in full,
+/// indented.
+pub(crate) fn round_summary(round: &RoundDto) -> Vec<String> {
+    let mut lines = vec![format!(
+        "round {} closed: {}",
+        round.n,
+        round.verdict.unwrap_or("no verdict")
+    )];
+    if let Some(body) = &round.body {
+        lines.extend(indented(body));
+    }
+    lines
+}
+
+/// A closed round on one line: `round 1 closed: request_changes: <the summary's first line>`.
+pub(crate) fn round_line(round: &RoundDto) -> String {
+    let summary = round
+        .body
+        .as_deref()
+        .map(|body| format!(": {}", first_line(body)))
+        .unwrap_or_default();
+    format!(
+        "round {} closed: {}{summary}",
+        round.n,
+        round.verdict.unwrap_or("no verdict")
     )
 }
 
@@ -83,7 +191,18 @@ pub(crate) fn first_line(text: &str) -> String {
     }
 }
 
-/// `text`'s lines, each indented by `indent`.
-pub(crate) fn indented(text: &str, indent: &str) -> Vec<String> {
-    text.lines().map(|line| format!("{indent}{line}")).collect()
+/// `text`'s lines, each indented by [`BODY_INDENT`] and without whitespace at its end; a blank
+/// line stays empty. (A Markdown hard break, two spaces at a line's end, reads as a line break
+/// here anyway.)
+pub(crate) fn indented(text: &str) -> Vec<String> {
+    text.lines()
+        .map(|line| {
+            let line = line.trim_end();
+            if line.is_empty() {
+                String::new()
+            } else {
+                format!("{BODY_INDENT}{line}")
+            }
+        })
+        .collect()
 }

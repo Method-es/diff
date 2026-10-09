@@ -118,6 +118,7 @@ fn the_tree_parses_every_documented_command() {
         Command::Comment(CommentCommand::List(CommentListArgs {
             status: vec![ThreadStatusArg::Open, ThreadStatusArg::Outdated],
             file: Some("a.ts".into()),
+            oneline: false,
         }))
     );
     assert_eq!(
