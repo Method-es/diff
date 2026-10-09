@@ -69,7 +69,7 @@ use gpui::{
 
 use crate::failure::Failure;
 use crate::services::{ActiveServices as _, ViewMode};
-use crate::session::{FileState, ReviewSession, SessionEvent};
+use crate::session::{Comparison, FileState, ReviewSession, SessionEvent};
 use crate::thread::Composer;
 use rows::{
     Content, LinePos, Row, RowKey, RowsSpec, file_rows, find_row, heights, selected_numbers,
@@ -140,6 +140,9 @@ struct Block {
 struct FileUi {
     /// The loaded diff the segments below belong to.
     diff: Option<Arc<FileDiff>>,
+    /// The comparison that diff was listed under: an old side under another one is another
+    /// text (`reload`).
+    comparison: Option<Comparison>,
     segments: Vec<Segment>,
     /// The widest line, in columns.
     columns: usize,
@@ -224,6 +227,12 @@ pub struct DiffPane {
     /// A thread shown before its card was built (its file loading, or collapsed): it is
     /// scrolled into view once the card is there.
     pending_thread: Option<ThreadId>,
+    /// A thread shown while another comparison was being listed: it is shown again once the
+    /// list lands (the comments list's "all changes" rows, `threads`).
+    reveal_after_listing: Option<ThreadId>,
+    /// A draft the comparison shown can't hold, asked for (`C`) while all changes are being
+    /// listed: it takes the keyboard once its row is there (`threads`).
+    focus_composer_after_listing: bool,
     /// Resolved threads the reviewer opened; the rest show collapsed (DESIGN §4.1).
     opened_threads: HashSet<ThreadId>,
     /// Why the last change to a thread's state failed, by thread.
@@ -287,6 +296,8 @@ impl DiffPane {
             refocus_pending: false,
             focused_thread: None,
             pending_thread: None,
+            reveal_after_listing: None,
+            focus_composer_after_listing: false,
             opened_threads: HashSet::new(),
             thread_error: None,
             writes: 0,
@@ -336,6 +347,8 @@ impl DiffPane {
         self.composer = None;
         self.focused_thread = None;
         self.pending_thread = None;
+        self.reveal_after_listing = None;
+        self.focus_composer_after_listing = false;
         self.opened_threads.clear();
         self.thread_error = None;
         self.measured.clear();
@@ -540,7 +553,11 @@ impl DiffPane {
         let shown = session.shown_diff(&entry.path);
         let failed = matches!(state, Some(FileState::Failed(_)));
         if let Some(diff) = shown.filter(|_| !failed) {
-            self.take_diff(&entry.path, diff);
+            let threads = threads::thread_lines(&entry.path, diff, session);
+            let comparison = session
+                .shown_comparison(&entry.path)
+                .unwrap_or(session.comparison());
+            self.take_diff(&entry.path, diff, comparison, &threads);
         }
         let composer = self.composer.as_ref().map(|composer| &composer.target);
         let ui = self.files.entry(entry.path.clone()).or_default();
@@ -588,12 +605,17 @@ impl DiffPane {
         self.measured
             .retain(|(path, _), _| listed.contains(path.as_str()));
         self.recompute_starts();
-        // A comment on a file that left the diff (the agent reverted it) has nowhere to go.
-        if self
-            .composer
-            .as_ref()
-            .is_some_and(|composer| !self.index.contains_key(&composer.target.path))
-        {
+        // A comment on a file that left the review (the agent reverted it) has nowhere to go.
+        // One on a file the comparison shown doesn't list (an interdiff) keeps its draft until
+        // its file shows again (DESIGN §4.1).
+        let in_review = |path: &str| {
+            self.session
+                .as_ref()
+                .is_some_and(|session| session.read(cx).in_review(path))
+        };
+        if self.composer.as_ref().is_some_and(|composer| {
+            !self.index.contains_key(&composer.target.path) && !in_review(&composer.target.path)
+        }) {
             self.composer = None;
         }
         self.list.reset(self.item_count());
@@ -608,6 +630,9 @@ impl DiffPane {
             self.selection = None;
         }
         self.after_rows_changed(cx);
+        if let Some(thread) = self.reveal_after_listing.take() {
+            self.reveal_thread(&thread, cx);
+        }
     }
 
     /// Rebuilds every block in place, splicing only those whose rows changed (the review

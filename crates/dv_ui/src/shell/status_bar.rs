@@ -56,7 +56,8 @@ pub struct StatusLine {
     pub health: Health,
     /// "Local · watching for changes", "Ubuntu · can't be opened", "No repo".
     pub location: String,
-    /// "Changes requested · round 2 · 3 open · 1 resolved", with a review open.
+    /// "Changes requested · round 2 · 3 open · 1 resolved", with a review open; an interdiff
+    /// adds "· since round 1".
     pub review: Option<String>,
     /// Whether "Ctrl Enter finish review" shows (an open review that isn't finished).
     pub finish: bool,
@@ -109,12 +110,18 @@ impl Shell {
                 (Health::Live, "watching for changes")
             };
             let review = session.review();
+            // An interdiff says so (PLAN §2.3).
+            let since = session
+                .comparison()
+                .round()
+                .map(|n| format!(" · since round {n}"))
+                .unwrap_or_default();
             // A finished review names the round that finished it, not one that never opens.
             return StatusLine {
                 health,
                 location: format!("{} · {state}", place(&session.backend().repo().location)),
                 review: Some(format!(
-                    "{} · round {} · {}",
+                    "{} · round {} · {}{since}",
                     status_label(review.status),
                     review.shown_round(),
                     thread_counts(review.summary().threads),

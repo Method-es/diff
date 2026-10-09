@@ -3,7 +3,7 @@
 use dv_core::diff::{FileEntry, FileStatus};
 use dv_core::review::{AnchorSide, Author, ReviewStatus, Thread};
 use dv_ui::services::reviews::{RepoRow, ReviewRow};
-use dv_ui::session::{FileState, Placement, ReviewSession, diff_kind};
+use dv_ui::session::{Comparison, FileState, ReviewSession, diff_kind};
 use dv_ui::submit::SummaryTab;
 use dv_ui::switcher::items::{ItemKind, ReviewBadge};
 use dv_ui::system::SystemRequest;
@@ -260,7 +260,33 @@ pub fn session(shell: &Shell, cx: &App) -> Value {
         "focused_thread": shell.diff_pane().read(cx).focused_thread(),
         "sheet": sheet(shell, cx),
         "rounds": rounds,
+        "comparison": comparison(session.comparison()),
+        "comparison_asked": comparison(session.asked_comparison()),
+        "comparison_available": session.comparison_available(),
+        "comparison_error": failure(session.comparison_error()),
+        "ready_note": ready_note(shell, cx),
     })
+}
+
+/// `{"kind": "since_round", "round": n}` or `{"kind": "all"}`.
+fn comparison(comparison: Comparison) -> Value {
+    match comparison {
+        Comparison::SinceRound(n) => json!({"kind": comparison.key(), "round": n}),
+        Comparison::All => json!({"kind": comparison.key()}),
+    }
+}
+
+/// `state.session.ready_note`: the agent's handoff the ready banner shows, or `null`.
+fn ready_note(shell: &Shell, cx: &App) -> Value {
+    match shell.ready_note(cx) {
+        Some(ready) => json!({
+            "author": ready.author.as_ref().map(author),
+            "round": ready.round,
+            "note": ready.note,
+            "open": shell.ready_note_open(),
+        }),
+        None => Value::Null,
+    }
 }
 
 /// `state.session.composer`: the open composer, or `null`.
@@ -316,6 +342,8 @@ pub fn comments_list(shell: &Shell, cx: &App) -> Value {
                 "id": row.id,
                 "state": row.state.as_str(),
                 "outdated": row.outdated,
+                "not_in_comparison": row.not_in_comparison,
+                "pending": row.pending,
                 "location": row.location,
                 "summary": row.summary,
                 "snippet": row.snippet,
@@ -410,6 +438,12 @@ fn thread_state(session: &ReviewSession, thread: &Thread) -> Value {
         .filter(|reply| !reply.is_deleted())
         .map(|reply| json!({"id": reply.id, "author": author(&reply.author), "body": reply.body}))
         .collect();
+    let placement = session.placement(thread);
+    let lines = |lines: Option<(u32, u32)>| match lines {
+        Some((start, end)) => json!({"start": start, "end": end}),
+        None => Value::Null,
+    };
+    let first = thread.first_anchor();
     json!({
         "id": thread.id,
         "path": anchor.path,
@@ -421,11 +455,18 @@ fn thread_state(session: &ReviewSession, thread: &Thread) -> Value {
         "author": author(&thread.author),
         "body": thread.body,
         "replies": replies,
-        "outdated": match session.placement(thread) {
-            Placement::Inline => json!(false),
-            Placement::Outdated => json!(true),
-            Placement::Unknown => Value::Null,
+        // `null` while it can't be told: its file's text isn't there yet. A thread the
+        // interdiff doesn't show says how it stands in all changes.
+        "outdated": if placement.is_outdated() {
+            json!(true)
+        } else if placement.is_pending() {
+            Value::Null
+        } else {
+            json!(false)
         },
+        "placement": placement.key(thread),
+        "lines": lines(placement.lines(anchor)),
+        "original_lines": lines(Some((first.start_line, first.end_line))),
         "round": anchor.round,
     })
 }

@@ -226,10 +226,11 @@ fn a_thread_whose_lines_changed_heads_its_file_as_outdated(cx: &mut TestAppConte
     pane.read_with(cx, |pane, _| {
         assert!(matches!(&pane.blocks[0].rows[1], Row::Gap(_)));
     });
-    // The agent rewrites the anchored line: the watch refreshes the file.
+    // The agent rewrites the anchored line beyond recognition: the watch refreshes the file,
+    // and relocation finds it nowhere (PLAN §8).
     let long: String = (1..=80)
         .map(|i| match i {
-            10 => "line TEN\n".to_string(),
+            10 => "fn zebra() {}\n".to_string(),
             70 => "line seventy\n".to_string(),
             i => format!("line {i}\n"),
         })
@@ -241,10 +242,12 @@ fn a_thread_whose_lines_changed_heads_its_file_as_outdated(cx: &mut TestAppConte
         watched.read(cx).blocks[0].rows.get(1) == Some(&Row::Outdated(wanted.clone()))
     });
     let session = session(&shell, cx);
-    let placement = session.read_with(cx, |session, _| {
-        session.placement(session.review().thread(&id).expect("the thread"))
+    let outdated = session.read_with(cx, |session, _| {
+        session
+            .placement(session.review().thread(&id).expect("the thread"))
+            .is_outdated()
     });
-    assert_eq!(placement, crate::session::Placement::Outdated);
+    assert!(outdated);
     // It still takes the keyboard's `]`.
     pane.update(cx, |pane, cx| {
         pane.focused_thread = None;

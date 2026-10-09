@@ -13,8 +13,8 @@ use super::{Cursor, DiffPane, SelectionAnchor};
 use crate::actions::diff_pane::{
     ClearSelection, Comment, CursorDown, CursorLeft, CursorRight, CursorUp, ExpandGap,
     ExpandGapFully, NextChange, NextFile, NextThread, PageDown, PageUp, PreviousChange,
-    PreviousFile, PreviousThread, Reply, ResolveThread, SelectDown, SelectUp, ToggleSplit,
-    ToggleViewed,
+    PreviousFile, PreviousThread, Reply, ResolveThread, SelectDown, SelectUp, ToggleComparison,
+    ToggleSplit, ToggleViewed,
 };
 use crate::services::ViewMode;
 
@@ -72,6 +72,7 @@ impl DiffPane {
             ExpandGap => expand_step,
             ExpandGapFully => expand_fully,
             ToggleSplit => toggle_split,
+            ToggleComparison => toggle_comparison,
             CursorUp => cursor_up,
             CursorDown => cursor_down,
             SelectUp => select_up,
@@ -158,6 +159,14 @@ impl DiffPane {
 
     fn toggle_split(&mut self, cx: &mut Context<Self>) {
         self.set_view_mode(self.mode.toggled(), cx);
+    }
+
+    /// `I`: the interdiff since the last round, or all changes (the panel's toggle, PLAN
+    /// §2.3); the reading position stays where the same file and line still show.
+    fn toggle_comparison(&mut self, cx: &mut Context<Self>) {
+        if let Some(session) = self.session.clone() {
+            session.update(cx, |session, cx| session.toggle_comparison(cx));
+        }
     }
 
     /// Where the keys start from: the cursor's row, else the row at the top of the viewport.

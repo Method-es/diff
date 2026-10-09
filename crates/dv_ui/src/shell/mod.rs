@@ -36,7 +36,10 @@
 //! hands it to the nearest drawn ancestor that takes the keyboard, else the main area.
 //!
 //! A finished review shows "Approved · this review is finished" at the top of the main area,
-//! with "Start a new review" (DESIGN §4.4).
+//! with "Start a new review"; a `ready` one the agent's handoff, "claude-code marked round 2
+//! ready" with the first line of its note and "Show note" for the rest; an interdiff whose
+//! round snapshot went missing why it shows all changes instead (DESIGN §4.4). An empty
+//! interdiff says "No changes since round n" and offers "Show all changes".
 //!
 //! **Panel.** `Ctrl B` shows or hides it; dragging its right edge resizes it within 220–420,
 //! saved in `settings.json` (DESIGN §2).
@@ -49,12 +52,13 @@ pub mod title_bar;
 mod tests;
 
 use anyhow::{Context as _, Result};
-use dv_core::review::ReviewId;
+use dv_core::review::{Author, ReviewId, ReviewStatus};
 use dv_core::{Location, Target};
 use futures::channel::oneshot;
 use gpui::{
-    App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, Size, Subscription,
-    Task, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, point, px, size,
+    App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, ScrollHandle, Size,
+    Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, point,
+    px, size,
 };
 use gpui_component::Root;
 
@@ -66,7 +70,7 @@ use crate::file_list::{FileList, FileListEvent};
 use crate::platform;
 use crate::services::ActiveServices as _;
 use crate::services::reviews::OpenRequest;
-use crate::session::{ReviewSession, SessionEvent};
+use crate::session::{Comparison, ReviewSession, SessionEvent};
 use crate::submit::{FinishSheet, SheetEvent};
 use crate::switcher::source::{SourcePicker, SourcePickerEvent};
 use crate::switcher::{Switcher, SwitcherEvent};
@@ -81,17 +85,33 @@ pub enum EmptyState {
     WorkingTreeClean,
     /// Any other review whose target has no changes.
     NoChanges,
+    /// An empty interdiff: "No changes since round n", with **Show all changes**.
+    NoChangesSince(u32),
 }
 
 impl EmptyState {
-    /// `"no_review"`, `"working_tree_clean"` or `"no_changes"`, as automation state spells it.
+    /// `"no_review"`, `"working_tree_clean"`, `"no_changes"` or `"no_changes_since"`, as
+    /// automation state spells it.
     pub fn key(self) -> &'static str {
         match self {
             Self::NoReview => "no_review",
             Self::WorkingTreeClean => "working_tree_clean",
             Self::NoChanges => "no_changes",
+            Self::NoChangesSince(_) => "no_changes_since",
         }
     }
+}
+
+/// The agent's handoff while the review is `ready` (DESIGN §4.4): who marked which round ready,
+/// with the note they left (`dv review done --note`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadyNote {
+    /// The agent who set `ready`, when the event says.
+    pub author: Option<Author>,
+    /// The round in progress, which they handed back.
+    pub round: u32,
+    /// Markdown, `None` without one.
+    pub note: Option<String>,
 }
 
 /// A review being opened.
@@ -110,6 +130,15 @@ pub struct MainBanner {
     pub retry: Option<(Location, OpenRequest)>,
     /// Whether its detail is disclosed.
     pub expanded: bool,
+}
+
+/// What [`Shell::open_repo`] shows when the location doesn't open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IfNotOpened {
+    /// Why, in the main area's banner (DESIGN §4.4).
+    Banner,
+    /// Nothing: a guess that didn't pan out (bare `dv` outside any repository).
+    Ignore,
 }
 
 /// What [`Shell::open`] opened.
@@ -148,11 +177,21 @@ pub struct Shell {
     opening: Option<Opening>,
     /// Bumped by every open: an open that lands after a newer one started is dropped.
     open_generation: u64,
-    /// Folder-picker flows still running.
-    picking: usize,
+    /// Folder-picker and [`Shell::open_repo`] flows still running.
+    adding: usize,
     banner: Option<MainBanner>,
     /// Whether the session's error banner shows its detail.
     session_banner_expanded: bool,
+    /// Whether the ready banner shows the agent's whole note.
+    ready_note_open: bool,
+    /// The handoff the banner's disclosure state belongs to ([`handoff`]): a new one starts
+    /// closed and is measured afresh.
+    ready_note_for: Option<u64>,
+    /// The open note's scroll position, for its fade.
+    ready_note_scroll: ScrollHandle,
+    /// Whether the open note has been drawn once since it opened, so its scroll extent is
+    /// known.
+    ready_note_measured: bool,
     _session_subscriptions: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
@@ -227,9 +266,13 @@ impl Shell {
             panel_visible: true,
             opening: None,
             open_generation: 0,
-            picking: 0,
+            adding: 0,
             banner: None,
             session_banner_expanded: false,
+            ready_note_open: false,
+            ready_note_for: None,
+            ready_note_scroll: ScrollHandle::new(),
+            ready_note_measured: false,
             _session_subscriptions: Vec::new(),
             _subscriptions: subscriptions,
         }
@@ -277,19 +320,29 @@ impl Shell {
 
     /// Shows `session`'s review, replacing (and so closing) the one open before.
     pub fn open_session(&mut self, session: Entity<ReviewSession>, cx: &mut Context<Self>) {
-        let location = session.read(cx).backend().repo().location.clone();
+        // The row the review belongs to in the switcher: the repository it was opened from.
+        let location = session.read(cx).origin().clone();
         self._session_subscriptions = vec![
             cx.observe(&session, |_, _, cx| cx.notify()),
-            // A review changing under an open switcher shows in its row at once.
-            cx.subscribe(&session, move |this, _, event: &SessionEvent, cx| {
-                if matches!(event, SessionEvent::ReviewChanged) && this.switcher.is_some() {
+            cx.subscribe(&session, move |this, session, event: &SessionEvent, cx| {
+                if !matches!(event, SessionEvent::ReviewChanged) {
+                    return;
+                }
+                // A review changing under an open switcher shows in its row at once.
+                if this.switcher.is_some() {
                     let reviews = cx.services().reviews.clone();
                     reviews.update(cx, |reviews, cx| reviews.refresh(location.clone(), cx));
+                }
+                let handoff = handoff(session.read(cx).review());
+                if handoff != this.ready_note_for {
+                    this.reset_ready_note(handoff);
+                    cx.notify();
                 }
             }),
         ];
         self.session = Some(session.clone());
         self.session_banner_expanded = false;
+        self.reset_ready_note(handoff(session.read(cx).review()));
         // A sheet over the review that was open goes with it.
         self.sheet = None;
         self.file_list
@@ -324,10 +377,60 @@ impl Shell {
             && !session.is_first_load()
             && session.error().is_none()
             && session.files().is_empty();
-        empty.then(|| match session.review().target {
-            Target::Working => EmptyState::WorkingTreeClean,
-            _ => EmptyState::NoChanges,
+        empty.then(|| match (session.comparison(), &session.review().target) {
+            (Comparison::SinceRound(n), _) => EmptyState::NoChangesSince(n),
+            (Comparison::All, Target::Working) => EmptyState::WorkingTreeClean,
+            (Comparison::All, _) => EmptyState::NoChanges,
         })
+    }
+
+    /// The agent's handoff the main area shows while the review is `ready` (DESIGN §4.4).
+    pub fn ready_note(&self, cx: &App) -> Option<ReadyNote> {
+        let review = self.session.as_ref()?.read(cx).review();
+        if review.status != ReviewStatus::Ready {
+            return None;
+        }
+        let change = review
+            .status_change
+            .as_ref()
+            .filter(|change| change.status == ReviewStatus::Ready);
+        Some(ReadyNote {
+            author: change.and_then(|change| change.author.clone()),
+            round: review.current_round(),
+            note: change
+                .and_then(|change| change.note.clone())
+                .filter(|note| !note.trim().is_empty()),
+        })
+    }
+
+    /// Whether the ready banner shows the whole note ("Show note").
+    pub fn ready_note_open(&self) -> bool {
+        self.ready_note_open
+    }
+
+    /// The ready banner's disclosure, closed, for `handoff`.
+    fn reset_ready_note(&mut self, handoff: Option<u64>) {
+        self.ready_note_for = handoff;
+        self.ready_note_open = false;
+        self.ready_note_measured = false;
+        self.ready_note_scroll = ScrollHandle::new();
+    }
+
+    /// "Show note" / "Hide note" on the ready banner.
+    pub fn toggle_ready_note(&mut self, cx: &mut Context<Self>) {
+        self.ready_note_open = !self.ready_note_open;
+        self.ready_note_measured = false;
+        self.ready_note_scroll = ScrollHandle::new();
+        cx.notify();
+    }
+
+    /// "Show all changes" on an empty interdiff.
+    pub fn show_all_changes(&mut self, cx: &mut Context<Self>) {
+        if let Some(session) = &self.session {
+            session.update(cx, |session, cx| {
+                session.set_comparison(Comparison::All, cx)
+            });
+        }
     }
 
     /// The material applied to the window.
@@ -339,7 +442,7 @@ impl Shell {
     /// `settled`.
     pub fn is_settled(&self, cx: &App) -> bool {
         self.opening.is_none()
-            && self.picking == 0
+            && self.adding == 0
             && self
                 .sheet
                 .as_ref()
@@ -486,11 +589,15 @@ impl Shell {
         let Some(session) = &self.session else {
             return;
         };
+        // The targets of the repository the review was opened from; the review's own is checked
+        // when that repository is its home (not when it is another worktree's, PLAN §2.4).
         let (location, target) = {
             let session = session.read(cx);
             (
-                session.backend().repo().location.clone(),
-                session.review().target.clone(),
+                session.origin().clone(),
+                session
+                    .is_home_origin()
+                    .then(|| session.review().target.clone()),
             )
         };
         let return_focus = self.take_menu().unwrap_or_else(|| window.focused(cx));
@@ -633,49 +740,86 @@ impl Shell {
     }
 
     /// "Open folder…": the folder picker (through the system seam), then the folder's
-    /// repository added and selected in the switcher. A folder that isn't a repository shows
-    /// why in the main area's banner.
+    /// repository added and selected in the switcher ([`Shell::open_repo`]). A folder that
+    /// isn't a repository shows why in the main area's banner.
     pub fn pick_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.picking += 1;
+        self.adding += 1;
         let picked = crate::system::pick_folder("Open repository", cx);
         cx.spawn_in(window, async move |this, cx| {
-            let added = match picked.await {
-                Ok(Some(path)) => {
-                    // A folder picked through `\\wsl.localhost\<distro>\…` is a WSL location.
-                    let text = path.to_string_lossy().into_owned();
-                    let location = Location::parse(&text).unwrap_or(Location::Local(path));
-                    let adding = this.update(cx, |_, cx| {
-                        let reviews = cx.services().reviews.clone();
-                        reviews.update(cx, |reviews, cx| reviews.add_repo(location, cx))
-                    });
-                    match adding {
-                        Ok(adding) => Some(adding.await),
-                        Err(_) => None,
-                    }
-                }
-                Ok(None) => None,
-                Err(error) => Some(Err(Failure::new(format!(
-                    "the folder picker failed: {error}"
-                )))),
-            };
+            let picked = picked.await;
             this.update_in(cx, |this, window, cx| {
-                this.picking -= 1;
-                match added {
-                    Some(Ok(location)) => this.open_switcher(Some(&location), window, cx),
-                    Some(Err(failure)) => {
+                match picked {
+                    Ok(Some(path)) => {
+                        // A folder picked through `\\wsl.localhost\<distro>\…` is a WSL
+                        // location.
+                        let text = path.to_string_lossy().into_owned();
+                        let location = Location::parse(&text).unwrap_or(Location::Local(path));
+                        this.open_repo(location, IfNotOpened::Banner, window, cx)
+                            .detach();
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
                         this.banner = Some(MainBanner {
-                            failure,
+                            failure: Failure::new(format!("the folder picker failed: {error}")),
                             retry: None,
                             expanded: false,
                         });
                     }
-                    None => {}
                 }
+                // After `open_repo` counted itself, so `is_settled` sees no gap.
+                this.adding -= 1;
                 cx.notify();
             })
             .ok();
         })
         .detach();
+    }
+
+    /// `dv open <path>` (PLAN §10.1), automation's `open` and "Open folder…": the repository at
+    /// `location` becomes a known one (its worktree root; a WSL location as given, whose row
+    /// says why it can't be opened yet) and the switcher opens with its first row selected. A
+    /// location that doesn't open shows why in the main area's banner, or, with
+    /// [`IfNotOpened::Ignore`] (bare `dv` started outside any repository), nothing. Resolves to
+    /// the location as known once the switcher is open; `is_settled` waits for it.
+    pub fn open_repo(
+        &mut self,
+        location: Location,
+        if_not_opened: IfNotOpened,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Location, Failure>> {
+        self.adding += 1;
+        let reviews = cx.services().reviews.clone();
+        let added = reviews.update(cx, |reviews, cx| reviews.add_repo(location, cx));
+        let (sender, receiver) = oneshot::channel();
+        cx.spawn_in(window, async move |this, cx| {
+            let added = added.await;
+            let result = this
+                .update_in(cx, |this, window, cx| {
+                    this.adding -= 1;
+                    match &added {
+                        Ok(known) => this.open_switcher(Some(known), window, cx),
+                        Err(failure) if if_not_opened == IfNotOpened::Banner => {
+                            this.banner = Some(MainBanner {
+                                failure: failure.clone(),
+                                retry: None,
+                                expanded: false,
+                            });
+                        }
+                        Err(failure) => log::info!("nothing to open: {}", failure.message),
+                    }
+                    cx.notify();
+                    added
+                })
+                .unwrap_or_else(|_| Err(Failure::new("dv is closing")));
+            let _ = sender.send(result);
+        })
+        .detach();
+        cx.background_spawn(async move {
+            receiver
+                .await
+                .unwrap_or_else(|_| Err(Failure::new("dv is closing")))
+        })
     }
 
     /// Opens the review the banner's Retry names again.
@@ -757,6 +901,16 @@ impl Focusable for Shell {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
+}
+
+/// The agent's handoff the ready banner shows for `review`, by when it landed: the `ready`
+/// status change (DESIGN §4.4), or `None` while the review isn't `ready`. Another handoff
+/// (the next round's, or a second `dv review done --note`) is another banner, whose "Show note"
+/// starts closed.
+fn handoff(review: &dv_core::review::Review) -> Option<u64> {
+    let change = review.status_change.as_ref()?;
+    (review.status == ReviewStatus::Ready && change.status == ReviewStatus::Ready)
+        .then_some(change.at)
 }
 
 /// Options for the main window: centred at `window_size` (logical px), DESIGN's minimum size, a

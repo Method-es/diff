@@ -5,8 +5,9 @@
 //! [`crate::markdown`], sanitised), the reviewer's actions (Resolve, Reopen) and a reply field.
 //! `open` threads wear the accent ring dot, `addressed` ones the agent's blue note with Resolve
 //! and Reopen, `resolved` ones a green check and collapse to one line until opened, and an
-//! outdated one (its anchored text no longer stands at its lines, PLAN §8) a yellow chip and its
-//! original lines. On a finished review the actions and the reply field stay, disabled.
+//! outdated one (relocation can't find its anchored text, PLAN §8) a yellow chip and its lines
+//! as they were. A thread that moved shows its new lines, "· moved" after them. On a finished
+//! review the actions and the reply field stay, disabled.
 //!
 //! The composer is one multi-line field: on a new thread it sits under the selected lines with
 //! "Comment on new · lines 12–14"; as a reply it takes the place of the card's reply field.
@@ -26,7 +27,7 @@ mod tests;
 
 use std::fmt::Write as _;
 
-use dv_core::review::{AnchorSide, Author, AuthorKind, Thread, ThreadId, ThreadState};
+use dv_core::review::{Anchor, AnchorSide, Author, AuthorKind, Thread, ThreadId, ThreadState};
 use gpui::{Entity, Subscription};
 use gpui_component::input::TextareaState;
 
@@ -91,13 +92,30 @@ pub fn anchor_label(side: AnchorSide, start: u32, end: u32) -> String {
     }
 }
 
+/// A card's anchor as it shows now: `anchor`'s side at `lines` (else the anchor's own lines),
+/// with "· moved" when those are lines it moved to (DESIGN §4.1: "new · lines 34–36 · moved").
+pub fn shown_anchor_label(anchor: &Anchor, lines: Option<(u32, u32)>, moved: bool) -> String {
+    let (start, end) = lines.unwrap_or((anchor.start_line, anchor.end_line));
+    let label = anchor_label(anchor.side, start, end);
+    if moved {
+        format!("{label} · moved")
+    } else {
+        label
+    }
+}
+
 /// `path:31` or `path:12–14`: where a thread sits, as the comments list and prompts name it.
 pub fn location_label(thread: &Thread) -> String {
     let anchor = &thread.anchor;
-    if anchor.start_line == anchor.end_line {
-        format!("{}:{}", anchor.path, anchor.start_line)
+    path_lines(&anchor.path, anchor.start_line, anchor.end_line)
+}
+
+/// `path:31` or `path:12–14`.
+pub fn path_lines(path: &str, start: u32, end: u32) -> String {
+    if start == end {
+        format!("{path}:{start}")
     } else {
-        format!("{}:{}–{}", anchor.path, anchor.start_line, anchor.end_line)
+        format!("{path}:{start}–{end}")
     }
 }
 
@@ -159,9 +177,10 @@ pub fn state_note(thread: &Thread) -> Option<&str> {
 }
 
 /// The Markdown "Copy as prompt" puts on the clipboard (DESIGN §4.1 panel): the open threads,
-/// each with where it sits, the anchored code, the comment and its replies, so an agent can be
+/// each with where it shows now (`path:line`, its location beside it in `threads`, as the
+/// comments list names it), the anchored code, the comment and its replies, so an agent can be
 /// handed the review in one paste. `label` names the target ("working tree vs main").
-pub fn prompt_markdown(label: &str, threads: &[&Thread]) -> String {
+pub fn prompt_markdown(label: &str, threads: &[(&Thread, String)]) -> String {
     let mut out = String::new();
     let count = threads.len();
     let _ = writeln!(
@@ -169,18 +188,10 @@ pub fn prompt_markdown(label: &str, threads: &[&Thread]) -> String {
         "Open review comments on {label} ({count} {}):",
         if count == 1 { "comment" } else { "comments" }
     );
-    for thread in threads {
+    for (thread, location) in threads {
         let anchor = &thread.anchor;
-        let side = match anchor.side {
-            AnchorSide::New => String::new(),
-            AnchorSide::Old => " (old side)".to_string(),
-        };
-        let _ = write!(
-            out,
-            "\n## {}{side}\n\nThread `{}`.\n\n",
-            location_label(thread),
-            thread.id
-        );
+        // `location` says "(old)" for an old-side thread (`ReviewSession::location`).
+        let _ = write!(out, "\n## {location}\n\nThread `{}`.\n\n", thread.id);
         if !anchor.text.is_empty() {
             let code = anchor.text.join("\n");
             let fence = fence_for(&code);

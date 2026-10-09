@@ -11,6 +11,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::git::{GitError, GitRepo, Oid};
+use crate::review::Round;
 
 /// What a review compares (PLAN §2.2).
 ///
@@ -25,7 +26,8 @@ pub enum Target {
     /// `HEAD` against the index.
     Staged,
     /// A branch's work since it left `base`: `merge-base(base, branch)` against the branch tip,
-    /// or against the working tree while the branch is checked out in this worktree.
+    /// or against the working tree while the branch is checked out in the worktree it resolves
+    /// in (a review's home, `review::home`, is that worktree when there is one).
     Branch {
         branch: String,
         /// The branch to compare against; `None` means the repo's default branch
@@ -96,6 +98,31 @@ pub struct DiffSpec {
     pub new: Side,
 }
 
+impl DiffSpec {
+    /// The interdiff since `round` (PLAN §2.3, §6 step 6): the round's snapshot — the new side
+    /// as it stood when the round closed — against this spec's new side, so only what changed
+    /// after the round shows.
+    pub fn since(&self, round: &Round) -> DiffSpec {
+        DiffSpec {
+            old: Side::Commit(round.new_oid.clone()),
+            new: self.new.clone(),
+        }
+    }
+
+    /// [`DiffSpec::since`], once the round's snapshot commit is known to be in `repo`;
+    /// [`TargetError::MissingSnapshot`] when it isn't (the GUI then says so and shows all
+    /// changes).
+    pub fn since_checked(&self, repo: &GitRepo, round: &Round) -> Result<DiffSpec, TargetError> {
+        if !repo.has_commit(&round.new_oid)? {
+            return Err(TargetError::MissingSnapshot {
+                round: round.n,
+                oid: round.new_oid.clone(),
+            });
+        }
+        Ok(self.since(round))
+    }
+}
+
 /// Why a target didn't resolve.
 #[derive(Debug, thiserror::Error)]
 pub enum TargetError {
@@ -107,12 +134,17 @@ pub enum TargetError {
     /// A `branch` target without a base, in a repo with no `origin/HEAD`, `main` or `master`.
     #[error("no default branch to compare {branch} with (no origin/HEAD, main or master)")]
     NoDefaultBase { branch: String },
+    /// A round's snapshot commit isn't in the repository, so nothing can be compared with it.
+    #[error("round {round}'s snapshot ({}) is missing from the repository", oid.short())]
+    MissingSnapshot { round: u32, oid: Oid },
 }
 
 impl Target {
     /// Resolves the target in `repo` (PLAN §2.2): every revision becomes a commit id, so the
     /// returned spec means the same thing however the repo moves on afterwards (except the index
-    /// and the working tree, which are live by nature).
+    /// and the working tree, which are live by nature). The index and the working tree are
+    /// `repo`'s worktree's, so a review's target is resolved in its home worktree
+    /// (`review::home`), whichever worktree reads it.
     pub fn resolve(&self, repo: &GitRepo) -> Result<DiffSpec, TargetError> {
         match self {
             Target::Working => Ok(DiffSpec {

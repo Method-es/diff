@@ -1,0 +1,62 @@
+{"scenario": {"window_size": "1440x900", "description": "reviews homed in a linked worktree (PLAN §2.2, §2.4): a working review made in the linked worktree, opened from the main work tree's switcher row and with `dv open <main> --review <id>`, lists the linked worktree's files and places its thread where `dv comment list` does, run from either worktree; finishing its round snapshots the linked worktree (the interdiff since it is empty); a branch review of the branch checked out there means the same from both worktrees; a working review whose worktree was removed opens to a banner and is exit 1 `target` in the CLI"}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+
+// The main work tree on `main` with an untracked file of its own, and a linked worktree at wt/
+// (ignored by the main work tree) on `feat`, whose working tree changes line 5.
+{"cmd": "seed_repo", "name": "api", "steps": [{"write": ".gitignore", "text": "wt/\n"}, {"write": "src/a.ts", "text": "export const one = 1;\nexport const two = 2;\nexport const three = 3;\nexport const four = 4;\nexport const five = 5;\nexport const six = 6;\nexport const seven = 7;\nexport const eight = 8;\n"}, {"commit": "base"}, {"git": ["worktree", "add", "-q", "wt", "-b", "feat"]}, {"write": "wt/src/a.ts", "text": "export const one = 1;\nexport const two = 2;\nexport const three = 3;\nexport const four = 4;\nexport const five = 55;\nexport const six = 6;\nexport const seven = 7;\nexport const eight = 8;\n"}, {"write": "src/main_only.ts", "text": "export const main = 1;\n"}], "save": {"repo": "/path"}}
+
+// The agent, in the linked worktree, starts its working review and asks about line 5.
+{"cmd": "cli", "args": ["review", "new", "--json"], "cwd": "repos/api/wt", "save": {"review": "/json/review/id"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/review/target/kind", "equals": "working"}]}
+{"cmd": "cli", "args": ["comment", "add", "--file", "src/a.ts", "--lines", "5", "--body", "why 55?", "--json"], "cwd": "repos/api/wt", "env": {"CLAUDECODE": "1"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/thread/placement", "equals": "unchanged"}]}
+// From the main work tree the CLI reads it in the linked worktree too.
+{"cmd": "cli", "args": ["comment", "list", "--review", "${review}", "--json"], "cwd": "repos/api", "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/threads/0/placement", "equals": "unchanged"}, {"pointer": "/json/threads/0/anchor/current", "equals": {"path": "src/a.ts", "side": "new", "start_line": 5, "end_line": 5}}, {"pointer": "/json/threads/0/current_code", "equals": "export const five = 55;"}]}
+
+// The reviewer opens it from the main work tree's switcher row: the linked worktree's one file,
+// the thread unchanged at line 5, labelled by the linked worktree's HEAD.
+{"cmd": "open", "path": "${repo}"}
+{"cmd": "wait_for", "pointer": "/repos/0/reviews/0/id", "equals": "${review}", "timeout_ms": 20000}
+{"cmd": "settle"}
+{"cmd": "click", "target": "switcher/api/review/${review}"}
+{"cmd": "wait_for", "pointer": "/session/review_id", "equals": "${review}", "timeout_ms": 20000}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/session/target_label", "equals": "working tree vs feat"}, {"pointer": "/session/total", "equals": 1}, {"pointer": "/session/files/0/path", "equals": "src/a.ts"}, {"pointer": "/session/threads/0/placement", "equals": "unchanged"}, {"pointer": "/session/threads/0/lines", "equals": {"start": 5, "end": 5}}, {"pointer": "/session/threads/0/outdated", "equals": false}, {"pointer": "/comments_list/rows/0/location", "equals": "src/a.ts:5"}, {"pointer": "/shell/banner", "equals": null}, {"pointer": "/repos", "len": 1}]}
+{"cmd": "screenshot", "name": "linked-review-from-main-row"}
+
+// Finishing round 1 from this session snapshots the linked worktree: the interdiff since it is
+// empty (a snapshot of the main work tree would differ in src/a.ts and src/main_only.ts).
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle", "expect": [{"pointer": "/session/sheet/verdict", "equals": "request_changes"}]}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "wait_for", "pointer": "/session/status", "equals": "changes_requested", "timeout_ms": 20000}
+{"cmd": "wait_for", "pointer": "/session/comparison", "equals": {"kind": "since_round", "round": 1}, "timeout_ms": 20000}
+{"cmd": "settle", "expect": [{"pointer": "/session/total", "equals": 0}, {"pointer": "/shell/empty_state", "equals": "no_changes_since"}, {"pointer": "/session/threads/0/placement", "equals": "not_in_comparison"}, {"pointer": "/session/threads/0/lines", "equals": {"start": 5, "end": 5}}]}
+{"cmd": "cli", "args": ["review", "show", "${review}", "--json"], "cwd": "repos/api", "expect_result": [{"pointer": "/json/review/status", "equals": "changes_requested"}, {"pointer": "/json/review/rounds/0/n", "equals": 1}]}
+
+// `dv open <main> --review <id>`: the same, straight away.
+{"restart": {"app_args": ["open", "${repo}", "--review", "${review}"]}}
+{"cmd": "wait_for", "pointer": "/session/review_id", "equals": "${review}", "timeout_ms": 20000}
+{"cmd": "key", "keystroke": "i"}
+{"cmd": "wait_for", "pointer": "/session/comparison", "equals": {"kind": "all"}, "timeout_ms": 20000}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/session/target_label", "equals": "working tree vs feat"}, {"pointer": "/session/total", "equals": 1}, {"pointer": "/session/files/0/path", "equals": "src/a.ts"}, {"pointer": "/session/threads/0/placement", "equals": "unchanged"}, {"pointer": "/session/threads/0/lines", "equals": {"start": 5, "end": 5}}, {"pointer": "/shell/banner", "equals": null}]}
+{"cmd": "screenshot", "name": "linked-review-dv-open"}
+
+// A branch review of `feat`, started from the main work tree, is the linked worktree's files
+// (the branch is checked out there) from both worktrees, in the CLI and in the GUI.
+{"cmd": "cli", "args": ["review", "new", "--branch", "feat", "--base", "main", "--json"], "cwd": "repos/api", "save": {"branch_review": "/json/review/id"}, "expect_result": {"pointer": "/exit", "equals": 0}}
+{"cmd": "cli", "args": ["comment", "add", "--review", "${branch_review}", "--file", "src/a.ts", "--lines", "5", "--body", "branch: why 55?", "--json"], "cwd": "repos/api", "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/thread/placement", "equals": "unchanged"}]}
+{"cmd": "cli", "args": ["comment", "list", "--review", "${branch_review}", "--json"], "cwd": "repos/api/wt", "expect_result": [{"pointer": "/json/threads/0/placement", "equals": "unchanged"}, {"pointer": "/json/threads/0/current_code", "equals": "export const five = 55;"}]}
+{"cmd": "cli", "args": ["comment", "list", "--review", "${branch_review}", "--json"], "cwd": "repos/api", "expect_result": [{"pointer": "/json/threads/0/placement", "equals": "unchanged"}, {"pointer": "/json/threads/0/current_code", "equals": "export const five = 55;"}]}
+// Both reviews are the linked worktree's work, so neither is the main work tree's.
+{"cmd": "cli", "args": ["review", "show", "--json"], "cwd": "repos/api/wt", "expect_result": [{"pointer": "/exit", "equals": 2}, {"pointer": "/json/error/code", "equals": "ambiguous_review"}]}
+{"cmd": "cli", "args": ["review", "show", "--json"], "cwd": "repos/api", "expect_result": [{"pointer": "/exit", "equals": 2}, {"pointer": "/json/error/code", "equals": "no_review"}]}
+{"cmd": "open_review", "path": "${repo}", "target": {"branch": {"branch": "feat", "base": "main"}}, "expect_result": [{"pointer": "/review_id", "equals": "${branch_review}"}, {"pointer": "/created", "equals": false}]}
+{"cmd": "wait_for", "pointer": "/session/review_id", "equals": "${branch_review}", "timeout_ms": 20000}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/session/total", "equals": 1}, {"pointer": "/session/files/0/path", "equals": "src/a.ts"}, {"pointer": "/session/threads/0/placement", "equals": "unchanged"}, {"pointer": "/session/threads/0/lines", "equals": {"start": 5, "end": 5}}]}
+
+// The linked worktree removed: its working review can't be read anywhere else.
+{"cmd": "repo_edit", "name": "api", "steps": [{"git": ["worktree", "remove", "--force", "wt"]}]}
+{"cmd": "cli", "args": ["comment", "list", "--review", "${review}", "--json"], "cwd": "repos/api", "expect_result": [{"pointer": "/exit", "equals": 1}, {"pointer": "/json/error/code", "equals": "target"}, {"pointer": "/json/error/message", "contains": "is no longer one of the repository's"}]}
+{"restart": {"app_args": ["open", "${repo}", "--review", "${review}"]}}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/session", "equals": null}, {"pointer": "/shell/banner/message", "contains": "its worktree is gone"}, {"pointer": "/shell/banner/detail", "contains": "is no longer one of the repository's worktrees"}]}
+{"cmd": "screenshot", "name": "linked-review-gone"}
+{"cmd": "quit"}

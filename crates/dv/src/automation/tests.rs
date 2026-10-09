@@ -1,3 +1,6 @@
+use std::cell::RefCell;
+use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use dv_ui::platform::MaterialSupport;
@@ -49,6 +52,35 @@ fn run(
     let task = task.unwrap_or_else(|| panic!("{cmd} is a dv command"));
     cx.run_until_parked();
     cx.foreground_executor().block_test(task)
+}
+
+/// Runs a command whose task waits on real processes (`cli`, `cli_spawn`, `cli_join`) to its
+/// reply, letting real time pass meanwhile.
+fn run_waiting(
+    host: &Entity<DvAutomation>,
+    cmd: &str,
+    args: Value,
+    cx: &mut VisualTestContext,
+) -> Result<Value> {
+    let task =
+        cx.update(|window, cx| host.update(cx, |host, cx| host.custom_task(cmd, args, window, cx)));
+    let task = task.unwrap_or_else(|| panic!("{cmd} is a dv command"));
+    let reply: Rc<RefCell<Option<Result<Value>>>> = Rc::default();
+    cx.update(|_, cx| {
+        let reply = reply.clone();
+        cx.spawn(async move |_| *reply.borrow_mut() = Some(task.await))
+            .detach();
+    });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.executor().advance_clock(Duration::from_millis(50));
+        cx.run_until_parked();
+        if let Some(reply) = reply.borrow_mut().take() {
+            return reply;
+        }
+        assert!(Instant::now() < deadline, "{cmd} didn't reply");
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// Lets real time pass (watch threads deliver from outside the test scheduler) until the host
@@ -137,6 +169,10 @@ fn steps_parse_strictly() {
         parse(json!({"config": ["core.autocrlf", "true"]})).unwrap(),
         Step::Config("core.autocrlf".into(), "true".into())
     );
+    assert_eq!(
+        parse(json!({"worktree": ["wt", "feat"]})).unwrap(),
+        Step::Worktree("wt".into(), "feat".into())
+    );
     for (step, error) in [
         (json!("write"), "is an object"),
         (json!({}), "exactly one of"),
@@ -149,6 +185,7 @@ fn steps_parse_strictly() {
         ),
         (json!({"commit": "m", "text": "x"}), "unknown key \"text\""),
         (json!({"rename": ["a"]}), "takes 2 strings"),
+        (json!({"worktree": ["wt"]}), "takes 2 strings"),
         (json!({"git": []}), "at least one argument"),
         (json!({"remove": 3}), "needs a string"),
     ] {
@@ -196,6 +233,7 @@ fn state_describes_the_empty_shell(cx: &mut TestAppContext) {
     assert_eq!(state["repos"], json!([]));
     assert_eq!(state["session"], Value::Null);
     assert_eq!(state["comments_list"], Value::Null);
+    assert_eq!(state["cli"], json!({"spawned": []}));
     assert!(settled(&host, cx));
 }
 
@@ -375,10 +413,20 @@ fn a_seeded_repo_opens_as_a_review_and_the_agent_answers(cx: &mut TestAppContext
     assert_eq!(
         state["comments_list"],
         json!({"show_resolved": false, "rows": [{
-            "id": thread, "state": "open", "outdated": false, "location": "src/app.ts:2",
-            "summary": "Why 3?", "snippet": null,
+            "id": thread, "state": "open", "outdated": false, "not_in_comparison": false,
+            "pending": false, "location": "src/app.ts:2", "summary": "Why 3?", "snippet": null,
         }]})
     );
+    let thread_state = &state["session"]["threads"][0];
+    assert_eq!(thread_state["placement"], "unchanged");
+    assert_eq!(thread_state["lines"], json!({"start": 2, "end": 2}));
+    assert_eq!(
+        thread_state["original_lines"],
+        json!({"start": 2, "end": 2})
+    );
+    assert_eq!(state["session"]["comparison"], json!({"kind": "all"}));
+    assert_eq!(state["session"]["comparison_available"], false);
+    assert_eq!(state["session"]["ready_note"], Value::Null);
 
     run(
         &host,
@@ -416,6 +464,35 @@ fn a_seeded_repo_opens_as_a_review_and_the_agent_answers(cx: &mut TestAppContext
             .contains("\"reply\", \"address\" or \"done\""),
         "{error}"
     );
+    // Done, with a note for the reviewer (`dv review done --note`).
+    let done = run(
+        &host,
+        "review_op",
+        json!({"op": "done", "note": "Ready for another look.", "author": "claude-code"}),
+        cx,
+    )
+    .unwrap();
+    assert_eq!(done, json!({"changed": true}));
+    let state = wait_until(&host, cx, "the handoff", |state| {
+        state["session"]["status"] == "ready"
+    });
+    assert_eq!(
+        state["session"]["ready_note"],
+        json!({
+            "author": {"kind": "agent", "name": "claude-code"},
+            "round": 1,
+            "note": "Ready for another look.",
+            "open": false,
+        })
+    );
+    let change = session
+        .read_with(cx, |session, _| session.review().status_change.clone())
+        .expect("the status change");
+    assert_eq!(change.note.as_deref(), Some("Ready for another look."));
+    assert_eq!(
+        change.author,
+        Some(dv_core::review::Author::agent("claude-code"))
+    );
 
     // The agent edits the repo: the session's list follows.
     run(
@@ -445,4 +522,225 @@ fn seeded_repos_are_found_again_after_a_restart(cx: &mut TestAppContext) {
     std::fs::create_dir_all(dir.path().join("repos").join("other")).unwrap();
     assert_eq!(repos::reopen_seeded(dir.path()).len(), 1);
     let _ = cx;
+}
+
+#[gpui::test]
+fn a_seeded_repos_linked_worktrees_get_its_environment(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let (dir, host, cx) = open(cx);
+    run(
+        &host,
+        "seed_repo",
+        json!({"name": "api", "steps": [
+            {"write": "a.txt", "text": "a
+        "},
+            {"commit": "base"},
+            {"worktree": ["wt", "feat"]},
+        ]}),
+        cx,
+    )
+    .unwrap();
+    // Beside the work tree, outside it; and one more added later, elsewhere again.
+    let repos = dir.path().join("repos");
+    let linked = repos.join("api.fixture").join("worktrees").join("wt");
+    assert!(linked.join("a.txt").is_file());
+    run(
+        &host,
+        "repo_edit",
+        json!({"name": "api", "steps": [{"git": ["worktree", "add", "-q", "-b", "late", "../late"]}]}),
+        cx,
+    )
+    .unwrap();
+    let late = repos.join("late");
+    // Only the fixture's environment points git at this global configuration.
+    std::fs::write(
+        repos.join("api.fixture").join("home").join(".gitconfig"),
+        "[dv-test]
+	marker = from-the-overlay
+",
+    )
+    .unwrap();
+    // A backend opened on either runs git with the fixture's environment, not this machine's.
+    for root in [&linked, &late] {
+        let locations = cx.update(|_, cx| cx.services().locations.clone());
+        let open = locations.update(cx, |locations, cx| {
+            locations.open(dv_core::Location::Local(root.clone()), cx)
+        });
+        cx.run_until_parked();
+        let backend = cx.foreground_executor().block_test(open).unwrap();
+        let marker = backend
+            .git(
+                &["config", "--get", "dv-test.marker"],
+                &dv_core::backend::GitOpts::default().with_ok_codes(&[0, 1]),
+            )
+            .unwrap();
+        assert_eq!(
+            marker.stdout_utf8().map(str::trim),
+            Some("from-the-overlay"),
+            "{}",
+            root.display()
+        );
+    }
+    // So does a `cli` child started in one.
+    host.update(cx, |host, _| host.cli_exe = Some(PathBuf::from("git")));
+    for root in [&linked, &late] {
+        let reply = run_waiting(
+            &host,
+            "cli",
+            json!({"args": ["config", "--get", "dv-test.marker"], "cwd": root}),
+            cx,
+        )
+        .unwrap();
+        assert_eq!(
+            reply["stdout"],
+            "from-the-overlay
+",
+            "{reply}"
+        );
+    }
+}
+
+#[gpui::test]
+fn the_cli_commands_run_children_off_the_ui_thread(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let (_dir, host, cx) = open(cx);
+    let seeded = run(
+        &host,
+        "seed_repo",
+        json!({"name": "api", "steps": [
+            {"write": "a.txt", "text": "a
+        "},
+            {"commit": "base"},
+            {"config": ["dv.answer", "{\"schema\": 1}"]},
+        ]}),
+        cx,
+    )
+    .unwrap();
+    let path = seeded["path"].as_str().unwrap().to_string();
+    // git stands in for dv here: the commands start whatever `cli_exe` names (dv itself in the
+    // app), and a test binary can't name the dv executable.
+    host.update(cx, |host, _| host.cli_exe = Some(PathBuf::from("git")));
+
+    let reply = run_waiting(
+        &host,
+        "cli",
+        json!({"args": ["config", "--get", "dv.answer"], "cwd": path}),
+        cx,
+    )
+    .unwrap();
+    assert_eq!(
+        reply,
+        json!({"exit": 0, "stdout": "{\"schema\": 1}
+", "stderr": "", "json": {"schema": 1}})
+    );
+    // The seeded repo's environment, then the line's `env`.
+    let reply = run_waiting(
+        &host,
+        "cli",
+        json!({"args": ["var", "GIT_AUTHOR_IDENT"], "cwd": path}),
+        cx,
+    )
+    .unwrap();
+    assert!(
+        reply["stdout"]
+            .as_str()
+            .unwrap()
+            .starts_with("dv fixture <"),
+        "{reply}"
+    );
+    let reply = run_waiting(
+        &host,
+        "cli",
+        json!({"args": ["var", "GIT_AUTHOR_IDENT"], "cwd": path, "env": {"GIT_AUTHOR_NAME": "claude-code"}}),
+        cx,
+    )
+    .unwrap();
+    assert!(
+        reply["stdout"]
+            .as_str()
+            .unwrap()
+            .starts_with("claude-code <"),
+        "{reply}"
+    );
+    // A command line that would open the app is refused before anything starts.
+    let error = run(&host, "cli", json!({"args": ["open", path]}), cx).unwrap_err();
+    assert!(error.to_string().contains("would open a window"), "{error}");
+    let error = run(&host, "cli", json!({"args": ["status"], "bogus": 1}), cx).unwrap_err();
+    assert!(error.to_string().contains("not \"bogus\""), "{error}");
+
+    // `cli_spawn` replies at once and lists the child in `state.cli`; `cli_join` collects it.
+    let spawned = run_waiting(
+        &host,
+        "cli_spawn",
+        json!({"name": "hash", "args": ["hash-object", "--stdin"], "cwd": path, "stdin": "hello
+"}),
+        cx,
+    )
+    .unwrap();
+    assert_eq!(spawned["name"], "hash");
+    assert!(spawned["pid"].is_u64());
+    let cli = &state(&host, cx)["cli"];
+    assert_eq!(cli["spawned"][0]["name"], "hash");
+    assert_eq!(cli["spawned"][0]["args"], json!(["hash-object", "--stdin"]));
+    let error = run_waiting(
+        &host,
+        "cli_spawn",
+        json!({"name": "hash", "args": ["--version"]}),
+        cx,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("hasn't been joined"), "{error}");
+    let joined = run_waiting(
+        &host,
+        "cli_join",
+        json!({"name": "hash", "timeout_ms": 10000}),
+        cx,
+    )
+    .unwrap();
+    assert_eq!(joined["exit"], 0);
+    assert_eq!(
+        joined["stdout"],
+        "ce013625030ba8dba906f756967f9e9ca394464a
+"
+    );
+    assert_eq!(state(&host, cx)["cli"], json!({"spawned": []}));
+    let error = run(&host, "cli_join", json!({"name": "hash"}), cx).unwrap_err();
+    assert!(
+        error.to_string().contains("no cli_spawn named \"hash\""),
+        "{error}"
+    );
+    // Children never hold up `settled`.
+    assert!(settled(&host, cx));
+
+    // A child that outlives `cli_join`'s wait keeps running; the app's quit kills it.
+    host.update(cx, |host, _| {
+        host.cli_exe = Some(std::env::current_exe().unwrap())
+    });
+    run_waiting(
+        &host,
+        "cli_spawn",
+        json!({
+            "name": "sleeper",
+            "args": ["--exact", "automation::agent_cli::tests::sleeping_child", "--nocapture"],
+            "env": {"DV_TEST_SLEEPING_CHILD": "1"},
+        }),
+        cx,
+    )
+    .unwrap();
+    let error = run_waiting(
+        &host,
+        "cli_join",
+        json!({"name": "sleeper", "timeout_ms": 300}),
+        cx,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("still running"), "{error}");
+    assert_eq!(state(&host, cx)["cli"]["spawned"][0]["running"], true);
+    assert!(settled(&host, cx));
+    let children = host.read_with(cx, |host, _| host.children.clone());
+    cx.quit();
+    assert_eq!(
+        agent_cli::lock(&children).spawned_state(),
+        Vec::<Value>::new()
+    );
 }

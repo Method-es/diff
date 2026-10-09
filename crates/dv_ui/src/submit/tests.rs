@@ -2,7 +2,9 @@
 //! the verdict the open threads call for, the keys choose and write, and submitting snapshots
 //! the round and moves the review's status.
 
-use dv_core::review::{AnchorSide, ReviewStatus, ThreadId, Verdict};
+use dv_core::review::{
+    Anchor, AnchorSide, Author, ReviewStatus, Thread, ThreadId, ThreadState, Verdict,
+};
 use dv_core::{Location, Target};
 use dv_test_support::FixtureRepo;
 use gpui::{Entity, Focusable as _, TestAppContext, VisualTestContext};
@@ -21,6 +23,83 @@ fn the_verdict_follows_the_open_threads_and_the_sheet_fits_the_window() {
     assert_eq!(sheet_top(gpui::px(900.)), gpui::px(92.));
     assert_eq!(sheet_top(gpui::px(700.)), gpui::px(24.));
     assert_eq!(sheet_top(gpui::px(1400.)), gpui::px(92.));
+}
+
+/// A thread opened in `round` (moved, and the move recorded, in `moved_in`), in `state`.
+fn thread_in(id: &str, round: u32, moved_in: Option<u32>, state: ThreadState) -> Thread {
+    let anchor = |round: u32, line: u32| Anchor {
+        round,
+        path: "a.txt".into(),
+        old_path: None,
+        side: AnchorSide::New,
+        start_line: line,
+        end_line: line,
+        text: vec!["one".into()],
+        context_before: Vec::new(),
+        context_after: Vec::new(),
+    };
+    let first = anchor(round, 1);
+    Thread {
+        id: ThreadId::parse(id).expect("a thread id"),
+        anchor: moved_in.map_or_else(|| first.clone(), |round| anchor(round, 4)),
+        original_anchor: moved_in.map(|_| first),
+        author: Author::reviewer("kyle"),
+        body: "Why?".into(),
+        created_at: 0,
+        edited_at: None,
+        deleted_at: None,
+        state,
+        last_change: None,
+        replies: Vec::new(),
+    }
+}
+
+#[test]
+fn the_comments_are_the_rounds_own_and_the_earlier_unresolved_ones() {
+    let threads = [
+        // Round 1's, resolved: done with, not handed back.
+        thread_in(
+            "t-01jbzv8m2e3q9w5x7y0z1a2b01",
+            1,
+            None,
+            ThreadState::Resolved,
+        ),
+        // Round 1's, moved and resolved in round 2 (the move recorded in round 2): still round
+        // 1's, so not listed.
+        thread_in(
+            "t-01jbzv8m2e3q9w5x7y0z1a2b02",
+            1,
+            Some(2),
+            ThreadState::Resolved,
+        ),
+        // Round 1's, moved in round 2 and still open: listed, from round 1.
+        thread_in(
+            "t-01jbzv8m2e3q9w5x7y0z1a2b03",
+            1,
+            Some(2),
+            ThreadState::Open,
+        ),
+        // Round 2's own, resolved already: listed.
+        thread_in(
+            "t-01jbzv8m2e3q9w5x7y0z1a2b04",
+            2,
+            None,
+            ThreadState::Resolved,
+        ),
+    ];
+    let listed: Vec<String> = round_comments(&threads, 2)
+        .into_iter()
+        .map(|thread| thread.id.to_string())
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            "t-01jbzv8m2e3q9w5x7y0z1a2b03",
+            "t-01jbzv8m2e3q9w5x7y0z1a2b04"
+        ]
+    );
+    assert_eq!(opened_in(&threads[2]), 1);
+    assert_eq!(threads[2].anchor.round, 2);
 }
 
 fn fixture() -> FixtureRepo {
@@ -173,11 +252,14 @@ fn submitting_snapshots_the_round_and_requests_changes(cx: &mut TestAppContext) 
     assert_eq!(tree, "fresh\n");
     // Viewed is per round: the new round starts with nothing viewed.
     assert_eq!(viewed, 0);
+    // The stream moves on to what changes since the round: nothing yet (PLAN §2.3).
     let status = shell.read_with(cx, |shell, cx| shell.status_line(cx).review);
     assert_eq!(
         status.as_deref(),
-        Some("Changes requested · round 2 · 1 open")
+        Some("Changes requested · round 2 · 1 open · since round 1")
     );
+    let empty = shell.read_with(cx, |shell, cx| shell.empty_state(cx));
+    assert_eq!(empty, Some(crate::shell::EmptyState::NoChangesSince(1)));
 }
 
 #[gpui::test]
@@ -317,4 +399,51 @@ fn approving_finishes_the_review_and_a_new_one_can_start(cx: &mut TestAppContext
     });
     let status = session(&shell, cx).read_with(cx, |session, _| session.review().status);
     assert_eq!(status, ReviewStatus::Open);
+}
+
+#[gpui::test]
+fn the_sheet_counts_the_reviews_changes_and_names_threads_where_they_show(cx: &mut TestAppContext) {
+    let repo = fixture();
+    let (_dir, shell, cx) = open(&repo, cx);
+    let thread = add_thread(&shell, cx);
+    press(cx, &shell, "secondary-enter");
+    press(cx, &shell, "secondary-enter");
+    settle(cx, &shell, "round 1", |shell, cx| {
+        shell.sheet().is_none()
+            && shell.session().is_some_and(|session| {
+                session.read(cx).comparison() == crate::session::Comparison::SinceRound(1)
+            })
+    });
+    // The agent inserts a line above the thread's: only a.txt changed since the round.
+    repo.write("a.txt", "zero\none\n2\n");
+    settle(cx, &shell, "the interdiff", |shell, cx| {
+        shell.session().is_some_and(|session| {
+            let session = session.read(cx);
+            session.files().len() == 1 && session.target_files().len() == 2
+        })
+    });
+    let session = session(&shell, cx);
+    session.update(cx, |session, cx| {
+        session.ensure_loaded(["a.txt".to_string()], cx)
+    });
+    settle(cx, &shell, "a.txt", |shell, cx| {
+        shell.session().is_some_and(|session| {
+            let session = session.read(cx);
+            session
+                .review()
+                .thread(&thread)
+                .is_some_and(|found| session.placement(found).lines(&found.anchor) == Some((3, 3)))
+        })
+    });
+    session.read_with(cx, |session, _| {
+        // The review's two files and their totals, not the interdiff's one.
+        assert_eq!(super::render::finished_changes(session), (2, 3, 1));
+        // The moved thread is named where it shows now, as the comments list names it.
+        let found = session.review().thread(&thread).unwrap();
+        assert_eq!(found.anchor.start_line, 2);
+        assert_eq!(session.location(found), "a.txt:3");
+        let prompt = crate::comments_list::prompt_threads(session);
+        assert_eq!(prompt.len(), 1);
+        assert_eq!(prompt[0].1, "a.txt:3");
+    });
 }

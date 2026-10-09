@@ -8,6 +8,7 @@ use dv_test_support::FixtureRepo;
 use gpui::{Entity, TestAppContext, VisualTestContext};
 use pretty_assertions::assert_eq;
 
+mod rounds;
 mod threads;
 
 use super::*;

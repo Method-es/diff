@@ -33,10 +33,6 @@ fn snapshot(store: &ReviewStore, id: &ReviewId) -> serde_json::Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-fn status(status: ReviewStatus) -> EventBody {
-    EventBody::Status { status }
-}
-
 #[test]
 fn create_append_load() {
     let (repo, store) = fixture_store();
@@ -430,7 +426,7 @@ fn a_cached_review_is_the_folded_one() {
     };
     let id = store.create(target, reviewer()).unwrap().id;
     let thread = add_thread(&store, &id, anchor("src/lib.rs", 2), "Nit", reviewer()).unwrap();
-    reply(&store, &id, &thread, "Ok", Author::github("octocat")).unwrap_err();
+    reply(&store, &id, &thread, "Ok", Author::github("octocat"), None).unwrap_err();
     mark_viewed(&store, &id, "src/lib.rs", true).unwrap();
     close_round(&store, &id, oid('a'), oid('b'), Some(Verdict::Comment)).unwrap();
     mark_viewed(&store, &id, "src/main.rs", true).unwrap();

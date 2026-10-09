@@ -21,6 +21,10 @@ use super::watch::watch_spec;
 use super::*;
 use crate::syntax::TokenKind;
 
+mod home;
+mod placement;
+mod rounds;
+
 fn backend(repo: &FixtureRepo) -> Arc<dyn Backend> {
     Arc::new(
         LocalBackend::open_with(
@@ -47,6 +51,7 @@ fn session(repo: &FixtureRepo, target: Target, cx: &mut TestAppContext) -> Entit
     cx.new(|cx| {
         ReviewSession::new(
             OpenedReview {
+                origin: backend.repo().location.clone(),
                 backend,
                 loaded,
                 created: opened.created,
@@ -366,7 +371,7 @@ fn an_agents_append_reloads_the_fold(cx: &mut TestAppContext) {
     let thread = cx.foreground_executor().block_test(posted).unwrap();
     session.read_with(cx, |session, _| {
         let thread = session.review().thread(&thread).unwrap();
-        assert_eq!(session.placement(thread), Placement::Inline);
+        assert_eq!(session.placement(thread).key(thread), "unchanged");
         assert_eq!(session.open_threads_in("src/a.rs"), 1);
     });
 
@@ -380,6 +385,7 @@ fn an_agents_append_reloads_the_fold(cx: &mut TestAppContext) {
         ThreadState::Addressed,
         Some("done"),
         Author::agent("claude-code"),
+        None,
     )
     .unwrap();
     wait(cx, &session, "the agent's change", |session| {
@@ -397,7 +403,7 @@ fn an_agents_append_reloads_the_fold(cx: &mut TestAppContext) {
     });
     session.read_with(cx, |session, _| {
         let thread = session.review().thread(&thread).unwrap();
-        assert_eq!(session.placement(thread), Placement::Outdated);
+        assert_eq!(session.placement(thread).key(thread), "outdated");
     });
 }
 
@@ -671,6 +677,7 @@ fn session_over(
     cx.new(|cx| {
         ReviewSession::new(
             OpenedReview {
+                origin: backend.repo().location.clone(),
                 backend,
                 loaded,
                 created: opened.created,
@@ -930,7 +937,7 @@ fn a_file_loading_again_keeps_showing_its_diff(cx: &mut TestAppContext) {
         let shown = session.shown("src/a.rs").expect("the old diff stays shown");
         assert!(Arc::ptr_eq(&shown.diff, &before));
         let thread = session.review().thread(&thread).unwrap();
-        assert_eq!(session.placement(thread), Placement::Inline);
+        assert_eq!(session.placement(thread).key(thread), "unchanged");
         assert!(
             session
                 .anchor_for("src/a.rs", AnchorSide::New, 1, 1)

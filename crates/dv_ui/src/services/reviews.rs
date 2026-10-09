@@ -23,9 +23,12 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use dv_core::backend::GitOpts;
 use dv_core::diff::file_list;
-use dv_core::review::{Author, ListEntry, LoadedReview, ReviewId, ReviewStore, ReviewSummary, ops};
+use dv_core::label::{LabelContext, Labels};
+use dv_core::review::{
+    Author, Home, HomeError, ListEntry, LoadedReview, ReviewId, ReviewStore, ReviewSummary, home,
+    ops, reviewer_identity,
+};
 use dv_core::{Backend, BackendError, GitRepo, Location, Target};
 use futures::channel::oneshot;
 use gpui::{App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
@@ -50,118 +53,12 @@ pub struct WorkingSummary {
     pub deletions: u64,
 }
 
-/// What a target's label needs to know about the repository: the branch checked out (or a
-/// short commit id when `HEAD` is detached) and the default branch a `branch` target without a
-/// base compares against.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct LabelContext {
-    pub head: Option<String>,
-    /// The branch checked out, `None` when `HEAD` is detached: what a `branch` target of the
-    /// work in progress names (the switcher's and the source picker's "Branch" row).
-    pub branch: Option<String>,
-    pub default_base: Option<String>,
-}
-
-impl LabelContext {
-    /// Reads them from `repo` (blocking). A part that can't be read stays `None`.
-    pub fn read(repo: &GitRepo) -> Self {
-        let branch = repo.current_branch().ok().flatten();
-        let head = branch.clone().or_else(|| {
-            repo.head()
-                .ok()
-                .flatten()
-                .map(|oid| oid.as_str()[..7].to_string())
-        });
-        Self {
-            head,
-            branch,
-            default_base: repo.default_branch().ok().flatten(),
-        }
-    }
-
-    /// The `branch` target of the work checked out, compared with the default branch: `None`
-    /// when `HEAD` is detached, nothing is known to compare with, or the branch is the default
-    /// branch itself (nothing to compare).
-    pub fn branch_target(&self) -> Option<Target> {
-        let (branch, base) = (self.branch.as_ref()?, self.default_base.as_ref()?);
-        (branch != base).then(|| Target::Branch {
-            branch: branch.clone(),
-            base: None,
-        })
-    }
-}
-
-/// A target as the title bar and the switcher name it (DESIGN §4.1: "working tree vs main"):
-/// what is being reviewed and what it is compared against.
-pub fn target_label(target: &Target, context: &LabelContext) -> String {
-    let versus = |what: &str| match &context.head {
-        Some(head) => format!("{what} vs {head}"),
-        None => what.to_string(),
-    };
-    match target {
-        Target::Working => versus("working tree"),
-        Target::Staged => versus("staged"),
-        Target::Branch { branch, base } => match base.as_ref().or(context.default_base.as_ref()) {
-            Some(base) => format!("{branch} vs {base}"),
-            None => branch.clone(),
-        },
-        Target::Commit { rev } => format!("commit {rev}"),
-        Target::Range {
-            from,
-            to,
-            three_dot,
-        } => format!("{from}{}{to}", if *three_dot { "..." } else { ".." }),
-        Target::Pr {
-            owner,
-            repo,
-            number,
-            ..
-        } => format!("{owner}/{repo}#{number}"),
-    }
-}
-
-/// What the stream's side labels call a target's two sides (DESIGN §4.1: `main` / `working
-/// tree`): the old side, then the new.
-pub fn side_labels(target: &Target, context: &LabelContext) -> (String, String) {
-    let head = || context.head.clone().unwrap_or_else(|| "HEAD".to_string());
-    match target {
-        Target::Working => (head(), "working tree".to_string()),
-        Target::Staged => (head(), "staged".to_string()),
-        // The old side is the merge base with the base branch; the board names it by the branch.
-        Target::Branch { branch, base } => (
-            base.as_ref()
-                .or(context.default_base.as_ref())
-                .cloned()
-                .unwrap_or_else(|| "merge base".to_string()),
-            branch.clone(),
-        ),
-        Target::Commit { rev } => (format!("{rev}^"), rev.clone()),
-        Target::Range { from, to, .. } => (from.clone(), to.clone()),
-        Target::Pr { number, .. } => ("base".to_string(), format!("#{number}")),
-    }
-}
-
-/// The reviewer's name for events they write: their git identity in that repository
-/// (`user.name`), or `reviewer` when none is configured (PLAN §2.5). Blocking.
-pub fn reviewer_identity(backend: &dyn Backend) -> Author {
-    let name = backend
-        .git(
-            &["config", "--get", "user.name"],
-            &GitOpts::default().with_ok_codes(&[0, 1]),
-        )
-        .ok()
-        .and_then(|output| output.stdout_utf8().map(|name| name.trim().to_string()))
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "reviewer".to_string());
-    Author::reviewer(name)
-}
-
 /// One review in a repository's row.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ReviewRow {
     Ok {
         summary: Box<ReviewSummary>,
-        /// [`target_label`] of its target.
+        /// `dv_core::label::target_label` of its target.
         label: String,
     },
     /// A log that didn't load (PLAN §7: one bad file never hides the others).
@@ -280,6 +177,9 @@ pub enum OpenRequest {
 
 /// A target's review, opened or resumed ([`Reviews::open_review`]).
 pub struct OpenedReview {
+    /// The repository it was opened from: the switcher's row, `dv open`'s path.
+    pub origin: Location,
+    /// Its home worktree's backend, where its target resolves ([`Reviews::open`]).
     pub backend: Arc<dyn Backend>,
     pub loaded: LoadedReview,
     /// `false` when an open review of the target already existed.
@@ -424,6 +324,15 @@ impl Reviews {
 
     /// [`Reviews::open_review`] for either kind of [`OpenRequest`]: a review asked for by id is
     /// loaded as it is (the switcher's rows for reviews of other targets).
+    ///
+    /// The review comes back bound to its home worktree (`dv_core::review::home`, PLAN §2.2,
+    /// §2.4): the backend of the worktree its target resolves in, which may be another
+    /// worktree of the repository than `location`'s (a `working` review made in a linked
+    /// worktree, a `branch` review of a branch checked out in one), opened through
+    /// [`Locations`] like any other. The CLI resolves it there too, so both list the same
+    /// files, place threads at the same lines and snapshot the same content. A home worktree
+    /// that is gone is a failure, the banner's. The repository marked as used is `location`'s,
+    /// the row it was opened from.
     pub fn open(
         &mut self,
         location: Location,
@@ -431,23 +340,39 @@ impl Reviews {
         cx: &mut Context<Self>,
     ) -> Task<Result<OpenedReview, Failure>> {
         self.opening += 1;
+        let locations = self.locations.clone();
         let open = self
             .locations
             .update(cx, |locations, cx| locations.open(location, cx));
         detached(cx, async move |this, cx| {
             let result: Result<OpenedReview, Failure> = async {
-                let backend = open.await.map_err(|error| Failure::from(&*error))?;
+                let origin = open.await.map_err(|error| Failure::from(&*error))?;
+                let job = cx.background_spawn({
+                    let backend = origin.clone();
+                    async move { find_blocking(backend, request) }
+                });
+                let Found { id, created, home } = job.await?;
+                let backend = match &home {
+                    Home::Worktree(root) if !home.is(&origin.repo().toplevel) => {
+                        let there = sibling(&origin.repo().location, root);
+                        locations
+                            .update(cx, |locations, cx| locations.open(there, cx))
+                            .await
+                            .map_err(|error| Failure::from(&*error))?
+                    }
+                    Home::Worktree(_) | Home::Anywhere => origin.clone(),
+                };
                 let job = cx.background_spawn({
                     let backend = backend.clone();
-                    async move { open_blocking(backend, request) }
+                    async move { load_blocking(backend, &id) }
                 });
-                let Opening {
+                let Loading {
                     loaded,
-                    created,
                     reviewer,
                     labels,
                 } = job.await?;
                 Ok(OpenedReview {
+                    origin: origin.repo().location.clone(),
                     backend,
                     loaded,
                     created,
@@ -459,7 +384,7 @@ impl Reviews {
             this.update(cx, |this, cx| {
                 this.opening -= 1;
                 if let Ok(opened) = &result {
-                    let known = opened.backend.repo().location.clone();
+                    let known = opened.origin.clone();
                     this.add_known(known.clone(), cx);
                     if this
                         .known
@@ -598,42 +523,92 @@ fn closing() -> Failure {
     Failure::new("dv is closing")
 }
 
-/// What [`open_blocking`] read.
-struct Opening {
-    loaded: LoadedReview,
+/// What [`find_blocking`] found: the review, whether it was just created, and its home.
+struct Found {
+    id: ReviewId,
     created: bool,
+    home: Home,
+}
+
+/// `ops::open_review` as the reviewer (or the review asked for by id) in `backend`'s
+/// worktree, and the review's home (blocking). A review whose home worktree is gone fails,
+/// saying so.
+fn find_blocking(backend: Arc<dyn Backend>, request: OpenRequest) -> Result<Found, Failure> {
+    let store = ReviewStore::new(backend.clone());
+    let (review, created) = match request {
+        OpenRequest::Target(target) => {
+            let opened = ops::open_review(&store, target, reviewer_identity(backend.as_ref()))
+                .map_err(|e| Failure::from(&e))?;
+            (opened.review, opened.created)
+        }
+        OpenRequest::Review(id) => (
+            store.load(&id).map_err(|e| Failure::from(&e))?.review,
+            false,
+        ),
+    };
+    let home = home(&GitRepo::new(backend), &review.target, &review.worktree).map_err(|error| {
+        match error {
+            HomeError::Git(error) => Failure::from(&error),
+            // The headline says what is wrong; the path, long, is the detail.
+            HomeError::Gone { worktree } => Failure {
+                message: format!(
+                    "review {} can't be opened: its worktree is gone (removed, moved or deleted)",
+                    review.id
+                ),
+                detail: Some(format!(
+                    "{worktree} is no longer one of the repository's worktrees"
+                )),
+            },
+        }
+    })?;
+    Ok(Found {
+        id: review.id,
+        created,
+        home,
+    })
+}
+
+/// What [`load_blocking`] read.
+struct Loading {
+    loaded: LoadedReview,
     reviewer: Author,
     labels: LabelContext,
 }
 
-/// `ops::open_review` as the reviewer (or the review asked for by id), then the review's full
-/// load (warnings included) and the repository's labels.
-fn open_blocking(backend: Arc<dyn Backend>, request: OpenRequest) -> Result<Opening, Failure> {
+/// The review's full load (warnings included) through `backend`, its home worktree's, with
+/// who the reviewer is there and that worktree's labels (blocking).
+fn load_blocking(backend: Arc<dyn Backend>, id: &ReviewId) -> Result<Loading, Failure> {
     let reviewer = reviewer_identity(backend.as_ref());
     let labels = LabelContext::read(&GitRepo::new(backend.clone()));
-    let store = ReviewStore::new(backend);
-    let (id, created) = match request {
-        OpenRequest::Target(target) => {
-            let opened = ops::open_review(&store, target, reviewer.clone())
-                .map_err(|e| Failure::from(&e))?;
-            (opened.review.id, opened.created)
-        }
-        OpenRequest::Review(id) => (id, false),
-    };
-    let loaded = store.load(&id).map_err(|e| Failure::from(&e))?;
-    Ok(Opening {
+    let loaded = ReviewStore::new(backend)
+        .load(id)
+        .map_err(|e| Failure::from(&e))?;
+    Ok(Loading {
         loaded,
-        created,
         reviewer,
         labels,
     })
+}
+
+/// The location of the worktree whose root is `root` (as git lists it), another worktree of
+/// the repository at `location`: a path on this machine, or in the same distro.
+fn sibling(location: &Location, root: &str) -> Location {
+    match location {
+        Location::Local(_) => Location::Local(std::path::PathBuf::from(root)),
+        Location::Wsl { distro, .. } => Location::Wsl {
+            distro: distro.clone(),
+            path: root.to_string(),
+        },
+    }
 }
 
 /// Reads a repository's row (blocking): its reviews, its uncommitted changes and its labels.
 fn scan(backend: Arc<dyn Backend>) -> Scan {
     let toplevel = backend.repo().toplevel.clone();
     let repo = GitRepo::new(backend.clone());
-    let labels = LabelContext::read(&repo);
+    // Another worktree's `working` or `staged` review is named by that worktree's HEAD.
+    let all_labels = Labels::read(&repo);
+    let labels = all_labels.here.clone();
     let store = ReviewStore::new(backend);
     let reviews = store
         .list()
@@ -642,7 +617,7 @@ fn scan(backend: Arc<dyn Backend>) -> Scan {
                 .into_iter()
                 .map(|entry| match entry {
                     ListEntry::Ok(summary) => ReviewRow::Ok {
-                        label: target_label(&summary.target, &labels),
+                        label: all_labels.label(&summary.target, &summary.worktree),
                         summary,
                     },
                     ListEntry::Err { id, error } => ReviewRow::Err {

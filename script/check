@@ -117,7 +117,7 @@ else
 fi
 
 if [[ "$linux" -eq 1 ]]; then
-    linux_crates=(-p dv_core -p dv_test_support -p mock_gh)
+    linux_crates=(-p dv_core -p dv_cli -p dv_test_support -p mock_gh)
     if command -v wsl.exe > /dev/null 2>&1; then
         # Inside Ubuntu, on the same checkout through /mnt, with the target dir on the distro's
         # ext4 disk: building onto /mnt (9P) is many times slower. rustup installs the toolchain

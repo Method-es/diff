@@ -14,10 +14,15 @@
 //! | `{"checkout": rev}` | checks out a branch or revision |
 //! | `{"config": [key, value]}` | sets a key in the repo's `.git/config` |
 //! | `{"attributes": text}` | replaces the root `.gitattributes` |
+//! | `{"worktree": [name, branch]}` | adds a linked worktree on a new branch at `HEAD`, at `<data_dir>/repos/<repo>.fixture/worktrees/<name>` |
 //! | `{"git": [args…]}` | any other git command, the escape hatch |
 //!
 //! The work runs off the UI thread. A fixture method panics on failure (it is a test helper);
 //! the panic is caught and becomes the command's error.
+//!
+//! A seeded repo's linked worktrees, wherever they are (a `worktree` step, or `git worktree
+//! add` through the escape hatch), get the fixture's environment too: every backend opened on
+//! one, and every `cli` child started in one, runs git with it ([`roots`]).
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -46,6 +51,7 @@ pub enum Step {
     Checkout(String),
     Config(String, String),
     Attributes(String),
+    Worktree(String, String),
     Git(Vec<String>),
 }
 
@@ -65,6 +71,7 @@ impl Step {
             "checkout",
             "config",
             "attributes",
+            "worktree",
             "git",
         ];
         let named: Vec<&str> = verbs
@@ -153,6 +160,11 @@ impl Step {
                 Self::Config(key, value)
             }
             "attributes" => Self::Attributes(text("attributes")?),
+            "worktree" => {
+                let [name, branch] = <[String; 2]>::try_from(strings(Some(2))?)
+                    .map_err(|_| anyhow!("\"worktree\" takes [name, branch]"))?;
+                Self::Worktree(name, branch)
+            }
             _ => {
                 let args = strings(None)?;
                 if args.is_empty() {
@@ -190,6 +202,9 @@ impl Step {
             }
             Self::Attributes(text) => {
                 repo.set_attributes(text);
+            }
+            Self::Worktree(name, branch) => {
+                repo.add_worktree(name, branch);
             }
             Self::Git(args) => {
                 repo.git(args);
@@ -236,6 +251,28 @@ fn run_steps(repo: &FixtureRepo, steps: &[Step]) -> Result<Vec<String>> {
             .unwrap_or_else(|| "the fixture panicked".to_string());
         anyhow!("{message}")
     })
+}
+
+/// The roots a seeded repo's environment applies to: its work tree and each of its linked
+/// worktrees (`git worktree list`, read with the fixture's environment; blocking). A list git
+/// can't give leaves the work tree alone.
+pub fn roots(fixture: &FixtureRepo) -> Vec<PathBuf> {
+    let mut roots = vec![fixture.path().to_path_buf()];
+    let listed = fixture
+        .git_command()
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success());
+    if let Some(output) = listed {
+        roots.extend(
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter_map(|line| line.strip_prefix("worktree "))
+                .map(PathBuf::from),
+        );
+    }
+    roots
 }
 
 /// The seeded repos already in `data_dir` (an earlier launch of the same scenario), by name.
@@ -292,12 +329,13 @@ impl DvAutomation {
             let fixture = catch_unwind(|| FixtureRepo::persistent(&path))
                 .map_err(|_| anyhow!("couldn't build a repo at {}", path.display()))?;
             let commits = run_steps(&fixture, &steps)?;
-            anyhow::Ok((fixture, commits))
+            let roots = roots(&fixture);
+            anyhow::Ok((fixture, commits, roots))
         });
         Ok(cx.spawn(async move |this, cx| {
-            let (fixture, commits) = job.await?;
+            let (fixture, commits, roots) = job.await?;
             let path = fixture.path().display().to_string();
-            this.update(cx, |this, cx| this.register(name, fixture, cx))?;
+            this.update(cx, |this, cx| this.register(name, fixture, roots, cx))?;
             Ok(json!({"path": path, "commits": commits}))
         }))
     }
@@ -325,12 +363,19 @@ impl DvAutomation {
             .get(name)
             .cloned()
             .with_context(|| format!("no repo named {name:?} was seeded"))?;
-        Ok(cx.background_spawn(async move {
+        let job = cx.background_spawn(async move {
             let fixture = fixture
                 .lock()
                 .map_err(|_| anyhow!("an earlier step on this repo panicked"))?;
             let commits = run_steps(&fixture, &steps)?;
-            Ok(json!({"path": fixture.path().display().to_string(), "commits": commits}))
+            let env = fixture.env_overlay();
+            anyhow::Ok((fixture.path().to_path_buf(), commits, roots(&fixture), env))
+        });
+        Ok(cx.spawn(async move |this, cx| {
+            let (path, commits, roots, env) = job.await?;
+            // A worktree the steps added gets the fixture's environment from now on.
+            this.update(cx, |this, cx| this.register_roots(roots, env, cx))?;
+            Ok(json!({"path": path.display().to_string(), "commits": commits}))
         }))
     }
 }

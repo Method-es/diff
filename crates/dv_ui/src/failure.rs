@@ -94,6 +94,10 @@ impl From<&OpError> for Failure {
                 message,
                 ..Self::from(target)
             },
+            OpError::Git(git) => Self {
+                message,
+                ..Self::from(git)
+            },
             OpError::Snapshot(SnapshotError::Backend(backend)) => {
                 Self::with_backend(message, Some(backend))
             }

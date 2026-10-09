@@ -675,7 +675,10 @@ impl Session<'_> {
             self.quit_app(json!(format!("{}/quit", step.line)))?;
         }
         if let Some(app_args) = &restart.app_args {
-            self.launcher.app_args = app_args.clone();
+            // Variables `save` set earlier are known now and stay what they were; the
+            // launcher's own are the same for every launch.
+            let app_args = substituted_args(app_args, &self.vars());
+            self.launcher.app_args = app_args;
         }
         if let Some(data_dir) = restart.data_dir {
             self.launcher.data_dir_arg = data_dir;
@@ -857,6 +860,15 @@ mod tests {
         assert_eq!(
             substituted_args(&["--repo".into(), "${data_dir}/repo".into()], &vars),
             ["--repo", "D:/tmp/x/repo"]
+        );
+        // A restart's arguments see `save`d variables too.
+        let vars = [
+            ("data_dir", "D:/tmp/x".to_string()),
+            ("review", "r-1".to_string()),
+        ];
+        assert_eq!(
+            substituted_args(&["--review".into(), "${review}".into()], &vars),
+            ["--review", "r-1"]
         );
     }
 

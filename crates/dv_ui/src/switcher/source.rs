@@ -38,8 +38,9 @@ pub struct SourcePicker {
     focus_handle: FocusHandle,
     reviews: gpui::Entity<Reviews>,
     location: Location,
-    /// The open review's target, checked in the menu.
-    current: Target,
+    /// The open review's target, checked in the menu; `None` when the open review isn't this
+    /// repository's own (one homed in another worktree, PLAN §2.4).
+    current: Option<Target>,
     offers: Vec<TargetOffer>,
     selected: usize,
     _subscription: Subscription,
@@ -59,7 +60,7 @@ impl SourcePicker {
     pub fn new(
         reviews: gpui::Entity<Reviews>,
         location: Location,
-        current: Target,
+        current: Option<Target>,
         cx: &mut Context<Self>,
     ) -> Self {
         let subscription = cx.observe(&reviews, |this, _, cx| this.rebuild(cx));
@@ -76,7 +77,7 @@ impl SourcePicker {
         this.selected = this
             .offers
             .iter()
-            .position(|offer| offer.target == this.current)
+            .position(|offer| this.current.as_ref() == Some(&offer.target))
             .unwrap_or(0);
         this
     }
@@ -151,7 +152,7 @@ impl SourcePicker {
     ) -> AnyElement {
         let c = &theme.colors;
         let selected = ix == self.selected;
-        let current = offer.target == self.current;
+        let current = self.current.as_ref() == Some(&offer.target);
         let hover = c.control_hover;
         div()
             .id(ElementId::NamedInteger("source-offer".into(), ix as u64))

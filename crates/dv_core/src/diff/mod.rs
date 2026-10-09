@@ -15,6 +15,7 @@ mod list;
 mod patch;
 mod remap;
 mod rows;
+mod strays;
 
 use std::ops::Range;
 
@@ -104,6 +105,13 @@ pub struct FileEntry {
     /// The new side's object id; `None` when the file doesn't exist there or git hasn't hashed
     /// it (a working tree file it didn't read, an untracked file).
     pub new_oid: Option<Oid>,
+    /// The new side is a working tree file the index doesn't track, though the old side has
+    /// the file: in an interdiff, a file the round's snapshot holds that is still untracked
+    /// (PLAN §6 step 1). git compares such a file with the old side only through a temporary
+    /// index that names it, which [`file_diff`] builds. An [`FileStatus::Untracked`] entry is
+    /// new instead, and diffs against nothing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub new_untracked: bool,
 }
 
 impl FileEntry {
@@ -182,6 +190,16 @@ impl FileMode {
             _ => return None,
         })
     }
+
+    /// The mode in git's octal notation (`100644`).
+    pub fn octal(self) -> &'static str {
+        match self {
+            FileMode::Regular => "100644",
+            FileMode::Executable => "100755",
+            FileMode::Symlink => "120000",
+            FileMode::Submodule => "160000",
+        }
+    }
 }
 
 /// Per-side caps for [`file_diff`] (PLAN §6 step 2). [`DiffLimits::default`] holds the
@@ -257,8 +275,9 @@ impl FileDiff {
 }
 
 /// A text diff: every line of both sides in order, unchanged lines included, because the
-/// per-file diff runs with context larger than the file (PLAN D4). Empty when the content didn't
-/// change (a mode change, an unchanged rename) or a side is an empty file.
+/// per-file diff runs with context larger than the file (PLAN D4). A file whose content didn't
+/// change (a mode change, an unchanged rename) is all context lines ([`TextDiff::has_changes`]
+/// is false); an empty file has no lines.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TextDiff {
     pub lines: Vec<DiffLine>,
@@ -286,6 +305,12 @@ impl TextDiff {
     /// The rows to show with `context` unchanged lines around each change ([`segments`]).
     pub fn segments(&self, context: usize) -> Vec<Segment> {
         segments(&self.lines, context)
+    }
+
+    /// Whether any line was added or removed. A file renamed or with its mode changed, its
+    /// content as it was, has its text as context lines alone ("No content change").
+    pub fn has_changes(&self) -> bool {
+        self.lines.iter().any(|line| line.kind != LineKind::Context)
     }
 
     /// The number of lines on the old side.

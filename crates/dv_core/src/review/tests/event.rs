@@ -29,12 +29,14 @@ fn one_of_each() -> Vec<EventBody> {
             id: comment.clone(),
             body: "Fixed.".to_string(),
             author: agent(),
+            anchor: Some(anchor("src/lib.rs", 9)),
         },
         EventBody::ThreadState {
             thread: thread.clone(),
             state: ThreadState::Addressed,
             note: Some("renamed it".to_string()),
             author: agent(),
+            anchor: Some(anchor("src/lib.rs", 10)),
         },
         EventBody::BodyEdited {
             target_id: ItemId::Comment(comment.clone()),
@@ -55,6 +57,10 @@ fn one_of_each() -> Vec<EventBody> {
         },
         EventBody::Status {
             status: ReviewStatus::Ready,
+            note: Some("Both threads addressed.".to_string()),
+            author: Some(agent()),
+            if_status: Some(ReviewStatus::ChangesRequested),
+            if_round: None,
         },
     ]
 }
@@ -93,6 +99,7 @@ fn a_line_carries_v_eid_at_and_the_kind_beside_its_fields() {
             state: ThreadState::Resolved,
             note: None,
             author: reviewer(),
+            anchor: None,
         },
     };
     let line = String::from_utf8(event.to_line().unwrap()).unwrap();
@@ -121,14 +128,7 @@ fn bodies_with_newlines_stay_on_one_line() {
 #[test]
 fn bad_lines_become_warnings_and_the_rest_still_parses() {
     let good: Vec<Event> = (0..3)
-        .map(|n| {
-            event_at(
-                n,
-                EventBody::Status {
-                    status: ReviewStatus::Ready,
-                },
-            )
-        })
+        .map(|n| event_at(n, status(ReviewStatus::Ready)))
         .collect();
     let mut log = Vec::new();
     log.extend(good[0].to_line().unwrap());
@@ -175,9 +175,7 @@ fn bad_lines_become_warnings_and_the_rest_still_parses() {
 #[test]
 fn a_torn_last_line_is_reported_and_skipped() {
     let first = Event::new(created(Target::Working));
-    let second = Event::new(EventBody::Status {
-        status: ReviewStatus::Closed,
-    });
+    let second = Event::new(status(ReviewStatus::Closed));
     let mut log = log_of(std::slice::from_ref(&first));
     let torn = second.to_line().unwrap();
     log.extend(&torn[..torn.len() / 2]);
@@ -216,12 +214,60 @@ fn newer_events_are_counted_not_reported() {
     assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
     assert_eq!(parsed.events.len(), 2);
     assert_eq!(parsed.events[0], known);
-    assert_eq!(
-        parsed.events[1].body,
-        EventBody::Status {
-            status: ReviewStatus::Ready
+    assert_eq!(parsed.events[1].body, status(ReviewStatus::Ready));
+}
+
+#[test]
+fn optional_anchors_notes_and_authors_are_left_out_when_absent_and_read_when_missing() {
+    // As written before replies, state changes and statuses carried them: optional fields
+    // need no version bump (PLAN §7).
+    let thread = ThreadId::parse("t-01j9z3k4m5n6p7q8r9s0t1v2w3").unwrap();
+    let lines = [
+        r#"{"v":1,"eid":"e-01j9z3k4m5n6p7q8r9s0t1v2w3","at":5,"kind":"status","status":"ready"}"#,
+        r#"{"v":1,"eid":"e-01j9z3k4m5n6p7q8r9s0t1v2w4","at":6,"kind":"reply_added","thread":"t-01j9z3k4m5n6p7q8r9s0t1v2w3","id":"c-01j9z3k4m5n6p7q8r9s0t1v2w3","body":"Done.","author":{"kind":"agent","name":"claude-code"}}"#,
+        r#"{"v":1,"eid":"e-01j9z3k4m5n6p7q8r9s0t1v2w5","at":7,"kind":"thread_state","thread":"t-01j9z3k4m5n6p7q8r9s0t1v2w3","state":"addressed","author":{"kind":"agent","name":"claude-code"}}"#,
+    ];
+    let log = lines.join("\n");
+    let parsed = parse_log(log.as_bytes());
+    assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+    assert_eq!(parsed.events[0].body, status(ReviewStatus::Ready));
+    assert!(matches!(
+        &parsed.events[1].body,
+        EventBody::ReplyAdded { anchor: None, thread: t, .. } if *t == thread
+    ));
+    assert!(matches!(
+        &parsed.events[2].body,
+        EventBody::ThreadState {
+            anchor: None,
+            note: None,
+            ..
         }
-    );
+    ));
+    for (event, line) in parsed.events.iter().zip(lines) {
+        assert_eq!(String::from_utf8(event.to_line().unwrap()).unwrap(), line);
+    }
+
+    // Present, they ride beside the event's other fields.
+    let done = Event::new(EventBody::Status {
+        status: ReviewStatus::Ready,
+        note: Some("Renamed both.".to_string()),
+        author: Some(agent()),
+        if_status: None,
+        if_round: None,
+    });
+    let value: serde_json::Value = serde_json::from_slice(&done.to_line().unwrap()).unwrap();
+    assert_eq!(value["note"], "Renamed both.");
+    assert_eq!(value["author"]["name"], "claude-code");
+    let moved = Event::new(EventBody::ThreadState {
+        thread,
+        state: ThreadState::Resolved,
+        note: None,
+        author: reviewer(),
+        anchor: Some(anchor("src/lib.rs", 7)),
+    });
+    let value: serde_json::Value = serde_json::from_slice(&moved.to_line().unwrap()).unwrap();
+    assert_eq!(value["anchor"]["start_line"], 7);
+    assert_eq!(value["anchor"]["path"], "src/lib.rs");
 }
 
 #[test]

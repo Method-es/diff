@@ -5,8 +5,11 @@ mod anchor;
 mod concurrency;
 mod event;
 mod fold;
+mod hand_back;
+mod home;
 mod id;
 mod ops;
+mod relocate;
 mod round;
 mod snapshot;
 mod store;
@@ -75,6 +78,29 @@ fn thread_state(thread: &ThreadId, state: ThreadState, author: Author) -> EventB
         state,
         note: None,
         author,
+        anchor: None,
+    }
+}
+
+/// A reply with a fresh id and no relocated anchor.
+fn reply_added(thread: &ThreadId, body: &str, author: Author) -> EventBody {
+    EventBody::ReplyAdded {
+        thread: thread.clone(),
+        id: CommentId::generate(),
+        body: body.to_string(),
+        author,
+        anchor: None,
+    }
+}
+
+/// A `status` event without a note or an author, as older writers wrote them.
+fn status(status: ReviewStatus) -> EventBody {
+    EventBody::Status {
+        status,
+        note: None,
+        author: None,
+        if_status: None,
+        if_round: None,
     }
 }
 

@@ -7,6 +7,11 @@
 //! - [`store`]: the logs, their snapshot cache and refs, over a [`crate::Backend`].
 //! - [`snapshot`]: a round's new side kept as a commit under `refs/dv/` (PLAN §2.3).
 //! - [`anchor`]: anchors built from a selection of a side's lines (PLAN §2.5).
+//! - [`relocate`]: relocation and placement — where a thread shows once its file moved on
+//!   (PLAN §8).
+//! - [`identity`]: the reviewer's name (PLAN §2.5).
+//! - [`home`]: the worktree a review's target resolves in, whichever worktree reads it
+//!   (PLAN §2.2, §2.4).
 //! - [`ops`]: checked changes — what the UI and the CLI call.
 //!
 //! Many writers (the GUI, the CLI, any number of agents, in Windows and inside WSL) append to
@@ -16,21 +21,30 @@
 pub mod anchor;
 pub mod event;
 pub mod fold;
+pub mod home;
 pub mod id;
+pub mod identity;
 pub mod model;
 pub mod ops;
+pub mod relocate;
 pub mod snapshot;
 pub mod store;
 
 pub use anchor::{ANCHOR_CONTEXT, AnchorError, AnchorPlace, anchor_selection, side_lines};
 pub use event::{EVENT_VERSION, Event, EventBody, LogWarning, ParsedLog, parse_log};
 pub use fold::{FoldError, Folded, Outcome, Rejection, fold};
+pub use home::{Home, HomeError, Worktrees, home, same_worktree};
 pub use id::{CommentId, EventId, InvalidId, ItemId, ReviewId, ThreadId};
+pub use identity::reviewer_identity;
 pub use model::{
     Anchor, AnchorSide, Author, AuthorKind, Comment, PrLink, Review, ReviewStatus, ReviewSummary,
-    Round, StateChange, Submission, Thread, ThreadCounts, ThreadState, Verdict,
+    Round, StateChange, StatusChange, Submission, Thread, ThreadCounts, ThreadState, Verdict,
 };
 pub use ops::{FinishedRound, OpError, Opened};
+pub use relocate::{
+    FuzzyLines, MoveKind, Placement, Relocation, SideLines, SideText, anchored_entry, has_side,
+    place_thread, relocate, relocate_with, relocated_anchor, shows_edited, shows_moved,
+};
 pub use snapshot::SnapshotError;
 pub use store::{ListEntry, LoadedReview, ReviewStore, StoreError};
 

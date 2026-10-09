@@ -5,7 +5,8 @@
 //!
 //! `state` ([`state`]): `app`, `data_dir`, `settings`, `shell`, `system`, `repos` (the known
 //! repositories), `switcher` and `source_picker` (the title bar's overlays), `file_list` (the
-//! panel), `session` (the open review, or `null`) and `stream` (the diff stream, or `null`).
+//! panel), `session` (the open review, or `null`), `stream` (the diff stream, or `null`),
+//! `comments_list` and `cli` (the `cli_spawn` children not yet joined).
 //!
 //! Commands:
 //! - `set_setting {key, value}` changes `material` (`mica`, `acrylic`, `opaque`) or `mode`
@@ -14,10 +15,15 @@
 //! - `seed_repo {name, steps}` builds a fixture repo at `<data_dir>/repos/<name>` and
 //!   `repo_edit {name, steps}` changes one ("the agent edits"; [`repos`]).
 //! - `open {path}`, `open_review {path, target?}` and `review_op {op, thread, …}` ([`commands`]).
+//! - `cli {args, …}`, `cli_spawn {name, args, …}` and `cli_join {name, timeout_ms?}` run this
+//!   binary's headless commands as child processes: the agent's side of a scenario through the
+//!   real CLI ([`agent_cli`]).
 //!
-//! Seeded repos open with their fixture's environment ([`dv_ui::services::Locations`]'s
-//! overlay), never the owner's git configuration, and are found again after a restart.
+//! Seeded repos, and their linked worktrees, open with their fixture's environment
+//! ([`dv_ui::services::Locations`]'s overlay), never the owner's git configuration, and are found
+//! again after a restart.
 
+mod agent_cli;
 mod commands;
 mod repos;
 mod state;
@@ -26,23 +32,32 @@ mod state;
 mod tests;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use dv_test_support::FixtureRepo;
 use dv_ui::services::Mode;
+use dv_ui::services::locations::EnvOverlay;
 use dv_ui::{ActiveServices as _, Material, Shell};
-use gpui::{App, AppContext as _, Context, Entity, Task, Window};
+use gpui::{App, AppContext as _, Context, Entity, Subscription, Task, Window};
 use gpui_automation::AutomationHost;
 use serde_json::{Value, json};
 
 /// A seeded fixture repo, shared with the background jobs that edit it.
 type Seeded = Arc<Mutex<FixtureRepo>>;
 
-/// The entity `gpui_automation` drives: the shell it describes and the repos it seeded.
+/// The entity `gpui_automation` drives: the shell it describes, the repos it seeded and the
+/// CLI children it started.
 pub struct DvAutomation {
     shell: Entity<Shell>,
     seeded: HashMap<String, Seeded>,
+    /// `cli` runs and `cli_spawn` children not yet collected ([`agent_cli`]).
+    children: Arc<Mutex<agent_cli::Children>>,
+    /// The program `cli` starts: this process's own executable.
+    cli_exe: Option<PathBuf>,
+    /// Kills the children still running as the app quits.
+    _quit: Subscription,
 }
 
 impl DvAutomation {
@@ -50,23 +65,46 @@ impl DvAutomation {
     /// `restart`) are found again and their environments registered, so they keep opening
     /// with the fixture's configuration.
     pub fn new(shell: Entity<Shell>, cx: &mut App) -> Self {
+        let children: Arc<Mutex<agent_cli::Children>> = Arc::default();
+        // The hook holds the registry itself: the driver lets go of this host as it quits,
+        // before the app runs its quit hooks.
+        let quit = cx.on_app_quit({
+            let children = children.clone();
+            move |_| {
+                agent_cli::lock(&children).kill_all();
+                async {}
+            }
+        });
         let mut host = Self {
             shell,
             seeded: HashMap::new(),
+            children,
+            cli_exe: std::env::current_exe().ok(),
+            _quit: quit,
         };
         for (name, fixture) in repos::reopen_seeded(cx.services().data_dir()) {
-            host.register(name, fixture, cx);
+            let roots = repos::roots(&fixture);
+            host.register(name, fixture, roots, cx);
         }
         host
     }
 
-    /// Keeps `fixture` as the seeded repo `name` and has every backend opened for it use its
-    /// environment.
-    fn register(&mut self, name: String, fixture: FixtureRepo, cx: &mut App) {
-        let (path, env) = (fixture.path().to_path_buf(), fixture.env_overlay());
-        let locations = cx.services().locations.clone();
-        locations.update(cx, |locations, _| locations.register_env(path, env));
+    /// Keeps `fixture` as the seeded repo `name` and has every backend opened for it, or for
+    /// one of its linked worktrees (`roots`, [`repos::roots`]), use its environment.
+    fn register(&mut self, name: String, fixture: FixtureRepo, roots: Vec<PathBuf>, cx: &mut App) {
+        self.register_roots(roots, fixture.env_overlay(), cx);
         self.seeded.insert(name, Arc::new(Mutex::new(fixture)));
+    }
+
+    /// Has every backend opened for one of `roots` (a seeded repo's work tree and worktrees)
+    /// use `env`, the fixture's environment.
+    fn register_roots(&mut self, roots: Vec<PathBuf>, env: EnvOverlay, cx: &mut App) {
+        let locations = cx.services().locations.clone();
+        locations.update(cx, |locations, _| {
+            for root in roots {
+                locations.register_env(root, env.clone());
+            }
+        });
     }
 }
 
@@ -85,6 +123,7 @@ impl AutomationHost for DvAutomation {
             "session": state::session(self.shell.read(cx), cx),
             "stream": state::stream(self.shell.read(cx), window, cx),
             "comments_list": state::comments_list(self.shell.read(cx), cx),
+            "cli": self.cli_state(),
         })
     }
 
@@ -124,6 +163,9 @@ impl AutomationHost for DvAutomation {
             "open" => commands::open(self.shell.clone(), args, window, cx),
             "open_review" => commands::open_review(self.shell.clone(), args, window, cx),
             "review_op" => commands::review_op(self.shell.clone(), args, cx),
+            "cli" => self.cli(args, cx),
+            "cli_spawn" => self.cli_spawn(args, cx),
+            "cli_join" => self.cli_join(args, cx),
             _ => return None,
         };
         Some(task.unwrap_or_else(|error| Task::ready(Err(error))))

@@ -155,12 +155,18 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   Opened over the "Finish round" sheet (§4.2), it and the source picker hang above the sheet, which
   the scrim then covers too; closing them returns to the sheet as it was. Status
   chips: `open`/`draft` accent, `ready` yellow, `changes_requested` red, `in_progress` ("Agent
-  working") blue, `approved`/`submitted` green, `closed` grey; always worded.
+  working": the agent's first reply, address or comment after changes were requested, PLAN §2.4)
+  blue, `approved`/`submitted` green, `closed` grey; always worded.
 - **Source picker** (`⇄ ▾`): a 340-wide menu under its button with the open review's repo's targets
   (the switcher's three rows) and their open reviews; the current target is checked. `↑`/`↓`/`Enter`/
   `Esc`; picking one opens or resumes its review.
-- **Panel:** "Changes", the file count and the review's `+n −m`; a thin progress track with "`viewed`
-  of `total` viewed"; filter input (`Enter` shows the first file left, `Esc` clears it; both hand the
+- **Panel:** "Changes", the file count and the review's `+n −m`; under it, while the review offers
+  it (a live target — `working`, `staged`, a branch — not finished, with a closed round; PLAN §2.3),
+  a full-width segmented control **Since round n | All changes** with its `I` keycap (the
+  header's Split | Unified style; each segment as wide as its label, sharing the room left; in
+  a panel narrower than 270 the second reads **All**, so the first keeps its round; the choice
+  shows at once, the list follows when it lands); a thin
+  progress track with "`viewed` of `total` viewed"; filter input (`Enter` shows the first file left, `Esc` clears it; both hand the
   keyboard back to the diff); file rows (28 high, radius 6) — viewed checkbox (16, accent filled with
   a check when on; dimmed and inert on a finished review), status letter (M modified, A added, U
   untracked, D deleted, R renamed, C copied, T type changed, `!` unmerged; colour + letter, never
@@ -168,14 +174,22 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   `fg3`), open-comment badge, `+n −m`. The current file's row is `sel`, its name at 600; a click on a
   row shows that file in the diff, a click on the checkbox toggles viewed. Then, under a hairline,
   "Open comments" with the number of threads still waiting (open, and addressed but not yet
-  resolved) and "Copy as prompt" — one row per thread in stream order (an accent ring dot for
-  `open`, a blue dot and "addressed" for `addressed`, `path:line` in mono, the first line of the
+  resolved) and "Copy as prompt" — one row per thread, the addressed ones first (the reviewer's
+  turn, PLAN §3 workflow A step 5), then the open ones, each group in stream order (an accent
+  ring dot for `open`, a blue dot and "addressed" for `addressed`, `path:line` in mono where the
+  thread stands now (an old-side thread's ends in "(old)", as the CLI prints it, so its lines
+  aren't taken for the file's lines now; while its file's text hasn't landed — briefly, since
+  every file a thread shows in loads at once — the line it was written on, in `fg3`), the first
+  line of the
   comment as plain text — its Markdown dropped, a fenced block's first line of code, as in every
   one-line summary of a comment; an outdated thread says "outdated" in `yellow` and shows its original first line in
-  mono), then "n resolved · show", which lists the resolved ones too; with none waiting, "No open
-  comments". A click on a row shows and focuses the thread in the diff; the focused thread's row
-  is `sel`. "Copy as prompt" puts the `open` threads on the clipboard as Markdown (`path:line`,
-  the thread id, the anchored code, the comment and its replies), for pasting to an agent; in a
+  mono; a thread the interdiff doesn't show carries a quiet "all changes" tag in `fg3`, and its
+  `path:line` and "outdated" are where it stands in all changes), then
+  "n resolved · show", which lists the resolved ones too; with none waiting, "No open
+  comments". A click on a row shows and focuses the thread in the diff — an "all changes" row
+  switches the stream to all changes first; the focused thread's row is `sel`. "Copy as prompt" puts the `open` threads on the clipboard as Markdown (`path:line` where each stands now, as its row,
+  "(where it was written; dv hasn't placed it yet)" beside one not placed yet, the thread id,
+  the anchored code, the comment and its replies), for pasting to an agent; in a
   panel narrower than 270 it is its copy glyph alone, with the words in a tooltip, so the header
   never runs past the panel. The list grows to 240 high, then scrolls. The panel's right edge is a resize handle (a 2px accent line while hovered; a double click restores 280).
 - **Diff:** one stream over every file (PLAN §6.7). Each file starts with its header: a 44-high
@@ -183,8 +197,9 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   `old → new`), status pill, totals, a quiet "Loading…" once its diff takes longer than 300 ms,
   Split|Unified segmented control with its `S` keycap, "Viewed" checkbox with `V`, previous / next
   file, and `⋯` (a menu with Copy path and Reveal in folder) — over 24-high side labels (`main` /
-  `working tree`, one per column in split view, `main → working tree` in unified) when the file
-  shows lines. The header of the file being read stays pinned at the top while its rows scroll
+  `working tree`, one per column in split view, `main → working tree` in unified; in an
+  interdiff `round 1` / `working tree` and `round 1 → working tree`, the round by a commit glyph
+  since its column is the round's snapshot) when the file shows lines. The header of the file being read stays pinned at the top while its rows scroll
   under it, and the next file's header pushes it up. **Viewed files collapse to their header bar**
   (as on GitHub), the chevron pointing right; the chevron opens one again (and collapses any).
   Rows per §1.1: 20 high, a 44-wide line number (`fg3`) and a 16-wide `+`/`−` marker per side;
@@ -202,9 +217,21 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   while loading, and a failed load's banner (§4.4: one line, Details, Retry, Copy diagnostics).
   Each open file ends with the next-file footer. The **cursor** marks its line number in
   `accentText` at 600 with a 2px accent bar, and its line on `sel`; a selection is `sel` over the
-  selected lines of one side. Inline thread cards go between rows.
+  selected lines of one side. Inline thread cards go between rows, and the lines a card sits
+  on stay shown (a thread relocation moved can stand on lines no change is near, which would
+  otherwise fold into a gap).
+- **Interdiff** (round n+1 of a live target, PLAN §2.3): the stream, the file list and its
+  totals are what changed since round n (its snapshot → now); `I` or the panel's toggle switches
+  to all changes and back, the reading position staying where the same file and line still
+  show. Its new side is the same text as in all changes, so new-side threads show there as in
+  all changes; old-side threads, and threads whose file isn't in the interdiff, aren't drawn in
+  the stream (`]`/`[` pass over them) and carry the comments list's "all changes" tag, named
+  where they stand in all changes.
 - **Thread card:** avatar (reviewer round, agent square with the agent's icon), name, agent tag, time,
-  anchor (`new · line 31`), rendered markdown body, replies, state chip + actions, reply input. States
+  anchor (`new · line 31`: where the thread shows now; "`new · lines 34–36 · moved`" while
+  those are other lines than the ones it was written on, found there by relocation or recorded
+  there by an event — never for code edited where it stands, PLAN §8), rendered
+  markdown body, replies, state chip + actions, reply input. States
   and their chips: `open` (accent ring dot), `addressed` (blue "Addressed by agent — Resolve /
   Reopen"), `resolved` (green check, collapsed by default), `outdated` (yellow, shown with its
   original snippet). The card (`thread`, radius 10, `line2` outline, the card shadow; the focused
@@ -216,10 +243,14 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   an addressed one, Reopen and a chevron on a resolved one; in a narrow card the anchor, then the
   chip's agent name, truncate, never the actions); an addressed thread's note follows
   on `blueSoft` with the agent's glyph. A resolved thread collapses to that header with its
-  comment's first line until its chevron opens it (or while a reply to it is being written). An
-  outdated thread (its anchored text no
-  longer stands at its lines, PLAN §8) has no line to follow until relocation exists: its card
-  heads its file, under the header, with the lines it was written on in a `recess` block. The
+  comment's first line until its chevron opens it (or while a reply to it is being written). A
+  thread whose code moved (lines inserted above it, its block moved, a small edit) follows it to
+  its new lines. An outdated thread (relocation can't find its code at all, PLAN §8) has no line
+  to follow: its card heads its file, under the header, with the lines it was anchored on in a
+  `recess` block. In a file shown without lines (too large to show, or "No content change": a
+  file only renamed, or only its mode changed), a thread still found in it (PLAN §8: placed
+  against the file read in full, or against the unchanged text the diff carries) heads the file
+  too, above its notice, with the anchor where it stands and no "Outdated". The
   reply field reads "Reply…" (with `R` on the focused thread) and opens the reply composer in
   its place. On a finished review the actions and the field stay, disabled ("Replies are closed
   on a finished review").
@@ -230,16 +261,19 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   is the field and the footer alone, inside the card ("Reply"). It takes the keyboard while
   open, also scrolled out of view (typing brings it back); posting or cancelling gives it back to
   the diff, posting focuses the thread. Hidden by its file collapsing, it keeps its text and
-  gives the keyboard back to the diff (`C` opens the file and takes it up again); its file
-  leaving the diff drops it.
+  gives the keyboard back to the diff (`C` opens the file and takes it up again). A
+  comparison that can't hold it — an interdiff that doesn't list its file, or (it being on the
+  old side) whose old column is the round's snapshot — leaves it undrawn with its text and
+  lines, until all changes show it again; `C` then switches to all changes and takes it up. Its
+  file leaving the review (the agent reverted it) drops it.
 - **Next-file footer:** "Next: `src/routes/users.test.ts`" + "Mark viewed and go next `V` `J`"
   ("Go to next file `J`" once viewed; the last file says "Last file" with "Mark viewed `V`").
 - **Status bar:** a dot and the location with the backend's state — green "Local · watching for
   changes", yellow "· refreshes when focused" (the watch can't follow the worktree), red "· refresh
   failed" or "· can't be opened", `fg3` "No repo" / "· opening…"; then, after a `|`, the review's
   status, round and thread counts ("Changes requested · round 2 · 3 open · 1 resolved", "no comments"
-  when there are none); at the right, `Ctrl Enter finish review` while the review can still be
-  finished.
+  when there are none; an interdiff adds "· since round 1"); at the right, `Ctrl Enter finish
+  review` while the review can still be finished.
 
 ### 4.2 Finish review / Submit (`GlassSubmit`)
 - Sheet, 980 wide, centred, over `scrim`. Header: "Finish review", `PR #482`, checks state, close.
@@ -251,13 +285,15 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
 - Footer: "Posting as `kylekz` via gh", blocker text when something needs fixing, Cancel, **Submit
   review `Ctrl Enter`** (disabled until every comment is postable or skipped).
 - Local reviews use the same sheet titled "Finish round" with no GitHub rows: "Finish round n"
-  over "`repo` · `working tree vs main` · 7 files `+n −m`"; the Summary (a 150-high field in
+  over "`repo` · `working tree vs main` · 7 files `+n −m`" (the review's changes, which the round
+  finishes, also while the stream shows an interdiff); the Summary (a 150-high field in
   mono 12.5, "Markdown · optional", `Tab` to move between it and the verdicts); the Verdict as
   two cards, **Approve** (`1`, "The work is done; the review closes") and **Request changes**
   (`2`, "The agent has more to do; the round goes back to it"), Request changes chosen while a
   thread is open, else Approve; on the right "Comments" — those opened this round and earlier
-  ones not yet resolved (with their round), each with its state glyph, `path:line` and first
-  line; the footer "Finishing round n as `name`", why the last attempt failed in `red`, Cancel
+  ones not yet resolved (with their round: the one a thread was opened in, which a move recorded
+  in a later round, PLAN §8, doesn't change), each with its state glyph, `path:line` where it
+  shows now (as the comments list names it, `fg3` while not placed yet) and first line; the footer "Finishing round n as `name`", why the last attempt failed in `red`, Cancel
   and the primary button named by the verdict with `Ctrl Enter`. The verdicts have the keyboard
   when it opens (`↑`/`↓`, `1`/`2`); `Esc` closes it. While the round is being finished the
   primary reads "Finishing…" and the sheet stays: `Esc`, Cancel (dimmed) and the close button do
@@ -289,13 +325,34 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   other regions, never raw stderr as the headline (the first implementation painted git's stderr across
   the sidebar). The banner is `redSoft` with a `red` outline at 35%, radius 6, 12 in from the
   region's edges. A review that didn't open shows one at the top of the main area (Retry, Dismiss;
-  the review open before stays open); a refresh that failed shows one there too (Retry).
+  the review open before stays open); a refresh that failed shows one there too (Retry), and so
+  does a folder (or a `dv open` path) that isn't a repository (Dismiss). A review whose worktree
+  is gone (PLAN §2.2: a working review of a linked worktree removed since) says so in its
+  headline, "review r-… can't be opened: its worktree is gone (removed, moved or deleted)", the
+  worktree's path in Details.
+  A round's snapshot missing from the repository (its ref deleted by hand and pruned) is a banner
+  there too, "Showing all changes: round 1's snapshot (…) is missing from the repository"
+  (Dismiss), over the all-changes stream it falls back to.
+- **Handoff:** while the review is `ready` the agent's handoff heads the main area: an info
+  banner on `blueSoft` over `code` made opaque (on Mica and Acrylic the material doesn't show
+  through it, so its note's fade ends in exactly its colour), with a `blue` outline at 35%,
+  radius 6, 12 in from the region's edges —
+  the agent's glyph in `blue`, "`claude-code` marked round 2 ready" (the name at 600; a long
+  name truncates, "marked round n ready" and the disclosure never do), the first line of its
+  note (`dv review done --note`, PLAN §7) as plain text in `fg2`, and a **Show note** disclosure
+  that opens the whole note under it as Markdown (the first line then leaves the header),
+  growing to 240 high, then scrolling, so the stream keeps its room; its `md` inset at the foot
+  stays below the scrolled text, so a clipped line stops short of the outline, and a 28-high
+  fade into the banner's colour sits there while more of the note lies below. It goes once the
+  reviewer finishes the round. Each handoff (the next round's, or the agent's `dv review done`
+  again with another note) is a new banner, its note closed.
 - **Backend down (WSL):** status bar shows "Ubuntu · reconnecting…" → banner with **Retry** and
   **Open setup**.
 - **Empty:** no changes ("Working tree clean — nothing to review" for a `working` review, "No changes
-  — nothing to review" for other targets), no reviews ("Pick a repo to start a review"), no open
-  comments. The switcher with no known repo says "No repositories yet"; a filter that matches nothing
-  says so.
+  — nothing to review" for other targets), an empty interdiff ("No changes since round 1",
+  "Nothing changed after the round was handed over.", and **Show all changes** with its `I`
+  keycap), no reviews ("Pick a repo to start a review"), no open comments. The switcher with no
+  known repo says "No repositories yet"; a filter that matches nothing says so.
 - **Read-only (submitted PR review):** banner "Submitted to GitHub · view on GitHub", composer and
   thread actions disabled, not hidden. A finished local review says "Approved · this review is
   finished" (on `greenSoft` with a `green` outline at 35%; "Closed · …" in `fg2` on `layer`) with
@@ -310,9 +367,10 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
 |---|---|
 | `J` / `K` | next / previous file: its header at the top, the cursor on its first change |
 | `N` / `P` | next / previous block of changed lines, on into the next files |
-| `]` / `[` | focus the next / previous thread that isn't resolved (open or addressed), scrolling to it, on into the next files |
+| `]` / `[` | focus the next / previous thread that isn't resolved (open or addressed), scrolling to it, on into the next files (in an interdiff, the threads it shows) |
+| `I` | switch between the interdiff since the last round and all changes (the panel's toggle; while the review offers it, PLAN §2.3) |
 | `V` | toggle viewed on the current file (`V` then `J`: mark viewed and go next); each press flips the state the last one asked for, however fast they come |
-| `C` | comment on the selected lines, else the cursor's line, else (no cursor yet) the first line in view, where the cursor goes too (click a line number to put the cursor there, shift-click to select to it); a composer holding a draft takes the keyboard instead, wherever the cursor is |
+| `C` | comment on the selected lines, else the cursor's line, else (no cursor yet) the first line in view, where the cursor goes too (click a line number to put the cursor there, shift-click to select to it); a composer holding a draft takes the keyboard instead, wherever the cursor is. In an interdiff it comments on the new side only: on the old column (the round's snapshot, which no anchor names) it does nothing |
 | `R` | reply to the focused thread (the reply composer opens in its card) |
 | `X` | resolve the focused thread, or reopen it when it is resolved |
 | `↑` / `↓` | move the cursor a line (the stream scrolls to keep it in view; it crosses into the next file) |
@@ -363,6 +421,9 @@ else the file at the top of the viewport, whose header is the pinned one.
   card heading its file (§4.1), titles the panel's section "Open comments" rather than the
   board's capitals, and gives the local "Finish round" sheet a "Comments" column without the
   include checkboxes and validation rows `GlassSubmit` shows for a PR (§4.2).
+- The boards show a first round only. This file adds what later rounds bring (§4.1, §4.4): the
+  panel's Since round n | All changes toggle, the `round n` side label, "· moved" on a card, the
+  comments list's "all changes" tag, the empty interdiff and the agent's ready banner.
 - Board copy (file names, comment text, PR #482) is illustrative fixture content; the e2e fixtures
   (PLAN §14) reproduce it so screenshots compare 1:1.
 - The boards' wallpaper is light pastel, which flatters the translucent surfaces. On Windows,

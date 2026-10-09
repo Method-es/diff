@@ -24,7 +24,7 @@ mod render;
 #[cfg(test)]
 mod tests;
 
-use dv_core::review::{FinishedRound, ThreadState, Verdict};
+use dv_core::review::{FinishedRound, Thread, ThreadState, Verdict};
 use gpui::{AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, Window};
 use gpui_component::input::TextareaState;
 
@@ -63,6 +63,25 @@ pub fn verdict_label(verdict: Verdict) -> &'static str {
         Verdict::RequestChanges => "Request changes",
         Verdict::Comment => "Comment",
     }
+}
+
+/// The round a thread was opened in: its first anchor's, which a move recorded since (PLAN
+/// §8, re-taken in the round of the event that recorded it) doesn't change.
+pub fn opened_in(thread: &Thread) -> u32 {
+    thread.first_anchor().round
+}
+
+/// The comments the "Comments" column lists for `round`, the one being finished: the threads
+/// opened in it and earlier rounds' threads not yet resolved (the agent gets both with the
+/// round), in the order given.
+pub fn round_comments<'a>(
+    threads: impl IntoIterator<Item = &'a Thread>,
+    round: u32,
+) -> Vec<&'a Thread> {
+    threads
+        .into_iter()
+        .filter(|thread| opened_in(thread) == round || thread.state != ThreadState::Resolved)
+        .collect()
 }
 
 /// Which way the summary shows.

@@ -3,13 +3,14 @@
 
 use gpui::{
     AnyElement, AppContext as _, Context, DragMoveEvent, InteractiveElement as _, IntoElement,
-    MouseButton, MouseUpEvent, ParentElement as _, Render, StatefulInteractiveElement as _,
-    Styled as _, Window, deferred, div, prelude::FluentBuilder as _, px,
+    MouseButton, MouseUpEvent, ParentElement as _, Render, ScrollHandle,
+    StatefulInteractiveElement as _, Styled as _, Window, deferred, div, linear_color_stop,
+    linear_gradient, prelude::FluentBuilder as _, px,
 };
 
 use dv_core::review::ReviewStatus;
 
-use super::{EmptyState, Shell};
+use super::{EmptyState, ReadyNote, Shell};
 use crate::automation::AutomationTargetExt as _;
 use crate::banner::{Banner, BannerAction};
 use crate::components::{icon, inline_code, kbd, skeleton, small_button, status_label};
@@ -20,6 +21,7 @@ use crate::services::ActiveServices as _;
 use crate::services::reviews::OpenRequest;
 use crate::services::settings::PANEL_WIDTH_DEFAULT;
 use crate::theme::{ActiveTheme as _, DvTheme, StyledText as _};
+use crate::thread::first_line;
 
 /// Deferred paint order: the panel's resize handle over its neighbour, the scrim over the
 /// window, the sheet over the scrim, and a menu (the switcher, the source picker) over
@@ -42,6 +44,12 @@ impl Render for DraggedPanelEdge {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The ready banner's open note knows its scroll extent once it is laid out: draw once
+        // more then, for its fade.
+        if self.ready_note_open && !self.ready_note_measured {
+            self.ready_note_measured = true;
+            cx.on_next_frame(window, |_, _, cx| cx.notify());
+        }
         let theme = cx.dv_theme().clone();
         let c = &theme.colors;
         let overlay_open =
@@ -225,12 +233,30 @@ impl Shell {
                 )),
             )
         });
+        // An interdiff that fell back to all changes: its round's snapshot is missing.
+        let comparison_banner = self.session.as_ref().and_then(|session| {
+            let failure = session.read(cx).comparison_error()?.clone();
+            let session = session.clone();
+            Some(
+                Banner::new("banner/comparison", failure).action(BannerAction::new(
+                    "dismiss",
+                    "Dismiss",
+                    move |_, cx| {
+                        session.update(cx, |session, cx| session.dismiss_comparison_error(cx))
+                    },
+                )),
+            )
+        });
         let finished = self
             .session
             .as_ref()
             .map(|session| session.read(cx).review().status)
             .filter(|status| status.is_final())
             .map(|status| finished_banner(status, theme, cx));
+        let ready = self.ready_note(cx).map(|ready| {
+            let scroll = self.ready_note_scroll.clone();
+            ready_banner(ready, self.ready_note_open, &scroll, theme, cx)
+        });
         // The first listing only: a refresh keeps the stream (or the empty state) on screen, and
         // so does opening the review that is already open (it stays as it is).
         let reopening = match (&self.opening, &self.session) {
@@ -253,7 +279,7 @@ impl Shell {
                 .as_ref()
                 .is_some_and(|session| session.read(cx).is_first_load());
         let content: AnyElement = match self.empty_state(cx) {
-            Some(empty) => empty_view(empty, theme),
+            Some(empty) => empty_view(empty, theme, cx),
             None if loading => loading_view(self.opening.is_some(), theme),
             None if self.session.is_some() => div()
                 .flex_1()
@@ -266,18 +292,22 @@ impl Shell {
             .id("main")
             .key_context(keymap::DIFF_PANE)
             .track_focus(&self.focus_handle);
+        // Clipped: a banner never draws over the status bar (DESIGN §4.4).
         DiffPane::bind_actions(main, &self.diff_pane)
             .flex_1()
             .min_w_0()
             .h_full()
             .flex()
             .flex_col()
+            .overflow_hidden()
             .bg(c.code)
             .debug_selector(|| "main".into())
             .children(banner)
             .children(session_banner)
             .children(viewed_banner)
+            .children(comparison_banner)
             .children(finished)
+            .children(ready)
             .child(content)
             .automation_target("shell/main")
     }
@@ -395,6 +425,169 @@ fn finished_banner(status: ReviewStatus, theme: &DvTheme, cx: &mut Context<Shell
         .automation_target("banner/finished")
 }
 
+/// How tall the ready banner's open note grows before it scrolls (DESIGN §4.4), like the
+/// comments list.
+const READY_NOTE_MAX_HEIGHT: f32 = 240.;
+
+/// How tall the fade at the foot of a scrolling note is (DESIGN §4.4).
+const READY_NOTE_FADE: f32 = 28.;
+
+/// The agent's handoff over a `ready` review (DESIGN §4.4): on `blueSoft` with a `blue` outline
+/// at 35%, the agent's glyph, "claude-code marked round 2 ready", the note's first line as
+/// plain text and "Show note", which opens the whole note as Markdown under it, scrolling
+/// (`scroll`) past READY_NOTE_MAX_HEIGHT with a fade at its foot while more lies below.
+fn ready_banner(
+    ready: ReadyNote,
+    open: bool,
+    scroll: &ScrollHandle,
+    theme: &DvTheme,
+    cx: &mut Context<Shell>,
+) -> AnyElement {
+    let c = &theme.colors;
+    let who = ready
+        .author
+        .as_ref()
+        .map_or_else(|| "The agent".to_string(), |author| author.name.clone());
+    // The first line stands in for the note while it is closed.
+    let first = ready
+        .note
+        .as_deref()
+        .filter(|_| !open)
+        .map(first_line)
+        .filter(|line| !line.is_empty());
+    let hover = c.control_hover;
+    let disclosure = ready.note.is_some().then(|| {
+        div()
+            .id("ready-note")
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .h(theme.sizes.control_small_height)
+            .px(theme.spacing.sm)
+            .rounded(theme.radii.control)
+            .text_spec(&theme.text.secondary)
+            .text_color(c.fg2)
+            .cursor_pointer()
+            .hover(move |style| style.bg(hover))
+            .child(icon(
+                if open {
+                    DvIcon::ChevronDown
+                } else {
+                    DvIcon::ChevronRight
+                },
+                px(12.),
+                c.fg2,
+            ))
+            .child(if open { "Hide note" } else { "Show note" })
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_ready_note(cx)))
+            .debug_selector(|| "ready-note-toggle".into())
+            .automation_target("banner/ready/note")
+    });
+    let header = div()
+        .flex()
+        .items_center()
+        .gap(theme.spacing.md)
+        .min_h(px(40.))
+        .py(theme.spacing.sm)
+        .pl(theme.spacing.lg)
+        .pr(theme.spacing.md)
+        .child(icon(DvIcon::Bot, px(15.), c.blue))
+        // The agent's name truncates before anything else does; "marked round n ready" and
+        // the disclosure always show (DESIGN §4.4).
+        .child(
+            div()
+                .min_w_0()
+                .flex_shrink(1.)
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(who),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .child(format!("marked round {} ready", ready.round)),
+                ),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_color(c.fg2)
+                .children(first),
+        )
+        .children(disclosure);
+    // An open note grows to READY_NOTE_MAX_HEIGHT, then scrolls, so the stream keeps its room.
+    // Its inset at the foot sits outside the scrolled text, so a clipped line stops short of
+    // the outline, and a fade there says the note goes on while more of it lies below.
+    let max = scroll.max_offset().y;
+    let more_below = max > px(0.5) && -scroll.offset().y < max - px(0.5);
+    // The banner is `blueSoft` over an opaque `code` (DESIGN §4.4), so the fade can end in
+    // exactly its colour: over a translucent surface the material shows through the banner and
+    // through the note behind the fade alike, and no colour painted on top matches both.
+    let fill = c.code.alpha(1.).blend(c.blue_soft);
+    let note = ready.note.filter(|_| open).map(|note| {
+        div()
+            .relative()
+            .pb(theme.spacing.md)
+            .child(
+                div()
+                    .id("ready-note-scroll")
+                    .max_h(px(READY_NOTE_MAX_HEIGHT))
+                    .overflow_y_scroll()
+                    .track_scroll(scroll)
+                    .on_scroll_wheel(cx.listener(|_, _, _, cx| cx.notify()))
+                    .px(theme.spacing.lg)
+                    .pl(px(43.))
+                    .child(
+                        crate::markdown::view("ready-note-body", &note, cx)
+                            .text_size(theme.text.body.size)
+                            .line_height(px(20.))
+                            .text_color(c.fg),
+                    )
+                    .debug_selector(|| "ready-note-body".into())
+                    .automation_target("banner/ready/body"),
+            )
+            .when(more_below, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom(theme.spacing.md)
+                        .h(px(READY_NOTE_FADE))
+                        .bg(linear_gradient(
+                            180.,
+                            linear_color_stop(fill.opacity(0.), 0.),
+                            linear_color_stop(fill, 1.),
+                        ))
+                        .debug_selector(|| "ready-note-fade".into()),
+                )
+            })
+    });
+    div()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .m(theme.spacing.lg)
+        .rounded(theme.radii.control)
+        .border_1()
+        .border_color(c.blue.opacity(0.35))
+        .bg(fill)
+        .debug_selector(|| "ready-banner".into())
+        .child(header)
+        .children(note)
+        .automation_target("banner/ready")
+}
+
 /// The main area while a review opens or lists its files (DESIGN §4.4): a quiet progress line
 /// where the file header goes, over skeleton rows, never a spinner.
 fn loading_view(opening: bool, theme: &DvTheme) -> AnyElement {
@@ -437,7 +630,7 @@ fn loading_view(opening: bool, theme: &DvTheme) -> AnyElement {
 }
 
 /// DESIGN §4.4's empty states.
-fn empty_view(empty: EmptyState, theme: &DvTheme) -> AnyElement {
+fn empty_view(empty: EmptyState, theme: &DvTheme, cx: &mut Context<Shell>) -> AnyElement {
     let c = &theme.colors;
     let centred = div()
         .flex_1()
@@ -446,7 +639,7 @@ fn empty_view(empty: EmptyState, theme: &DvTheme) -> AnyElement {
         .items_center()
         .justify_center()
         .gap(theme.spacing.md);
-    let heading = |text: &'static str| {
+    let heading = |text: String| {
         div()
             .text_spec(&theme.text.heading)
             .text_color(c.fg)
@@ -455,7 +648,7 @@ fn empty_view(empty: EmptyState, theme: &DvTheme) -> AnyElement {
     let note = |text: &'static str| div().text_color(c.fg2).child(text);
     match empty {
         EmptyState::NoReview => centred
-            .child(heading("Pick a repo to start a review"))
+            .child(heading("Pick a repo to start a review".into()))
             .child(
                 div()
                     .flex()
@@ -476,11 +669,23 @@ fn empty_view(empty: EmptyState, theme: &DvTheme) -> AnyElement {
                     .child("inside a repo"),
             ),
         EmptyState::WorkingTreeClean => centred
-            .child(heading("Working tree clean — nothing to review"))
+            .child(heading("Working tree clean — nothing to review".into()))
             .child(note("The review picks up changes as soon as files change.")),
         EmptyState::NoChanges => centred
-            .child(heading("No changes — nothing to review"))
+            .child(heading("No changes — nothing to review".into()))
             .child(note("The two sides of this review are the same.")),
+        EmptyState::NoChangesSince(n) => centred
+            .child(heading(format!("No changes since round {n}")))
+            .child(note("Nothing changed after the round was handed over."))
+            .child(
+                crate::components::button("show-all-changes", theme)
+                    .debug_selector(|| "show-all-changes".into())
+                    .mt(theme.spacing.sm)
+                    .child("Show all changes")
+                    .child(kbd(keymap::label("i"), theme))
+                    .on_click(cx.listener(|this, _, _, cx| this.show_all_changes(cx)))
+                    .automation_target("shell/main/empty/show_all"),
+            ),
     }
     .automation_target("shell/main/empty")
 }

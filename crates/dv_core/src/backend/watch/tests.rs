@@ -204,6 +204,12 @@ fn removing_an_ignored_directory_is_not_reported() {
     let (_handle, rx) = start(&backend, WatchSpec::ALL);
     // An ignored directory that appears while the watch runs.
     repo.write("out/z", "build output\n");
+    // The watch reads the ignore rules (a few git calls) before it reports anything, and they
+    // learn which ignored paths are directories by listing the tree. Waiting for a write made
+    // after `out/z` waits for them, so the directories removed below were there to be listed
+    // however slow git is.
+    repo.write("ready.txt", "the rules are loaded\n");
+    wait_for(&rx, Duration::from_secs(10), has_worktree_path("ready.txt"));
     settle(&rx);
 
     repo.remove("target").remove("out").remove("build");

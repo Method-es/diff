@@ -281,7 +281,7 @@ pub struct RowsSpec<'a> {
 /// One file's rows (see the module docs).
 pub fn file_rows(spec: &RowsSpec) -> Vec<Row> {
     let labels = !spec.collapsed
-        && matches!(spec.content, Content::Loaded(FileDiff::Text(text)) if !text.lines.is_empty());
+        && matches!(spec.content, Content::Loaded(FileDiff::Text(text)) if text.has_changes());
     let mut rows = vec![Row::Header {
         collapsed: spec.collapsed,
         labels,
@@ -302,7 +302,9 @@ pub fn file_rows(spec: &RowsSpec) -> Vec<Row> {
         Content::Loaded(diff) => diff,
     };
     let notice = match diff {
-        FileDiff::Text(text) if text.lines.is_empty() => Some(Notice::NoContentChange),
+        // Renamed or its mode changed, its content as it was: the diff holds the text as
+        // context (for its threads, PLAN §8), the stream says what happened.
+        FileDiff::Text(text) if !text.has_changes() => Some(Notice::NoContentChange),
         FileDiff::Text(_) => None,
         FileDiff::Binary { old_len, new_len } => Some(Notice::Binary {
             old_len: *old_len,

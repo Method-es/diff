@@ -48,6 +48,12 @@ fn finishing_a_round_snapshots_it_and_moves_the_status_by_verdict() {
         "one\nTWO\nthree\n"
     );
     assert_eq!(finished.review.status, ReviewStatus::ChangesRequested);
+    // The verdict's status says who set it, and carries no note (the summary is the round's).
+    let change = finished.review.status_change.clone().unwrap();
+    assert_eq!(
+        (change.status, change.note, change.author),
+        (ReviewStatus::ChangesRequested, None, Some(reviewer()))
+    );
     assert_eq!(finished.review.current_round(), 2);
     // What the log folds to is what the operation returned.
     let loaded = store.load(&id).unwrap();
@@ -82,6 +88,65 @@ fn finishing_a_round_snapshots_it_and_moves_the_status_by_verdict() {
             status: ReviewStatus::Approved
         })
     ));
+}
+
+#[test]
+fn a_handoff_landing_while_the_round_is_snapshotted_doesnt_outlive_the_verdict() {
+    let (repo, store, id) = working_review();
+    let git = git_repo(&repo);
+    // Changes were requested, and the agent hasn't written since: still `changes_requested`.
+    finish_round(
+        &store,
+        &git,
+        &id,
+        Some(Verdict::RequestChanges),
+        None,
+        &reviewer(),
+    )
+    .unwrap();
+    repo.write("src/lib.rs", "one\ntwo\nthree\n");
+    // The reviewer finishes the next round asking for more; it reads the review...
+    let read = store.load_for_update(&id).unwrap().review;
+    assert_eq!(read.status, ReviewStatus::ChangesRequested);
+    // ...the agent's `dv review done` lands while the snapshot is taken...
+    set_status(&store, &id, ReviewStatus::Ready, &agent(), Some("Done.")).unwrap();
+    // ...and the round closes on what it read.
+    let finished = crate::review::ops::finish_round_on(
+        &store,
+        &git,
+        &id,
+        read,
+        Some(Verdict::RequestChanges),
+        Some("More, please.".to_string()),
+        &reviewer(),
+    )
+    .unwrap();
+    let loaded = store.load(&id).unwrap();
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+    assert_eq!(
+        loaded.review.status,
+        ReviewStatus::ChangesRequested,
+        "the verdict wins over the handoff it closed the round after"
+    );
+    assert_eq!(finished.review.status, ReviewStatus::ChangesRequested);
+    assert_eq!(loaded.review.last_round().map(|round| round.n), Some(2));
+
+    // With nothing between, the repeated status is a no-op in the fold.
+    let before = loaded.review.status_change.clone();
+    repo.write("src/lib.rs", "one\ntwo\nthree\nfour\n");
+    let finished = finish_round(
+        &store,
+        &git,
+        &id,
+        Some(Verdict::RequestChanges),
+        None,
+        &reviewer(),
+    )
+    .unwrap();
+    let loaded = store.load(&id).unwrap();
+    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+    assert_eq!(loaded.review, finished.review);
+    assert_eq!(loaded.review.status_change, before);
 }
 
 #[test]
@@ -123,7 +188,7 @@ fn only_the_reviewer_finishes_a_local_round() {
     ));
 
     // A closed review is finished.
-    set_status(&store, &id, ReviewStatus::Closed, AuthorKind::Reviewer).unwrap();
+    set_status(&store, &id, ReviewStatus::Closed, &reviewer(), None).unwrap();
     assert!(matches!(
         finish_round(&store, &git, &id, None, None, &reviewer()),
         Err(OpError::Finished {
@@ -285,4 +350,42 @@ fn an_unborn_repo_closes_its_round_against_the_empty_tree() {
         repo.git(&["log", "--format=%P", finished.round.new_oid.as_str()]),
         "\n"
     );
+}
+
+#[test]
+fn a_review_deleted_while_its_round_is_snapshotted_leaves_no_ref() {
+    let (repo, store, id) = working_review();
+    let git = git_repo(&repo);
+    // A clean filter slow enough for the delete to land while `git add` runs in the snapshot.
+    repo.git(&["config", "filter.slow.clean", "sleep 2; cat"]);
+    repo.write(".gitattributes", "*.slow filter=slow\n");
+    repo.write("big.slow", "content\n");
+
+    let deleting = {
+        let store = store.clone();
+        let id = id.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(700));
+            store.delete(&id).unwrap()
+        })
+    };
+    let result = finish_round(
+        &store,
+        &git,
+        &id,
+        Some(Verdict::RequestChanges),
+        None,
+        &reviewer(),
+    );
+    assert!(deleting.join().unwrap(), "the delete found the log");
+    assert!(
+        matches!(
+            result,
+            Err(OpError::Store(StoreError::UnknownReview { .. }))
+        ),
+        "{result:?}"
+    );
+    // The round's snapshot ref, made after the delete looked for refs, went with the round.
+    assert_eq!(repo.git(&["for-each-ref", "refs/dv/"]), "");
+    assert!(store.list().unwrap().is_empty());
 }

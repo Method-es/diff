@@ -25,21 +25,21 @@ WSL; macOS and Linux supported. Agents read and answer reviews through the `dv` 
 
 | Crate | Role | gpui? |
 |---|---|---|
-| `dv` | bin: entry for the GUI, the CLI and (Linux) `dv backend --stdio`; automation host (`automation` feature, on by default), which also seeds scenario repos with `dv_test_support` | yes |
-| `dv_ui` | views (`shell`, `switcher`, `file_list`, `comments_list`, `diff_pane`, `thread`, `submit`, …) and their keys (`keymap`, `actions`), services (`Settings`, `Locations`, `Reviews`, `ReviewUi`), the open review (`session::ReviewSession`), highlighting (`syntax`, token kinds) and comment Markdown (`markdown`, sanitised), the Glass theme (`theme`), window material (`appearance`, `platform`), assets, the `system` and `automation` seams (PLAN §11) | yes |
-| `dv_core` | locations, the `Backend` trait and `LocalBackend` (PLAN §5.1), targets, git runner, diff pipeline, review event store, anchors, GitHub via `gh` (PLAN §6–§9) | **never** |
+| `dv` | bin: entry for the GUI, the CLI and (Linux) `dv backend --stdio`: one clap tree (`cli`, the headless commands flattened in from `dv_cli` and run before any gpui code), the GUI started detached and what `dv open` opens (`launch`); automation host (`automation` feature, on by default), which also seeds scenario repos with `dv_test_support` and plays a scenario's agent through its own CLI (`cli`, `cli_spawn`, `cli_join`: this executable as a child process) | yes |
+| `dv_ui` | views (`shell`, `switcher`, `file_list`, `comments_list`, `diff_pane`, `thread`, `submit`, …) and their keys (`keymap`, `actions`), services (`Settings`, `Locations`, `Reviews`, `ReviewUi`), the open review (`session::ReviewSession`: its comparison, interdiff or all changes, and where each thread shows, through `dv_core`'s placement), highlighting (`syntax`, token kinds) and comment Markdown (`markdown`, sanitised), the Glass theme (`theme`), window material (`appearance`, `platform`), assets, the `system` and `automation` seams (PLAN §11) | yes |
+| `dv_core` | locations, the `Backend` trait and `LocalBackend` (PLAN §5.1), targets and their labels (`label`), git runner, diff pipeline, review event store, anchors, relocation and placement (`review::relocate`), GitHub via `gh` (PLAN §6–§9) | **never** |
 | `dv_backend` | the stdio protocol, the `dv backend --stdio` server loop, `RemoteBackend`, distro install (PLAN §5) | never |
-| `dv_cli` | clap command tree, JSON DTOs, setup/doctor checks (PLAN §10, §12) | never |
+| `dv_cli` | the headless commands (`args`, clap) and what they run with (`Context`: cwd, env, streams, git env, so tests run them in-process), the repository and which review a command means (PLAN §10.2), who it acts as, thread placement, JSON DTOs (`dto`), exit and error codes (`error`), the `dv-review` agent skill (`skill/SKILL.md`, PLAN §10.5), setup/doctor checks (PLAN §10, §12) | never |
 | `gpui_automation` | JSONL automation over stdio + the `e2e` runner bin (PLAN §14) | yes |
 | `mock_gh` | bin: fake `gh` for tests (PLAN §14.2) | never |
 | `dv_test_support` | dev-only lib: `FixtureRepo` and shared test helpers (PLAN §14.2) | never |
 
-Direction: `dv` → `dv_ui` → {`dv_cli`, `dv_backend`, `dv_core`, `gpui-component`};
-`dv_cli` → {`dv_backend`, `dv_core`}; `dv_backend` → `dv_core`. `dv` and `dv_ui` reach
-`gpui_automation` only through their `automation` features; `dv`'s also brings `dv_core` and
-`dv_test_support` (both gpui-free) for the scenario repos it seeds, never in the shipped build. A gpui dependency in a "never" crate
-fails `script/check` (step 3, `cargo tree`), because those crates run headless: in the CLI, as the
-static musl backend inside WSL, and in fast tests.
+Direction: `dv` → {`dv_ui`, `dv_cli`, `dv_core`}; `dv_ui` → {`dv_cli`, `dv_backend`, `dv_core`,
+`gpui-component`}; `dv_cli` → {`dv_backend`, `dv_core`}; `dv_backend` → `dv_core`. `dv` and
+`dv_ui` reach `gpui_automation` only through their `automation` features; `dv`'s also brings
+`dv_test_support` (gpui-free) for the scenario repos it seeds, never in the shipped build. A gpui
+dependency in a "never" crate fails `script/check` (step 3, `cargo tree`), because those crates
+run headless: in the CLI, as the static musl backend inside WSL, and in fast tests.
 
 GPUI naming: `gpui` = crates.io `gpui-pre =0.3.6`, `gpui_platform` = `gpui-pre-platform =0.3.6`,
 components = `gpui-component =0.6.6` (PLAN D1). Don't guess APIs: grep the sources under
@@ -109,6 +109,36 @@ silently if only the default shape is linted, so `script/check` runs both.
 
 Run `cargo build -p dv -p mock_gh` right before the e2e runner: a `cargo test` build relinks the
 binaries with gpui's test support, which the runner must not start. `script/check` does this itself.
+
+### The dv CLI
+
+```bash
+dv status --json             # the repo, who you act as, the open reviews and the current one
+dv review list [--all]       # dv review show [<id>], dv comment list [--status open] [--file p]
+dv comment show <thread>     # --json on any command: one {"schema": 1, …} document on stdout
+dv comment reply <thread> --body-file -    # also add, address, resolve, reopen (PLAN §10.1)
+dv review new | done | submit | close | delete | wait     # wait: exit 3 on --timeout
+dv setup agents --home <dir> --yes         # the dv-review skill; never without --home in tests
+dv open <path>               # the GUI, detached; `dv` alone opens the working directory's repo
+```
+
+Every command but `dv` and `dv open` is headless; its exit codes are PLAN §10.3's (2 usage or
+an unclear review, 4 a WSL repo). Test commands in-process (`dv_cli::main_with` with a
+`Context`, as `crates/dv_cli/src/tests/` does), or spawn the built binary with a headless
+subcommand only: `dv` alone or `dv open` opens a window on the owner's desktop, so no test runs
+them (the startup decisions are pure functions in `crates/dv/src/launch.rs`). `dv setup agents`
+writes into the home directory: tests pass the hidden `--home <temp dir>`, and nothing runs it
+against the real home (`~/.claude`, `~/.agents`, or `~/.codex` / `$CODEX_HOME`, which it reads
+to see whether Codex is installed). Every command line in `crates/dv_cli/skill/SKILL.md`
+is run by `crates/dv_cli/src/tests/skill.rs`; change both together.
+
+This shell runs inside Claude Code, which exports `CLAUDECODE=1`: any `dv` command run from it
+acts as the agent `claude-code` (PLAN §10.1). Run the CLI as the reviewer with
+`env -u CLAUDECODE dv …`, and have every test and scenario that runs it remove `CLAUDECODE`,
+`DV_AUTHOR` and `DV_REVIEW` from the child's environment, setting them only on purpose. A
+scenario plays the agent with the automation host's `cli` / `cli_spawn` / `cli_join`, which do
+this themselves (`"env": {"CLAUDECODE": "1"}` makes the agent Claude Code;
+`tests/e2e/workflow_a_agent.jsonl` is PLAN §3 workflow A end to end that way).
 
 ## GUI runs
 

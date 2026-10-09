@@ -3,7 +3,7 @@
 //! relocated when the file moves on and shown with its original code when it can't.
 
 use super::model::{Anchor, AnchorSide};
-use crate::diff::TextDiff;
+use crate::diff::{FileEntry, TextDiff};
 
 /// Lines of context an anchor keeps before and after its range (PLAN §2.5).
 pub const ANCHOR_CONTEXT: usize = 3;
@@ -31,6 +31,23 @@ pub struct AnchorPlace {
     /// The file's old path, for a renamed file.
     pub old_path: Option<String>,
     pub side: AnchorSide,
+}
+
+impl AnchorPlace {
+    /// `side` of the listed file `entry` in `round`: the new side by the file's path, the old
+    /// side by its old path when it was renamed.
+    pub fn for_entry(entry: &FileEntry, side: AnchorSide, round: u32) -> Self {
+        let path = match side {
+            AnchorSide::New => entry.path.clone(),
+            AnchorSide::Old => entry.old_path.clone().unwrap_or_else(|| entry.path.clone()),
+        };
+        Self {
+            round,
+            path,
+            old_path: entry.old_path.clone(),
+            side,
+        }
+    }
 }
 
 /// The anchor for lines `from` to `to` (1-based, inclusive, in either order: a selection
@@ -89,8 +106,8 @@ pub fn side_lines(diff: &TextDiff, side: AnchorSide) -> Vec<&str> {
 
 impl Anchor {
     /// Whether the anchored text still stands at the recorded line numbers in `lines`, the
-    /// side's current full text ([`side_lines`]). A thread whose anchor doesn't match isn't
-    /// shown inline: relocation (PLAN §8) or the outdated listing takes over.
+    /// side's current full text ([`side_lines`]). When it doesn't, relocation looks for it
+    /// (PLAN §8, `super::relocate`).
     pub fn matches<S: AsRef<str>>(&self, lines: &[S]) -> bool {
         let Some(first) = (self.start_line as usize).checked_sub(1) else {
             return false;

@@ -1,0 +1,136 @@
+{"scenario": {"window_size": "1440x900", "description": "Rounds (PLAN §2.3, §8; DESIGN §4.1, §4.4): four threads, then Request changes closes round 1 and the stream shows the empty interdiff since round 1. The agent (repo_edit) moves a commented block, inserts lines above another commented line, rewrites a third file and leaves the fourth alone: the interdiff lists the three changed files, the moved threads show at their new lines (moved), the rewritten one heads its file (outdated), the untouched one is only in all changes. The agent addresses, replies and says done with a note (review_op): the ready banner. I toggles to all changes and back; X records the moved anchor; Approve finishes the review on all changes. Screenshots of the empty interdiff, the interdiff with its toggle, the ready banner, the outdated and the moved card in dark Mica, dark Opaque and light."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "settle"}
+
+// The agent's round 1 in api-server: a README edit, a new cache, an http change, users.ts.
+{"cmd": "seed_repo", "name": "api-server", "steps": [{"write": "README.md", "text": "# api-server\n\nThe users API.\n"}, {"write": "src/lib/http.ts", "text": "export async function get(url: string) {\n\tconst response = await fetch(url, { signal: AbortSignal.timeout(5000) });\n\treturn response.json();\n}\n"}, {"write": "src/routes/users.ts", "text": "import { db } from \"../db\";\nimport type { User } from \"../types\";\n\nexport const users = Router();\n\nusers.get(\"/:id\", async (req, res) => {\n  const user = await db.users.find(req.params.id);\n  if (!user) return res.status(404).end();\n  res.json({ id: user.id, name: user.name });\n});\n"}, {"commit": "base"}, {"write": "README.md", "text": "# api-server\n\nThe users API, with a cache in front of the database.\n\nRun it with npm start.\n"}, {"write": "src/lib/cache.ts", "text": "const entries = new Map<string, { value: unknown; until: number }>();\n\nexport const cache = {\n  get<T>(key: string): T | undefined {\n    const entry = entries.get(key);\n    return entry && entry.until > Date.now() ? (entry.value as T) : undefined;\n  },\n  set(key: string, value: unknown, ttl: number) {\n    entries.set(key, { value, until: Date.now() + ttl });\n  },\n};\n"}, {"write": "src/lib/http.ts", "text": "import { config } from \"../config\";\n\nexport async function get(url: string) {\n\tconst response = await fetch(url, { signal: AbortSignal.timeout(config.timeoutMs) });\n\treturn response.json();\n}\n"}, {"write": "src/routes/users.ts", "text": "import { db } from \"../db\";\nimport { cache } from \"../lib/cache\";\nimport type { User } from \"../types\";\n\nexport const users = Router();\n\nexport async function fetchUser(id: string): Promise<User | null> {\n  const key = `user:${id}`;\n  const hit = cache.get<User>(key);\n  if (hit) return hit;\n  const user = await db.users.find(id);\n  if (user) cache.set(key, user, 60_000);\n  return user;\n}\n\nusers.get(\"/:id\", async (req, res) => {\n  const user = await fetchUser(req.params.id);\n  if (!user) return res.status(404).json({ error: \"not_found\" });\n  res.json({ id: user.id, name: user.name, email: user.email });\n});\n"}]}
+{"cmd": "open_review", "path": "${data_dir}/repos/api-server"}
+{"cmd": "settle"}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 4}
+{"cmd": "settle", "expect": [{"pointer": "/session/comparison", "equals": {"kind": "all"}}, {"pointer": "/session/comparison_available", "equals": false}, {"pointer": "/session/files/0/path", "equals": "README.md"}, {"pointer": "/session/files/1/status", "equals": "untracked"}]}
+// No round closed yet: no toggle in the panel, and `I` does nothing.
+{"cmd": "query", "prefix": "file_list/comparison", "expect_result": {"pointer": "", "len": 0}}
+{"cmd": "key", "keystroke": "i", "expect": {"pointer": "/session/comparison_asked", "equals": {"kind": "all"}}}
+
+// Four threads, one per file: README line 3, cache.ts line 1, http.ts line 4, users.ts 8-10.
+{"cmd": "click", "target": "stream/line/README.md/new/3"}
+{"cmd": "key", "keystroke": "c"}
+{"cmd": "type", "text": "Say what the cache holds."}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle", "expect": {"pointer": "/session/threads", "len": 1}}
+{"cmd": "key", "keystroke": "j"}
+{"cmd": "settle", "expect": {"pointer": "/session/current_file", "equals": "src/lib/cache.ts"}}
+{"cmd": "click", "target": "stream/line/src/lib/cache.ts/new/1"}
+{"cmd": "key", "keystroke": "c"}
+{"cmd": "type", "text": "This map never forgets an entry."}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle", "expect": {"pointer": "/session/threads", "len": 2}}
+{"cmd": "key", "keystroke": "j"}
+{"cmd": "settle", "expect": {"pointer": "/session/current_file", "equals": "src/lib/http.ts"}}
+{"cmd": "click", "target": "stream/line/src/lib/http.ts/new/4"}
+{"cmd": "key", "keystroke": "c"}
+{"cmd": "type", "text": "Retry once before giving up?"}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle", "expect": {"pointer": "/session/threads", "len": 3}}
+{"cmd": "key", "keystroke": "j"}
+{"cmd": "settle", "expect": {"pointer": "/session/current_file", "equals": "src/routes/users.ts"}}
+{"cmd": "click", "target": "stream/line/src/routes/users.ts/new/8"}
+{"cmd": "click", "target": "stream/line/src/routes/users.ts/new/10", "modifiers": "shift"}
+{"cmd": "key", "keystroke": "c"}
+{"cmd": "type", "text": "Normalise the id before it goes into the key."}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle", "expect": [{"pointer": "/session/threads", "len": 4}, {"pointer": "/session/threads/3/start_line", "equals": 8}, {"pointer": "/session/threads/3/end_line", "equals": 10}]}
+{"cmd": "state", "save": {"readme": "/session/threads/0/id", "cache": "/session/threads/1/id", "http": "/session/threads/2/id", "users": "/session/threads/3/id"}}
+
+// Request changes: round 1 closes, and the stream shows what changed since it: nothing yet.
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle", "expect": {"pointer": "/session/sheet/verdict", "equals": "request_changes"}}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle"}
+{"cmd": "wait_for", "pointer": "/session/status", "equals": "changes_requested"}
+{"cmd": "settle", "expect": [{"pointer": "/session/comparison", "equals": {"kind": "since_round", "round": 1}}, {"pointer": "/session/comparison_available", "equals": true}, {"pointer": "/session/total", "equals": 0}, {"pointer": "/shell/empty_state", "equals": "no_changes_since"}, {"pointer": "/shell/status/review", "equals": "Changes requested · round 2 · 4 open · since round 1"}, {"pointer": "/comments_list/rows", "len": 4}, {"pointer": "/comments_list/rows/0/not_in_comparison", "equals": true}, {"pointer": "/comments_list/rows/3/not_in_comparison", "equals": true}, {"pointer": "/session/threads/0/placement", "equals": "not_in_comparison"}]}
+{"cmd": "query", "prefix": "file_list/comparison/", "expect_result": {"pointer": "", "len": 2}}
+{"cmd": "query", "prefix": "shell/main/empty/show_all", "expect_result": {"pointer": "", "len": 1}}
+{"cmd": "screenshot", "name": "empty-interdiff-dark-mica"}
+{"cmd": "set_setting", "key": "material", "value": "opaque"}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "empty-interdiff-dark-opaque"}
+{"cmd": "set_setting", "key": "material", "value": "mica"}
+{"cmd": "set_setting", "key": "mode", "value": "light"}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "empty-interdiff-light"}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+
+// The agent's round 2: fetchUser moves below the route (its block keeps its text), two lines go
+// in above http.ts's fetch, the cache becomes an LRU (nothing of the old one left), and the
+// README stays as it was.
+{"cmd": "repo_edit", "name": "api-server", "steps": [{"write": "src/routes/users.ts", "text": "import { db } from \"../db\";\nimport { cache } from \"../lib/cache\";\nimport type { User } from \"../types\";\n\nexport const users = Router();\n\nusers.get(\"/:id\", async (req, res) => {\n  const user = await fetchUser(req.params.id);\n  if (!user) return res.status(404).json({ error: \"not_found\" });\n  res.json({ id: user.id, name: user.name, email: user.email });\n});\n\nexport async function fetchUser(id: string): Promise<User | null> {\n  const key = `user:${id}`;\n  const hit = cache.get<User>(key);\n  if (hit) return hit;\n  const user = await db.users.find(id);\n  if (user) cache.set(key, user, 60_000);\n  return user;\n}\n"}, {"write": "src/lib/http.ts", "text": "import { config } from \"../config\";\nimport { log } from \"../log\";\n\n/** GETs `url` as JSON, giving up after the configured timeout. */\nexport async function get(url: string) {\n\tlog.debug(`GET ${url}`);\n\tconst response = await fetch(url, { signal: AbortSignal.timeout(config.timeoutMs) });\n\treturn response.json();\n}\n"}, {"write": "src/lib/cache.ts", "text": "import { LRU } from \"./lru\";\n\nexport const cache = new LRU<string, unknown>({ max: 1_000 });\n"}]}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 3, "timeout_ms": 15000}
+{"cmd": "wait_for", "pointer": "/session/threads/3/placement", "equals": "moved", "timeout_ms": 15000}
+{"cmd": "wait_for", "pointer": "/session/threads/2/placement", "equals": "moved", "timeout_ms": 15000}
+{"cmd": "settle", "expect": [{"pointer": "/file_list/shown", "equals": ["src/lib/cache.ts", "src/lib/http.ts", "src/routes/users.ts"]}, {"pointer": "/session/files/0/status", "equals": "modified"}, {"pointer": "/session/threads/3/lines", "equals": {"start": 14, "end": 16}}, {"pointer": "/session/threads/3/original_lines", "equals": {"start": 8, "end": 10}}, {"pointer": "/session/threads/2/lines", "equals": {"start": 7, "end": 7}}, {"pointer": "/session/threads/1/placement", "equals": "outdated"}, {"pointer": "/session/threads/1/outdated", "equals": true}, {"pointer": "/session/threads/0/placement", "equals": "not_in_comparison"}, {"pointer": "/session/threads/0/outdated", "equals": false}]}
+
+// The agent answers: users.ts addressed, a reply on http.ts, then `dv review done --note`.
+{"cmd": "review_op", "op": "address", "thread": "${users}", "note": "Moved fetchUser below the route; the key is normalised by the router now.", "author": "claude-code"}
+{"cmd": "review_op", "op": "reply", "thread": "${http}", "body": "Logged instead: a retry belongs in the caller.", "author": "claude-code"}
+{"cmd": "review_op", "op": "done", "note": "Round 2: fetchUser moved, GETs logged, the cache is an LRU.\n\n- `cache.ts`: capped at 1,000 entries\n- `http.ts`: one debug line per request", "author": "claude-code"}
+{"cmd": "wait_for", "pointer": "/session/status", "equals": "ready", "timeout_ms": 15000}
+{"cmd": "wait_for", "pointer": "/session/threads/3/state", "equals": "addressed", "timeout_ms": 15000}
+{"cmd": "settle", "expect": [{"pointer": "/session/ready_note", "equals": {"author": {"kind": "agent", "name": "claude-code"}, "round": 2, "note": "Round 2: fetchUser moved, GETs logged, the cache is an LRU.\n\n- `cache.ts`: capped at 1,000 entries\n- `http.ts`: one debug line per request", "open": false}}, {"pointer": "/shell/status/review", "equals": "Ready for review · round 2 · 3 open · 1 addressed · since round 1"}]}
+// The comments: addressed first, then open in stream order, the README's last with its tag.
+{"cmd": "settle", "expect": [{"pointer": "/comments_list/rows/0/id", "equals": "${users}"}, {"pointer": "/comments_list/rows/0/location", "equals": "src/routes/users.ts:14–16"}, {"pointer": "/comments_list/rows/1/id", "equals": "${cache}"}, {"pointer": "/comments_list/rows/1/outdated", "equals": true}, {"pointer": "/comments_list/rows/2/id", "equals": "${http}"}, {"pointer": "/comments_list/rows/2/location", "equals": "src/lib/http.ts:7"}, {"pointer": "/comments_list/rows/3/id", "equals": "${readme}"}, {"pointer": "/comments_list/rows/3/not_in_comparison", "equals": true}]}
+{"cmd": "query", "prefix": "banner/ready", "expect_result": {"pointer": "", "len": 2}}
+// The stream opens on the interdiff's first file, the outdated card heading it.
+{"cmd": "settle", "expect": {"pointer": "/stream/top_file", "equals": "src/lib/cache.ts"}}
+{"cmd": "screenshot", "name": "interdiff-dark-mica"}
+// A click on the addressed thread's row shows its card at the lines it moved to.
+{"cmd": "click", "target": "comments_list/${users}"}
+{"cmd": "settle", "expect": {"pointer": "/session/focused_thread", "equals": "${users}"}}
+{"cmd": "screenshot", "name": "moved-dark-mica"}
+{"cmd": "click", "target": "banner/ready/note"}
+{"cmd": "settle", "expect": {"pointer": "/session/ready_note/open", "equals": true}}
+{"cmd": "screenshot", "name": "ready-note-dark-mica"}
+{"cmd": "click", "target": "banner/ready/note", "expect": {"pointer": "/session/ready_note/open", "equals": false}}
+
+// `I`: all changes, where the README thread shows too; and back.
+{"cmd": "key", "keystroke": "i"}
+{"cmd": "settle", "expect": [{"pointer": "/session/comparison", "equals": {"kind": "all"}}, {"pointer": "/session/total", "equals": 4}, {"pointer": "/shell/status/review", "equals": "Ready for review · round 2 · 3 open · 1 addressed"}]}
+{"cmd": "keys", "keys": "k k k k"}
+{"cmd": "wait_for", "pointer": "/session/threads/0/placement", "equals": "unchanged", "timeout_ms": 15000}
+{"cmd": "settle", "expect": [{"pointer": "/comments_list/rows/3/not_in_comparison", "equals": false}, {"pointer": "/session/threads/3/placement", "equals": "moved"}]}
+{"cmd": "screenshot", "name": "all-changes-dark-mica"}
+{"cmd": "click", "target": "file_list/comparison/since"}
+{"cmd": "settle", "expect": [{"pointer": "/session/comparison", "equals": {"kind": "since_round", "round": 1}}, {"pointer": "/session/total", "equals": 3}]}
+
+// The same in dark Opaque and light.
+{"cmd": "set_setting", "key": "material", "value": "opaque"}
+{"cmd": "keys", "keys": "k k k"}
+{"cmd": "settle", "expect": {"pointer": "/session/current_file", "equals": "src/lib/cache.ts"}}
+{"cmd": "screenshot", "name": "interdiff-dark-opaque"}
+{"cmd": "click", "target": "comments_list/${users}"}
+{"cmd": "settle", "expect": {"pointer": "/session/focused_thread", "equals": "${users}"}}
+{"cmd": "screenshot", "name": "moved-dark-opaque"}
+{"cmd": "set_setting", "key": "material", "value": "mica"}
+{"cmd": "set_setting", "key": "mode", "value": "light"}
+{"cmd": "keys", "keys": "k k k"}
+{"cmd": "settle", "expect": {"pointer": "/session/current_file", "equals": "src/lib/cache.ts"}}
+{"cmd": "screenshot", "name": "interdiff-light"}
+{"cmd": "click", "target": "comments_list/${users}"}
+{"cmd": "settle", "expect": {"pointer": "/session/focused_thread", "equals": "${users}"}}
+{"cmd": "screenshot", "name": "moved-light"}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+
+// X resolves the moved thread and records where it moved (PLAN §8); it still says moved.
+{"cmd": "key", "keystroke": "x"}
+{"cmd": "settle", "expect": [{"pointer": "/session/threads/3/state", "equals": "resolved"}, {"pointer": "/session/threads/3/start_line", "equals": 14}, {"pointer": "/session/threads/3/end_line", "equals": 16}, {"pointer": "/session/threads/3/original_lines", "equals": {"start": 8, "end": 10}}, {"pointer": "/session/threads/3/placement", "equals": "moved"}]}
+
+// Approve: the review is finished, and shows all changes without a toggle.
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle", "expect": {"pointer": "/session/sheet/verdict", "equals": "request_changes"}}
+{"cmd": "key", "keystroke": "1", "expect": {"pointer": "/session/sheet/verdict", "equals": "approve"}}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle"}
+{"cmd": "wait_for", "pointer": "/session/status", "equals": "approved"}
+{"cmd": "settle", "expect": [{"pointer": "/session/comparison", "equals": {"kind": "all"}}, {"pointer": "/session/comparison_available", "equals": false}, {"pointer": "/session/ready_note", "equals": null}, {"pointer": "/session/total", "equals": 4}, {"pointer": "/shell/status/review", "equals": "Approved · round 2 · 3 open · 1 resolved"}]}
+{"cmd": "query", "prefix": "file_list/comparison", "expect_result": {"pointer": "", "len": 0}}
+{"cmd": "screenshot", "name": "approved-dark-mica"}

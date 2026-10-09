@@ -6,9 +6,10 @@ use pretty_assertions::assert_eq;
 use super::items::{Entry, RepoSummary, build};
 use super::*;
 use crate::failure::Failure;
-use crate::services::reviews::{LabelContext, RepoRow, ReviewRow, WorkingSummary};
+use crate::services::reviews::{RepoRow, ReviewRow, WorkingSummary};
 use crate::shell::Shell;
 use crate::test_support::{add_repo, fixture_at, open_shell, settle};
+use dv_core::label::LabelContext;
 
 fn row(name: &str, path: &str) -> RepoRow {
     RepoRow {

@@ -14,7 +14,8 @@ use dv_core::review::{ReviewId, ReviewStatus, ReviewSummary};
 use dv_core::{Location, Target};
 
 use crate::components::status_label;
-use crate::services::reviews::{OpenRequest, RepoRow, ReviewRow, WorkingSummary, target_label};
+use crate::services::reviews::{OpenRequest, RepoRow, ReviewRow, WorkingSummary};
+use dv_core::label::target_label;
 
 /// The targets every repository offers (the source picker's menu too).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

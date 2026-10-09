@@ -111,6 +111,9 @@ pub mod diff_pane {
             PreviousThread,
             /// Resolve the focused thread, or reopen it when it is resolved (`X`).
             ResolveThread,
+            /// Switch between the interdiff since the last round and all changes (`I`, PLAN
+            /// §2.3).
+            ToggleComparison,
         ]
     );
 }

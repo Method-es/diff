@@ -49,10 +49,9 @@ fn every_kind_folds_into_the_state() {
             id: reply.clone(),
             body: "On it.".to_string(),
             author: agent(),
+            anchor: None,
         },
-        EventBody::Status {
-            status: ReviewStatus::ChangesRequested,
-        },
+        status(ReviewStatus::ChangesRequested),
         EventBody::RoundClosed {
             n: 1,
             new_oid: oid('b'),
@@ -65,6 +64,7 @@ fn every_kind_folds_into_the_state() {
             state: ThreadState::Addressed,
             note: Some("renamed".to_string()),
             author: agent(),
+            anchor: None,
         },
         EventBody::BodyEdited {
             target_id: ItemId::Comment(reply.clone()),
@@ -79,9 +79,7 @@ fn every_kind_folds_into_the_state() {
             repo: "difftest".to_string(),
             number: 4,
         },
-        EventBody::Status {
-            status: ReviewStatus::Ready,
-        },
+        status(ReviewStatus::Ready),
         EventBody::Viewed {
             round: 2,
             path: "b.txt".to_string(),
@@ -105,6 +103,7 @@ fn every_kind_folds_into_the_state() {
             verdict: Some(Verdict::RequestChanges),
             body: Some("Rename it.".to_string()),
             closed_at: 6,
+            closed_from: Some(ReviewStatus::ChangesRequested),
         }]
     );
     assert_eq!(review.current_round(), 2);
@@ -177,6 +176,7 @@ fn a_pr_review_starts_as_a_draft_and_submission_makes_it_read_only() {
             id: CommentId::generate(),
             body: "late".to_string(),
             author: agent(),
+            anchor: None,
         },
         EventBody::Viewed {
             round: 1,
@@ -188,9 +188,7 @@ fn a_pr_review_starts_as_a_draft_and_submission_makes_it_read_only() {
             url: "https://example.invalid/r/78".to_string(),
             event: Verdict::Approve,
         },
-        EventBody::Status {
-            status: ReviewStatus::Closed,
-        },
+        status(ReviewStatus::Closed),
     ]);
     assert_eq!(
         rejections(&folded),
@@ -273,6 +271,7 @@ fn events_naming_unknown_ids_are_skipped_with_warnings() {
             id: CommentId::generate(),
             body: "?".to_string(),
             author: agent(),
+            anchor: None,
         },
         thread_state(&ghost, ThreadState::Addressed, agent()),
         EventBody::BodyEdited {
@@ -328,6 +327,7 @@ fn deleted_threads_and_replies_are_tombstones() {
             id: reply.clone(),
             body: "x".to_string(),
             author: agent(),
+            anchor: None,
         },
         EventBody::Deleted {
             target_id: ItemId::Comment(reply.clone()),
@@ -348,6 +348,7 @@ fn deleted_threads_and_replies_are_tombstones() {
             id: CommentId::generate(),
             body: "z".to_string(),
             author: agent(),
+            anchor: None,
         },
         thread_state(&thread, ThreadState::Resolved, reviewer()),
         EventBody::Deleted {
@@ -398,6 +399,7 @@ fn replies_in_a_deleted_thread_are_gone_with_it() {
             id: reply.clone(),
             body: "x".to_string(),
             author: agent(),
+            anchor: None,
         },
         EventBody::Deleted {
             target_id: ItemId::Thread(thread.clone()),
@@ -504,6 +506,7 @@ fn github_threads_take_only_github_replies() {
         id: CommentId::generate(),
         body: "x".to_string(),
         author,
+        anchor: None,
     };
     let folded = fold_bodies(vec![
         created(Target::Working),
@@ -566,11 +569,11 @@ fn status_transitions_follow_the_table() {
     // In a log: a final status sticks, and a local review never becomes a draft.
     let folded = fold_bodies(vec![
         created(Target::Working),
-        EventBody::Status { status: Ready },
-        EventBody::Status { status: Ready },
-        EventBody::Status { status: Draft },
-        EventBody::Status { status: Approved },
-        EventBody::Status { status: Ready },
+        status(Ready),
+        status(Ready),
+        status(Draft),
+        status(Approved),
+        status(Ready),
     ]);
     assert_eq!(
         rejections(&folded),
@@ -708,12 +711,7 @@ fn the_review_starts_at_its_created_event() {
     let id = review_id();
     // Nothing before `created` applies, a second `created` is refused, and a log without one
     // has no review.
-    let early = event_at(
-        1,
-        EventBody::Status {
-            status: ReviewStatus::Closed,
-        },
-    );
+    let early = event_at(1, status(ReviewStatus::Closed));
     let first = event_at(2, created(Target::Working));
     let second = event_at(3, created(Target::Staged));
     let folded = fold(&id, &[early.clone(), first, second.clone()]).unwrap();
@@ -753,6 +751,7 @@ fn an_event_that_lands_twice_folds_once() {
             id: CommentId::generate(),
             body: "x".to_string(),
             author: agent(),
+            anchor: None,
         },
     );
     let mut all = base;
@@ -824,5 +823,202 @@ fn rejections_and_warnings_serialise_for_the_cache() {
             .ends_with(": an agent can't move a thread from resolved to addressed"),
         "{}",
         warnings[1]
+    );
+}
+
+/// `anchor("src/lib.rs", line)` moved into `round`.
+fn moved_anchor(line: u32, round: u32) -> Anchor {
+    Anchor {
+        round,
+        ..anchor("src/lib.rs", line)
+    }
+}
+
+#[test]
+fn a_moved_threads_next_events_record_its_anchor_and_keep_the_first() {
+    let thread = ThreadId::generate();
+    let reply_with = |anchor: Option<Anchor>| EventBody::ReplyAdded {
+        thread: thread.clone(),
+        id: CommentId::generate(),
+        body: "Moved it.".to_string(),
+        author: agent(),
+        anchor,
+    };
+    let state_with = |state, author, anchor| EventBody::ThreadState {
+        thread: thread.clone(),
+        state,
+        note: None,
+        author,
+        anchor,
+    };
+    let mut reversed = moved_anchor(9, 2);
+    reversed.end_line = 8;
+    let folded = fold_bodies(vec![
+        created(Target::Working),
+        thread_added(&thread, reviewer()),
+        EventBody::RoundClosed {
+            n: 1,
+            new_oid: oid('b'),
+            old_oid: oid('a'),
+            verdict: Some(Verdict::RequestChanges),
+            body: None,
+        },
+        // No anchor: the thread stays where it was opened.
+        reply_with(None),
+        // The first move keeps the anchor the thread was opened with.
+        reply_with(Some(moved_anchor(5, 2))),
+        // A second move replaces the current anchor only.
+        state_with(ThreadState::Addressed, agent(), Some(moved_anchor(7, 2))),
+        // An invalid anchor skips the whole event, its reply or state change included.
+        reply_with(Some(reversed)),
+        state_with(ThreadState::Resolved, reviewer(), Some(moved_anchor(8, 3))),
+        state_with(ThreadState::Resolved, reviewer(), None),
+        // A state change that changes nothing records nothing, its anchor included.
+        state_with(ThreadState::Resolved, reviewer(), Some(moved_anchor(11, 2))),
+    ]);
+    let reasons = rejections(&folded);
+    assert_eq!(reasons.len(), 2, "{reasons:?}");
+    assert!(
+        matches!(&reasons[0], Rejection::InvalidAnchor { reason } if reason.contains("reversed")),
+        "{reasons:?}"
+    );
+    assert_eq!(
+        reasons[1],
+        Rejection::UnknownRound {
+            round: 3,
+            current: 2
+        }
+    );
+    let t = &folded.review.threads[0];
+    assert_eq!(t.anchor, moved_anchor(7, 2));
+    assert_eq!(t.original_anchor, Some(anchor("src/lib.rs", 3)));
+    assert_eq!(t.first_anchor(), &anchor("src/lib.rs", 3));
+    assert_eq!(t.replies.len(), 2);
+    assert_eq!(t.state, ThreadState::Resolved);
+
+    // A thread that never moved has no original anchor; its first anchor is its anchor.
+    let folded = fold_bodies(vec![
+        created(Target::Working),
+        thread_added(&thread, reviewer()),
+        reply_added(&thread, "Looks fine.", agent()),
+        // Recording the anchor it already has is no move.
+        reply_with(Some(anchor("src/lib.rs", 3))),
+    ]);
+    assert!(folded.warnings.is_empty(), "{:?}", folded.warnings);
+    let t = &folded.review.threads[0];
+    assert_eq!(t.original_anchor, None);
+    assert_eq!(t.first_anchor(), &t.anchor);
+}
+
+#[test]
+fn status_events_keep_their_note_and_author() {
+    let with_note = |status, note: Option<&str>, author: Option<Author>| EventBody::Status {
+        status,
+        note: note.map(str::to_string),
+        author,
+        if_status: None,
+        if_round: None,
+    };
+    let bodies = [
+        created(Target::Working),
+        with_note(ReviewStatus::ChangesRequested, None, Some(reviewer())),
+        with_note(ReviewStatus::Ready, Some("Renamed both."), Some(agent())),
+        // The same note again changes nothing; another one replaces it; none is a no-op.
+        with_note(ReviewStatus::Ready, Some("Renamed both."), Some(agent())),
+        with_note(
+            ReviewStatus::Ready,
+            Some("Renamed both, and the test."),
+            Some(agent()),
+        ),
+        with_note(ReviewStatus::Ready, None, Some(agent())),
+        // An older writer's status, without either.
+        status(ReviewStatus::Approved),
+        // A finished review takes no new note.
+        with_note(ReviewStatus::Approved, Some("late"), Some(reviewer())),
+    ];
+    let change = |count: usize| {
+        let folded = fold_bodies(bodies[..count].to_vec());
+        assert!(folded.warnings.is_empty(), "{:?}", folded.warnings);
+        (folded.review.status_change, folded.review.updated_at)
+    };
+    assert_eq!(change(1), (None, 1));
+    assert_eq!(
+        change(2),
+        (
+            Some(StatusChange {
+                status: ReviewStatus::ChangesRequested,
+                note: None,
+                author: Some(reviewer()),
+                at: 2,
+            }),
+            2
+        )
+    );
+    let ready = |note: &str, at| StatusChange {
+        status: ReviewStatus::Ready,
+        note: Some(note.to_string()),
+        author: Some(agent()),
+        at,
+    };
+    assert_eq!(change(3), (Some(ready("Renamed both.", 3)), 3));
+    assert_eq!(change(4), (Some(ready("Renamed both.", 3)), 3));
+    assert_eq!(
+        change(5),
+        (Some(ready("Renamed both, and the test.", 5)), 5)
+    );
+    assert_eq!(
+        change(6),
+        (Some(ready("Renamed both, and the test.", 5)), 5)
+    );
+    let approved = StatusChange {
+        status: ReviewStatus::Approved,
+        note: None,
+        author: None,
+        at: 7,
+    };
+    assert_eq!(change(7), (Some(approved.clone()), 7));
+    assert_eq!(change(8), (Some(approved), 7));
+}
+
+#[test]
+fn a_conditional_status_applies_only_on_its_status() {
+    let start_work = EventBody::Status {
+        status: ReviewStatus::InProgress,
+        note: None,
+        author: Some(agent()),
+        if_status: Some(ReviewStatus::ChangesRequested),
+        if_round: None,
+    };
+    let ready = EventBody::Status {
+        status: ReviewStatus::Ready,
+        note: Some("Done.".to_string()),
+        author: Some(agent()),
+        if_status: None,
+        if_round: None,
+    };
+    // Where changes are requested, it applies.
+    let folded = fold_bodies(vec![
+        created(Target::Working),
+        status(ReviewStatus::ChangesRequested),
+        start_work.clone(),
+    ]);
+    assert!(folded.warnings.is_empty(), "{:?}", folded.warnings);
+    assert_eq!(folded.review.status, ReviewStatus::InProgress);
+    // After the agent's handoff landed first, it is a no-op, not a bad event.
+    let folded = fold_bodies(vec![
+        created(Target::Working),
+        status(ReviewStatus::ChangesRequested),
+        ready,
+        start_work,
+    ]);
+    assert!(folded.warnings.is_empty(), "{:?}", folded.warnings);
+    assert_eq!(folded.review.status, ReviewStatus::Ready);
+    assert_eq!(
+        folded
+            .review
+            .status_change
+            .and_then(|change| change.note)
+            .as_deref(),
+        Some("Done.")
     );
 }

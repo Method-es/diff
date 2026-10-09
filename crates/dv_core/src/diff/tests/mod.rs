@@ -3,6 +3,7 @@
 
 mod attributes;
 mod file;
+mod interdiff;
 mod list;
 mod parse_records;
 mod rows;

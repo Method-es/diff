@@ -176,6 +176,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("]", DIFF_PANE, diff_pane::NextThread, OutsideInputs),
     shortcut!("[", DIFF_PANE, diff_pane::PreviousThread, OutsideInputs),
     shortcut!("x", DIFF_PANE, diff_pane::ResolveThread, OutsideInputs),
+    shortcut!("i", DIFF_PANE, diff_pane::ToggleComparison, OutsideInputs),
     // The composer's text field inserts a newline on `Ctrl Enter` itself (it is multi-line),
     // so posting sits ahead of it; it lets an idle `Esc` through to the plain row.
     shortcut!("secondary-enter", COMPOSER, composer::Post, AheadOfInputs),

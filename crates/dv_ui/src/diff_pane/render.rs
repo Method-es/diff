@@ -51,6 +51,7 @@ impl Render for DiffPane {
         }
         self.code_columns = self.columns_in_view();
         self.release_orphaned_focus(window, cx);
+        self.focus_waiting_composer(window, cx);
         // What the viewport shows is worked out again after this frame's layout, when it moved.
         if self.viewport_key != Some(self.current_viewport_key()) && !self.viewport_pending {
             self.viewport_pending = true;

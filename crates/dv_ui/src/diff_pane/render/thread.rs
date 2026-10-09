@@ -19,8 +19,8 @@ const CARD_TOP: f32 = 8.;
 const CARD_BOTTOM: f32 = 10.;
 
 impl DiffPane {
-    /// `thread`'s card; `at` is where it sits, `None` for an outdated thread at the top of its
-    /// file.
+    /// `thread`'s card; `at` is where it sits, `None` for a card heading its file: an outdated
+    /// thread, or one placed at lines of a file whose rows aren't shown (too large to show).
     pub(in super::super) fn render_thread(
         &self,
         block: usize,
@@ -32,16 +32,17 @@ impl DiffPane {
         let Some(session) = self.session.clone() else {
             return div().into_any_element();
         };
-        let (found, read_only) = {
+        let (found, placement, read_only) = {
             let session = session.read(cx);
-            (
-                session.review().thread(thread).cloned(),
-                session.is_read_only(),
-            )
+            let found = session.review().thread(thread).cloned();
+            let placement = found.as_ref().map(|found| session.placement(found));
+            (found, placement, session.is_read_only())
         };
-        let Some(found) = found else {
+        let (Some(found), Some(placement)) = (found, placement) else {
             return div().into_any_element();
         };
+        let lines = placement.lines(&found.anchor);
+        let moved = placement.shows_moved(&found);
         let collapsed = !self.is_thread_open(thread, found.state);
         let reply = self
             .composer
@@ -51,7 +52,8 @@ impl DiffPane {
         let error = self.thread_error(thread).cloned();
         let pane = cx.weak_entity();
         let card = ThreadCard::new(found, dv_core::review::event::now_ms())
-            .outdated(at.is_none())
+            .outdated(placement.is_outdated())
+            .shown_at(lines, moved)
             .focused(self.focused_thread.as_ref() == Some(thread))
             .collapsed(collapsed)
             .read_only(read_only)

@@ -1,4 +1,4 @@
-{"scenario": {"window_size": "1440x900", "description": "A review open while the agent works: the agent saving the file being commented on leaves the composer and its keystrokes alone, its edits update the file list and the diffs live, a new file joins, a thread whose lines it rewrote turns outdated (its card heads its file with its original lines, the comments list flags it), and a commit of everything leaves the working tree clean with the outdated thread still listed. Screenshots of the outdated thread in dark Mica, dark Opaque and light."}}
+{"scenario": {"window_size": "1440x900", "description": "A review open while the agent works: the agent saving the file being commented on leaves the composer and its keystrokes alone, its edits update the file list and the diffs live, a new file joins, a thread whose line it edited is relocated (found at the same line, so not moved), one whose function it rewrote turns outdated (its card heads its file with its original lines, the comments list flags it), and a commit of everything leaves the working tree clean with the outdated thread still listed. Screenshots of the outdated thread in dark Mica, dark Opaque and light."}}
 {"cmd": "wait_ready", "timeout_ms": 20000}
 {"cmd": "settle"}
 
@@ -59,9 +59,15 @@
 {"cmd": "wait_for", "pointer": "/session/total", "equals": 3, "timeout_ms": 15000}
 {"cmd": "settle", "expect": [{"pointer": "/session/files/0/path", "equals": "src/lib/cache.ts"}, {"pointer": "/session/files/0/status", "equals": "untracked"}]}
 
-// It rewrites the commented line: the thread is outdated, its card heads users.ts with the
-// line as it was, and the comments list flags it.
+// It edits the commented line (and drops the file's last line): relocation still finds it (a
+// fuzzy match, PLAN §8), so the card stays at line 8, which is where it was written: edited
+// there, not moved.
 {"cmd": "repo_edit", "name": "api-server", "steps": [{"write": "src/routes/users.ts", "text": "import { db } from \"../db\";\nimport { cache } from \"../lib/cache\";\nimport type { User } from \"../types\";\n\nexport const users = Router();\n\nexport async function fetchUser(id: string): Promise<User | null> {\n  const key = `user:${id.toLowerCase()}`;\n  const hit = cache.get<User>(key);\n  if (hit) return hit;\n  const user = await db.users.find(id);\n  if (user) cache.set(key, user, 60_000);\n  return user;\n}\n\nusers.get(\"/:id\", async (req, res) => {\n  const user = await fetchUser(req.params.id);\n  if (!user) return res.status(404).json({ error: \"not_found\" });\n  res.json({ id: user.id, name: user.name, email: user.email });\n});\n"}]}
+{"cmd": "wait_for", "pointer": "/session/files/2/additions", "equals": 13, "timeout_ms": 15000}
+{"cmd": "settle", "expect": [{"pointer": "/session/files/2/path", "equals": "src/routes/users.ts"}, {"pointer": "/session/threads/0/placement", "equals": "edited"}, {"pointer": "/session/threads/0/outdated", "equals": false}, {"pointer": "/session/threads/0/lines", "equals": {"start": 8, "end": 8}}, {"pointer": "/session/threads/0/original_lines", "equals": {"start": 8, "end": 8}}, {"pointer": "/comments_list/rows/0/outdated", "equals": false}]}
+// It rewrites the whole function: nothing is left to find. The thread is outdated, its card
+// heads users.ts with the line as it was, and the comments list flags it.
+{"cmd": "repo_edit", "name": "api-server", "steps": [{"write": "src/routes/users.ts", "text": "import { db } from \"../db\";\nimport { cache } from \"../lib/cache\";\nimport type { User } from \"../types\";\n\nexport const users = Router();\n\nexport async function fetchUser(id: string): Promise<User | null> {\n  return users.lookup(id, { ttl: 60_000 });\n}\n\nusers.get(\"/:id\", async (req, res) => {\n  const user = await fetchUser(req.params.id);\n  if (!user) return res.status(404).json({ error: \"not_found\" });\n  res.json({ id: user.id, name: user.name, email: user.email });\n});\n"}]}
 {"cmd": "wait_for", "pointer": "/session/threads/0/outdated", "equals": true, "timeout_ms": 15000}
 {"cmd": "settle", "expect": [{"pointer": "/comments_list/rows/0/id", "equals": "${thread}"}, {"pointer": "/comments_list/rows/0/outdated", "equals": true}, {"pointer": "/comments_list/rows/0/snippet", "equals": "const key = `user:${id}`;"}]}
 {"cmd": "query", "prefix": "comments_list/${thread}", "expect_result": {"pointer": "", "len": 1}}

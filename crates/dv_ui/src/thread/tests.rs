@@ -19,6 +19,7 @@ fn thread(path: &str, side: AnchorSide, lines: (u32, u32), text: &[&str], body: 
             context_before: Vec::new(),
             context_after: Vec::new(),
         },
+        original_anchor: None,
         author: Author::reviewer("kyle"),
         body: body.to_string(),
         created_at: 0,
@@ -49,6 +50,17 @@ fn anchors_read_as_design_writes_them() {
     assert_eq!(location_label(&one), "src/a.ts:7");
     let range = thread("src/a.ts", AnchorSide::Old, (3, 5), &["x"], "b");
     assert_eq!(location_label(&range), "src/a.ts:3–5");
+    // A card shows where its thread stands now, and says when it moved (DESIGN §4.1).
+    let moved = thread("src/a.ts", AnchorSide::New, (31, 33), &["x", "y", "z"], "b");
+    assert_eq!(
+        shown_anchor_label(&moved.anchor, Some((34, 36)), true),
+        "new · lines 34–36 · moved"
+    );
+    assert_eq!(
+        shown_anchor_label(&moved.anchor, None, false),
+        "new · lines 31–33"
+    );
+    assert_eq!(path_lines("src/a.ts", 9, 9), "src/a.ts:9");
 }
 
 #[test]
@@ -133,15 +145,23 @@ fn copy_as_prompt_carries_where_the_code_the_comment_and_the_replies() {
         &["Use ``` fences"],
         "Keep this line.",
     );
-    let text = prompt_markdown("working tree vs main", &[&first, &second]);
+    // Each under where it shows now: the first moved down two lines since it was written.
+    let text = prompt_markdown(
+        "working tree vs main",
+        &[
+            (&first, "src/lib/http.ts:16–17".to_string()),
+            // An old-side thread, named as `ReviewSession::location` names it.
+            (&second, format!("{} (old)", location_label(&second))),
+        ],
+    );
     assert_eq!(
         text,
         "Open review comments on working tree vs main (2 comments):\n\
-         \n## src/lib/http.ts:14–15\n\nThread `t-01jbzv8m2e3q9w5x7y0z1a2b3c`.\n\n\
+         \n## src/lib/http.ts:16–17\n\nThread `t-01jbzv8m2e3q9w5x7y0z1a2b3c`.\n\n\
          ```ts\n  for (;;) {\n    retry();\n```\n\n\
          Retry loop swallows the last error.\n\
          \n> **claude-code** (agent):\n> Rethrown after the last try.\n>\n> See the test.\n\
-         \n## README:2 (old side)\n\nThread `t-01jbzv8m2e3q9w5x7y0z1a2b3c`.\n\n\
+         \n## README:2 (old)\n\nThread `t-01jbzv8m2e3q9w5x7y0z1a2b3c`.\n\n\
          ````\nUse ``` fences\n````\n\n\
          Keep this line.\n"
     );

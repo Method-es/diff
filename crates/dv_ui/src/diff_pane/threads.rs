@@ -2,12 +2,14 @@
 //! that move between threads (`]`/`[`), reply (`R`), resolve (`X`) and comment (`C`), and the
 //! writes behind them, each a `dv_core::review::ops` call through the session.
 //!
-//! A thread shows inline after the last line of its range on its side when its anchored text
-//! still stands at those lines; one whose text moved on is outdated (PLAN §8, until relocation)
-//! and its card heads its file, with its original lines. Resolved threads collapse to one line
-//! until opened. The composer sits under the selection's last line (a new thread) or inside the
-//! card it answers (a reply), which stays open meanwhile, and takes the keyboard while it is
-//! open; posting or cancelling hands it back to the stream.
+//! A thread shows inline after the last line of its range on its side where the session places
+//! it (`ReviewSession::placement`, PLAN §8): at its recorded lines, or where relocation found
+//! them since ("· moved"). One relocation can't find is outdated (DESIGN §4.1) and its card
+//! heads its file, with its lines as they were. In an interdiff, old-side threads and those
+//! whose file isn't in it aren't drawn, and `C` comments on the new side only. Resolved threads
+//! collapse to one line until opened. The composer sits under the selection's last line (a new
+//! thread) or inside the card it answers (a reply), which stays open meanwhile, and takes the
+//! keyboard while it is open; posting or cancelling hands it back to the stream.
 //!
 //! The composer's row carries its field's focus handle into the list, so the field stays
 //! rendered, and the keys work, while the stream scrolls it out of view; typing brings it back
@@ -23,7 +25,7 @@ use gpui_component::input::{InputEvent, TextareaState};
 use super::rows::{Dir, Insert, InsertItem, Row, side_number};
 use super::{DiffPane, rows};
 use crate::failure::Failure;
-use crate::session::{Placement, ReviewSession, placement_in};
+use crate::session::{Comparison, ReviewSession};
 use crate::thread::{COMPOSER_ROWS, Composer, ComposerTarget, REPLY_ROWS};
 
 /// Whether `row` of `path` holds `composer`: its own row, or the card of the thread it answers.
@@ -51,27 +53,44 @@ pub(super) fn thread_rows(
 ) -> (Vec<Insert>, Vec<ThreadId>) {
     let mut inserts = Vec::new();
     let mut outdated = Vec::new();
-    let lines = diff.as_text().map(|text| text.lines.as_slice());
+    // A file whose content didn't change shows a notice rather than its lines: its threads'
+    // cards head it, with the lines they stand at (DESIGN §4.1).
+    let lines = diff
+        .as_text()
+        .filter(|text| text.has_changes())
+        .map(|text| text.lines.as_slice());
     for thread in session.threads_in(path) {
-        let anchor = &thread.anchor;
-        // Against the diff these rows show, which may be the one a reload replaces.
-        match (placement_in(thread, diff), lines) {
-            (Placement::Inline, Some(lines)) => {
-                match line_index(lines, anchor.side, anchor.end_line) {
-                    Some(line) => inserts.push(Insert {
-                        line,
-                        side: anchor.side,
-                        item: InsertItem::Thread(thread.id.clone()),
-                    }),
-                    None => outdated.push(thread.id.clone()),
-                }
-            }
+        let side = thread.anchor.side;
+        // Placed against the diff these rows show, which may be the one a reload replaces.
+        let placement = session.placement(thread);
+        if placement.is_pending() {
+            // Its side isn't there to place it against yet: it is drawn once it is.
+            continue;
+        }
+        match (placement.lines(&thread.anchor), lines) {
+            (Some((_, end)), Some(lines)) => match line_index(lines, side, end) {
+                Some(line) => inserts.push(Insert {
+                    line,
+                    side,
+                    item: InsertItem::Thread(thread.id.clone()),
+                }),
+                None => outdated.push(thread.id.clone()),
+            },
             _ => outdated.push(thread.id.clone()),
         }
     }
+    // An interdiff's old column is round n's snapshot: a draft on the old side waits for all
+    // changes, where its lines are (`reload`), until this file's own diff of them lands (a
+    // switch to all changes shows the interdiff's diff meanwhile), as its threads wait.
+    let other_text = composer.is_some_and(|target| target.side == AnchorSide::Old)
+        && (session.comparison().is_interdiff()
+            || session
+                .shown_comparison(path)
+                .is_some_and(Comparison::is_interdiff));
     if let (Some(target), Some(lines)) = (composer, lines)
         && target.reply_to.is_none()
         && target.path == path
+        && !other_text
         && let Some(line) = nearest_line(lines, target.side, target.end_line)
     {
         inserts.push(Insert {
@@ -81,6 +100,26 @@ pub(super) fn thread_rows(
         });
     }
     (inserts, outdated)
+}
+
+/// The lines (indexes into `diff`'s lines) of the threads that show inline in `path`: each
+/// one's whole range on its side, which the stream keeps shown (`reload`).
+pub(super) fn thread_lines(path: &str, diff: &FileDiff, session: &ReviewSession) -> Vec<usize> {
+    let Some(text) = diff.as_text() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for thread in session.threads_in(path) {
+        let side = thread.anchor.side;
+        if let Some((start, end)) = session.placement(thread).lines(&thread.anchor) {
+            out.extend(text.lines.iter().enumerate().filter_map(|(index, line)| {
+                side_number(line, side)
+                    .filter(|number| (start..=end).contains(number))
+                    .map(|_| index)
+            }));
+        }
+    }
+    out
 }
 
 /// The index of the line numbered `number` on `side`.
@@ -148,6 +187,13 @@ impl DiffPane {
             .is_none_or(|session| session.read(cx).is_read_only())
     }
 
+    /// What the stream shows: an interdiff or all changes.
+    fn comparison(&self, cx: &gpui::App) -> Comparison {
+        self.session
+            .as_ref()
+            .map_or(Comparison::All, |session| session.read(cx).comparison())
+    }
+
     /// `C`: opens the composer on the selected lines, else on the cursor's line; without a
     /// cursor, it is put on the first line in view first, as `↓` does. A composer that already
     /// holds text keeps it and takes the keyboard instead, wherever the cursor is (its file
@@ -176,6 +222,10 @@ impl DiffPane {
             },
             (None, None) => return,
         };
+        // An interdiff's old column is a round's snapshot, which no anchor names (DESIGN §5).
+        if target.side == AnchorSide::Old && self.comparison(cx).is_interdiff() {
+            return;
+        }
         // A collapsed (viewed) file opens to show the composer.
         if self.is_collapsed(&target.path) {
             self.set_open(&target.path.clone(), true, cx);
@@ -203,14 +253,18 @@ impl DiffPane {
             let Some(found) = session.review().thread(thread) else {
                 return;
             };
-            let Some(entry) = session.file_of(found) else {
+            let placement = session.placement(found);
+            let Some(entry) = placement.file().and_then(|path| session.file(path)) else {
                 return;
             };
+            let (start_line, end_line) = placement
+                .lines(&found.anchor)
+                .unwrap_or((found.anchor.start_line, found.anchor.end_line));
             ComposerTarget {
                 path: entry.path.clone(),
                 side: found.anchor.side,
-                start_line: found.anchor.start_line,
-                end_line: found.anchor.end_line,
+                start_line,
+                end_line,
                 reply_to: Some(thread.clone()),
             }
         };
@@ -232,16 +286,58 @@ impl DiffPane {
 
     /// A composer that holds text stays: it takes the keyboard and comes into view. `true`
     /// when there was one, shown or not: a draft whose file can't show it yet (a failed load)
-    /// is kept for when it can, never replaced by a new composer.
+    /// is kept for when it can, never replaced by a new composer. One the interdiff shown
+    /// can't hold (its file isn't in it, or it is on the old side) switches the stream to all
+    /// changes, and takes the keyboard once its row is there.
     fn keep_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let has_text = self
             .composer
             .as_ref()
             .is_some_and(|composer| !composer.input.read(cx).value().trim().is_empty());
-        if has_text {
-            self.focus_composer(window, cx);
+        if !has_text {
+            return false;
         }
-        has_text
+        if self.composer_needs_all_changes(cx)
+            && let Some(session) = self.session.clone()
+        {
+            self.focus_composer_after_listing = true;
+            session.update(cx, |session, cx| {
+                session.set_comparison(Comparison::All, cx)
+            });
+            return true;
+        }
+        self.focus_composer(window, cx);
+        true
+    }
+
+    /// Whether the composer's draft waits for all changes: the stream shows an interdiff, and
+    /// the draft's file isn't in it or the draft is on the old side.
+    fn composer_needs_all_changes(&self, cx: &App) -> bool {
+        let Some(composer) = &self.composer else {
+            return false;
+        };
+        let target = &composer.target;
+        self.comparison(cx).is_interdiff()
+            && (!self.index.contains_key(&target.path)
+                || (target.reply_to.is_none() && target.side == AnchorSide::Old))
+    }
+
+    /// Gives a draft asked for while all changes were being listed the keyboard, once its row
+    /// is there ([`DiffPane::keep_composer`]). Runs as the stream is drawn.
+    pub(super) fn focus_waiting_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.focus_composer_after_listing {
+            return;
+        }
+        if self.composer.is_none() {
+            self.focus_composer_after_listing = false;
+            return;
+        }
+        if self.composer_item().is_some() {
+            self.focus_composer_after_listing = false;
+            cx.defer_in(window, |this, window, cx| {
+                this.focus_composer(window, cx);
+            });
+        }
     }
 
     /// Gives the composer the keyboard and brings it into view, opening its file first when it
@@ -584,8 +680,8 @@ impl DiffPane {
     }
 
     /// Focuses `thread` and scrolls to its card (a click on its row in the comments list).
-    /// A thread whose card isn't built yet — its file collapsed or still loading — is shown
-    /// once it is.
+    /// A thread whose card isn't built yet — its file collapsed or still loading, or the
+    /// comparison asked for still being listed — is shown once it is.
     pub fn reveal_thread(&mut self, thread: &ThreadId, cx: &mut Context<Self>) {
         let Some(session) = self.session.clone() else {
             return;
@@ -594,17 +690,20 @@ impl DiffPane {
             self.focus_item(item, thread.clone(), cx);
             return;
         }
-        let path = {
+        let (path, switching) = {
             let session = session.read(cx);
-            session
+            let path = session
                 .review()
                 .thread(thread)
                 .and_then(|found| session.file_of(found))
-                .map(|entry| entry.path.clone())
+                .map(|entry| entry.path.clone());
+            (path, session.asked_comparison() != session.comparison())
         };
         let Some(path) = path else {
-            // Its file left the diff: the comments list is the only place it shows.
+            // Its file left the diff (the comments list is the only place it shows), or the
+            // comparison being listed shows it once it lands.
             self.focused_thread = Some(thread.clone());
+            self.reveal_after_listing = switching.then(|| thread.clone());
             cx.notify();
             return;
         };
@@ -808,6 +907,13 @@ impl DiffPane {
         }
         if self.pending_thread.as_ref().is_some_and(|id| !exists(id)) {
             self.pending_thread = None;
+        }
+        if self
+            .reveal_after_listing
+            .as_ref()
+            .is_some_and(|id| !exists(id))
+        {
+            self.reveal_after_listing = None;
         }
         self.opened_threads.retain(exists);
         let reply_gone = self

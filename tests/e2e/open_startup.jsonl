@@ -1,0 +1,39 @@
+{"scenario": {"window_size": "1440x900", "description": "dv open (PLAN §10.1): started as `dv open <path>` the app adds the repository and opens the switcher on its changes; as `dv open <path> --review <id>` it opens that review; a path that isn't a repository and a review that isn't there show the main area's banner; an automation run started without `open` opens nothing."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "settle", "expect": [{"pointer": "/repos", "equals": []}, {"pointer": "/switcher/open", "equals": false}, {"pointer": "/session", "equals": null}]}
+
+// A repository to open: the board's api-server in miniature.
+{"cmd": "seed_repo", "name": "api-server", "steps": [{"write": "src/routes/users.ts", "text": "export function list() {\n  return [];\n}\n"}, {"write": "README.md", "text": "# api-server\n"}, {"commit": "base"}, {"write": "src/routes/users.ts", "text": "export function list(limit: number) {\n  return [].slice(0, limit);\n}\n"}, {"write": "src/routes/users.test.ts", "text": "import { list } from './users';\n"}], "save": {"repo": "/path"}}
+
+// `dv open repos/api-server`: a relative path, from the working directory (the data dir). The
+// repository becomes known and the switcher opens on its uncommitted changes.
+{"restart": {"app_args": ["open", "repos/api-server"]}}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/repos", "len": 1}, {"pointer": "/repos/0/path", "equals": "${repo}"}, {"pointer": "/switcher/open", "equals": true}, {"pointer": "/switcher/selected", "equals": "api-server/working"}, {"pointer": "/session", "equals": null}, {"pointer": "/shell/banner", "equals": null}]}
+{"cmd": "wait_for", "pointer": "/repos/0/working/files", "equals": 2, "timeout_ms": 20000}
+{"cmd": "screenshot", "name": "open-path"}
+
+// Enter opens the working review, as from the switcher anywhere.
+{"cmd": "key", "keystroke": "enter"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 2, "timeout_ms": 20000}
+{"cmd": "state", "save": {"review": "/session/review_id"}, "expect": [{"pointer": "/switcher/open", "equals": false}, {"pointer": "/session/target", "equals": "working"}]}
+
+// `dv open <path> --review <id>`: that review, straight away, without the switcher.
+{"restart": {"app_args": ["open", "${repo}", "--review", "${review}"]}}
+{"cmd": "settle", "timeout_ms": 20000}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 2, "timeout_ms": 20000}
+{"cmd": "settle", "expect": [{"pointer": "/session/review_id", "equals": "${review}"}, {"pointer": "/session/target_label", "equals": "working tree vs main"}, {"pointer": "/switcher/open", "equals": false}, {"pointer": "/shell/banner", "equals": null}, {"pointer": "/repos", "len": 1}]}
+{"cmd": "screenshot", "name": "open-review"}
+
+// A review the repository doesn't have: the banner says so, and nothing opens.
+{"restart": {"app_args": ["open", "${repo}", "--review", "r-01k6zzzzzzzzzzzzzzzzzzzzzz"]}}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/session", "equals": null}, {"pointer": "/shell/banner/message", "equals": "no review r-01k6zzzzzzzzzzzzzzzzzzzzzz"}]}
+
+// A path that isn't a repository: the banner says why.
+{"restart": {"app_args": ["open", "no-such-repo"]}}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/switcher/open", "equals": false}, {"pointer": "/session", "equals": null}, {"pointer": "/shell/banner/message", "contains": "no such directory"}, {"pointer": "/repos", "len": 1}]}
+{"cmd": "screenshot", "name": "open-not-a-repo"}
+
+// Started without `open`, an automation run opens nothing: scenarios open what they need.
+{"restart": {"app_args": []}}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/switcher/open", "equals": false}, {"pointer": "/session", "equals": null}, {"pointer": "/shell/banner", "equals": null}, {"pointer": "/shell/empty_state", "equals": "no_review"}, {"pointer": "/repos/0/path", "equals": "${repo}"}]}

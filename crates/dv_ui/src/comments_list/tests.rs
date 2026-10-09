@@ -112,6 +112,7 @@ fn rows_list_waiting_threads_in_stream_order_and_copy_the_open_ones(cx: &mut Tes
         ThreadState::Addressed,
         Some("Matches the API."),
         Author::agent("claude-code"),
+        None,
     )
     .expect("the agent addresses it");
     ops::set_thread_state(
@@ -121,6 +122,7 @@ fn rows_list_waiting_threads_in_stream_order_and_copy_the_open_ones(cx: &mut Tes
         ThreadState::Resolved,
         None,
         Author::reviewer("kyle"),
+        None,
     )
     .expect("the reviewer resolves it");
     session.update(cx, |session, cx| session.reload_fold(cx));
@@ -134,24 +136,29 @@ fn rows_list_waiting_threads_in_stream_order_and_copy_the_open_ones(cx: &mut Tes
         })
     });
 
+    // Addressed threads first (the reviewer's turn), then open ones (PLAN §3 workflow A).
     let rows = list_rows(&shell, cx);
     assert_eq!(
         rows,
         [
             CommentRow {
-                id: on_a.clone(),
-                state: ThreadState::Open,
-                outdated: false,
-                location: "a.txt:2".to_string(),
-                summary: "Spell out two.".to_string(),
-                snippet: None,
-            },
-            CommentRow {
                 id: on_b.clone(),
                 state: ThreadState::Addressed,
                 outdated: false,
+                not_in_comparison: false,
+                pending: false,
                 location: "b.txt:2".to_string(),
                 summary: "Why upper case?".to_string(),
+                snippet: None,
+            },
+            CommentRow {
+                id: on_a.clone(),
+                state: ThreadState::Open,
+                outdated: false,
+                not_in_comparison: false,
+                pending: false,
+                location: "a.txt:2".to_string(),
+                summary: "Spell out two.".to_string(),
                 snippet: None,
             },
         ]
@@ -163,7 +170,7 @@ fn rows_list_waiting_threads_in_stream_order_and_copy_the_open_ones(cx: &mut Tes
         .into_iter()
         .map(|row| row.id)
         .collect();
-    assert_eq!(ids, [on_a.clone(), on_b.clone(), done]);
+    assert_eq!(ids, [on_b.clone(), on_a.clone(), done]);
 
     // "Copy as prompt" hands over the open thread only, through the seam.
     list.update(cx, |list, cx| list.copy_as_prompt(cx));
@@ -234,4 +241,27 @@ fn the_header_fits_the_narrowest_panel(cx: &mut TestAppContext) {
     });
     let copied = cx.update(|_, cx| crate::system::requests(cx).0);
     assert!(matches!(copied.last(), Some(SystemRequest::Clipboard(_))));
+}
+
+#[test]
+fn copy_as_prompt_says_when_a_thread_isnt_placed_yet() {
+    let row = CommentRow {
+        id: dv_core::review::ThreadId::generate(),
+        state: ThreadState::Open,
+        outdated: false,
+        not_in_comparison: false,
+        pending: false,
+        location: "src/a.rs:12".to_string(),
+        summary: "Why?".to_string(),
+        snippet: None,
+    };
+    assert_eq!(super::prompt_location(&row), "src/a.rs:12");
+    let waiting = CommentRow {
+        pending: true,
+        ..row
+    };
+    assert_eq!(
+        super::prompt_location(&waiting),
+        "src/a.rs:12 (where it was written; dv hasn't placed it yet)"
+    );
 }

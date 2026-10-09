@@ -12,7 +12,9 @@ use gpui::{
 };
 use gpui_component::input::{Textarea, TextareaState};
 
-use super::{anchor_label, first_line, initial, relative_time, role_word, state_label, state_note};
+use super::{
+    first_line, initial, relative_time, role_word, shown_anchor_label, state_label, state_note,
+};
 use crate::actions::composer::{Cancel, Post};
 use crate::automation::AutomationTargetExt as _;
 use crate::components::{chip, icon, kbd, kbd_on_accent, primary_button, small_button};
@@ -30,6 +32,9 @@ pub struct ThreadCard {
     thread: Thread,
     now: u64,
     outdated: bool,
+    /// The lines it shows at now, when they aren't its anchor's.
+    lines: Option<(u32, u32)>,
+    moved: bool,
     focused: bool,
     collapsed: bool,
     read_only: bool,
@@ -48,6 +53,8 @@ impl ThreadCard {
             thread,
             now,
             outdated: false,
+            lines: None,
+            moved: false,
             focused: false,
             collapsed: false,
             read_only: false,
@@ -60,9 +67,17 @@ impl ThreadCard {
         }
     }
 
-    /// Its anchored text no longer stands at its lines: the yellow chip and the original lines.
+    /// Its anchored text can't be found (PLAN §8): the yellow chip and its lines as they were.
     pub fn outdated(mut self, outdated: bool) -> Self {
         self.outdated = outdated;
+        self
+    }
+
+    /// Where it shows now (`None`: its anchor's lines) and whether those are lines it moved
+    /// to: the anchor then reads "new · lines 34–36 · moved" (DESIGN §4.1).
+    pub fn shown_at(mut self, lines: Option<(u32, u32)>, moved: bool) -> Self {
+        self.lines = lines;
+        self.moved = moved;
         self
     }
 
@@ -127,7 +142,7 @@ impl RenderOnce for ThreadCard {
         let c = &theme.colors;
         let name = format!("thread/{}", self.thread.id);
         let anchor = &self.thread.anchor;
-        let anchor_text = anchor_label(anchor.side, anchor.start_line, anchor.end_line);
+        let anchor_text = shown_anchor_label(anchor, self.lines, self.moved);
         let resolved = self.thread.state == ThreadState::Resolved;
 
         let header = div()

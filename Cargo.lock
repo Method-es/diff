@@ -1618,6 +1618,7 @@ dependencies = [
  "anyhow",
  "clap",
  "dirs 6.0.0",
+ "dv_cli",
  "dv_core",
  "dv_test_support",
  "dv_ui",
@@ -1644,8 +1645,15 @@ dependencies = [
 name = "dv_cli"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "dv_backend",
  "dv_core",
+ "dv_test_support",
+ "log",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

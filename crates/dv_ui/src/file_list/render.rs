@@ -15,11 +15,16 @@ use gpui_component::input::Input;
 
 use super::{FileList, SKELETON_FOR, split_path, status_letter};
 use crate::automation::AutomationTargetExt as _;
-use crate::components::{checkbox, count_badge, icon, skeleton, totals};
+use crate::components::{checkbox, count_badge, icon, kbd, skeleton, totals};
 use crate::icons::DvIcon;
 use crate::keymap;
-use crate::session::ReviewSession;
+use crate::services::ActiveServices as _;
+use crate::session::{Comparison, ReviewSession};
 use crate::theme::{ActiveTheme as _, DvTheme, StyledText as _};
+
+/// The narrowest panel (DESIGN §2: 220–420) whose comparison control has room for "Since
+/// round n" and "All changes" in full beside its keycap.
+pub(super) const COMPARISON_LABEL_FROM: f32 = 270.;
 
 impl Render for FileList {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -68,6 +73,7 @@ impl FileList {
                 )
                 .automation_target("shell/panel/header");
         };
+        let toggle = self.render_comparison(session, theme, cx);
         let session = session.read(cx);
         let files = session.files();
         let (total, viewed) = (files.len(), session.viewed_count());
@@ -101,6 +107,7 @@ impl FileList {
                         ))
                     }),
             )
+            .children(toggle)
             .child(
                 div()
                     .flex()
@@ -131,6 +138,84 @@ impl FileList {
             )
             .child(self.render_filter(theme))
             .automation_target("shell/panel/header")
+    }
+
+    /// "Since round n | All changes" with its `I` keycap (DESIGN §4.1), while the review offers
+    /// the toggle; the comparison asked for is the chosen segment at once. Below
+    /// [`COMPARISON_LABEL_FROM`] the second segment reads "All".
+    fn render_comparison(
+        &self,
+        session: &gpui::Entity<ReviewSession>,
+        theme: &DvTheme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let c = &theme.colors;
+        let (asked, last) = {
+            let session = session.read(cx);
+            let last = session.review().last_round().map(|round| round.n);
+            (
+                session.asked_comparison(),
+                last.filter(|_| session.comparison_available())?,
+            )
+        };
+        let hover = c.control_hover;
+        // In a narrow panel "All changes" says "All", so "Since round n" keeps its round.
+        let (since, all) = comparison_labels(last, cx.services().settings.read(cx).panel_width());
+        let segment = |key: &'static str, label: String, comparison: Comparison| {
+            let on = match comparison {
+                Comparison::All => asked == Comparison::All,
+                Comparison::SinceRound(_) => asked.is_interdiff(),
+            };
+            let session = session.clone();
+            // Each segment starts at its label's width and shares what room is left.
+            div()
+                .id(ElementId::Name(format!("comparison-{key}").into()))
+                .flex_auto()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .h(theme.sizes.control_xsmall_height)
+                .px(theme.spacing.sm)
+                .rounded(theme.radii.chip)
+                .text_spec(&theme.text.secondary)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if on { c.fg } else { c.fg2 })
+                .when(on, |this| {
+                    this.bg(c.seg_on).shadow(theme.shadows.control.clone())
+                })
+                .when(!on, |this| {
+                    this.cursor_pointer().hover(move |style| style.bg(hover))
+                })
+                .child(div().min_w_0().truncate().child(label))
+                .on_click(move |_, _, cx| {
+                    session.update(cx, |session, cx| session.set_comparison(comparison, cx))
+                })
+                .debug_selector(move || format!("comparison-{key}"))
+                .automation_target(format!("file_list/comparison/{key}"))
+        };
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(2.))
+                .h(theme.sizes.control_height)
+                .p(px(2.))
+                .rounded(theme.radii.segmented)
+                .border_1()
+                .border_color(c.ctrl_line)
+                .bg(c.ctrl)
+                .child(segment("since", since, Comparison::SinceRound(last)))
+                .child(segment("all", all, Comparison::All))
+                .child(
+                    div()
+                        .flex_none()
+                        .ml(px(2.))
+                        .mr(px(4.))
+                        .child(kbd(keymap::label("i"), theme)),
+                )
+                .automation_target("file_list/comparison"),
+        )
     }
 
     fn render_filter(&self, theme: &DvTheme) -> AnyElement {
@@ -411,4 +496,15 @@ fn skeleton_row(ix: usize, theme: &DvTheme) -> AnyElement {
 /// `1 file`, `7 files`.
 pub(super) fn count_label(count: usize, one: &str, many: &str) -> String {
     format!("{count} {}", if count == 1 { one } else { many })
+}
+
+/// The comparison control's two labels (DESIGN §4.1): "Since round n" and "All changes", the
+/// second "All" in a panel narrower than [`COMPARISON_LABEL_FROM`].
+pub(super) fn comparison_labels(last: u32, panel_width: f32) -> (String, String) {
+    let all = if panel_width < COMPARISON_LABEL_FROM {
+        "All"
+    } else {
+        "All changes"
+    };
+    (format!("Since round {last}"), all.to_string())
 }

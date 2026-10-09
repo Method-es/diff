@@ -11,6 +11,18 @@
 //!
 //! An event that changes nothing (marking a viewed file viewed again, a status it already has)
 //! applies silently as a no-op ([`Outcome::Unchanged`]).
+//!
+//! A `reply_added` or `thread_state` event may carry the thread's relocated anchor (PLAN §8),
+//! checked like a `thread_added` anchor: the thread is attached there from then on and keeps
+//! the anchor it was opened with as [`Thread::original_anchor`]. A `status` event's note and
+//! author become [`Review::status_change`]; one with `if_status` applies only on that status,
+//! and one with `if_round` only with that many closed rounds, a no-op otherwise (PLAN §2.4: a
+//! status or a round that lands between a writer's read and its append wins).
+//!
+//! Each round records, derived rather than written, the status the review closed it from
+//! ([`super::model::Round::closed_from`], PLAN §2.4): a round closed while the agent was
+//! `in_progress` is one it may not have seen, which an agent's `dv review done` must name
+//! before it hands the review back ([`Review::unseen_round`]).
 
 use std::collections::{HashMap, HashSet};
 
@@ -20,7 +32,7 @@ use super::event::{Event, EventBody, LogWarning};
 use super::id::{CommentId, EventId, ItemId, ReviewId, ThreadId};
 use super::model::{
     Anchor, Author, AuthorKind, Comment, PrLink, Review, ReviewStatus, Round, StateChange,
-    Submission, Thread, ThreadState,
+    StatusChange, Submission, Thread, ThreadState,
 };
 use crate::backend::check_relative;
 use crate::target::Target;
@@ -179,8 +191,9 @@ pub fn check_thread_state(
     }
 }
 
-/// The moves a review's status may make (PLAN §2.4). `status` events carry no author, so this
-/// checks only the move; the operation layer checks who asks for it.
+/// The moves a review's status may make (PLAN §2.4). A `status` event's author is optional
+/// (older writers left it out), so this checks only the move; the operation layer checks who
+/// asks for it.
 ///
 /// - A local review in `open`, `changes_requested`, `in_progress` or `ready` may move to any
 ///   other of `changes_requested`, `in_progress`, `ready`, `approved` and `closed`.
@@ -338,6 +351,7 @@ impl Folder {
                     verdict: *verdict,
                     body: body.clone(),
                     closed_at: at,
+                    closed_from: Some(self.review.status),
                 });
                 Outcome::Changed
             }
@@ -373,6 +387,7 @@ impl Folder {
                 self.review.threads.push(Thread {
                     id: id.clone(),
                     anchor: anchor.clone(),
+                    original_anchor: None,
                     author: author.clone(),
                     body: body.clone(),
                     created_at: at,
@@ -389,15 +404,19 @@ impl Folder {
                 id,
                 body,
                 author,
+                anchor,
             } => {
                 let t = self.live_thread(thread)?;
                 check_thread_author(&self.review.threads[t], author.kind)?;
                 if self.comments.contains_key(id) {
                     return Err(Rejection::DuplicateId { id: id.to_string() });
                 }
-                let replies = &mut self.review.threads[t].replies;
-                self.comments.insert(id.clone(), (t, replies.len()));
-                replies.push(Comment {
+                if let Some(anchor) = anchor {
+                    check_anchor(anchor, self.review.current_round())?;
+                }
+                let current = &mut self.review.threads[t];
+                self.comments.insert(id.clone(), (t, current.replies.len()));
+                current.replies.push(Comment {
                     id: id.clone(),
                     author: author.clone(),
                     body: body.clone(),
@@ -405,6 +424,7 @@ impl Folder {
                     edited_at: None,
                     deleted_at: None,
                 });
+                record_move(current, anchor.as_ref());
                 Outcome::Changed
             }
             EventBody::ThreadState {
@@ -412,6 +432,7 @@ impl Folder {
                 state,
                 note,
                 author,
+                anchor,
             } => {
                 let t = self.live_thread(thread)?;
                 let current = &self.review.threads[t];
@@ -422,6 +443,11 @@ impl Folder {
                     *state,
                     author.kind,
                 )?;
+                if let Some(anchor) = anchor {
+                    check_anchor(anchor, self.review.current_round())?;
+                }
+                // A no-op stays one: the anchor of an event that changes nothing isn't
+                // recorded either, so relocation goes on finding the thread for display.
                 if outcome == Outcome::Changed {
                     let current = &mut self.review.threads[t];
                     current.state = *state;
@@ -431,6 +457,7 @@ impl Folder {
                         author: author.clone(),
                         at,
                     });
+                    record_move(current, anchor.as_ref());
                 }
                 outcome
             }
@@ -513,9 +540,44 @@ impl Folder {
                 });
                 Outcome::Changed
             }
-            EventBody::Status { status } => {
-                let outcome = check_status(self.review.status, *status)?;
-                self.review.status = *status;
+            EventBody::Status {
+                status,
+                note,
+                author,
+                if_status,
+                if_round,
+            } => {
+                // A conditional move made on a status, or a number of closed rounds, that
+                // changed before it landed.
+                if if_status.is_some_and(|expected| expected != self.review.status)
+                    || if_round.is_some_and(|rounds| rounds != self.review.closed_rounds())
+                {
+                    return Ok(Outcome::Unchanged);
+                }
+                let mut outcome = check_status(self.review.status, *status)?;
+                // Saying it again with another note replaces the note, as addressing a thread
+                // again does (`dv review done --note` a second time), while the review is open.
+                let last_note = self
+                    .review
+                    .status_change
+                    .as_ref()
+                    .and_then(|change| change.note.as_ref());
+                if outcome == Outcome::Unchanged
+                    && !self.review.status.is_final()
+                    && note.is_some()
+                    && note.as_ref() != last_note
+                {
+                    outcome = Outcome::Changed;
+                }
+                if outcome == Outcome::Changed {
+                    self.review.status = *status;
+                    self.review.status_change = Some(StatusChange {
+                        status: *status,
+                        note: note.clone(),
+                        author: author.clone(),
+                        at,
+                    });
+                }
                 outcome
             }
         };
@@ -587,11 +649,23 @@ fn new_review(id: ReviewId, at: u64, target: Target, author: Author, worktree: S
         author,
         created_at: at,
         updated_at: at,
+        status_change: None,
         rounds: Vec::new(),
         viewed: Default::default(),
         threads: Vec::new(),
         pr,
         submissions: Vec::new(),
+    }
+}
+
+/// Records the relocated anchor an event on `thread` carries (PLAN §8): the thread is attached
+/// there from now on, and the anchor it was opened with is kept the first time it moves.
+fn record_move(thread: &mut Thread, anchor: Option<&Anchor>) {
+    if let Some(anchor) = anchor
+        && *anchor != thread.anchor
+    {
+        let first = std::mem::replace(&mut thread.anchor, anchor.clone());
+        thread.original_anchor.get_or_insert(first);
     }
 }
 

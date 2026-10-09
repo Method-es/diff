@@ -1,14 +1,16 @@
-//! The GUI's command-line options. The headless commands (PLAN §10) join them in `dv_cli`.
+//! dv's one command tree (PLAN §10.1): the GUI's options and `dv open` here, the headless
+//! commands and the global flags from `dv_cli`, composed so `dv --help` lists every command.
 
 use std::{fmt, path::PathBuf, str::FromStr};
 
-use clap::{ArgGroup, Parser};
+use clap::{ArgGroup, Args, Parser, Subcommand};
 
-/// Review diffs and GitHub PRs locally.
+/// Review diffs and GitHub PRs locally. `dv` alone opens the app on the current repository;
+/// every command but `open` runs without a window.
 // A repeated option takes its last value: the e2e runner passes the scenario's `--window-size`
 // before the scenario's own `app_args`, which may give another (tests/e2e/README.md, `restart`).
 #[derive(Parser, Debug, Clone, PartialEq)]
-#[command(name = "dv", version, args_override_self = true)]
+#[command(name = "dv", bin_name = "dv", version, args_override_self = true)]
 #[command(group(ArgGroup::new("automation_mode").args(["automation", "automation_pipe"]).multiple(true)))]
 pub struct Cli {
     /// Where dv keeps its settings [default: %APPDATA%\dv on Windows, the config dir elsewhere;
@@ -34,6 +36,17 @@ pub struct Cli {
     /// Window size in logical pixels, e.g. 1440x900 (minimum 1100x700) [default: 1440x900].
     #[arg(long, value_name = "WxH")]
     pub window_size: Option<WindowSize>,
+
+    /// Run the app in this process rather than starting it detached: what a detaching `dv`
+    /// passes the copy it starts (PLAN §13.1).
+    #[arg(long, hide = true)]
+    pub no_detach: bool,
+
+    #[command(flatten)]
+    pub global: dv_cli::GlobalArgs,
+
+    #[command(subcommand)]
+    pub command: Option<Command>,
 }
 
 impl Cli {
@@ -41,6 +54,26 @@ impl Cli {
     pub fn automation_enabled(&self) -> bool {
         self.automation || self.automation_pipe.is_some()
     }
+}
+
+/// The subcommands: `open`, the GUI's, and the headless ones (`dv_cli`).
+#[derive(Subcommand, Debug, Clone, PartialEq)]
+pub enum Command {
+    /// Open the app on a repository (the switcher on its changes) or, with --review, on a
+    /// review
+    Open(OpenArgs),
+
+    #[command(flatten)]
+    Headless(dv_cli::Command),
+}
+
+/// `dv open [<path> | <PR-url> | #<n>] [--review <id>]`.
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct OpenArgs {
+    /// A path inside a repository's working tree, or \\wsl.localhost\<distro>\<path>
+    /// [default: the current directory]; a PR (URL or #<n>) in a later version
+    #[arg(value_name = "PATH")]
+    pub target: Option<String>,
 }
 
 /// A window size in logical pixels, written `WIDTHxHEIGHT`.
@@ -211,5 +244,65 @@ mod tests {
     #[test]
     fn rejects_unknown_flags() {
         assert!(parse(&["--frobnicate"]).is_err());
+    }
+
+    #[test]
+    fn one_tree_holds_the_app_and_the_headless_commands() {
+        let cli = parse(&[]).unwrap();
+        assert_eq!(cli.command, None);
+        assert!(!cli.no_detach);
+
+        let cli = parse(&["status", "--json"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Some(Command::Headless(dv_cli::Command::Status))
+        );
+        assert!(cli.global.json);
+        assert!(matches!(
+            parse(&["review", "list", "--all"]).unwrap().command,
+            Some(Command::Headless(dv_cli::Command::Review(
+                dv_cli::args::ReviewCommand::List(_)
+            )))
+        ));
+
+        // The e2e runner's line: the app's flags first, then the scenario's `open`.
+        let cli = parse(&[
+            "--automation",
+            "--automation-background",
+            "--data-dir",
+            "D:/data",
+            "--window-size",
+            "1440x900",
+            "open",
+            "repos/api-server",
+            "--review",
+            "r-01k6zzzzzzzzzzzzzzzzzzzzzz",
+        ])
+        .unwrap();
+        assert!(cli.automation_enabled());
+        assert_eq!(
+            cli.command,
+            Some(Command::Open(OpenArgs {
+                target: Some("repos/api-server".into())
+            }))
+        );
+        assert_eq!(
+            cli.global.review.as_deref(),
+            Some("r-01k6zzzzzzzzzzzzzzzzzzzzzz")
+        );
+        assert_eq!(
+            parse(&["--no-detach", "open"]).unwrap().command,
+            Some(Command::Open(OpenArgs { target: None }))
+        );
+
+        // The app's options belong to the app, not to the headless commands.
+        assert!(parse(&["status", "--automation"]).is_err());
+        assert!(parse(&["review", "list", "--window-size", "1440x900"]).is_err());
+    }
+
+    #[test]
+    fn the_tree_is_consistent() {
+        use clap::CommandFactory as _;
+        Cli::command().debug_assert();
     }
 }

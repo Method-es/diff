@@ -5,6 +5,7 @@
 //! starts with `-` is looked up as a revision and never read as an option.
 
 pub mod command;
+pub(crate) mod temp_index;
 
 use std::fmt;
 use std::str::FromStr;
@@ -83,6 +84,11 @@ impl Oid {
         &self.0
     }
 
+    /// The first 7 hex digits, as git abbreviates an id for people.
+    pub fn short(&self) -> &str {
+        &self.0[..7]
+    }
+
     /// The format this id belongs to, from its length.
     pub fn format(&self) -> ObjectFormat {
         if self.0.len() == ObjectFormat::Sha256.hex_len() {
@@ -138,6 +144,23 @@ pub enum GitError {
         command: &'static str,
         detail: String,
     },
+}
+
+/// One worktree of a repository ([`GitRepo::worktrees`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Worktree {
+    /// Its root as git prints it, `/`-separated.
+    pub path: String,
+    /// The commit checked out; `None` on an unborn branch.
+    pub head: Option<Oid>,
+    /// The branch checked out; `None` when `HEAD` is detached.
+    pub branch: Option<String>,
+    /// The bare repository itself, listed first in a bare repository with linked worktrees: no
+    /// files to review.
+    pub bare: bool,
+    /// Its directory is gone (`prunable`: deleted without `git worktree remove`), though git
+    /// still lists it until `git worktree prune`.
+    pub prunable: bool,
 }
 
 /// Repository queries over a [`Backend`]: thin wrappers around single git commands, shared by
@@ -287,6 +310,44 @@ impl GitRepo {
         Ok((!text.is_empty()).then(|| text.to_string()))
     }
 
+    /// Every worktree of the repository, this one included (`git worktree list --porcelain`):
+    /// its root as git prints it (`/`-separated), what it has checked out, and whether it is
+    /// the bare repository or a worktree whose directory is gone.
+    pub fn worktrees(&self) -> Result<Vec<Worktree>, GitError> {
+        let output = self.git(&["worktree", "list", "--porcelain"], &[0])?;
+        let text = stdout_text("worktree list", &output)?;
+        let mut worktrees: Vec<Worktree> = Vec::new();
+        for line in text.lines() {
+            if let Some(path) = line.strip_prefix("worktree ") {
+                worktrees.push(Worktree {
+                    path: path.to_string(),
+                    head: None,
+                    branch: None,
+                    bare: false,
+                    prunable: false,
+                });
+            } else if let Some(last) = worktrees.last_mut() {
+                if line == "bare" {
+                    last.bare = true;
+                } else if line == "prunable" || line.starts_with("prunable ") {
+                    last.prunable = true;
+                } else if let Some(head) = line.strip_prefix("HEAD ") {
+                    // An unborn branch's HEAD is printed as zeros.
+                    last.head =
+                        Oid::parse(head).filter(|oid| !oid.as_str().bytes().all(|b| b == b'0'));
+                } else if let Some(branch) = line.strip_prefix("branch ") {
+                    last.branch = Some(
+                        branch
+                            .strip_prefix("refs/heads/")
+                            .unwrap_or(branch)
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        Ok(worktrees)
+    }
+
     /// The branch checked out in this worktree (`main`, also on an unborn branch); `None` when
     /// `HEAD` is detached.
     pub fn current_branch(&self) -> Result<Option<String>, GitError> {
@@ -348,6 +409,28 @@ impl GitRepo {
             }
         }
         Ok(None)
+    }
+
+    /// Whether the commit `oid` is in the repository (`git cat-file -e <oid>^{commit}`). A
+    /// round's snapshot commit is gone when its ref was deleted by hand and git pruned it, or
+    /// the store came from another clone (PLAN §2.3).
+    pub fn has_commit(&self, oid: &Oid) -> Result<bool, GitError> {
+        let peeled = format!("{oid}^{{commit}}");
+        // Exit 128 with "Not a valid object name" for a missing object (or one that isn't a
+        // commit); any other 128 is a real failure.
+        let output = self.git(&["cat-file", "-e", &peeled], &[0, 128])?;
+        if output.code == 0 {
+            return Ok(true);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("Not a valid object name") {
+            Ok(false)
+        } else {
+            Err(GitError::UnexpectedOutput {
+                command: "cat-file -e",
+                detail: stderr.trim_end().to_string(),
+            })
+        }
     }
 
     /// Whether the full ref name `name` resolves to a commit.

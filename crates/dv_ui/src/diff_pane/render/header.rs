@@ -48,6 +48,7 @@ impl DiffPane {
         let viewed = session.is_viewed(&path);
         let read_only = session.is_read_only();
         let (old_label, new_label) = session.side_labels();
+        let interdiff = session.comparison().is_interdiff();
         let (collapsed, labels) = match self.blocks[block].rows.first() {
             Some(&Row::Header { collapsed, labels }) => (collapsed && !pinned, labels),
             _ => (false, false),
@@ -262,6 +263,7 @@ impl DiffPane {
             side_labels(
                 &old_label,
                 &new_label,
+                interdiff,
                 self.mode,
                 opaque(c.code, pinned),
                 theme,
@@ -406,15 +408,22 @@ fn header_path(entry: &FileEntry, viewed: bool, theme: &DvTheme) -> StyledText {
     StyledText::new(text).with_highlights(highlights)
 }
 
-/// The side labels under the header bar (the board's `main` | `working tree`).
+/// The side labels under the header bar (the board's `main` | `working tree`; in an interdiff
+/// `round 1` | `working tree`, the round by a commit glyph, since it is the round's snapshot).
 fn side_labels(
     old: &str,
     new: &str,
+    interdiff: bool,
     mode: ViewMode,
     background: gpui::Hsla,
     theme: &DvTheme,
 ) -> AnyElement {
     let c = &theme.colors;
+    let old_glyph = if interdiff {
+        DvIcon::GitCommit
+    } else {
+        DvIcon::GitBranch
+    };
     let label = |glyph: DvIcon, text: &str| {
         div()
             .flex()
@@ -442,7 +451,7 @@ fn side_labels(
                     .pl(theme.spacing.xl)
                     .border_r_1()
                     .border_color(c.line)
-                    .child(label(DvIcon::GitBranch, old)),
+                    .child(label(old_glyph, old)),
             )
             .child(
                 div()
@@ -460,7 +469,7 @@ fn side_labels(
                     .items_center()
                     .gap(theme.spacing.sm)
                     .pl(theme.spacing.xl)
-                    .child(label(DvIcon::GitBranch, old))
+                    .child(label(old_glyph, old))
                     .child("→")
                     .child(label(DvIcon::File, new)),
             )

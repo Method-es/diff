@@ -4,8 +4,12 @@
 //! The checks the log can carry are the fold's own ([`super::fold`]), run on the loaded state
 //! before anything is written, so an operation never appends an event the fold would skip given
 //! that state. On top of them come the checks that need to know who is asking, which some
-//! events don't record (`status`, `body_edited`, `deleted`): agents set only `in_progress` and
-//! `ready`, the reviewer the verdict statuses, and only an item's author edits or deletes it.
+//! events don't record (`body_edited`, `deleted`) or record only optionally (`status`): agents
+//! set only `in_progress` and `ready`, the reviewer the verdict statuses, and only an item's
+//! author edits or deletes it. A finished local review (`approved`, `closed`) takes no more
+//! threads, replies, state changes, edits or viewed marks ([`OpError::Finished`]), as the GUI
+//! shows it read-only (PLAN §2.4); a submitted PR review refuses every later event in the fold
+//! itself.
 //!
 //! Writers don't lock (PLAN D5), so another writer may append between the load and the append;
 //! the fold then applies both in file order under the same rules, and an event that no longer
@@ -15,7 +19,8 @@
 //! (`ReviewStore::load_for_update`): its own append would make it stale at once (PLAN §7).
 
 use super::event::{Event, EventBody};
-use super::fold::{Folder, Outcome, Rejection};
+use super::fold::{Folder, Outcome, Rejection, fold};
+use super::home::{HomeError, Worktrees};
 use super::id::{CommentId, ItemId, ReviewId, ThreadId};
 use super::model::{
     Anchor, Author, AuthorKind, PrLink, Review, ReviewStatus, ReviewSummary, Round, ThreadState,
@@ -23,7 +28,7 @@ use super::model::{
 };
 use super::snapshot::{self, SnapshotError};
 use super::store::{ListEntry, ReviewStore, StoreError};
-use crate::git::{GitRepo, Oid};
+use crate::git::{GitError, GitRepo, Oid};
 use crate::target::{Side, Target, TargetError};
 
 /// Why an operation was refused.
@@ -42,11 +47,25 @@ pub enum OpError {
     /// The review is `approved`, `closed` or `submitted`: nothing more happens to it.
     #[error("the review is {status}")]
     Finished { status: ReviewStatus },
+    /// An agent's hand-back ([`hand_back`]) would hand back a round the reviewer finished
+    /// while the agent was still working on the one before (PLAN §2.4): it reads round
+    /// `round` first, then acknowledges it.
+    #[error("the reviewer finished round {round} while the agent was working")]
+    UnseenRound { round: u32 },
+    /// A hand-back acknowledged a round that isn't the last closed one: `closed` rounds have
+    /// closed.
+    #[error("round {round} isn't the last closed round ({})", match closed {
+        0 => "no round has closed yet".to_string(),
+        n => format!("round {n} is"),
+    })]
+    NotLastRound { round: u32, closed: u32 },
     /// The review's target no longer resolves (a branch that was deleted, say).
     #[error(transparent)]
     Target(#[from] TargetError),
     #[error("couldn't snapshot the round: {0}")]
     Snapshot(#[from] SnapshotError),
+    #[error(transparent)]
+    Git(#[from] GitError),
 }
 
 /// What [`finish_round`] did.
@@ -117,18 +136,22 @@ pub fn add_thread(
             body: body.to_string(),
             author,
         },
-        no_extra_check,
+        check_not_finished,
     )?;
     Ok(id)
 }
 
-/// Replies to a thread; returns the reply's id.
+/// Replies to a thread; returns the reply's id. `relocated`: the thread's anchor where
+/// relocation found its text now, when it moved or its file was renamed
+/// (`super::relocate::relocated_anchor`), which the reply records (PLAN §8); `None` otherwise,
+/// or when nobody relocated it.
 pub fn reply(
     store: &ReviewStore,
     review: &ReviewId,
     thread: &ThreadId,
     body: &str,
     author: Author,
+    relocated: Option<Anchor>,
 ) -> Result<CommentId, OpError> {
     check_body(body, "reply")?;
     let id = CommentId::generate();
@@ -140,15 +163,20 @@ pub fn reply(
             id: id.clone(),
             body: body.to_string(),
             author,
+            anchor: relocated,
         },
-        no_extra_check,
+        check_not_finished,
     )?;
     Ok(id)
 }
 
 /// Moves a thread to `state` with an optional note (PLAN §2.5: agents address, only the
-/// reviewer resolves and reopens; [`super::fold::check_thread_state`]). `false` when the thread
-/// was already in that state and nothing was written.
+/// reviewer resolves and reopens; [`super::fold::check_thread_state`]), recording `relocated`
+/// as [`reply`] does. `false` when the thread was already in that state and nothing was
+/// written (the relocated anchor included).
+///
+/// An agent asking to resolve or reopen is [`OpError::NotAllowed`] before the thread's state
+/// is looked at, so it is told that those are the reviewer's, whatever state the thread is in.
 pub fn set_thread_state(
     store: &ReviewStore,
     review: &ReviewId,
@@ -156,7 +184,21 @@ pub fn set_thread_state(
     state: ThreadState,
     note: Option<&str>,
     author: Author,
+    relocated: Option<Anchor>,
 ) -> Result<bool, OpError> {
+    if author.kind == AuthorKind::Agent {
+        let action = match state {
+            ThreadState::Resolved => Some("resolve a thread: only the reviewer resolves threads"),
+            ThreadState::Open => Some("reopen a thread: only the reviewer reopens threads"),
+            ThreadState::Addressed => None,
+        };
+        if let Some(action) = action {
+            return Err(OpError::NotAllowed {
+                actor: author.kind,
+                action: action.to_string(),
+            });
+        }
+    }
     let note = note.map(str::trim).filter(|note| !note.is_empty());
     let outcome = commit(
         store,
@@ -166,8 +208,9 @@ pub fn set_thread_state(
             state,
             note: note.map(str::to_string),
             author,
+            anchor: relocated,
         },
-        no_extra_check,
+        check_not_finished,
     )?;
     Ok(outcome == Outcome::Changed)
 }
@@ -181,6 +224,7 @@ pub fn mark_viewed(
     on: bool,
 ) -> Result<bool, OpError> {
     let loaded = store.load_for_update(review)?;
+    check_not_finished(&loaded.review)?;
     let round = loaded.review.current_round();
     let outcome = apply_and_append(
         store,
@@ -195,30 +239,190 @@ pub fn mark_viewed(
     Ok(outcome == Outcome::Changed)
 }
 
-/// Sets the review's status on behalf of `actor` (PLAN §2.4): an agent sets `in_progress` and
-/// `ready` (`dv review done`); the reviewer sets `changes_requested`, `approved` and `closed`;
-/// GitHub sets nothing. The move itself must be allowed ([`super::fold::check_status`]).
-/// `false` when the review already had that status and nothing was written.
+/// Sets the review's status on behalf of `author` with an optional `note` (Markdown, PLAN
+/// §2.4): an agent sets `in_progress` and `ready` (`dv review done --note`, which is
+/// [`hand_back`]); the reviewer sets `changes_requested`, `approved` and `closed`; GitHub sets
+/// nothing. The move itself must be allowed ([`super::fold::check_status`]); a finished local
+/// review (`approved`, `closed`) moving anywhere else is [`OpError::Finished`], as every other
+/// write to it is, so an agent's `dv review done` racing the reviewer's approval hears the
+/// review is finished (a submitted PR review is the fold's, [`Rejection::Submitted`]).
+/// `false` when nothing was written: the review already had that status, and the note (if
+/// any) is the one it already carries.
 pub fn set_status(
     store: &ReviewStore,
     review: &ReviewId,
     status: ReviewStatus,
-    actor: AuthorKind,
+    author: &Author,
+    note: Option<&str>,
 ) -> Result<bool, OpError> {
     use ReviewStatus::{Approved, ChangesRequested, Closed, InProgress, Ready};
-    let allowed = match actor {
+    let allowed = match author.kind {
         AuthorKind::Agent => matches!(status, InProgress | Ready),
         AuthorKind::Reviewer => matches!(status, ChangesRequested | Approved | Closed),
         AuthorKind::Github => false,
     };
     if !allowed {
         return Err(OpError::NotAllowed {
-            actor,
+            actor: author.kind,
             action: format!("set a review's status to {status}"),
         });
     }
-    let outcome = commit(store, review, EventBody::Status { status }, no_extra_check)?;
+    if status == Ready {
+        return hand_back(store, review, author, note, None);
+    }
+    let note = note.map(str::trim).filter(|note| !note.is_empty());
+    let outcome = commit(
+        store,
+        review,
+        EventBody::Status {
+            status,
+            note: note.map(str::to_string),
+            author: Some(author.clone()),
+            if_status: None,
+            if_round: None,
+        },
+        |state| match state.status {
+            from if from != status => check_not_finished(state),
+            _ => Ok(()),
+        },
+    )?;
     Ok(outcome == Outcome::Changed)
+}
+
+/// An agent hands the review back (`dv review done`, PLAN §2.4, §3 workflow A step 4): status
+/// `ready`, with an optional `note` (Markdown) for the reviewer.
+///
+/// It never hands back a round the agent hasn't seen. `seen_round` is the round the agent
+/// worked on (`dv review done --round <n>`: the round `dv review wait` returned with), which
+/// must be the last closed one: an older one is [`OpError::UnseenRound`] for the newest, one
+/// that hasn't closed [`OpError::NotLastRound`]. Without it, a round the reviewer finished
+/// while the agent was still `in_progress` on the one before ([`Review::unseen_round`]) is
+/// [`OpError::UnseenRound`]: the agent's `done` would carry a note about the old round and
+/// leave the new one unread, and nothing in the log tells whether its writes since were about
+/// the new round. The event written is conditional on the closed rounds it was checked
+/// against (`if_round`), so a round that closes between this load and the append wins: the log
+/// is read again afterwards, and a hand-back the fold skipped there is [`OpError::Finished`]
+/// when the round finished the review, else [`OpError::UnseenRound`]. A finished review is
+/// [`OpError::Finished`], as for [`set_status`]. `false` when nothing was written (already
+/// `ready` with that note).
+pub fn hand_back(
+    store: &ReviewStore,
+    review: &ReviewId,
+    author: &Author,
+    note: Option<&str>,
+    seen_round: Option<u32>,
+) -> Result<bool, OpError> {
+    if author.kind != AuthorKind::Agent {
+        return Err(OpError::NotAllowed {
+            actor: author.kind,
+            action: format!("set a review's status to {}", ReviewStatus::Ready),
+        });
+    }
+    let loaded = store.load_for_update(review)?;
+    hand_back_on(store, review, loaded.review, author, note, seen_round)
+}
+
+/// [`hand_back`]'s work on `state`, the review as it was read (a test lands a round between
+/// the two).
+pub(crate) fn hand_back_on(
+    store: &ReviewStore,
+    review: &ReviewId,
+    state: Review,
+    author: &Author,
+    note: Option<&str>,
+    seen_round: Option<u32>,
+) -> Result<bool, OpError> {
+    if state.status != ReviewStatus::Ready {
+        check_not_finished(&state)?;
+    }
+    let closed = state.closed_rounds();
+    match seen_round {
+        Some(round) if round < closed => return Err(OpError::UnseenRound { round: closed }),
+        Some(round) if round != closed => return Err(OpError::NotLastRound { round, closed }),
+        Some(_) => {}
+        None => {
+            if let Some(round) = state.unseen_round() {
+                return Err(OpError::UnseenRound { round });
+            }
+        }
+    }
+    let note = note.map(str::trim).filter(|note| !note.is_empty());
+    let event = Event::new(EventBody::Status {
+        status: ReviewStatus::Ready,
+        note: note.map(str::to_string),
+        author: Some(author.clone()),
+        if_status: None,
+        if_round: Some(closed),
+    });
+    if Folder::from_review(state).apply(&event)? == Outcome::Unchanged {
+        return Ok(false);
+    }
+    store.append_event(review, &event)?;
+    // Read back: a round that closed between the load and the append makes the event a no-op
+    // where it landed, and a verdict that finished the review meanwhile refuses it.
+    let events = store.events(review)?.events;
+    let at = events
+        .iter()
+        .position(|logged| logged.eid == event.eid)
+        .unwrap_or(events.len());
+    let Ok(before) = fold(review, &events[..at]) else {
+        return Ok(true);
+    };
+    // A verdict that finished the review is the stop signal an agent must hear, before any
+    // round it missed (PLAN §2.4, §10.1).
+    check_not_finished(&before.review)?;
+    if before.review.closed_rounds() != closed {
+        let now = fold(review, &events).map_or(before.review.closed_rounds(), |folded| {
+            folded.review.closed_rounds()
+        });
+        return Err(OpError::UnseenRound { round: now });
+    }
+    Ok(true)
+}
+
+/// Moves a `changes_requested` review to `in_progress` for `author`, an agent: PLAN §2.4's
+/// follow-up to an agent's first write after changes were requested, so the reviewer sees the
+/// agent at work. Nothing is written unless the review is `changes_requested` as it stands now
+/// (not as the caller last loaded it), and the event written is conditional on it
+/// (`if_status`): a status that lands between this load and the append — the agent's own `dv
+/// review done` run beside the write, the reviewer's verdict — wins, the fold leaving the review
+/// as that status put it. `false` when nothing was written.
+pub fn start_work(
+    store: &ReviewStore,
+    review: &ReviewId,
+    author: &Author,
+) -> Result<bool, OpError> {
+    if author.kind != AuthorKind::Agent {
+        return Ok(false);
+    }
+    let loaded = store.load_for_update(review)?;
+    start_work_on(store, review, loaded.review, author)
+}
+
+/// [`start_work`]'s write on `loaded`, the review as it was read (a test interleaves another
+/// write between the two).
+pub(crate) fn start_work_on(
+    store: &ReviewStore,
+    review: &ReviewId,
+    loaded: Review,
+    author: &Author,
+) -> Result<bool, OpError> {
+    if loaded.status != ReviewStatus::ChangesRequested {
+        return Ok(false);
+    }
+    apply_and_append(
+        store,
+        review,
+        loaded,
+        EventBody::Status {
+            status: ReviewStatus::InProgress,
+            note: None,
+            author: Some(author.clone()),
+            if_status: Some(ReviewStatus::ChangesRequested),
+            if_round: None,
+        },
+    )?;
+    Ok(true)
 }
 
 /// Links the review to a pull request (a PR target is already linked to its own). `false` when
@@ -300,6 +504,11 @@ pub fn close_round(
 /// the content is unchanged, and replaced otherwise, also when it holds the commit an earlier
 /// round closed at (a branch that hadn't moved), since the round it belongs to never closed
 /// ([`snapshot::take`]).
+///
+/// The verdict's status event is written even when the review already had that status as it
+/// was loaded: the snapshot takes a while, and a status that lands meanwhile (the agent's `dv
+/// review done`) would otherwise stand after the round closed, the verdict lost. Written
+/// after it, the verdict wins; with nothing between, the fold reads it as the no-op it is.
 pub fn finish_round(
     store: &ReviewStore,
     repo: &GitRepo,
@@ -321,7 +530,24 @@ pub fn finish_round(
         ));
     }
     let loaded = store.load_for_update(review)?;
-    let state = loaded.review;
+    finish_round_on(store, repo, review, loaded.review, verdict, body, author)
+}
+
+/// [`finish_round`]'s work on `state`, the review as it was read (a test lands another write
+/// between the two), once the author and the verdict are known to be allowed.
+pub(crate) fn finish_round_on(
+    store: &ReviewStore,
+    repo: &GitRepo,
+    review: &ReviewId,
+    state: Review,
+    verdict: Option<Verdict>,
+    body: Option<String>,
+    author: &Author,
+) -> Result<FinishedRound, OpError> {
+    let not_allowed = |action: &str| OpError::NotAllowed {
+        actor: author.kind,
+        action: action.to_string(),
+    };
     if state.status.is_final() {
         return Err(OpError::Finished {
             status: state.status,
@@ -355,7 +581,7 @@ pub fn finish_round(
         .filter(|body| !body.is_empty());
     let round_closed = Event::new(EventBody::RoundClosed {
         n,
-        new_oid,
+        new_oid: new_oid.clone(),
         old_oid,
         verdict,
         body,
@@ -365,14 +591,29 @@ pub fn finish_round(
         Some(Verdict::Approve) => Some(ReviewStatus::Approved),
         Some(Verdict::Comment) | None => None,
     };
-    let status = status.map(|status| Event::new(EventBody::Status { status }));
+    let status = status.map(|status| {
+        Event::new(EventBody::Status {
+            status,
+            note: None,
+            author: Some(author.clone()),
+            if_status: None,
+            if_round: None,
+        })
+    });
     let mut folder = Folder::from_review(state);
     folder.apply(&round_closed)?;
-    let status = match status {
-        Some(event) => (folder.apply(&event)? == Outcome::Changed).then_some(event),
-        None => None,
-    };
-    store.append_event(review, &round_closed)?;
+    // Checked like the round, and written whatever it changes in the state read (above).
+    if let Some(event) = &status {
+        folder.apply(event)?;
+    }
+    if let Err(error) = store.append_event(review, &round_closed) {
+        // Deleted while the snapshot was taken: the delete may have listed the review's refs
+        // before this one existed, so it goes here, or it would pin the snapshot for good.
+        if matches!(error, StoreError::UnknownReview { .. }) {
+            snapshot::remove_ref(repo, review, n, &new_oid);
+        }
+        return Err(error.into());
+    }
     if let Some(event) = &status {
         store.append_event(review, event)?;
     }
@@ -401,7 +642,10 @@ pub fn edit_body(
             target_id: item.clone(),
             body: body.to_string(),
         },
-        |state| check_item_author(state, item, editor, "edit"),
+        |state| {
+            check_not_finished(state)?;
+            check_item_author(state, item, editor, "edit")
+        },
     )?;
     Ok(())
 }
@@ -419,7 +663,10 @@ pub fn delete_item(
         EventBody::Deleted {
             target_id: item.clone(),
         },
-        |state| check_item_author(state, item, by, "delete"),
+        |state| {
+            check_not_finished(state)?;
+            check_item_author(state, item, by, "delete")
+        },
     )?;
     Ok(())
 }
@@ -456,6 +703,18 @@ fn no_extra_check(_: &Review) -> Result<(), OpError> {
     Ok(())
 }
 
+/// A finished local review (`approved`, `closed`) takes no more writes on its threads or its
+/// files (module docs). A submitted PR review is left to the fold, which refuses every later
+/// event (`Rejection::Submitted`).
+fn check_not_finished(state: &Review) -> Result<(), OpError> {
+    match state.status {
+        ReviewStatus::Approved | ReviewStatus::Closed => Err(OpError::Finished {
+            status: state.status,
+        }),
+        _ => Ok(()),
+    }
+}
+
 /// Only an item's author edits or deletes it; GitHub's items are read-only (PLAN §9.2). An item
 /// that doesn't exist is left to the fold's check, which says so.
 fn check_item_author(
@@ -479,6 +738,52 @@ fn check_body(body: &str, what: &'static str) -> Result<(), OpError> {
     } else {
         Ok(())
     }
+}
+
+/// The open reviews a command run in `repo`'s worktree means when it names none (PLAN §10.2
+/// step 3), newest first: the ones whose home is this worktree ([`in_context`]). Logs that
+/// fail to load are passed over. A command acts on the review when exactly one comes back.
+pub fn reviews_in_context(
+    store: &ReviewStore,
+    repo: &GitRepo,
+) -> Result<Vec<ReviewSummary>, OpError> {
+    let open: Vec<ReviewSummary> = store
+        .list()?
+        .into_iter()
+        .filter_map(|entry| match entry {
+            ListEntry::Ok(summary) => Some(*summary),
+            ListEntry::Err { .. } => None,
+        })
+        .filter(|summary| summary.status.is_open())
+        .collect();
+    Ok(in_context(open.iter(), repo)?
+        .into_iter()
+        .cloned()
+        .collect())
+}
+
+/// Those of `summaries` (open or not) that are the work in progress of `repo`'s worktree: the
+/// reviews whose home is this worktree (`super::home`, PLAN §2.2) — a `working` or `staged`
+/// review made here, or a `branch` review of the branch checked out here, however its name is
+/// spelled (`feat`, `heads/feat`, `refs/heads/feat`). A review whose worktree is gone is
+/// nobody's context. The rule the GUI and the CLI resolve a review's target by, so a review in
+/// context here is resolved here. Blocking: `git worktree list` and a ref lookup per `branch`
+/// review.
+pub fn in_context<'s>(
+    summaries: impl IntoIterator<Item = &'s ReviewSummary>,
+    repo: &GitRepo,
+) -> Result<Vec<&'s ReviewSummary>, OpError> {
+    let worktrees = Worktrees::read(repo)?;
+    let here = &repo.info().toplevel;
+    let mut found = Vec::new();
+    for summary in summaries {
+        match worktrees.home(repo, &summary.target, &summary.worktree) {
+            Ok(home) if home.is(here) => found.push(summary),
+            Ok(_) | Err(HomeError::Gone { .. }) => {}
+            Err(HomeError::Git(error)) => return Err(error.into()),
+        }
+    }
+    Ok(found)
 }
 
 /// Whether `summary` reviews `target` as opened from `worktree` (the worktree root, as

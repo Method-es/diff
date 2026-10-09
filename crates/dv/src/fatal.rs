@@ -1,9 +1,9 @@
 //! Reporting an error that stops dv from starting (the data dir can't be made, the window can't
-//! open).
+//! open): `main` reports what fails before the app starts, `app` what fails inside it.
 //!
-//! It is always logged. A release build on Windows has no console, so there it is also shown in
-//! a native message box before the process exits non-zero; never under automation, where a
-//! modal box would hang the driver.
+//! It is always logged. The app usually runs detached, with no console or stderr to log to
+//! (PLAN §13.1), so on Windows it is also shown in a native message box before the process
+//! exits non-zero; never under automation, where a modal box would hang the driver.
 
 /// Logs `error` and, if `show_dialog`, shows it in a blocking message box (Windows only).
 pub fn report(error: &anyhow::Error, show_dialog: bool) {
@@ -45,7 +45,8 @@ fn show(message: &str) {
 
 #[cfg(not(windows))]
 fn show(_message: &str) {
-    // The log line is the report: macOS and Linux builds are started from a terminal.
+    // The log line is the report; the detached app's stderr goes nowhere, so `dv --no-detach`
+    // shows it in the terminal.
 }
 
 #[cfg(test)]

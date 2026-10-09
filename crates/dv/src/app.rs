@@ -1,24 +1,29 @@
 //! GUI startup: the data dir, then gpui with dv's assets, fonts, services and theme, the main
-//! window and, with `--automation`, the automation driver.
+//! window, with `--automation` the automation driver, and what `dv open` asked for
+//! ([`Startup`]).
 
 use std::{cell::Cell, path::PathBuf, process::ExitCode, rc::Rc};
 
 use anyhow::{Result, bail};
 use dv_ui::platform::MaterialSupport;
 use dv_ui::services::ServicesConfig;
-use dv_ui::shell::MainWindow;
+use dv_ui::services::reviews::OpenRequest;
+use dv_ui::shell::{IfNotOpened, MainWindow};
 use dv_ui::system::SystemShell;
 use gpui::{App, QuitMode, px, size};
 
 use crate::cli::{Cli, WindowSize};
 use crate::data_dir::Source;
+use crate::launch::Startup;
 
 /// Starts the app, blocks until it quits and returns the process exit code.
 ///
-/// Errors before the app starts are returned. A failure during startup inside the app is logged
-/// where it happens and reported as [`ExitCode::FAILURE`]: `Application::run` can't hand an
-/// error back, and on macOS it never returns after a quit.
-pub fn run(cli: Cli) -> Result<ExitCode> {
+/// Errors before the app starts are returned, for the caller to report. A failure during
+/// startup inside the app (the window can't open, the fonts don't load) is reported where it
+/// happens, through `fatal::report` with `show_dialog` (the detached app has no console, PLAN
+/// §13.1), and the process then exits with [`ExitCode::FAILURE`]: `Application::run` can't
+/// hand an error back, and on macOS it never returns after a quit.
+pub fn run(cli: Cli, open: Startup, show_dialog: bool) -> Result<ExitCode> {
     let automation = cli.automation_enabled();
     if automation && !cfg!(feature = "automation") {
         bail!("--automation and --automation-pipe need a build with the `automation` feature");
@@ -37,12 +42,13 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     if window_size != requested {
         log::warn!("--window-size {requested} is below the minimum; using {window_size}");
     }
-    let startup = Startup {
+    let startup = StartOptions {
         data_dir,
         automation,
         automation_pipe: cli.automation_pipe.clone(),
         background: cli.automation_background,
         window_size,
+        open,
     };
 
     let startup_failed = Rc::new(Cell::new(false));
@@ -51,7 +57,14 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         .with_quit_mode(QuitMode::LastWindowClosed)
         .run({
             let startup_failed = startup_failed.clone();
-            move |cx| start_or_quit(&startup_failed, cx, |cx| start(startup, cx))
+            move |cx| {
+                start_or_quit(
+                    &startup_failed,
+                    |error| crate::fatal::report(error, show_dialog),
+                    cx,
+                    |cx| start(startup, cx),
+                )
+            }
         });
     // An automation run's temporary data dir goes with it; everything in it was written before
     // the event loop ended. (On macOS `run` never returns and the OS's temp cleanup takes it.)
@@ -67,33 +80,41 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     })
 }
 
-/// Runs `start`. On failure logs the error, sets `failed` and quits the app, so [`run`] can exit
-/// non-zero once the event loop ends.
-fn start_or_quit(failed: &Cell<bool>, cx: &mut App, start: impl FnOnce(&mut App) -> Result<()>) {
+/// Runs `start`. On failure hands the error to `report`, sets `failed` and quits the app, so
+/// [`run`] can exit non-zero once the event loop ends.
+fn start_or_quit(
+    failed: &Cell<bool>,
+    report: impl FnOnce(&anyhow::Error),
+    cx: &mut App,
+    start: impl FnOnce(&mut App) -> Result<()>,
+) {
     if let Err(error) = start(cx) {
-        log::error!("startup failed: {error:#}");
+        report(&error);
         failed.set(true);
         cx.quit();
     }
 }
 
 /// Everything [`start`] needs from the command line.
-struct Startup {
+struct StartOptions {
     data_dir: PathBuf,
     automation: bool,
     automation_pipe: Option<String>,
     /// `--automation-background`.
     background: bool,
     window_size: WindowSize,
+    /// What to open once the window is up.
+    open: Startup,
 }
 
-fn start(startup: Startup, cx: &mut App) -> Result<()> {
-    let Startup {
+fn start(startup: StartOptions, cx: &mut App) -> Result<()> {
+    let StartOptions {
         data_dir,
         automation,
         automation_pipe,
         background,
         window_size,
+        open,
     } = startup;
     dv_ui::init(cx)?;
     // A scripted run opens no browser, Explorer window or folder picker: it records them.
@@ -114,6 +135,7 @@ fn start(startup: Startup, cx: &mut App) -> Result<()> {
         size(px(window_size.width as f32), px(window_size.height as f32)),
         cx,
     )?;
+    open_startup(open, &main, cx)?;
     if automation {
         start_automation(main, automation_pipe, cx)?;
     }
@@ -121,6 +143,29 @@ fn start(startup: Startup, cx: &mut App) -> Result<()> {
     if !dv_ui::automation::is_background() {
         cx.activate(true);
     }
+    Ok(())
+}
+
+/// Opens what `dv` or `dv open` asked for in the main window: the working directory's or the
+/// named repository with the switcher on it, or a review (PLAN §10.1). It runs in the
+/// background like any open; a failure shows in the main area's banner, except bare `dv`
+/// outside any repository, which opens nothing.
+fn open_startup(open: Startup, main: &MainWindow, cx: &mut App) -> Result<()> {
+    let shell = main.shell.clone();
+    main.handle.update(cx, |_, window, cx| {
+        shell.update(cx, |shell, cx| match open {
+            Startup::Nothing => {}
+            Startup::CurrentRepo(location) => shell
+                .open_repo(location, IfNotOpened::Ignore, window, cx)
+                .detach(),
+            Startup::Repo(location) => shell
+                .open_repo(location, IfNotOpened::Banner, window, cx)
+                .detach(),
+            Startup::Review(location, id) => shell
+                .open(location, OpenRequest::Review(id), window, cx)
+                .detach(),
+        })
+    })?;
     Ok(())
 }
 
@@ -153,10 +198,24 @@ mod tests {
     use super::*;
 
     #[gpui::test]
-    fn a_failed_start_is_recorded(cx: &mut TestAppContext) {
+    fn a_failed_start_is_reported_and_recorded(cx: &mut TestAppContext) {
+        // The detached app has no console: the error must reach `fatal::report` (its message
+        // box), not just a log line nobody sees.
         let failed = Cell::new(false);
-        cx.update(|cx| start_or_quit(&failed, cx, |_| anyhow::bail!("no fonts")));
+        let reported = std::cell::RefCell::new(None);
+        cx.update(|cx| {
+            start_or_quit(
+                &failed,
+                |error| *reported.borrow_mut() = Some(format!("{error:#}")),
+                cx,
+                |_| Err(anyhow::anyhow!("no fonts").context("opening the main window")),
+            )
+        });
         assert!(failed.get());
+        assert_eq!(
+            reported.into_inner().as_deref(),
+            Some("opening the main window: no fonts")
+        );
     }
 
     #[gpui::test]
@@ -164,10 +223,15 @@ mod tests {
         let failed = Cell::new(false);
         let mut ran = false;
         cx.update(|cx| {
-            start_or_quit(&failed, cx, |_| {
-                ran = true;
-                Ok(())
-            })
+            start_or_quit(
+                &failed,
+                |error| panic!("nothing to report: {error}"),
+                cx,
+                |_| {
+                    ran = true;
+                    Ok(())
+                },
+            )
         });
         assert!(ran);
         assert!(!failed.get());

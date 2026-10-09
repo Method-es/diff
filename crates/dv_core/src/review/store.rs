@@ -20,8 +20,11 @@ use crate::target::Target;
 /// The store directory holding the logs, relative to the store root (`<git-common-dir>/dv/`).
 const REVIEWS_DIR: &str = "reviews";
 
-/// The snapshot cache's format; a snapshot of any other version is ignored and rebuilt.
-const SNAPSHOT_VERSION: u32 = 1;
+/// The snapshot cache's format; a snapshot of any other version is ignored and rebuilt. It
+/// changes whenever the folded state does, so a cache folded by a build that ignored some
+/// event field (a `status` note or condition, a relocated anchor) or didn't derive some state
+/// (the status a round closed from) is never taken for this build's fold.
+const SNAPSHOT_VERSION: u32 = 5;
 
 /// A review's log, relative to the store root.
 fn log_path(id: &ReviewId) -> String {
@@ -395,8 +398,12 @@ impl ReviewStore {
                     .backend
                     .store_write_atomic(&snapshot_path(id), &bytes)?)
             });
+        // Only an optimisation: the next load folds the log again. Readers woken by the same
+        // append (an agent's `dv review wait`, the app) all write the cache at once, and on
+        // Windows the losers' replace fails while another holds the file, so a failure here is
+        // routine and never reaches a command's stderr.
         if let Err(err) = result {
-            log::warn!("review {id}: couldn't write the snapshot cache: {err}");
+            log::debug!("review {id}: couldn't write the snapshot cache: {err}");
         }
     }
 }

@@ -85,39 +85,39 @@ pub enum EventBody {
         body: Option<String>,
     },
     /// The reviewer marked `path` viewed (`on`) or not viewed in `round`.
-    Viewed {
-        round: u32,
-        path: String,
-        on: bool,
-    },
+    Viewed { round: u32, path: String, on: bool },
     ThreadAdded {
         id: ThreadId,
         anchor: Anchor,
         body: String,
         author: Author,
     },
+    /// A reply. `anchor`: the thread's anchor re-taken where relocation found its text in the
+    /// round the reply was written in, when it had moved (PLAN §8); the thread is attached
+    /// there from then on.
     ReplyAdded {
         thread: ThreadId,
         id: CommentId,
         body: String,
         author: Author,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anchor: Option<Anchor>,
     },
+    /// A thread's state change, with an optional note and, like `reply_added`, the relocated
+    /// anchor when the thread had moved (PLAN §8).
     ThreadState {
         thread: ThreadId,
         state: ThreadState,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
         author: Author,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anchor: Option<Anchor>,
     },
     /// A thread's opening comment or a reply got a new body.
-    BodyEdited {
-        target_id: ItemId,
-        body: String,
-    },
+    BodyEdited { target_id: ItemId, body: String },
     /// A thread or a reply was deleted (a tombstone, PLAN §7).
-    Deleted {
-        target_id: ItemId,
-    },
+    Deleted { target_id: ItemId },
     PrLinked {
         owner: String,
         repo: String,
@@ -129,8 +129,24 @@ pub enum EventBody {
         url: String,
         event: Verdict,
     },
+    /// The review's status moved (PLAN §2.4). `note`: what the one who moved it says, Markdown
+    /// (the agent's `dv review done --note`); `author`: who moved it. Both are left out by
+    /// writers that don't know them. `if_status`: the move applies only to a review that has
+    /// that status where the event lands in the log, and changes nothing otherwise (an agent's
+    /// automatic `in_progress`, which a status written just before it must win over, PLAN
+    /// §2.4). `if_round`: likewise, only to a review with exactly that many closed rounds
+    /// where it lands (the agent's `dv review done`, which must not hand back a round the
+    /// reviewer closed after the agent last looked).
     Status {
         status: ReviewStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        author: Option<Author>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_status: Option<ReviewStatus>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        if_round: Option<u32>,
     },
 }
 

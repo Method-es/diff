@@ -146,7 +146,7 @@ Repo          a clone at a Location: Local(<path>) | Wsl{distro, path}
 |---|---|---|---|
 | `working` | `HEAD` (the empty tree on an unborn branch) | working tree incl. untracked (not ignored) | yes, live |
 | `staged` | `HEAD` (the empty tree on an unborn branch) | index | yes, live |
-| `branch <b> [vs <base>]` | `merge-base(<base>, <b>)` | `<b>`'s tip, or the working tree when `<b>` is checked out in this worktree | yes |
+| `branch <b> [vs <base>]` | `merge-base(<base>, <b>)` | `<b>`'s tip, or the working tree of the worktree that has `<b>` checked out | yes |
 | `commit <rev>` | `<rev>`'s first parent (the empty tree for a root commit) | `<rev>` | no |
 | `range <a>..<b>` / `<a>...<b>` | `<a>` / merge-base | `<b>` | no |
 | `pr <owner/repo#n>` | merge-base(base, head) | PR head | on push |
@@ -161,13 +161,46 @@ empty tree, the index or the working tree. A target stores its spec *and* the re
 round, so a review never silently changes meaning (the first implementation froze `base` but left
 `head` symbolic).
 
+**A review's home worktree** (`dv_core::review::home`) is where its target resolves, whichever
+worktree reads it: a `working` or `staged` review's is the worktree it was made in (its
+`created` event's `worktree`, §7); a `branch` review's is the worktree that has `<b>` checked out:
+the worktree asking, when it has; else the one the review was made in, when it has; else one
+`git worktree list --porcelain` lists with it (git checks a branch out in one worktree only
+unless told otherwise, `git worktree add --force`; the bare repository, worktrees whose
+directory is gone, and the git dir git lists as the main worktree of a repository whose git dir
+is kept apart from its files — `git init --separate-git-dir`, a submodule — are left out). A
+branch checked out nowhere has none: its tip, the same from everywhere. `commit`, `range` and `pr` targets have none either.
+The GUI (`Reviews::open`: every open, by id or by target, from the switcher, the source picker,
+`dv open --review`, automation's `open_review`) and the CLI (`Repo::for_review`) both bind to it,
+so a review lists the same files, places its threads at the same lines and snapshots the same
+content from every worktree. A `working` or `staged` review whose worktree is no longer one of
+the repository's (removed, moved, or deleted and waiting for `git worktree prune`) has no home
+(`HomeError::Gone`): the GUI's main-area banner, the CLI's exit 1 (`target`), never a resolution
+in some other worktree. In the GUI the home is decided as the review opens; a branch checked out
+in another worktree after that shows once the review is opened again.
+
 ### 2.3 Rounds
 A round is the target as it stood when the reviewer last handed the review over.
 
 - **Local targets:** when the reviewer finishes a round ("Request changes", "Approve", or explicitly
   "Snapshot round"), dv snapshots the new side: a temporary index (`GIT_INDEX_FILE`) + `git add -A` +
   `write-tree` + `commit-tree`, stored at `refs/dv/reviews/<id>/<n>`. Round n+1 defaults to the interdiff
-  *round n → now*, with a toggle to the full diff.
+  *round n → now*, with a toggle to the full diff. The interdiff is `DiffSpec::since(&round)`: the
+  round's snapshot (`Side::Commit(round.new_oid)`) as the old side, the target's new side as it
+  resolves now (§6 step 6). `DiffSpec::since_checked` first makes sure the snapshot commit is still
+  in the repository (`git cat-file -e <oid>^{commit}`); a missing one (a ref deleted by hand and
+  pruned) is `TargetError::MissingSnapshot`, for the GUI to show as a banner while it falls back
+  to all changes. A fixed target (`commit`, `range`) has an empty interdiff.
+- **The comparison in the GUI** (`dv_ui::session::Comparison`: since round n, or all changes)
+  is session state, never persisted. A review opens on *since its last closed round* when it
+  has one, isn't finished and its target is live (`working`, `staged`, a branch), otherwise on
+  all changes; a fixed target and a PR review never offer the toggle (DESIGN §4.1). A round
+  that closes moves it to *since* that round, a review that finishes to all changes. Switching
+  (`I`, the panel's toggle, an "all changes" row of the comments list, "Show all changes")
+  re-resolves the spec and lists again under a new generation (§11), keeping the reading
+  position where the same file and line still show. Viewed marks stay per round: an
+  interdiff's files are marked in the round in progress. The CLI always works on all changes
+  (§10.1).
 - **Snapshot detail** (`dv_core::review::snapshot`): a commit side is kept as it is. For the index
   and the working tree, the worktree's index file is copied byte for byte, modification time
   included (git's racy-entry check compares against it), into the store (`tmp/index-<ulid>`,
@@ -204,15 +237,52 @@ A round is the target as it stood when the reviewer last handed the review over.
   `ready`) → `approved` | `closed`. Never "submitted". Any of `open`, `changes_requested`,
   `in_progress` and `ready` may move to any other of `changes_requested`, `in_progress`, `ready`,
   `approved` and `closed`; agents set `in_progress` and `ready`, the reviewer `changes_requested`,
-  `approved` and `closed`. Nothing returns to `open`.
+  `approved` and `closed`. Nothing returns to `open`. An agent's first write on a
+  `changes_requested` review (a reply, an address or a new comment through the CLI) moves it to
+  `in_progress`: one more `status` event after the write, best effort, written only when the
+  review is still `changes_requested` as it stands then (`ops::start_work`) and conditional on it
+  in the log itself (`if_status: changes_requested`, §7), so a status set meanwhile — the
+  reviewer's verdict, the agent's own `dv review done` run beside the write, even one landing
+  between that check and the append — wins; the switcher's "Agent working" chip then means the
+  agent has started.
+- **An agent never hands back a round it hasn't seen** (`ops::hand_back`, `dv review done`).
+  `done --round <n>` names the round the agent worked on (`round.n` from the `dv review wait`
+  that gave it the round, or the last of the review's rounds when it started without waiting),
+  which must be the last closed one: an older one is `OpError::UnseenRound` (the CLI's exit 1
+  `unseen_round`, nothing written) for the newest, one that hasn't closed exit 2. Without
+  `--round`, the fold's derived `Round::closed_from` (the status the review had when the round
+  closed; no event of its own) decides: a round the reviewer finished while the review was
+  `in_progress` (`Review::unseen_round`) came while the agent was still working on the one
+  before, whose `done` would carry a note about that round and whose next `review wait` would
+  block without ever hearing of the new one, so it is `unseen_round` until the agent names the
+  round. The agent's writes since don't count as having seen it: nothing in the log tells a
+  reply about the new round from one still going down the old round's list. A round closed from
+  `open` (the first) or from `ready` (after a handback, a summary-only round fixed in code
+  alone) came while the agent waited for it and needs no number, nor does a second `done` once
+  the review is `ready`. The `status` event `done` writes is conditional on the closed rounds
+  it was checked against (`if_round: n`, §7), so a round that closes between the check and the
+  append wins: the fold makes the late `ready` a no-op, and `hand_back` reads the log back after
+  appending and reports `finished` when that round finished the review, else `unseen_round`.
 - **PR review:** `draft` → `submitted` (read-only, owned by GitHub from then on: every later event is
   refused). The next round is a new draft review linked to the same PR. A draft may be abandoned
   (`closed`).
-- `approved`, `closed` and `submitted` are final; every other status counts as open.
+- `approved`, `closed` and `submitted` are final; every other status counts as open. A finished
+  local review is read-only for everyone, the CLI included: `review::ops` refuses a new thread,
+  a reply, a thread state change, an edit, a deletion or a viewed mark on an `approved` or
+  `closed` review (`OpError::Finished`, the CLI's exit 1 `finished`), as the GUI shows it
+  (DESIGN §4.4); a submitted PR review refuses every later event in the fold itself. A finished
+  local review moving to another status (`ops::set_status`: an agent's `ready` racing the
+  approval, a `closed` after it) and a round finished on one are `OpError::Finished` too.
+- **A verdict's status always lands after its round.** `ops::finish_round` writes the verdict's
+  `status` event even when the review already had that status as it read it: a status set while
+  the round's snapshot is taken (the agent's `dv review done`) would otherwise stand after
+  `round_closed` and outlive the verdict. With nothing between, the fold reads the repeat as a
+  no-op.
 - **At most one open review per target.** Opening a target resumes it; "New review" on a target that has
   one asks "Resume or start fresh?". `working` and `staged` targets are per worktree (each worktree has
   its own changes); the others are the same target from every worktree, and a `pr` target is the same
-  PR whatever head it was fetched at (`dv_core::review::ops::open_review`).
+  PR whatever head it was fetched at (`dv_core::review::ops::open_review`). Wherever a review was
+  opened, it is read in its home worktree (§2.2).
 - A repo has many reviews; a PR has many reviews over time; local reviews need no PR.
 - **dv never mutates the user's repo.** Allowed writes: `git fetch`, `.git/dv/**`, `refs/dv/**` and the
   objects those refs need. No commit, checkout, stash, reset or index change, ever.
@@ -222,8 +292,9 @@ A round is the target as it stood when the reviewer last handed the review over.
   lines' text and 3 lines of context either side** (§8).
 - **States:** `open` (waiting on the agent/author) → `addressed` (agent says done, with an optional note)
   → `resolved` (reviewer confirmed) or back to `open` ("Reopen"). Only the reviewer resolves and
-  reopens. Agents (and the reviewer) address; addressing again replaces the note; a resolved thread is
-  reopened before it can be addressed. Replies by anyone. Only an item's author edits or deletes it
+  reopens (`ops::set_thread_state` refuses an agent's resolve or reopen as `NotAllowed`, whatever
+  the thread's state, saying it is the reviewer's). Agents (and the reviewer) address; addressing
+  again replaces the note; a resolved thread is reopened before it can be addressed. Replies by anyone. Only an item's author edits or deletes it
   (a deletion is a tombstone).
 - **Authors:** `reviewer` (git identity), `agent` (`--author`, default from the skill: `claude-code`,
   `codex`, …), `github` (pulled threads, read-only: only GitHub's own events change them, and a
@@ -270,7 +341,7 @@ bringing dv to the front on the agent's working-tree review when the agent finis
 
 | Crate | Kind | Role | gpui? |
 |---|---|---|---|
-| `dv_core` | lib | Location, the `Backend` trait and `LocalBackend` (§5.1), Target, git runner, diff pipeline (§6), review events + fold (§7), anchors (§8), GitHub via `gh` (§9) | **never** |
+| `dv_core` | lib | Location, the `Backend` trait and `LocalBackend` (§5.1), Target and its labels, git runner, diff pipeline (§6), review events + fold (§7), anchors, relocation and placement (§8), GitHub via `gh` (§9) | **never** |
 | `dv_backend` | lib | The stdio protocol (§5), server loop, `RemoteBackend` client, distro install | never |
 | `dv_cli` | lib | clap command tree, JSON output DTOs, setup/doctor checks (§10, §12) | never |
 | `dv_ui` | lib | views + services (§11) | yes |
@@ -412,8 +483,16 @@ so the UI falls back to refreshing those itself instead of also losing review up
    nested repository (`dir/`) lists as a submodule with one addition, as `--numstat` counts the
    gitlink it becomes once staged or snapshotted (§2.3). A worktree-side entry that `--raw` lists as
    modified with an unhashed new side but `--numstat` doesn't list is a stat-dirty file whose
-   content is unchanged (the git policy's `diff.autoRefreshIndex=false`, §5.1) and is dropped. The
-   list is sorted by path.
+   content is unchanged (the git policy's `diff.autoRefreshIndex=false`, §5.1) and is dropped. An
+   untracked file the old side holds too (a round snapshot's, step 6; or one `git rm --cached`
+   left on disk) is part of the working tree side like any untracked file, but git's diff sees the
+   working tree only through the index: it lists such a file as deleted (or as the source of a
+   rename to a similar file added since) while `ls-files` lists it as new. When the list finds
+   any, it lists again through a temp copy of the index (`<git-common-dir>/dv/tmp/`) in which
+   `git update-index --index-info` registers each at its old-side mode and blob, writing no
+   object: git then compares them with the files on disk, and each lists once, as modified when it
+   changed, marked `FileEntry::new_untracked` so `file_diff` builds the same temp index for it.
+   The list is sorted by path.
 2. **Per file, on demand** (`dv_core::diff::file_diff`): cheap checks first. An unmerged entry on an
    index side is `Unmerged` (the index holds no single version); a submodule change (every side a
    gitlink) is its gitlink ids (on a working tree side git's own `Subproject commit <oid>[-dirty]`
@@ -425,7 +504,10 @@ so the UI falls back to refreshing those itself instead of also losing review up
    caps. Otherwise `git diff -U<N>` (D4) is parsed into aligned lines — hunk bodies read by their
    header counts, never by what a line looks like, because a reviewed file may itself be a patch —
    with each side's "no newline at end of file", and CRLF line endings stripped for display and
-   reported. Under `core.autocrlf` or `text eol=crlf` git compares the normalised LF form, so an
+   reported. A listed file whose content didn't change (renamed, or only its mode changed) gets
+   no hunk from git; its text is read from the old side's blob and given as context lines on
+   both sides, so the diff still holds both sides' complete text for threads to be placed
+   against (§8), while the stream shows "No content change". Under `core.autocrlf` or `text eol=crlf` git compares the normalised LF form, so an
    edited CRLF checkout is exactly its edited lines. A type change (file ↔ symlink, file ↔ gitlink)
    prints as a deletion plus an addition of one path and becomes one diff.
 3. **Intraline:** word-level ranges for paired changed lines (kept from the first implementation:
@@ -448,7 +530,11 @@ so the UI falls back to refreshing those itself instead of also losing review up
    it with that run's `@@ -a,b +c,d @@` (`dv_core::diff::hunk_range`, git's header for the same
    lines). In split view, within a run of changed lines the i-th removed line faces the i-th
    added one (`dv_core::diff::split_rows`, the pairing intraline marks use).
-6. **Interdiff (rounds):** the same pipeline between round n's snapshot and the current new side.
+6. **Interdiff (rounds):** the same pipeline between round n's snapshot and the current new side
+   (`DiffSpec::since`, §2.3). A working tree snapshot holds the untracked files of its round, so the
+   step 1 rule for untracked files the old side holds is what keeps an interdiff honest: an
+   untracked file unchanged since the round isn't listed, a changed one lists once as modified,
+   and a near copy staged since lists as added, not as a rename of the untracked original.
 7. **Stream:** the diff pane is one virtualised list over *all* files (file header rows pinned while
    scrolling), so `J`/`K` scroll to a file instead of swapping views. `dv_ui::diff_pane::rows`
    builds each file's rows as plain data — header, code rows (one line, or one split pair), gap
@@ -484,9 +570,15 @@ so the UI falls back to refreshing those itself instead of also losing review up
 - **Events (v1):** `created{target, author, worktree}`, `round_closed{n, new_oid, old_oid, verdict?,
   body?}` (`body`: the round's summary, Markdown),
   `viewed{round, path, on}`, `thread_added{id, anchor, body, author}`, `reply_added{thread, id, body,
-  author}`, `thread_state{thread, state, note?, author}`, `body_edited{target_id, body}`,
-  `deleted{target_id}`, `pr_linked{owner, repo, number}`, `submitted{github_review_id, url, event}`,
-  `status{status}`. Each line is `{"v":1, "eid", "at" (ms), "kind": …, …}`: the format version, a
+  author, anchor?}`, `thread_state{thread, state, note?, author, anchor?}`, `body_edited{target_id,
+  body}`, `deleted{target_id}`, `pr_linked{owner, repo, number}`, `submitted{github_review_id, url,
+  event}`, `status{status, note?, author?, if_status?, if_round?}`. A reply's or state change's
+  `anchor` is the thread's relocated anchor, recorded once it moved or its file was renamed (§8);
+  a status's `note` is what the one who set it says, Markdown (the agent's `dv review done --note`,
+  §3 workflow A step 4), `author` who that was, and `if_status` and `if_round` conditions: the
+  move applies only to a review that has that status (the agent's automatic `in_progress`), or
+  exactly that many closed rounds (the agent's `dv review done`), where the event lands, and is a
+  no-op otherwise (§2.4). Each line is `{"v":1, "eid", "at" (ms), "kind": …, …}`: the format version, a
   unique event id and the time, beside the kind and its fields (snake_case). Optional fields are left
   out when empty; unknown fields are ignored, so an optional addition needs no version bump.
 - **Writing:** one `store_append` per event (D5). A log whose last line lacks its newline ends in a
@@ -500,7 +592,13 @@ so the UI falls back to refreshing those itself instead of also losing review up
   `submitted`, an event id seen once — and skips one that doesn't apply with a warning. Writers don't
   lock, so two may race on stale state (an agent addresses a thread the reviewer just resolved); the
   fold is the final word. An event that changes nothing applies as a no-op. A log without a valid
-  `created` event is unreadable.
+  `created` event is unreadable. A relocated `anchor` on a reply or state change moves the thread
+  there and keeps its first anchor (§8). The last `status` event that changed the review is
+  `Review::status_change {status, note, author, at}`; repeating the status with another note while
+  the review is open replaces the note (as addressing a thread again does), with the same note or
+  none it is a no-op. The status each round closed from is derived, never written
+  (`Round::closed_from`): it says when a hand-back would be of a round the agent may not have
+  seen (§2.4).
 - **Operations** (`review::ops`) load the review, run the fold's own check on the new event, add the
   checks that need to know who is asking (§2.4's status rules, author-only edits and deletes), and
   only then append, so an operation never writes an event the fold would skip on that state.
@@ -515,34 +613,134 @@ so the UI falls back to refreshing those itself instead of also losing review up
   the log's complete-line count (the event count), length and FNV-1a hash. A snapshot answers a load
   only when all three match the log as it is now (checking them is far cheaper than parsing every
   line, and catches a log that grew or was edited in place); otherwise the log is folded and the
-  snapshot rewritten atomically. Operations fold without rewriting it: their own append makes a
+  snapshot rewritten atomically. Its format version changes whenever the folded state does, and a
+  snapshot of another version is rebuilt, so one folded by a dv that ignored an event field is
+  never taken for this build's fold. Operations fold without rewriting it: their own append makes a
   snapshot of the state they loaded stale at once. A snapshot that can't be read or written is
-  ignored.
+  ignored, logged at debug only: readers woken by one append (an agent's `dv review wait`, the
+  app) rewrite it at once, and on Windows the losers' replace fails while another holds the
+  file, which must not reach a successful command's stderr.
 - **Deletion** of a review removes its log, its snapshot and its `refs/dv/reviews/<id>/*` (one
   `git update-ref --stdin` over what `for-each-ref` lists), log first, and finishes an interrupted
-  delete when run again.
+  delete when run again. A round finished while its review is deleted can make its snapshot ref
+  after the delete listed the refs; its `round_closed` then finds no log, and `finish_round`
+  removes that ref again (`git update-ref -d <ref> <its commit>`), so nothing is left pinning
+  the snapshot.
 
 ## 8. Anchoring and relocation
-
-On every refresh, each thread whose anchored text no longer matches at its recorded lines is relocated:
-1. exact match of the anchored lines within ±200 lines, nearest wins;
-2. else exact match anywhere in the file, if unique;
-3. else fuzzy match (anchored + context lines, normalised whitespace, similarity ≥ 0.8), best wins;
-4. else the thread is **outdated**: shown in the comments list with its original code snippet, not
-   inline.
-
-Until relocation exists (phase 3), steps 1–3 are skipped: a thread whose anchored text doesn't
-stand at its recorded lines is outdated at once. The comments list flags it with its original
-first line, and its card heads its file in the stream with the lines it was written on (DESIGN
-§4.1), so it can still be answered and resolved; a thread whose file left the diff is in the
-comments list alone.
 
 A new thread's anchor comes from the selection and the side's full text
 (`dv_core::review::anchor_selection`: the lines' text and up to 3 lines of context either side);
 `Anchor::matches` says whether its text still stands at its recorded lines.
 
-Renames carry anchors via the old path. Relocation is display-only until the next event on the thread,
-which records the new anchor. `dv comment list --json` reports `anchor.current` (relocated) and
+**Relocation** (`dv_core::review::relocate(anchor, lines) -> Relocation`, against the side's
+current full text, `side_lines`) runs on every refresh, one pure function for the GUI and the CLI:
+1. the anchored text still stands at its recorded lines → `Unchanged`;
+2. exact matches of the anchored lines within ±200 lines of the recorded start: the one whose
+   context lines also match best wins (the count of `context_before`/`context_after` lines that
+   match where they belong), then the nearest, then the one above → `Moved { how: Nearby }`;
+3. else an exact match anywhere in the file, if it is the only one → `Moved { how: Unique }`;
+4. else (and before a slight anchor's bare matches count, below), when the anchor's whole
+   context still stands together somewhere (its `context_before`
+   lines, then its `context_after` lines, nothing or a few lines between; a context cut short by
+   the file's edge must meet that edge; the nearest to the recorded start, then the one above),
+   the anchored lines are gone from between it: with nothing between they were deleted →
+   **outdated**; with up to the anchored count plus 10 lines between (`REWRITE_SLACK`) they were
+   rewritten there, found at those lines when they score at least 0.80 as step 5 scores a window
+   (the same number of lines compared line by line, any other number as one text each) →
+   `Moved { how: Fuzzy { score } }`, else **outdated**. Never at a like line elsewhere: list-shaped
+   code (match arms, rows of data, flag lists) has neighbours that score as well as the line a
+   reviewer asked to remove, and a fuzzy window would land the thread on one of them;
+5. else fuzzy, on whitespace-normalised lines (trimmed, inner runs of whitespace collapsed to one
+   space): every window of the anchor's shape (its context before, as many lines as it anchors,
+   its context after, clipped at the file's edges, where a missing line scores 0) scores the
+   weighted mean of its lines' similarity to the anchor's, anchored lines weighing 2 and context
+   lines 1; an anchor of more than 16 lines is scored on 16 of them, its first and last among
+   them and the rest spread evenly (`FUZZY_MAX_ANCHORED`), so a window costs the same whatever
+   the range's length. Line similarity is the Dice coefficient of the two lines' character
+   bigrams (equal lines 1, two empty lines 1, a line shorter than 2 characters compared by
+   equality). Of the windows scoring ≥ 0.80, the nearest (then the one above) within 0.05 of the
+   best score wins (`FUZZY_MARGIN`: in repetitive text — rows of data, a flag list — an
+   untouched window far away can score a little better than the anchored lines edited where they
+   stand) → `Moved { how: Fuzzy { score } }`. A side over 20,000 lines skips this step.
+6. else **outdated**: shown in the comments list with its original code snippet, not inline.
+
+An exact match from step 2 or 3 wins at once when its context stands around it too (every
+`context_before` and `context_after` line where it belongs). One standing among other lines (a
+bare match) may be no more than the anchored text repeated somewhere (`return Ok(());`, `}`, a
+second debug print), and which it is depends on the anchor:
+- a **slight** anchor (`review::is_slight`: fewer than 32 non-whitespace characters in all its
+  lines, `SLIGHT_CHARS`; a longer line says enough to be followed where it moves, alone or not)
+  says too little to tell a move from a copy that was always there, so step 4 runs before its
+  bare matches count: the line a reviewer asked to remove, deleted while a twin stands
+  elsewhere, is outdated, and one rewritten where it stood is found there or outdated, never
+  moved onto the twin (whose lines the next event would record). A match standing between the
+  closed-up context is the anchored text itself, with lines inserted beside it, and still wins
+  at exactly its own lines. At a file's edge (its first or last lines: no context on that side)
+  the closed-up context runs to the edge, so code added above a file's last line (a route
+  before `module.exports = router;`) or below its first leaves the thread on that line. The
+  price: a slight line cut and pasted out of its context is outdated, and a slight last line
+  deleted while code ending in a copy of it is appended (the last `}` deleted, a function
+  appended) lands on the copy, which has the same shape as code inserted above the last line
+  and is far rarer;
+- a fuller anchor found elsewhere was moved there, so for it step 4 is only for text found
+  nowhere: a block cut and pasted elsewhere leaves its context closed up behind it and is still
+  found where it went (a block moved and edited at once, whose old place closed up, is outdated:
+  dv can't tell it from a deletion).
+
+Step 5 then runs as well, and a window scoring better than the bare match's own window wins over
+it, so an edit to the anchored line itself is found where it was made. An anchor of blank lines only
+would match any blank run by text alone, so in steps 2–3 its matches count only where at least one
+context line matches too. Each line's bigrams are computed once per side and shared by every
+thread placed on it (`review::FuzzyLines`); in a release build a 20,000-line side takes about
+16 ms for a 3-line anchor and about 30 ms for a 200-line one that moved far or is gone (measured
+2026-10-09).
+
+**Placement** (`review::place_thread(thread, entries, text) -> Placement`) decides the file and side
+a thread shows on now. Renames carry anchors: its file is the entry at the anchor's path, else the
+entry renamed from it (`entry.old_path == anchor.path`), else the entry renamed from the path the
+anchor's file had been renamed from (`entry.old_path == anchor.old_path`: renamed again since,
+which git reports as one rename from the first name; an added file renamed later has no such
+path, and its threads go outdated). The side's text comes from a callback (the GUI's loaded diff
+— every file a thread shows in loads whatever the stream's viewport; where the diff shown holds
+no text, a file too large to show, the review's own diff of the file without caps, read in the
+background for the threads anchored there —, the CLI's `file_diff` without caps; a file renamed
+or with its mode changed and nothing else carries its text as context lines, §6 step 2), which
+can say it isn't loaded yet (`Pending`) or that the side has no lines (binary, a submodule,
+unmerged: outdated). A thread
+whose file left the list, or whose side the file no longer has (a new-side thread on a deleted
+file, an old-side one on an added file), is `Outdated`; otherwise `relocate` decides `Unchanged`,
+`Moved` or `Outdated`. The GUI and the CLI place threads only through it, against the review's
+own file list (all changes), so they never disagree (the GUI's interdiff adds one rule after it:
+a thread whose file the interdiff doesn't show, and an old-side thread, isn't drawn, §2.3, §11;
+it is still placed, against the review's own diff of its file read in the background, so the
+comments list, "Copy as prompt" and the sheet name where it stands in all changes, as the CLI
+does). An outdated thread whose file is still listed heads that file in the stream with the lines
+it was written on (DESIGN §4.1), so it can still be answered and resolved; one whose file left
+the list is in the comments list alone.
+
+**Recording a move.** Relocation is display-only until the next event on the thread, which records
+the new anchor: `reply_added` and `thread_state` carry an optional `anchor` (§7), the thread's
+anchor re-taken at its relocated lines in the round in progress with fresh context
+(`review::relocated_anchor`, through `anchor_selection`); callers pass one for `Moved`, and for a
+thread standing at its lines in a file renamed since it was written (re-taken at the same lines
+under the file's name now, so the thread keeps its file once the rename becomes part of the old
+side — a commit, a rebase — rather than going outdated) (`ops::reply` / `ops::set_thread_state`
+take `relocated: Option<Anchor>`). The fold checks it like a
+`thread_added` anchor (an invalid one skips the event with a warning), replaces `Thread::anchor`
+with it and keeps the anchor the thread was opened with as `Thread::original_anchor` (set on the
+first move only); an event that changes nothing records no anchor either. dv versions without
+relocation ignore the field. The CLI's `comment reply | address | resolve | reopen` place the
+thread first and pass the anchor the same way the GUI's writes do. A thread shows as moved (the
+GUI's "· moved", the CLI's `placement: "moved"`) when the lines it shows at now start elsewhere
+than the first line it was written on (`review::shows_moved`), whether relocation finds it there
+or an event recorded the move: code edited where it stands (a fuzzy match starting at its own
+first line, however many lines it covers now: a line rewritten into a block) and a renamed file
+move nothing, so recording a move, an edit in place or a rename changes nothing anyone sees.
+Code edited where it stands is `placement: "edited"` in the CLI (`review::shows_edited`: found
+there by a fuzzy match, or standing at recorded lines whose text isn't the text it was written
+on), so an agent reads `current_code` rather than take the comment's code as still there; the
+GUI marks nothing for it. `dv comment list --json` reports `anchor.current` (relocated) and
 `anchor.original`, plus the anchored text, so agents never act on a stale line number.
 
 ---
@@ -593,15 +791,18 @@ dv review list [--all] [--status …]
 dv review new [--staged | --branch [<b>] [--base <base>] | --commit <rev> | --range <a..b> | --pr <n>]
 dv review show [<id>]
 dv review wait [<id>] [--timeout <s>]      block until the reviewer finishes a round (exit 3 on timeout)
-dv review done [<id>] [--note <t>]         agent: round addressed, ready for re-review
-dv review submit [<id>] --verdict comment|approve|request-changes [--body <t> | --body-file <f|->]
-dv review close | delete <id>
+dv review done [<id>] [--note <t> | --note-file <f|->] [--round <n>]
+                                           agent: round addressed, ready for re-review
+dv review submit [<id>] --verdict approve|request-changes [--body <t> | --body-file <f|->]
+                                           reviewer (`comment`: PR reviews, phase 5)
+dv review close | delete <id>              reviewer
 
-dv comment list [--status open|addressed|resolved|outdated] [--file <p>]
+dv comment list [--status open|addressed|resolved|outdated]… [--file <p>]
 dv comment show <id>                       thread, anchor (current + original), anchored code
 dv comment add --file <p> --lines N[:M] [--side old|new] (--body <t> | --body-file <f|->)
 dv comment reply <id> (--body <t> | --body-file <f|->)
-dv comment address <id> [--note <t>]       agent
+dv comment address <id> [--note <t> | --note-file <f|->]
+                                           agent
 dv comment resolve | reopen <id>           reviewer
 
 dv setup [path | agents | wsl <distro> | all] [--yes]
@@ -610,30 +811,242 @@ dv backend --stdio                         (Linux build only; started by the GUI
 ```
 
 Global flags: `--repo <path>` (also `\\wsl.localhost\<distro>\<path>`), `--wsl <distro>:<path>`,
-`--review <id>`, `--json`, `--author <name>`.
+`--review <id>`, `--json`, `--author <name>`; they go anywhere on the line.
+
+- **One clap tree.** `dv_cli::args` holds the global flags and the headless commands; the `dv`
+  binary keeps the GUI's options (`--data-dir`, `--automation…`, `--window-size`, the hidden
+  `--no-detach`) and `open`, and flattens `dv_cli::Command` into its own subcommands, so `dv
+  --help` lists every command. A headless command goes to `dv_cli::run(&global, command, &mut
+  Context)` before any gpui code runs. `Context` carries the working directory, the environment
+  (`dv_cli::Env`: `$DV_REVIEW`, `$DV_AUTHOR` and `CLAUDECODE` are read through it, never by
+  clap), stdin, stdout, stderr, whether they are terminals, and the environment overlay every git
+  the command spawns gets (`LocalBackendOptions::env`), so tests run commands in-process and
+  hermetically (`dv_cli::main_with` parses too); a few binary tests in `crates/dv/tests/` check
+  the real process.
+- **The repository** is `--wsl`, else `--repo` (relative to the working directory, the path
+  that makes read as a location again, so a relative path from a working directory inside a
+  distro, `\\wsl.localhost\…`, is a WSL location too), else the working directory's. Not
+  inside a work tree: exit 1. A WSL location (`\\wsl.localhost\…`,
+  `\\wsl$\…`, `--wsl`) is exit 4 until §10.4's routing exists (phase 4), without starting
+  `wsl.exe`.
+- **Identity (§2.5):** an agent named by `--author <name>`, else `$DV_AUTHOR`, else
+  `claude-code` when `CLAUDECODE` is set (Claude Code exports it to the commands it runs);
+  otherwise the reviewer, by the repo's `user.name` (`review::reviewer_identity`, as the GUI).
+  What each may do is `review::ops`'s rule. `dv status` says who a command acts as.
+- **Placement:** `comment list` and `comment show` place every thread with
+  `review::place_thread` (§8) against the review's target resolved now (all changes, never an
+  interdiff) in its home worktree (§2.2: a `working` or `staged` review's own worktree, a
+  `branch` review's the one with the branch checked out), whichever worktree the command runs in
+  (a home worktree that is gone is exit 1, `target`), reading each anchored side's full text through `file_diff`
+  without caps, so the CLI says what the GUI shows (a target that no longer resolves, such as a
+  deleted branch, is exit 1, `target`, with git's words; `review submit` too). `--status outdated` keeps the threads whose code can't
+  be found; `--file` matches a thread's file in the current diff, where its code is now, or any
+  path it was written on. A `--file` (here and in `comment add`) is a path from the worktree
+  root; an absolute one inside the worktree the review was made in, or the one the command runs
+  in, loses that root (the longer, when both hold it), so the reviewed file's own path works from
+  any worktree.
+- **Writes** go through `review::ops` (or the store's delete), so the CLI writes what the GUI
+  would and nothing else (§2.4: only `.git/dv/**` and `refs/dv/**`). A finished review (approved,
+  closed) takes no comment writes (`add`, `reply`, `address`, `resolve`, `reopen`: exit 1
+  `finished`, §2.4), as the GUI shows it read-only, and moves to no other status (`review done
+  <id>` racing the reviewer's approval, `review close` after it, `review submit`: exit 1
+  `finished` too, so an agent always hears the one stop signal). A finished review is no longer
+  open, so no longer in context (§10.2): a command that names none finds no review (exit 2
+  `no_review`), which is why the skill passes the review's id to `done` and `wait`:
+  - `review new` opens the target's review as whoever the command acts as, or resumes its open
+    one (§2.4), once the target resolves now (a mistyped revision is exit 1, not a review of
+    nothing); `--branch` alone is the branch checked out (a detached `HEAD` is exit 2), compared
+    with `--base` or the default branch, the switcher's own target.
+  - `review done [--note | --note-file] [--round <n>]` is an agent's (exit 2 without an agent
+    identity, saying to pass `--author`): status `ready` with the note (§7), through
+    `ops::hand_back`. `--round <n>` names the round the agent worked on, which must be the last
+    closed one; an older one, or none when the reviewer finished the last round while the agent
+    was working (§2.4), is exit 1 `unseen_round`, nothing written, with what to do: read round
+    n's summary (the `body` of the last of `rounds` in `dv review show <id> --json`) and its
+    open threads (`dv comment list --status open --json`), then `dv review done <id> --round
+    <n>`; one that hasn't closed is exit 2. The event is conditional on the closed rounds
+    (`if_round`), and a round that closed between the check and the append makes it a no-op,
+    reported as `finished` when that round finished the review, else `unseen_round`.
+  - `review submit` is the reviewer's `ops::finish_round` with the verdict and the summary
+    (`--body`, `--body-file`), snapshotting the review's home worktree (§2.2) whichever worktree
+    it runs in; `--verdict comment` on a local review is exit 2 ("a local round approves or requests
+    changes"), a PR review exit 2 (`unsupported`, phase 5). `review close <id>` sets `closed`;
+    `review delete <id>` is the store's delete (log, snapshot cache, round refs), reviewer only
+    (an agent is exit 1, `not_allowed`), and deleting again finishes an interrupted delete, then
+    says the review isn't there (exit 1).
+  - `comment add` anchors on a file of the review's current diff (the full target, never an
+    interdiff), by its path or its rename's old path: a file the review doesn't change is exit 1
+    `not_found`; a side the file lacks (`old` of an added file, `new` of a deleted one), lines
+    past the side's end, or a file without lines (binary, a submodule, conflicted) exit 1
+    `rejected`. The anchor is `anchor_selection` over that side's full text in the round in
+    progress.
+  - `comment reply | address | resolve | reopen` place the thread first and record its
+    relocated anchor when it moved (§8); a target that no longer resolves is exit 1 before
+    anything is written, as for `comment list`.
+  - **Text** comes from `--body <t>`, or `--body-file <path>` (relative to the working directory)
+    / `-` (stdin): a leading byte order mark, `\r\n` and trailing whitespace go, anything else is
+    kept; empty text is exit 2, a file that can't be read or isn't UTF-8 exit 1 (`io`). A note
+    (`comment address`, `review done`) comes from `--note <t>` or `--note-file <path> | -`, read
+    and cleaned the same way, and one left empty is no note. An inline `--body` or `--note` may
+    start with `-` (a Markdown list, "-1, I disagree"): clap takes the next word as the text
+    whatever it starts with, except a lone flag (`--json`, `-v`, `--author=x`: one word, a
+    letter after the dashes), which means the text was left out, and a lone `-` or `--` (stdin
+    meant through the inline option, or the end of the options), which the `-file` forms are
+    for: both exit 2 (`usage`). A `--` taken as such a value doesn't end the options, so a
+    `--json` after it still asks for the JSON error document.
+  - **An agent's first write** on a `changes_requested` review moves it to `in_progress` (§2.4).
+  - Each prints what it changed (`--json`: the review or thread as it is now, `changed: false`
+    when a status or thread state was already so and nothing was written).
+- **`review wait [<id>] [--timeout <s>]`** waits on the review's state, not for a change (the
+  first implementation reported changes; state can't lose a wakeup): it returns at once, exit 0,
+  when the status is one the agent acts on (`changes_requested`, `approved`, `closed`;
+  `submitted` for a PR review); otherwise it registers a store watch (`WatchSpec::STORE`) first,
+  then loads the review again, then blocks until a batch touches `reviews/<id>.jsonl` (or is a
+  rescan) and the reloaded status is one of those, also re-checking 5 s after each load however
+  many other batches (other reviews, temp indexes) arrive meanwhile (every 1 s when the store
+  can't be watched). A review deleted meanwhile is exit 1 (`not_found`); `--timeout`
+  (seconds, fractions allowed) running out is exit 3. It prints why it returned: `{"schema": 1,
+  "outcome": <the status>, "review": …, "round": <the last closed round> | null, "threads":
+  {open, addressed, resolved}}`, or `{"schema": 1, "outcome": "timeout"}`; the text ends with what
+  to do next ("1 open thread: run `dv comment list --status open`, …"; with no open thread, the
+  round's summary or the reviewer's replies, since a reviewer may request changes in the
+  summary alone; on a timeout, "run `dv review wait <id>` again", naming the review). A
+  finished review is no
+  longer in context (§10.2), so a wait that may start after the verdict names the review (the
+  skill passes the id `dv status` gave).
+- **`setup agents [--yes]`** installs the skill (§10.5).
+- **Recognised, not yet run:** `review new --pr` and `dv open` of a PR (a URL or `#n`: "GitHub
+  PRs arrive in a later version", before any window opens), `review submit` of a PR review,
+  `setup` other than `agents`, `doctor` and `backend` exit 2 (`unsupported`) with what to do
+  instead; `setup wsl` is exit 4.
+- **`dv` and `dv open`** start the GUI detached (§13.1) and return 0 at once; `--automation`
+  and `--no-detach` run it in the same process. It opens on the repository named (the path,
+  `--repo` or `--wsl`; `dv open` alone: the working directory's): the repository becomes a known
+  one and the switcher opens on its uncommitted changes, as the automation `open` command does
+  (`Shell::open_repo`); or, with `--review <id>` (the flag only), straight on that review through
+  `Shell::open`. Bare `dv` opens the working directory's repository when it is one and nothing
+  otherwise (an automation run opens nothing). Before detaching, a path that isn't a repository
+  and a review that isn't there are errors in the terminal (exit 1); in the app they are the main
+  area's banner (DESIGN §4.4). The headless commands' `--json` and `--author` mean nothing to the
+  app, which prints no document and always acts as the reviewer: on a `dv` or `dv open` line
+  they are exit 2 (`usage`, a JSON error document with `--json`), so an agent that asked for JSON
+  gets JSON rather than a window. Starting detached hands the app none of this process's
+  standard handles (§13.1), so a caller capturing `dv open`'s output gets its end at once.
 
 ### 10.2 Which review a command means
-1. `--review <id>`; 2. else `$DV_REVIEW`; 3. else the single open review whose target matches the
-current context (working tree of the cwd's worktree, or its checked-out branch); 4. else exit 2 with
-the candidates listed. Never a silent "newest draft" guess.
+1. `--review <id>` (or the command's own `<id>` argument; naming two different reviews is a usage
+error); 2. else `$DV_REVIEW`; 3. else the single open review whose target matches the current
+context, the one open review whose home (§2.2) is the cwd's worktree
+(`dv_core::review::ops::reviews_in_context` — a `working` or `staged` review made in this worktree,
+or a `branch` review whose branch, however it is spelled, is checked out here: the rule a review's
+target resolves by, so the review in context here is the one read here); 4. else exit 2 with
+the candidates listed: every open review of the repository (`id`, label, status, round and the
+`worktree` it was made in; a `working` or `staged` review labelled by its own worktree's `HEAD`,
+"working tree vs feature", whichever worktree the command runs in), in the message and as
+`error.candidates`, with the code `ambiguous_review` (several matched) or
+`no_review` (none did). Never a silent "newest draft" guess. A named review that doesn't exist is
+exit 1 (`not_found`); a finished one may still be named.
+
+Commands that take a thread id (`comment show | reply | address | resolve | reopen`) find the
+thread's review themselves (thread ids are unique across a repository's reviews), so an agent
+never needs `--review` for them; `--review` narrows the search to that review, `$DV_REVIEW`
+doesn't. A deleted thread is not found.
 
 ### 10.3 Output and exit codes
-- `--json` emits documented DTOs (`dv_cli::dto`), versioned with a top-level `"schema": 1` — never the
-  internal event or state structs. snake_case throughout.
+- `--json` prints one JSON document on stdout, compact on one line, `"schema": 1` first: the
+  documented DTOs of `dv_cli::dto` (its module docs list every document and field), never the
+  internal event or state structs. snake_case throughout; timestamps in ms since the epoch;
+  every key present (`null` when empty). A review: `id`, `target` (`kind`, the spec's fields,
+  `label`; a `working` or `staged` target is labelled with the `HEAD` of the worktree the review
+  was made in, `dv_core::label::Labels`, as the GUI's switcher labels it), `status`, `round`, `rounds` (`{n, verdict, body, closed_at}`), `threads` (`{open,
+  addressed, resolved}`), `worktree`, `created_at`, `updated_at`, `status_note` (the note the last
+  status change carried, `{status, note, author, at}`, or `null`). A thread: `id`, `review_id`,
+  `state`, `placement` (`unchanged`; `moved` — relocated now, or standing where an earlier
+  write recorded its move, `review::shows_moved`; `edited` — standing where it was written, its
+  text changed there, `review::shows_edited`; or `outdated`), `outdated`, `path` (its file
+  in the current diff), `side`, `anchor: {original: {round, path, side, start_line, end_line},
+  current: {path, side, start_line, end_line} | null}`, `code` (the lines it was written on, as
+  they were), `current_code` (the lines at `anchor.current` now), `body`, `author: {kind,
+  name}`, `created_at`, `note` (the last state change's), `replies: [{id, author, body,
+  created_at}]`. The writes print: `review new` `{created, review}`; `review done` and `close`
+  `{changed, review}`; `review submit` `{review, round}`; `review delete` `{deleted}`; `comment
+  add` `{thread}`; `comment reply` `{reply, thread}`; `comment address | resolve | reopen`
+  `{changed, thread}`; `setup agents` `{agents: [{agent, path, action: installed | updated |
+  unchanged | skipped, reason}]}`; `review wait` as in §10.1.
 - Exit codes: `0` ok, `1` operation error, `2` usage / ambiguous review, `3` wait timeout, `4` backend
   unavailable (WSL), `5` GitHub error (with `gh`'s message).
-- Errors: stderr always; `{"error": {"code", "message"}}` on stdout with `--json`.
+- Errors: stderr always (`dv: <message>`, then the candidates and the failed git command); with
+  `--json` also `{"schema": 1, "error": {"code", "message", "detail"?, "candidates"?}}` on stdout.
+  Codes (`dv_cli::error::code`): `usage`, `unsupported`, `ambiguous_review`, `no_review`,
+  `not_found`, `not_a_repository`, `not_allowed`, `rejected`, `finished`, `unseen_round`,
+  `cancelled`, `backend_unavailable`, `target` (also a review whose home worktree is gone),
+  `corrupt`, `git`, `io`, `internal`. clap's own parse errors
+  are `usage` documents too whenever `--json` (or a `--json=…` spelling, which clap refuses for a
+  flag) is anywhere on the line before a bare `--`, their message naming
+  what is wrong (the missing arguments after "the following required arguments were not
+  provided:"; a command group named alone, `dv --json review`, for which clap prints the group's
+  help on stderr, "'dv review' requires a subcommand but one was not provided"); `--help` and
+  `--version` print on stdout and exit 0.
+- Human output: short stable lines, fields two spaces apart, no colour. A thread's place reads
+  `path:12`, `path:14-16 (moved from 12-14)` or `path (outdated, was 12)`, and a thread on the old
+  side says so first (`path:12 (old)`, `path:14 (old, moved from 12)`), as the GUI names it
+  (DESIGN §4.1). The candidates of an `ambiguous_review` / `no_review` error follow the message,
+  one per line: `id  label  status  round n  worktree`.
 
 ### 10.4 WSL routing
 Inside a distro, `dv` is the native Linux binary. On Windows, a command whose repo is a WSL location
 re-executes itself as `wsl.exe -d <distro> --cd <path> --exec ~/.local/bin/dv <args>` and passes
-through stdio and the exit code. One crossing, no per-git-command spawns.
+through stdio and the exit code. One crossing, no per-git-command spawns. Until that lands (phase
+4) such a command is exit 4, saying how to run dv inside the distro instead.
 
 ### 10.5 The agent skill
-`dv setup agents` installs the `dv-review` skill for each detected agent and environment (Claude Code
-`~/.claude/skills/dv-review/`, Codex, Cursor) — content embedded in the binary, idempotent, drift
-repaired. The skill teaches: `dv status` → `dv comment list --status open --json` → fix →
-`reply`/`address` → `dv review done` → `dv review wait`; never `resolve`; bodies via `--body-file -`.
+The `dv-review` skill is `crates/dv_cli/skill/SKILL.md`, embedded in the binary
+(`dv_cli::skill::SKILL_MD`), frontmatter `name: dv-review` and a description that triggers on
+"address review comments", "dv review" and "the reviewer left comments". It teaches the loop
+`dv status --json` (keep `current.id`; no current review and none clearly the one asked about:
+tell the user, never guess or start one) → read the round's summary (`current.rounds`' last
+`body`, `round.body` in the wait's output: a reviewer may ask for more there than in the
+threads) → `dv comment list --status open --json`, and `--status addressed` for the reviewer's
+replies on threads already addressed → for each thread, `dv comment show <id> --json` again
+before the fix (line numbers go stale once the agent edits that file) and act on
+`anchor.current` / `current_code` → fix → `dv comment reply <id> --body-file -` (a quoted heredoc
+in a POSIX shell, a PowerShell here-string piped in, both shown in the loop) → `dv comment address
+<id> --note '…'` → once every open thread is answered and the summary acted on, `dv review done
+<id> --round <n> --note-file -` (a Markdown list piped in; the id, because a review approved
+meanwhile is no longer in context, and only named does `done` hear it is `finished`; `<n>` the
+round the agent worked on, `round.n` from the wait or the last of `current.rounds`; on
+`unseen_round`, read the round it names and run `done` again with its number) → `dv review wait <id> --timeout 600 --json` → again on
+`changes_requested` (also with `threads.open` 0), stop on `approved` (committing only if the
+user's instructions say so) or `closed`. A thread whose `author.kind` is `agent` is a question an
+agent asked the reviewer, not a request: left open while it waits for their reply, acted on once
+they replied (`review wait`'s text sets such questions apart from the threads to address; its
+`threads.open` counts them). It says what `target.kind` means for where the agent's fixes show: a `working` review
+is the files on disk (work in its `worktree`), a `branch` one too in whichever worktree has the
+branch checked out (its tip when none has), a `staged` one what is staged (fixes show only once staged: ask the user before `git
+add`), and a `commit` or `range` one fixed history (tell the user rather than hand back). Its
+rules: `--json` when parsing, `--author <agent>` on every write, `<agent>` being the agent's own
+name, which every example writes as that placeholder (Claude Code is recognised by `CLAUDECODE`
+anyway), never `resolve` or `reopen`, no `dv review new` unless the
+user asks, text through `--body-file -` / `--note-file -` and a short note inline only in single
+quotes (double quotes run backticks in a POSIX shell, and a backtick is PowerShell's escape), a
+disagreement is a reply with reasons and still an address with a note saying so;
+and what each exit code means (1 `finished`: stop; 1 `unseen_round`: read the round, then `done
+--round`; 2 with candidates: pick with `--review`, with none: tell the user; 4: run dv inside the
+distro). Every
+command line in it works as written: a test parses each fenced command and runs the loop
+against a fixture repo (`crates/dv_cli/src/tests/skill.rs`).
+
+`dv setup agents [--yes]` installs it, idempotently, repairing a copy that drifted, for each agent
+set up in the home directory (`%USERPROFILE%` / `$HOME`): Claude Code when `~/.claude` exists,
+at `~/.claude/skills/dv-review/SKILL.md`; Codex when its home (`$CODEX_HOME`, else `~/.codex`)
+exists, at `~/.agents/skills/dv-review/SKILL.md`, the user-level skills folder Codex's
+documentation names (checked 2026-10-09; `$CODEX_HOME` holds Codex's own state). Each file is
+written beside itself and renamed into place. Without `--yes` a terminal is shown the plan and
+asked; anything else (a pipe, `--json`) is shown the plan and refused with exit 2 ("pass
+`--yes`"); a "no" is exit 1 (`cancelled`); nothing to change needs no answer. `--json` reports
+`{agent, path, action: installed | updated | unchanged | skipped, reason}` per agent. A hidden
+`--home <dir>` stands in for the home directory, so tests never write the real one. Cursor and
+per-environment setup (WSL distros) come with phase 6.
 
 ---
 
@@ -649,7 +1062,10 @@ registered for a path, which the automation host does for its seeded repos; a WS
 per repo, its reviews (`ReviewStore::list`, an unreadable log a row of its own) and its uncommitted
 changes, computed in the background when a repo is added and when the switcher opens; it opens or
 resumes a target's review as the reviewer, whose name is the repo's `user.name`, or loads a review
-by id (the switcher's rows for reviews of other targets); a row records why a repo can't be opened
+by id (the switcher's rows for reviews of other targets), either way bound to the review's home
+worktree (§2.2: its backend, opened through `Locations`, which the session resolves, watches and
+snapshots, while the repo it was opened from is the one marked used, the row the switcher
+refreshes and the one the source picker offers); a row records why a repo can't be opened
 at all and the worktree root its reviews name, so the switcher shows each target beside its open
 review by the rule `open_review` resumes by (`review::ops::is_review_of`); it watches nothing
 itself), `ReviewUi` (what the reviewer chose per review: split or unified), `GitHub` (gh calls, PR
@@ -670,10 +1086,13 @@ the single fuzzy surface), `file_list`, `comments_list`, `diff_pane`, `thread` +
 (sheet), `onboarding`, `settings`, `banner` (errors and backend state, inline, never over content).
 
 **Review session:** `ReviewSession` entity (`dv_ui::session`) = one review, its target fixed for
-life: the repo and its store, the folded review, the resolved `DiffSpec`, the file list and each
+life: the repo and its store, the folded review, the comparison (§2.3: the interdiff since a
+round, or all changes) and the `DiffSpec` it resolves to, the file list and each
 file's state (unloaded, loading, loaded with its diff and, once they land, its highlights, or
 failed), and the watch. The file list loads first; diffs load on demand (the stream asks for the
-files around its viewport, at most 4 in flight; "Load anyway" reloads one without caps). A live
+files around its viewport, at most 4 in flight, then every file a thread shows in, wherever it
+is, so threads are placed against their files' current text, §8; "Load anyway" reloads one
+without caps). A live
 target (`working`, `staged`, a branch) watches the worktree when its new side is the working tree,
 the git state and the store (§5.3); others the store only. Worktree and git batches are coalesced
 again for 150 ms and refresh the spec and the list, keeping every loaded diff whose entry didn't
@@ -683,10 +1102,17 @@ rescan or a moved spec; an append to the review's own log reloads the fold. The 
 the session, and once it is registered whatever was read before it (the list, loaded diffs, the
 fold) is read again, since a change made before then is never reported; the same after every
 restart. A file that loads again keeps showing the diff it had until the new one lands, so its
-cards and an open composer stay put. Stopping a watch joins its thread, so the session drops
+cards and an open composer stay put; a switch of comparison lists everything again that way, the
+diffs of the other comparison shown until theirs land (an old side listed under the other
+comparison is another text, so no thread is placed and no comment anchored against it
+meanwhile). A draft comment survives a switch: one whose file the comparison doesn't list, or on
+an old side listed under the other comparison, keeps its text and lines, undrawn, until all
+changes show it again (`C` switches there and gives it the keyboard); only a file that left the
+review drops it. Stopping a watch joins its thread, so the session drops
 handles on a thread of their own, never the UI's. A watch that can't cover the worktree leaves
 a notice and the session refreshes on window activation instead. Writes go through `review::ops`
-off the UI thread and reload the fold; a failed viewed toggle leaves a banner saying why. The shell holds the open
+off the UI thread and reload the fold; a reply, Resolve or Reopen on a thread that shows moved
+records its relocated anchor (§8; a thread whose file was renamed records the name it has now); a failed viewed toggle leaves a banner saying why. The shell holds the open
 session; switching reviews swaps sessions (a small LRU of 3 may keep the last ones warm). Every open
 goes through `Shell::open` — the switcher's rows, the source picker, automation's `open_review` —
 in the background: the main area shows that it is opening, a failure becomes its banner (with
@@ -711,13 +1137,23 @@ Comment bodies render through `dv_ui::markdown` (gpui-component's `TextView` ove
 §15: no image or raw HTML survives to be fetched; links open through the system seam).
 
 **Threads, the composer and finishing a round.** The diff pane places the review's threads as
-rows of its stream (`diff_pane::rows`: an insert after the last line of a thread's range on its
-side, or an outdated card under the file's header, §8) and draws them with `dv_ui::thread`'s
-card; it also holds the one composer (a new thread under the selection, or a reply inside its
+rows of its stream where `ReviewSession::placement` puts them — `review::place_thread` (§8) over
+the review's files (in an interdiff, the target's own list, listed beside it) and the diffs
+shown, on the UI thread; since relocation can scan a whole side, each result is kept until
+something it read changes (its anchor, the comparison, its file's entry, the diff read), so a
+refresh that keeps a file's diff keeps its threads' placements, and a side's fuzzy table is
+shared by its threads; a file shown without text to place against (too large to show) has the
+review's own diff of it read in the background for the threads anchored in it, kept while the
+review's entry for the file stands as read — (`diff_pane::rows`: an insert after the last
+line of a thread's range on its side, those lines kept shown rather than folded into a gap, or
+an outdated card under the file's header) and draws them with `dv_ui::thread`'s card. In an
+interdiff, old-side threads and threads whose file isn't in it are "not in the comparison":
+not drawn, and listed with an "all changes" tag (DESIGN §4.1), placed against the review's own
+diff of their file, read in the background, for where they stand in all changes; it also holds the one composer (a new thread under the selection, or a reply inside its
 card), the focused thread (`]`/`[`, `R`, `X`) and which resolved threads are open. Posting,
 replying, resolving and reopening are the session's `review::ops` writes; the pane counts them
 until their follow-up lands, for `settled`. `comments_list` (the panel, under the files) lists
-the waiting threads in stream order and builds "Copy as prompt" (`thread::prompt_markdown`)
+the waiting threads, addressed ones first, each group in stream order, and builds "Copy as prompt" (`thread::prompt_markdown`)
 for the clipboard seam. `Ctrl Enter` opens `submit::FinishSheet`, an overlay the shell holds
 like the switcher, whose Submit is `ops::finish_round` (§2.3); while that runs the sheet can't be
 closed or submitted again, so its outcome (or failure) always shows in it. A review whose status is
@@ -763,6 +1199,19 @@ diagnostics". The repo banner for a dead WSL backend uses the same row.
 ### 13.1 Binaries
 - **Windows:** `dv.exe` (console subsystem: CLI, and launches the GUI detached) + `dv-gui.exe`
   (windows subsystem). The split exists only because a Windows exe is one or the other.
+  `dv.exe` is a console program in every build, so a headless command prints and returns its
+  exit code in a terminal. `dv` and `dv open` start the GUI detached (`crates/dv/src/launch.rs`):
+  the same binary again with the hidden `--no-detach`, `DETACHED_PROCESS |
+  CREATE_NEW_PROCESS_GROUP` on Windows (its own process group elsewhere), stdio closed, while
+  the first returns 0 at once; `--automation` and `--no-detach` run the GUI in the process.
+  A Windows child inherits every inheritable handle of its parent, the caller's stdout pipe
+  among them, so the first makes its own standard handles non-inheritable before it starts the
+  second: a caller capturing the output (`$(dv open .)`, an agent's shell tool) sees its end at
+  once, not when the window closes. The detached GUI has no console, so a fatal startup error is
+  a message box (`fatal.rs`): one before the app starts (the data dir) and one inside it (the
+  window can't open, the fonts don't load) alike.
+  `dv-gui.exe` comes with packaging (phase 8, for shortcuts and the installer); until then a
+  double-clicked `dv.exe` flashes a console window while it detaches the GUI.
 - **macOS:** `dv.app` containing one `dv` binary; the CLI is a symlink to it.
 - **Linux:** one `dv` binary (GUI + CLI + backend), plus the static musl build used inside WSL.
 
@@ -780,7 +1229,7 @@ Every gate runs locally through one script, `script/check` (bash; also used by a
    support), then the e2e scenarios (`cargo run -p gpui_automation --bin e2e -- tests/e2e`),
    background mode; `--fast` skips this step. `--foreground` also runs `tests/e2e/foreground/`,
    the scenarios that must take the focus (screen captures of the window materials, §14.2)
-6. `--linux`: `cargo test` of the headless crates (`dv_core`, `dv_test_support`, `mock_gh`) inside
+6. `--linux`: `cargo test` of the headless crates (`dv_core`, `dv_cli`, `dv_test_support`, `mock_gh`) inside
    WSL Ubuntu with `CARGO_TARGET_DIR` on ext4; phase 4 adds the musl backend, the Linux GUI build
    and the backend loopback tests
 
@@ -821,12 +1270,22 @@ switch is set.
   `wait_for`/`assert` JSON-pointer checks, background runs that never take focus, per-scenario output
   dir with numbered screenshots and `failure.png`. dv adds custom commands `set_setting` (window
   material and mode), `seed_repo` / `repo_edit` (fixture repos at `<data_dir>/repos/<name>`, built
-  and edited with `FixtureRepo` steps, a `write` step's `repeat` making a large file in one line;
-  their environment overlays are registered with `Locations`,
+  and edited with `FixtureRepo` steps, a `write` step's `repeat` making a large file in one line,
+  a `worktree` step adding a linked worktree; their environment overlays are registered with
+  `Locations` for the work tree and each of its linked worktrees, wherever they are,
   and found again with `FixtureRepo::reopen` after a restart, so scenarios never depend on the
   owner's git configuration), `open` (adds a repo and opens the switcher on it, as `dv open`
-  will), `open_review` and `review_op` (an agent's reply, address or "done" through
-  `review::ops`, until the CLI exists). The runner wires `mock_gh` itself:
+  does), `open_review`, `review_op` (an agent's reply, address or "done" straight through
+  `review::ops`, without the CLI's rules), and `cli` / `cli_spawn` / `cli_join`, which play the
+  agent through the real CLI: the same `dv` executable started as a child process with a
+  headless command (never one that opens a window), off the UI thread, in the seeded repo's
+  fixture environment (also from one of its linked worktrees) with the app's data dir, a home of its own under it (`HOME`,
+  `USERPROFILE`, `CODEX_HOME`: `dv setup agents` never reaches the owner's), and without the
+  inherited `CLAUDECODE`, `DV_AUTHOR` and `DV_REVIEW` (a scenario sets them on purpose); `cli`
+  runs one to its end and replies `{exit, stdout, stderr, json}`, `cli_spawn` starts one that
+  blocks (`dv review wait`) and `cli_join` collects it, and a child still running when the app
+  quits is killed.
+  `workflow_a_agent` runs §3 workflow A end to end that way. The runner wires `mock_gh` itself:
   every launch gets `DV_GH` = `mock_gh` and `DV_DATA_DIR` = the scenario's data dir, a scenario
   header's `gh` names the `mock_gh` scenario file (`DV_MOCK_GH`), and `{"gh_log": {}}` lines
   assert on its call log (`DV_MOCK_GH_LOG`) (tests/e2e/README.md).
@@ -836,8 +1295,12 @@ switch is set.
   that use it live in `tests/e2e/foreground/` and run on demand (`script/check --foreground`),
   never by default (tests/e2e/README.md, "Screenshots and window materials").
 - **View tests** with gpui's `TestAppContext`/`VisualTestContext` next to each view (`tests.rs`).
-- **CLI tests** run the built `dv` binary against fixture repos and `mock_gh`, from the agent's point
-  of view.
+- **CLI tests** run the commands in-process (`dv_cli::main_with` with a `Context` over captured
+  streams, an explicit environment and the fixture's git environment) against fixture repos and
+  `mock_gh`, from the agent's point of view; a few binary tests run the built `dv`
+  (`CARGO_BIN_EXE_dv`) for dispatch, exit codes and real pipes. Neither ever starts the GUI, and
+  every one removes `CLAUDECODE`, `DV_AUTHOR` and `DV_REVIEW` (which Claude Code's environment
+  may carry) unless it sets them on purpose.
 
 ### 14.3 Owner-only live checks
 `DV_LIVE_WSL=1` (real distro smoke: install, open, watch, CLI inside the distro) and `DV_LIVE_GH=1`
@@ -858,7 +1321,8 @@ Reviewed 2026-10-04 (live automation runs + four code reviews). Keep (port, then
 - Submit: validate-everything-before-posting, the blocked-with-violations result, the do-not-resubmit
   guidance on writeback failure (`crates/cli/src/submit.rs`).
 - Markdown body sanitiser (no remote fetches from comment bodies) (`crates/app/src/markdown.rs`).
-- `dv review wait` semantics and the SKILL.md workflow.
+- The SKILL.md workflow and its `dv review wait` loop (the wait itself is state-based now,
+  §10.1).
 - The four themes' colour values (DESIGN §1).
 
 Do not carry over: the `Workspace`/`AppShell` god objects, the epoch/generation machinery, the
@@ -903,6 +1367,9 @@ Each phase ends with its e2e scenarios green and a screenshot review against DES
 - **GitHub API may gain unchanged-line comments** — when it does, §9.3's fallback becomes the normal
   path; keep validation behind one function.
 - **WSL on arm64** — build `aarch64-unknown-linux-musl` from day one; test is owner-only.
+- **A second GUI on the same data dir** is allowed for now: `dv open` always starts a new app.
+  Handing the request to a running one (single instance) comes later; until then two apps share
+  `settings.json` and `known_repos.json`, each written atomically, the last write winning.
 - **macOS is unverified** until a Mac or phase 9's CI exists (§13.2); keep platform code behind small
   modules so the gap is contained.
 - Window material (D8) is available: `gpui-pre` 0.3.6 has `WindowBackgroundAppearance::{Blurred,

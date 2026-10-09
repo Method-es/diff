@@ -143,19 +143,29 @@ impl ReviewSession {
         })
     }
 
-    /// Replies to a thread as the reviewer.
+    /// Replies to a thread as the reviewer, recording where it moved, or its file's name now
+    /// (PLAN §8: relocation is display-only until the next event on the thread).
     pub fn reply(
         &mut self,
         thread: ThreadId,
         body: String,
         cx: &mut Context<Self>,
     ) -> Task<Result<CommentId, Failure>> {
+        let relocated = self.relocated_anchor(&thread);
         self.write(cx, move |w| {
-            ops::reply(&w.store, &w.review, &thread, &body, w.reviewer.clone())
+            ops::reply(
+                &w.store,
+                &w.review,
+                &thread,
+                &body,
+                w.reviewer.clone(),
+                relocated,
+            )
         })
     }
 
-    /// Resolves or reopens a thread as the reviewer (PLAN §2.5). `false` when it already was.
+    /// Resolves or reopens a thread as the reviewer (PLAN §2.5), recording where it moved as
+    /// a reply does. `false` when it already was.
     pub fn set_thread_state(
         &mut self,
         thread: ThreadId,
@@ -163,6 +173,7 @@ impl ReviewSession {
         note: Option<String>,
         cx: &mut Context<Self>,
     ) -> Task<Result<bool, Failure>> {
+        let relocated = self.relocated_anchor(&thread);
         self.write(cx, move |w| {
             ops::set_thread_state(
                 &w.store,
@@ -171,6 +182,7 @@ impl ReviewSession {
                 state,
                 note.as_deref(),
                 w.reviewer.clone(),
+                relocated,
             )
         })
     }

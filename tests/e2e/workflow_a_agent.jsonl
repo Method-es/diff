@@ -1,0 +1,127 @@
+{"scenario": {"window_size": "1440x900", "description": "PLAN §3 workflow A end to end, the agent played by the real dv CLI (this dv.exe as a child process: cli, cli_spawn, cli_join) and the reviewer by keyboard alone. The agent's `dv review wait` blocks while the reviewer comments and requests changes, then wakes with changes_requested; the agent lists the open thread, fixes the code (lines inserted above the thread), replies over stdin, addresses and says done with a note; dv shows round 2 as the interdiff since round 1 with the ready banner and the thread moved to its new lines; the reviewer resolves it and approves; the agent's second wait wakes with approved. Screenshots in dark Mica and one light."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "settle"}
+
+// Step 1: the agent's uncommitted work in api-server (the board's fixture, seven changes).
+{"cmd": "seed_repo", "name": "api-server", "steps": [{"config": ["core.autocrlf", "true"]}, {"write": "src/routes/users.ts", "text": "import { db } from \"../db\";\nimport type { User } from \"../types\";\n\nexport const users = Router();\n\nusers.get(\"/:id\", async (req, res) => {\n  const user = await db.users.find(req.params.id);\n  if (!user) return res.status(404).end();\n  res.json({ id: user.id, name: user.name });\n});\n"}, {"write": "src/lib/http.ts", "text": "export async function get(url: string) {\n\tconst response = await fetch(url, { signal: AbortSignal.timeout(5000) });\n\treturn response.json();\n}\n"}, {"write": "src/lib/legacy.ts", "text": "export const LEGACY = true;\nexport function old() {\n  return LEGACY;\n}\n"}, {"write": "src/db/schema.ts", "text": "export interface UserRow {\n  id: string;\n  name: string;\n}\n"}, {"write_crlf": "README.md", "text": "# api-server\n\nThe users API.\n\nRun it with npm start.\n"}, {"commit": "base"}, {"write": "src/routes/users.ts", "text": "import { db } from \"../db\";\nimport { cache } from \"../lib/cache\";\nimport type { User } from \"../types\";\n\nexport const users = Router();\n\nexport async function fetchUser(id: string): Promise<User | null> {\n  const key = `user:${id}`;\n  const hit = cache.get<User>(key);\n  if (hit) return hit;\n  const user = await db.users.find(id);\n  if (user) cache.set(key, user, 60_000);\n  return user;\n}\n\nusers.get(\"/:id\", async (req, res) => {\n  const user = await fetchUser(req.params.id);\n  if (!user) return res.status(404).json({ error: \"not_found\" });\n  res.json({ id: user.id, name: user.name, email: user.email });\n});\n"}, {"write": "src/lib/cache.ts", "text": "const entries = new Map<string, { value: unknown; until: number }>();\n\nexport const cache = {\n  get<T>(key: string): T | undefined {\n    const entry = entries.get(key);\n    return entry && entry.until > Date.now() ? (entry.value as T) : undefined;\n  },\n  set(key: string, value: unknown, ttl: number) {\n    entries.set(key, { value, until: Date.now() + ttl });\n  },\n};\n"}, {"write": "src/lib/http.ts", "text": "import { config } from \"../config\";\n\nexport async function get(url: string) {\n\tconst response = await fetch(url, { signal: AbortSignal.timeout(config.timeoutMs) });\n\treturn response.json();\n}\n"}, {"remove": "src/lib/legacy.ts"}, {"git": ["mv", "src/db/schema.ts", "src/db/models.ts"]}, {"write_crlf": "README.md", "text": "# api-server\n\nThe users API, with a cache in front of the database.\n\nRun it with npm start.\n"}, {"write": "src/routes/users.test.ts", "text": "import { fetchUser } from \"./users\";\n\ntest(\"caches a user\", async () => {\n  expect(await fetchUser(\"a\")).toEqual(await fetchUser(\"a\"));\n});\n"}]}
+{"cmd": "open", "path": "${data_dir}/repos/api-server", "expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/switcher/selected", "equals": "api-server/working"}]}
+{"cmd": "settle", "expect": [{"pointer": "/repos/0/working/files", "equals": 7}, {"pointer": "/cli/spawned", "len": 0}]}
+// Before any review: the agent's `dv status` has no current review; `cli` refuses a line that
+// would open a window.
+{"cmd": "cli", "args": ["status", "--json"], "cwd": "repos/api-server", "env": {"CLAUDECODE": "1"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/stderr", "equals": ""}, {"pointer": "/json/schema", "equals": 1}, {"pointer": "/json/author", "equals": {"kind": "agent", "name": "claude-code"}}, {"pointer": "/json/current", "equals": null}]}
+{"cmd": "cli", "args": ["open", "repos/api-server"], "expect_error": "would open a window"}
+
+// Step 2: the reviewer opens the working review from the switcher (Enter).
+{"cmd": "key", "keystroke": "enter"}
+{"cmd": "settle"}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 7}
+{"cmd": "settle", "expect": [{"pointer": "/switcher/open", "equals": false}, {"pointer": "/session/status", "equals": "open"}, {"pointer": "/session/round", "equals": 1}, {"pointer": "/session/current_file", "equals": "README.md"}, {"pointer": "/stream/focused", "equals": true}]}
+{"cmd": "state", "save": {"review": "/session/review_id"}}
+
+// The agent finds the review it is in (PLAN §10.2: the working review of this worktree) and
+// blocks in `dv review wait` (Claude Code's CLAUDECODE makes it the agent claude-code).
+{"cmd": "cli", "args": ["status", "--json"], "cwd": "repos/api-server", "env": {"CLAUDECODE": "1"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/current/id", "equals": "${review}"}, {"pointer": "/json/current/status", "equals": "open"}, {"pointer": "/json/current/round", "equals": 1}, {"pointer": "/json/current/target/kind", "equals": "working"}, {"pointer": "/json/current/target/label", "equals": "working tree vs main"}]}
+{"cmd": "cli_spawn", "name": "first-wait", "args": ["review", "wait", "--timeout", "120", "--json"], "cwd": "repos/api-server", "env": {"CLAUDECODE": "1"}, "expect_result": [{"pointer": "/name", "equals": "first-wait"}, {"pointer": "/pid", "gte": 1}]}
+{"cmd": "state", "expect": [{"pointer": "/cli/spawned/0/name", "equals": "first-wait"}, {"pointer": "/cli/spawned/0/args", "equals": ["review", "wait", "--timeout", "120", "--json"]}, {"pointer": "/cli/spawned/0/running", "equals": true}]}
+
+// Step 3: V marks the README viewed, J J and Shift Down select cache.ts 1-3, C comments.
+{"cmd": "key", "keystroke": "v"}
+{"cmd": "settle"}
+{"cmd": "wait_for", "pointer": "/session/files/0/viewed", "equals": true}
+{"cmd": "keys", "keys": "j j"}
+{"cmd": "settle", "expect": {"pointer": "/session/cursor", "equals": {"path": "src/lib/cache.ts", "side": "new", "line": 1}}}
+{"cmd": "keys", "keys": "shift-down shift-down"}
+{"cmd": "settle", "expect": {"pointer": "/session/selection", "equals": {"path": "src/lib/cache.ts", "side": "new", "start_line": 1, "end_line": 3}}}
+{"cmd": "key", "keystroke": "c"}
+{"cmd": "type", "text": "Entries never leave this map: cap it, or sweep the expired ones."}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle", "expect": [{"pointer": "/session/composer", "equals": null}, {"pointer": "/session/threads", "len": 1}, {"pointer": "/session/threads/0/state", "equals": "open"}, {"pointer": "/shell/status/review", "equals": "Open · round 1 · 1 open"}]}
+// A new thread isn't a verdict: the agent's wait keeps blocking.
+{"cmd": "state", "save": {"thread": "/session/threads/0/id"}, "expect": {"pointer": "/cli/spawned/0/running", "equals": true}}
+{"cmd": "screenshot", "name": "comment-dark-mica"}
+
+// Request changes: Ctrl Enter opens the sheet on Request changes, Tab to the summary, Ctrl Enter.
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle", "expect": [{"pointer": "/session/sheet/verdict", "equals": "request_changes"}, {"pointer": "/session/sheet/can_submit", "equals": true}]}
+{"cmd": "key", "keystroke": "tab"}
+{"cmd": "type", "text": "One thing before this lands: the cache grows without bound."}
+{"cmd": "settle", "expect": {"pointer": "/session/sheet/summary", "equals": "One thing before this lands: the cache grows without bound."}}
+{"cmd": "screenshot", "name": "sheet-dark-mica"}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle"}
+{"cmd": "wait_for", "pointer": "/session/status", "equals": "changes_requested"}
+{"cmd": "settle", "expect": [{"pointer": "/session/round", "equals": 2}, {"pointer": "/session/comparison", "equals": {"kind": "since_round", "round": 1}}, {"pointer": "/shell/empty_state", "equals": "no_changes_since"}]}
+
+// Step 4: the agent's wait wakes with the verdict, the round's summary and the open thread.
+{"cmd": "cli_join", "name": "first-wait", "timeout_ms": 30000, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/stderr", "equals": ""}, {"pointer": "/json/schema", "equals": 1}, {"pointer": "/json/outcome", "equals": "changes_requested"}, {"pointer": "/json/review/id", "equals": "${review}"}, {"pointer": "/json/review/round", "equals": 2}, {"pointer": "/json/round/n", "equals": 1}, {"pointer": "/json/round/verdict", "equals": "request_changes"}, {"pointer": "/json/round/body", "equals": "One thing before this lands: the cache grows without bound."}, {"pointer": "/json/threads", "equals": {"open": 1, "addressed": 0, "resolved": 0}}]}
+{"cmd": "state", "expect": {"pointer": "/cli/spawned", "len": 0}}
+// It lists the open threads and keeps the id and the lines it is to read.
+{"cmd": "cli", "args": ["comment", "list", "--status", "open", "--json"], "cwd": "repos/api-server", "env": {"CLAUDECODE": "1"}, "save": {"agent_thread": "/json/threads/0/id", "start": "/json/threads/0/anchor/current/start_line", "end": "/json/threads/0/anchor/current/end_line"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/review_id", "equals": "${review}"}, {"pointer": "/json/threads", "len": 1}, {"pointer": "/json/threads/0/id", "equals": "${thread}"}, {"pointer": "/json/threads/0/state", "equals": "open"}, {"pointer": "/json/threads/0/placement", "equals": "unchanged"}, {"pointer": "/json/threads/0/path", "equals": "src/lib/cache.ts"}, {"pointer": "/json/threads/0/anchor/current", "equals": {"path": "src/lib/cache.ts", "side": "new", "start_line": 1, "end_line": 3}}, {"pointer": "/json/threads/0/current_code", "equals": "const entries = new Map<string, { value: unknown; until: number }>();\n\nexport const cache = {"}, {"pointer": "/json/threads/0/body", "equals": "Entries never leave this map: cap it, or sweep the expired ones."}, {"pointer": "/json/threads/0/author/kind", "equals": "reviewer"}]}
+// The CLI and the GUI agree on where the thread is.
+{"cmd": "assert", "pointer": "/comments_list/rows/0/location", "equals": "src/lib/cache.ts:${start}–${end}"}
+
+// The fix: a cap, with two lines (and a blank) inserted above the thread's lines.
+{"cmd": "repo_edit", "name": "api-server", "steps": [{"write": "src/lib/cache.ts", "text": "/** At most this many entries; the oldest goes first. */\nconst MAX_ENTRIES = 1_000;\n\nconst entries = new Map<string, { value: unknown; until: number }>();\n\nexport const cache = {\n  get<T>(key: string): T | undefined {\n    const entry = entries.get(key);\n    return entry && entry.until > Date.now() ? (entry.value as T) : undefined;\n  },\n  set(key: string, value: unknown, ttl: number) {\n    if (entries.size >= MAX_ENTRIES) {\n      const oldest = entries.keys().next().value;\n      if (oldest !== undefined) entries.delete(oldest);\n    }\n    entries.set(key, { value, until: Date.now() + ttl });\n  },\n};\n"}]}
+// The thread's code moved down three lines; the CLI relocates it as the GUI does (PLAN §8).
+{"cmd": "cli", "args": ["comment", "show", "${agent_thread}", "--json"], "cwd": "repos/api-server", "env": {"CLAUDECODE": "1"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/thread/placement", "equals": "moved"}, {"pointer": "/json/thread/outdated", "equals": false}, {"pointer": "/json/thread/anchor/current", "equals": {"path": "src/lib/cache.ts", "side": "new", "start_line": 4, "end_line": 6}}, {"pointer": "/json/thread/anchor/original/start_line", "equals": 1}, {"pointer": "/json/thread/anchor/original/round", "equals": 1}, {"pointer": "/json/thread/current_code", "equals": "const entries = new Map<string, { value: unknown; until: number }>();\n\nexport const cache = {"}]}
+// The reply comes over stdin (`--body-file -`), quotes and backticks untouched; it records
+// where the thread moved and moves the review to in_progress (PLAN §2.4).
+{"cmd": "cli", "args": ["comment", "reply", "${agent_thread}", "--body-file", "-", "--author", "claude-code", "--json"], "cwd": "repos/api-server", "stdin": "Capped at `MAX_ENTRIES` (1,000): `set` drops the oldest entry first.\n\nA `Map` keeps insertion order, so \"oldest\" is its first key.\n", "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/stderr", "equals": ""}, {"pointer": "/json/reply/author", "equals": {"kind": "agent", "name": "claude-code"}}, {"pointer": "/json/reply/body", "equals": "Capped at `MAX_ENTRIES` (1,000): `set` drops the oldest entry first.\n\nA `Map` keeps insertion order, so \"oldest\" is its first key."}, {"pointer": "/json/thread/placement", "equals": "moved"}, {"pointer": "/json/thread/anchor/current/start_line", "equals": 4}]}
+{"cmd": "cli", "args": ["review", "show", "--json"], "cwd": "repos/api-server", "env": {"CLAUDECODE": "1"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/review/status", "equals": "in_progress"}]}
+{"cmd": "wait_for", "pointer": "/session/status", "equals": "in_progress", "timeout_ms": 15000}
+{"cmd": "cli", "args": ["comment", "address", "${agent_thread}", "--note", "Capped at 1,000 entries; the oldest goes first.", "--author", "claude-code", "--json"], "cwd": "repos/api-server", "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/changed", "equals": true}, {"pointer": "/json/thread/state", "equals": "addressed"}, {"pointer": "/json/thread/note", "equals": "Capped at 1,000 entries; the oldest goes first."}]}
+// Every open thread is answered: `dv review done` with a note for the reviewer.
+{"cmd": "cli", "args": ["review", "done", "--note", "Round 2: the cache is capped.\n\n- `cache.ts`: `set` evicts the oldest entry past 1,000", "--author", "claude-code", "--json"], "cwd": "repos/api-server", "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/changed", "equals": true}, {"pointer": "/json/review/status", "equals": "ready"}, {"pointer": "/json/review/status_note/note", "equals": "Round 2: the cache is capped.\n\n- `cache.ts`: `set` evicts the oldest entry past 1,000"}, {"pointer": "/json/review/status_note/author", "equals": {"kind": "agent", "name": "claude-code"}}]}
+
+// Step 5: dv shows round 2 as round 1 → now: the ready banner, the interdiff's one file, the
+// thread addressed and moved to its new lines.
+{"cmd": "wait_for", "pointer": "/session/status", "equals": "ready", "timeout_ms": 15000}
+{"cmd": "wait_for", "pointer": "/session/threads/0/state", "equals": "addressed", "timeout_ms": 15000}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 1, "timeout_ms": 15000}
+{"cmd": "wait_for", "pointer": "/session/threads/0/placement", "equals": "moved", "timeout_ms": 15000}
+{"cmd": "settle", "expect": [{"pointer": "/session/comparison", "equals": {"kind": "since_round", "round": 1}}, {"pointer": "/session/comparison_available", "equals": true}, {"pointer": "/file_list/shown", "equals": ["src/lib/cache.ts"]}, {"pointer": "/session/files/0/status", "equals": "modified"}, {"pointer": "/shell/empty_state", "equals": null}, {"pointer": "/session/threads/0/lines", "equals": {"start": 4, "end": 6}}, {"pointer": "/session/threads/0/original_lines", "equals": {"start": 1, "end": 3}}, {"pointer": "/session/threads/0/start_line", "equals": 4}, {"pointer": "/session/threads/0/end_line", "equals": 6}, {"pointer": "/session/threads/0/outdated", "equals": false}, {"pointer": "/session/threads/0/note", "equals": "Capped at 1,000 entries; the oldest goes first."}, {"pointer": "/session/threads/0/replies", "len": 1}, {"pointer": "/session/threads/0/replies/0/author", "equals": {"kind": "agent", "name": "claude-code"}}]}
+{"cmd": "settle", "expect": [{"pointer": "/session/ready_note", "equals": {"author": {"kind": "agent", "name": "claude-code"}, "round": 2, "note": "Round 2: the cache is capped.\n\n- `cache.ts`: `set` evicts the oldest entry past 1,000", "open": false}}, {"pointer": "/shell/status/review", "equals": "Ready for review · round 2 · 1 addressed · since round 1"}, {"pointer": "/comments_list/rows/0/id", "equals": "${thread}"}, {"pointer": "/comments_list/rows/0/state", "equals": "addressed"}, {"pointer": "/comments_list/rows/0/location", "equals": "src/lib/cache.ts:4–6"}, {"pointer": "/comments_list/rows/0/not_in_comparison", "equals": false}]}
+{"cmd": "query", "prefix": "banner/ready", "expect_result": {"pointer": "", "len": 2}}
+{"cmd": "screenshot", "name": "ready-dark-mica"}
+
+// The agent waits for the verdict on round 2, naming the review as the skill does.
+{"cmd": "cli_spawn", "name": "second-wait", "args": ["review", "wait", "${review}", "--timeout", "120", "--json"], "cwd": "repos/api-server", "env": {"CLAUDECODE": "1"}}
+{"cmd": "state", "expect": [{"pointer": "/cli/spawned/0/name", "equals": "second-wait"}, {"pointer": "/cli/spawned/0/running", "equals": true}]}
+
+// Step 6: ] focuses the thread, X resolves it, Ctrl Enter opens the sheet on Approve, Ctrl Enter.
+{"cmd": "key", "keystroke": "]", "expect": {"pointer": "/session/focused_thread", "equals": "${thread}"}}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "moved-addressed-dark-mica"}
+{"cmd": "key", "keystroke": "x"}
+{"cmd": "settle", "expect": [{"pointer": "/session/threads/0/state", "equals": "resolved"}, {"pointer": "/session/threads/0/placement", "equals": "moved"}, {"pointer": "/shell/status/review", "equals": "Ready for review · round 2 · 1 resolved · since round 1"}, {"pointer": "/cli/spawned/0/running", "equals": true}]}
+{"cmd": "screenshot", "name": "resolved-dark-mica"}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle", "expect": [{"pointer": "/session/sheet/verdict", "equals": "approve"}, {"pointer": "/session/sheet/can_submit", "equals": true}]}
+{"cmd": "key", "keystroke": "tab"}
+{"cmd": "type", "text": "Capped and evicting: thanks."}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "approve-sheet-dark-mica"}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle"}
+{"cmd": "wait_for", "pointer": "/session/status", "equals": "approved"}
+{"cmd": "settle", "expect": [{"pointer": "/session/read_only", "equals": true}, {"pointer": "/session/rounds/1/verdict", "equals": "approve"}, {"pointer": "/session/ready_note", "equals": null}, {"pointer": "/session/comparison", "equals": {"kind": "all"}}]}
+
+// The agent's second wait wakes with the approval; the thread is resolved, the review approved.
+{"cmd": "cli_join", "name": "second-wait", "timeout_ms": 30000, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/stderr", "equals": ""}, {"pointer": "/json/outcome", "equals": "approved"}, {"pointer": "/json/review/status", "equals": "approved"}, {"pointer": "/json/round/n", "equals": 2}, {"pointer": "/json/round/verdict", "equals": "approve"}, {"pointer": "/json/round/body", "equals": "Capped and evicting: thanks."}, {"pointer": "/json/threads", "equals": {"open": 0, "addressed": 0, "resolved": 1}}]}
+// A finished review is out of context (PLAN §10.2), so the agent names it ($DV_REVIEW here).
+{"cmd": "cli", "args": ["comment", "list", "--json"], "cwd": "repos/api-server", "env": {"CLAUDECODE": "1", "DV_REVIEW": "${review}"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/threads", "len": 1}, {"pointer": "/json/threads/0/id", "equals": "${thread}"}, {"pointer": "/json/threads/0/state", "equals": "resolved"}, {"pointer": "/json/threads/0/placement", "equals": "moved"}, {"pointer": "/json/threads/0/anchor/current/start_line", "equals": 4}, {"pointer": "/json/threads/0/anchor/original/start_line", "equals": 1}, {"pointer": "/json/threads/0/replies", "len": 1}]}
+{"cmd": "cli", "args": ["review", "list", "--all", "--json"], "cwd": "repos/api-server", "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/reviews", "len": 1}, {"pointer": "/json/reviews/0/id", "equals": "${review}"}, {"pointer": "/json/reviews/0/status", "equals": "approved"}, {"pointer": "/json/reviews/0/rounds", "len": 2}, {"pointer": "/json/reviews/0/threads", "equals": {"open": 0, "addressed": 0, "resolved": 1}}]}
+{"cmd": "cli", "args": ["status", "--json"], "cwd": "repos/api-server", "env": {"CLAUDECODE": "1"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/current", "equals": null}, {"pointer": "/json/reviews", "len": 0}]}
+// Without the id, a wait after the verdict has nothing to wait on: exit 2, no_review.
+{"cmd": "cli", "args": ["review", "wait", "--json"], "cwd": "repos/api-server", "env": {"CLAUDECODE": "1"}, "expect_result": [{"pointer": "/exit", "equals": 2}, {"pointer": "/json/error/code", "equals": "no_review"}]}
+{"cmd": "set_setting", "key": "mode", "value": "light"}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "approved-light"}
+
+// A child still running at the end is killed as the app quits: a reviewer's staged review
+// (through the CLI) with an agent's wait on it, left blocked.
+{"cmd": "cli", "args": ["review", "new", "--staged", "--json"], "cwd": "repos/api-server", "save": {"staged": "/json/review/id"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/created", "equals": true}, {"pointer": "/json/review/target/kind", "equals": "staged"}, {"pointer": "/json/review/status", "equals": "open"}]}
+{"cmd": "cli_spawn", "name": "left-running", "args": ["review", "wait", "${staged}", "--timeout", "110", "--json"], "cwd": "repos/api-server", "env": {"CLAUDECODE": "1"}}
+{"cmd": "cli_join", "name": "left-running", "timeout_ms": 300, "expect_error": "still running"}
+{"cmd": "state", "expect": [{"pointer": "/cli/spawned", "len": 1}, {"pointer": "/cli/spawned/0/running", "equals": true}]}

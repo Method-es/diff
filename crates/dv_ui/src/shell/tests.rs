@@ -6,7 +6,7 @@ use super::status_bar::Health;
 use super::*;
 use crate::services::Mode;
 use crate::test_support::{add_repo, bounds, fixture, open_shell, settle};
-use crate::theme::Appearance;
+use crate::theme::{ActiveTheme as _, Appearance};
 
 #[gpui::test]
 fn the_empty_shell_shows_the_no_review_state(cx: &mut TestAppContext) {
@@ -344,4 +344,225 @@ fn a_review_that_does_not_open_shows_a_banner_with_retry(cx: &mut TestAppContext
     shell.read_with(cx, |shell, _| {
         assert_eq!(shell.banner().map(|b| &b.failure), Some(&failure))
     });
+}
+
+fn open_repo(
+    shell: &Entity<Shell>,
+    location: Location,
+    if_not_opened: IfNotOpened,
+    cx: &mut VisualTestContext,
+) -> Result<Location, Failure> {
+    let task = cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| {
+            shell.open_repo(location, if_not_opened, window, cx)
+        })
+    });
+    cx.run_until_parked();
+    settle(cx, shell, "the repository to be added", |_, _| true);
+    cx.foreground_executor().block_test(task)
+}
+
+#[gpui::test]
+fn dv_open_adds_the_repository_and_opens_the_switcher_on_it(cx: &mut TestAppContext) {
+    let (_dir, shell, cx) = open_shell(cx);
+    let repo = fixture();
+    crate::test_support::register(&repo, cx);
+    // A subdirectory names its work tree.
+    let known = open_repo(
+        &shell,
+        Location::Local(repo.path().join("src")),
+        IfNotOpened::Banner,
+        cx,
+    )
+    .expect("a repository opens");
+    assert_ne!(known, Location::Local(repo.path().join("src")), "the root");
+    cx.update(|_, cx| {
+        let view = shell.read(cx);
+        assert!(view.switcher().is_some(), "the switcher is open");
+        assert_eq!(view.banner().map(|_| ()), None);
+        let reviews = cx.services().reviews.read(cx);
+        assert_eq!(reviews.rows().len(), 1);
+        assert!(reviews.row(&known).is_some(), "known by its root");
+    });
+
+    // A path that doesn't open: the banner says why, unless it was only a guess (bare `dv`).
+    cx.update(|window, cx| shell.update(cx, |shell, cx| shell.close_menu(window, cx)));
+    let missing = Location::Local(repo.path().join("no-such-dir"));
+    let failure =
+        open_repo(&shell, missing.clone(), IfNotOpened::Ignore, cx).expect_err("not a repository");
+    assert!(failure.message.contains("no such directory"), "{failure}");
+    shell.read_with(cx, |shell, _| {
+        assert_eq!(shell.banner().map(|_| ()), None);
+        assert!(shell.switcher().is_none());
+    });
+    let failure = open_repo(&shell, missing, IfNotOpened::Banner, cx).expect_err("still not one");
+    shell.read_with(cx, |shell, _| {
+        assert_eq!(shell.banner().map(|b| &b.failure), Some(&failure));
+        assert!(shell.switcher().is_none());
+    });
+}
+
+#[gpui::test]
+fn a_ready_review_shows_the_agents_handoff_with_its_note(cx: &mut TestAppContext) {
+    use dv_core::review::{Author, ReviewStatus, ops};
+
+    let (_dir, shell, cx) = open_shell(cx);
+    let repo = fixture();
+    add_repo(&repo, &shell, cx);
+    let location = Location::Local(repo.path().to_path_buf());
+    open_review(&shell, location, OpenRequest::Target(Target::Working), cx)
+        .expect("the review opens");
+    let session = shell.read_with(cx, |shell, _| shell.session().cloned().unwrap());
+    let (store, review) = session.read_with(cx, |session, _| {
+        (session.store().clone(), session.review_id().clone())
+    });
+    assert_eq!(shell.read_with(cx, |shell, cx| shell.ready_note(cx)), None);
+    // The agent runs `dv review done --note …`: the watch brings it in.
+    ops::set_status(
+        &store,
+        &review,
+        ReviewStatus::Ready,
+        &Author::agent("claude-code"),
+        Some("Capped the cache.\n\nSee **cache.ts** for the sweep."),
+    )
+    .expect("the agent hands the round back");
+    settle(cx, &shell, "the handoff", |shell, cx| {
+        shell.ready_note(cx).is_some()
+    });
+    let ready = shell.read_with(cx, |shell, cx| shell.ready_note(cx));
+    assert_eq!(
+        ready,
+        Some(ReadyNote {
+            author: Some(Author::agent("claude-code")),
+            round: 1,
+            note: Some("Capped the cache.\n\nSee **cache.ts** for the sweep.".to_string()),
+        })
+    );
+    // It heads the main area; "Show note" opens the whole note under it.
+    let closed = bounds(cx, "ready-banner").expect("the banner").size.height;
+    shell.update(cx, |shell, cx| shell.toggle_ready_note(cx));
+    let open = bounds(cx, "ready-banner").expect("the banner").size.height;
+    assert!(shell.read_with(cx, |shell, _| shell.ready_note_open()));
+    assert!(open > closed, "{open:?} vs {closed:?}");
+    assert_eq!(bounds(cx, "ready-note-fade"), None, "a short note fits");
+    // The reviewer's verdict ends it.
+    let finishing = session.update(cx, |session, cx| {
+        session.finish_round(Some(dv_core::review::Verdict::RequestChanges), None, cx)
+    });
+    settle(cx, &shell, "the round", |shell, cx| {
+        shell.ready_note(cx).is_none()
+    });
+    cx.foreground_executor()
+        .block_test(finishing)
+        .expect("the round finishes");
+    assert_eq!(bounds(cx, "ready-banner"), None);
+
+    // The next round's handoff is another banner: its note starts closed, though round 1's
+    // was open when the round finished.
+    ops::set_status(
+        &store,
+        &review,
+        ReviewStatus::Ready,
+        &Author::agent("claude-code"),
+        Some("Round two.\n\nThe sweep runs hourly now."),
+    )
+    .expect("the agent hands round 2 back");
+    settle(cx, &shell, "the second handoff", |shell, cx| {
+        shell.ready_note(cx).is_some_and(|ready| ready.round == 2)
+    });
+    assert!(!shell.read_with(cx, |shell, _| shell.ready_note_open()));
+    assert_eq!(
+        bounds(cx, "ready-banner").expect("the banner").size.height,
+        closed,
+        "closed, its first line in the header"
+    );
+    // Saying it again with another note is another handoff too.
+    shell.update(cx, |shell, cx| shell.toggle_ready_note(cx));
+    assert!(shell.read_with(cx, |shell, _| shell.ready_note_open()));
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    ops::set_status(
+        &store,
+        &review,
+        ReviewStatus::Ready,
+        &Author::agent("claude-code"),
+        Some("Round two, again."),
+    )
+    .expect("the agent says it again");
+    settle(cx, &shell, "the new note", |shell, cx| {
+        shell
+            .ready_note(cx)
+            .is_some_and(|ready| ready.note.as_deref() == Some("Round two, again."))
+    });
+    assert!(!shell.read_with(cx, |shell, _| shell.ready_note_open()));
+}
+
+#[gpui::test]
+fn a_long_note_or_name_never_pushes_the_handoff_out_of_its_region(cx: &mut TestAppContext) {
+    use dv_core::review::{Author, ReviewStatus, ops};
+
+    let (_dir, shell, cx) = open_shell(cx);
+    let repo = fixture();
+    add_repo(&repo, &shell, cx);
+    let location = Location::Local(repo.path().to_path_buf());
+    open_review(&shell, location, OpenRequest::Target(Target::Working), cx)
+        .expect("the review opens");
+    // The widest panel leaves the main area least room.
+    cx.update(|_, cx| {
+        let settings = cx.services().settings.clone();
+        settings.update(cx, |settings, cx| settings.set_panel_width(420., cx));
+    });
+    let session = shell.read_with(cx, |shell, _| shell.session().cloned().unwrap());
+    let (store, review) = session.read_with(cx, |session, _| {
+        (session.store().clone(), session.review_id().clone())
+    });
+    let name = "a-very-long-agent-name-for-a-custom-agent-wrapper".repeat(3);
+    let note: String = (1..=60)
+        .map(|n| format!("Paragraph {n} of what the agent did this round.\n\n"))
+        .collect();
+    ops::set_status(
+        &store,
+        &review,
+        ReviewStatus::Ready,
+        &Author::agent(name),
+        Some(&note),
+    )
+    .expect("the agent hands the round back");
+    settle(cx, &shell, "the handoff", |shell, cx| {
+        shell.ready_note(cx).is_some()
+    });
+    // The name truncates: "Show note" stays inside the banner.
+    let banner = bounds(cx, "ready-banner").expect("the banner");
+    let toggle = bounds(cx, "ready-note-toggle").expect("Show note");
+    assert!(
+        toggle.right() <= banner.right(),
+        "{toggle:?} runs past {banner:?}"
+    );
+    // The open note scrolls past 240 high; the banner stays in the main area.
+    shell.update(cx, |shell, cx| shell.toggle_ready_note(cx));
+    let body = bounds(cx, "ready-note-body").expect("the note");
+    assert!(body.size.height <= gpui::px(240.), "{body:?}");
+    let main = bounds(cx, "main").expect("the main area");
+    let banner = bounds(cx, "ready-banner").expect("the banner");
+    // Its clipped foot stops short of the outline, and fades while more lies below...
+    let inset = cx.update(|_, cx| cx.dv_theme().spacing.md);
+    assert!(
+        body.bottom() + inset <= banner.bottom(),
+        "{body:?} runs into the outline of {banner:?}"
+    );
+    let fade = bounds(cx, "ready-note-fade").expect("a fade while the note goes on");
+    assert!(fade.bottom() <= body.bottom() + gpui::px(0.5), "{fade:?}");
+    // ...but not once it is read to its end.
+    shell.update(cx, |shell, cx| {
+        let end = shell.ready_note_scroll.max_offset().y;
+        shell
+            .ready_note_scroll
+            .set_offset(gpui::point(gpui::px(0.), -end));
+        cx.notify();
+    });
+    assert_eq!(bounds(cx, "ready-note-fade"), None, "read to its end");
+    assert!(banner.bottom() <= main.bottom(), "{banner:?} in {main:?}");
+    assert!(
+        main.bottom() - banner.bottom() > gpui::px(200.),
+        "the stream keeps its room: {banner:?} in {main:?}"
+    );
 }

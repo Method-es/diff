@@ -8,42 +8,79 @@
 //! which also overrides a configured `diff.renames=copies`) and copy detection off, matching
 //! GitHub's file list. A working tree new side adds the untracked files
 //! (`git ls-files --others --exclude-standard`), counted by reading them unless git converts
-//! them first (a clean filter, a `working-tree-encoding`), in which case git counts them.
+//! them first (a clean filter, a `working-tree-encoding`), in which case git counts them; an
+//! untracked file the old side holds too (a round snapshot's, in an interdiff) is compared with
+//! it through a temporary index instead ([`super::strays`]).
 
 use std::collections::{HashMap, HashSet};
 use std::iter::Peekable;
 
-use super::{DIFF_PINS, DiffError, FileEntry, FileMode, FileStatus, no_index_path, side_args};
+use super::{
+    DIFF_PINS, DiffError, FileEntry, FileMode, FileStatus, no_index_path, side_args, strays,
+};
 use crate::backend::{GitOpts, GitOutput, TextStats};
 use crate::git::{GitRepo, Oid};
 use crate::target::{DiffSpec, Side};
 
 /// Every file that differs between `spec`'s sides, sorted by path, each with its totals.
+///
+/// A working tree new side is the working tree as `git add -A` would stage it, untracked files
+/// included. A file the old side holds that the working tree has untracked (an interdiff's
+/// snapshot holds the untracked files of its round) is compared with the file on disk through
+/// a temporary index ([`super::strays`]) and listed once, as modified when it changed, marked
+/// [`FileEntry::new_untracked`].
 pub fn file_list(repo: &GitRepo, spec: &DiffSpec) -> Result<Vec<FileEntry>, DiffError> {
+    let mut entries = tracked(repo, spec, None)?;
+    if spec.new == Side::Worktree {
+        let mut untracked = untracked(repo)?;
+        let found = {
+            let names: HashSet<&str> = untracked.iter().map(|entry| entry.path.as_str()).collect();
+            strays::find(&entries, &names)
+        };
+        if !found.is_empty() {
+            let index = strays::index(repo, &found)?;
+            entries = tracked(repo, spec, Some(index.rel()))?;
+            let paths: HashSet<&str> = found.iter().map(|stray| stray.path.as_str()).collect();
+            for entry in &mut entries {
+                entry.new_untracked =
+                    entry.status != FileStatus::Deleted && paths.contains(entry.path.as_str());
+            }
+            untracked.retain(|entry| !paths.contains(entry.path.as_str()));
+        }
+        entries.extend(untracked);
+    }
+    // git prints tracked entries by path (unless `diff.orderFile` says otherwise); untracked
+    // files join them in place.
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(entries)
+}
+
+/// What `git diff --raw --numstat` lists between `spec`'s sides, through the temp index
+/// `index` (a store path) when given.
+fn tracked(
+    repo: &GitRepo,
+    spec: &DiffSpec,
+    index: Option<&str>,
+) -> Result<Vec<FileEntry>, DiffError> {
     let mut args: Vec<String> = ["diff", "--raw", "--numstat", "-z", "-M", "--no-abbrev"]
         .iter()
         .chain(DIFF_PINS)
         .map(|arg| arg.to_string())
         .collect();
     args.extend(side_args(repo, spec)?);
-    let output = git(repo, &args, None)?;
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut opts = GitOpts::new();
+    opts.index_file = index.map(str::to_string);
+    let output = repo.backend().git(&args, &opts)?;
     let (raw, numstat) =
         parse_raw_numstat(&output.stdout).map_err(|detail| DiffError::UnexpectedOutput {
             command: "diff --raw --numstat",
             detail,
         })?;
-    let mut entries = join(raw, numstat).map_err(|detail| DiffError::UnexpectedOutput {
+    join(raw, numstat).map_err(|detail| DiffError::UnexpectedOutput {
         command: "diff --raw --numstat",
         detail,
-    })?;
-    if spec.new == Side::Worktree {
-        entries.extend(untracked(repo)?);
-    }
-    // git prints tracked entries by path (unless `diff.orderFile` says otherwise); untracked
-    // files join them in place. The sort is stable, so a path listed twice (deleted from the
-    // index but still on disk, so also untracked) keeps git's entry first.
-    entries.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(entries)
+    })
 }
 
 /// One `--raw` record: `:<old mode> <new mode> <old oid> <new oid> <status>` and its path(s).
@@ -228,6 +265,7 @@ pub(crate) fn join(
             new_mode: record.new_mode,
             old_oid: record.old_oid,
             new_oid: record.new_oid,
+            new_untracked: false,
         });
     }
     match stats.next() {
@@ -315,6 +353,7 @@ fn untracked(repo: &GitRepo) -> Result<Vec<FileEntry>, DiffError> {
             new_mode: stats.symlink.then_some(FileMode::Symlink),
             old_oid: None,
             new_oid: None,
+            new_untracked: false,
         });
     }
     for path in nested {
@@ -329,6 +368,7 @@ fn untracked(repo: &GitRepo) -> Result<Vec<FileEntry>, DiffError> {
             new_mode: Some(FileMode::Submodule),
             old_oid: None,
             new_oid: None,
+            new_untracked: false,
         });
     }
     Ok(entries)

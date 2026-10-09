@@ -180,15 +180,25 @@ impl CommentsList {
             Some((path, line)) => (path.to_string(), format!(":{line}")),
             None => (row.location.clone(), String::new()),
         };
-        let flag = |text: &'static str, color| {
+        let flag = |text: &'static str, color, weight| {
             div()
                 .flex_none()
-                .ml_auto()
                 .text_size(px(11.))
-                .font_weight(FontWeight::MEDIUM)
+                .font_weight(weight)
                 .text_color(color)
                 .child(text)
         };
+        // At the row's end: outdated or addressed, and a quiet "all changes" for a thread the
+        // interdiff doesn't show (DESIGN §4.1).
+        let mut flags = Vec::new();
+        if row.outdated {
+            flags.push(flag("outdated", c.yellow, FontWeight::MEDIUM));
+        } else if row.state == ThreadState::Addressed {
+            flags.push(flag("addressed", c.blue, FontWeight::MEDIUM));
+        }
+        if row.not_in_comparison {
+            flags.push(flag("all changes", c.fg3, FontWeight::NORMAL));
+        }
         let id = row.id.clone();
         div()
             .id(ElementId::Name(format!("comment-row-{}", row.id).into()))
@@ -218,7 +228,8 @@ impl CommentsList {
                     .text_size(px(11.5))
                     .line_height(px(16.))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(c.fg2)
+                    // Not placed yet: the line it was written on, quietly (module docs).
+                    .text_color(if row.pending { c.fg3 } else { c.fg2 })
                     .child(marker)
                     // `path:line` reads as one: no gap between the two.
                     .child(
@@ -239,11 +250,17 @@ impl CommentsList {
                             )
                             .child(div().flex_none().text_color(c.fg3).child(line)),
                     )
-                    .when(row.outdated, |this| this.child(flag("outdated", c.yellow)))
-                    .when(
-                        row.state == ThreadState::Addressed && !row.outdated,
-                        |this| this.child(flag("addressed", c.blue)),
-                    ),
+                    .when(!flags.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .flex_none()
+                                .ml_auto()
+                                .flex()
+                                .items_center()
+                                .gap(theme.spacing.sm)
+                                .children(flags),
+                        )
+                    }),
             )
             .child(
                 div()

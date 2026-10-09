@@ -1,5 +1,5 @@
 use dv_core::diff::{FileEntry, FileStatus};
-use dv_core::review::{AuthorKind, ReviewStatus, ReviewStore, ops};
+use dv_core::review::{Author, ReviewStatus, ReviewStore, ops};
 use dv_core::{Location, Target};
 use gpui::{Entity, TestAppContext, VisualTestContext};
 use pretty_assertions::assert_eq;
@@ -21,6 +21,7 @@ fn entry(path: &str, old_path: Option<&str>) -> FileEntry {
         new_mode: None,
         old_oid: None,
         new_oid: None,
+        new_untracked: false,
     }
 }
 
@@ -215,7 +216,8 @@ fn the_viewed_checkbox_marks_the_file_through_the_store(cx: &mut TestAppContext)
         &ReviewStore::new(backend.clone()),
         &id,
         ReviewStatus::Approved,
-        AuthorKind::Reviewer,
+        &Author::reviewer("kyle"),
+        None,
     )
     .unwrap();
     session.update(cx, |session, cx| session.reload_fold(cx));
@@ -242,4 +244,17 @@ fn a_click_on_a_row_makes_it_the_current_file(cx: &mut TestAppContext) {
     // A path that isn't in the diff changes nothing.
     list.update(cx, |list, cx| list.reveal("nope.ts", cx));
     assert_eq!(current(&shell, cx).as_deref(), Some("src/routes/users.ts"));
+}
+
+#[test]
+fn the_comparison_labels_keep_the_round_in_a_narrow_panel() {
+    use super::render::comparison_labels;
+    assert_eq!(
+        comparison_labels(1, 280.),
+        ("Since round 1".to_string(), "All changes".to_string())
+    );
+    assert_eq!(
+        comparison_labels(12, 220.),
+        ("Since round 12".to_string(), "All".to_string())
+    );
 }

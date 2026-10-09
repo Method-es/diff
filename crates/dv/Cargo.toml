@@ -17,7 +17,6 @@ default = ["automation"]
 # It also seeds fixture repos for scenarios (`seed_repo`, PLAN §14.2) with `dv_test_support`,
 # which, like `dv_core`, never depends on gpui.
 automation = [
-    "dep:dv_core",
     "dep:dv_test_support",
     "dep:gpui_automation",
     "dep:serde",
@@ -29,7 +28,9 @@ automation = [
 anyhow.workspace = true
 clap.workspace = true
 dirs.workspace = true
-dv_core = { workspace = true, optional = true }
+# The headless commands (PLAN §10), dispatched before any gpui code runs.
+dv_cli.workspace = true
+dv_core.workspace = true
 dv_test_support = { workspace = true, optional = true }
 dv_ui.workspace = true
 env_logger.workspace = true
@@ -41,13 +42,21 @@ serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
-# The fatal-error message box of a release build, which has no console (`fatal.rs`).
-windows-sys = { workspace = true, features = ["Win32_UI_WindowsAndMessaging"] }
+# The fatal-error message box of the detached app, which has no console (`fatal.rs`), and the
+# flags and handle inheritance it is started detached with (`launch.rs`, PLAN §13.1).
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui_platform = { workspace = true, features = ["x11"] }
 
 [dev-dependencies]
+dv_test_support.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 pretty_assertions.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true

@@ -79,71 +79,6 @@ fn known_repos_add_mark_and_remove() {
     assert_eq!(file.repos().count(), 0);
 }
 
-#[test]
-fn target_labels_name_what_is_compared() {
-    let context = LabelContext {
-        head: Some("main".into()),
-        branch: Some("main".into()),
-        default_base: Some("origin/main".into()),
-    };
-    let none = LabelContext::default();
-    let branch = |base: Option<&str>| Target::Branch {
-        branch: "feat".into(),
-        base: base.map(str::to_string),
-    };
-    for (target, labels, label) in [
-        (Target::Working, &context, "working tree vs main"),
-        (Target::Working, &none, "working tree"),
-        (Target::Staged, &context, "staged vs main"),
-        (branch(None), &context, "feat vs origin/main"),
-        (branch(Some("dev")), &context, "feat vs dev"),
-        (branch(None), &none, "feat"),
-        (
-            Target::Commit {
-                rev: "abc1234".into(),
-            },
-            &context,
-            "commit abc1234",
-        ),
-        (
-            Target::Range {
-                from: "v1".into(),
-                to: "v2".into(),
-                three_dot: true,
-            },
-            &context,
-            "v1...v2",
-        ),
-    ] {
-        assert_eq!(target_label(&target, labels), label, "{target:?}");
-    }
-}
-
-#[test]
-fn the_branch_target_is_the_checked_out_branch_against_the_default() {
-    let labels = |branch: Option<&str>, base: Option<&str>| LabelContext {
-        head: branch.map(str::to_string),
-        branch: branch.map(str::to_string),
-        default_base: base.map(str::to_string),
-    };
-    assert_eq!(
-        labels(Some("feat"), Some("main")).branch_target(),
-        Some(Target::Branch {
-            branch: "feat".into(),
-            base: None
-        })
-    );
-    // Unpushed work on main is worth a look against origin/main.
-    assert!(
-        labels(Some("main"), Some("origin/main"))
-            .branch_target()
-            .is_some()
-    );
-    assert_eq!(labels(Some("main"), Some("main")).branch_target(), None);
-    assert_eq!(labels(None, Some("main")).branch_target(), None, "detached");
-    assert_eq!(labels(Some("feat"), None).branch_target(), None);
-}
-
 fn services(cx: &mut TestAppContext, data_dir: &Path) -> (Entity<Locations>, Entity<Reviews>) {
     let locations = cx.new(|_| Locations::new());
     let reviews = cx.new(|cx| Reviews::new(locations.clone(), data_dir, cx));
@@ -419,4 +354,52 @@ async fn a_file_dv_cant_read_is_never_saved_over(cx: &mut TestAppContext) {
         });
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     }
+}
+
+#[gpui::test]
+async fn another_worktrees_working_review_is_named_by_its_own_head(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let repo = fixture();
+    // A working review made in a linked worktree on `feature`.
+    let linked = repo.add_worktree("wt", "feature");
+    std::fs::write(linked.join("notes.md"), "# linked\n").unwrap();
+    let backend: Arc<dyn Backend> = Arc::new(
+        dv_core::LocalBackend::open_with(
+            &linked,
+            dv_core::backend::LocalBackendOptions {
+                env: repo.env_overlay(),
+            },
+        )
+        .unwrap(),
+    );
+    let made = ops::open_review(
+        &ReviewStore::new(backend),
+        Target::Working,
+        Author::reviewer(dv_test_support::AUTHOR_NAME),
+    )
+    .unwrap();
+    let (locations, reviews) = services(cx, data.path());
+    locations.update(cx, |locations, _| {
+        locations.register_env(repo.path().to_path_buf(), repo.env_overlay())
+    });
+    let added = reviews
+        .update(cx, |reviews, cx| {
+            reviews.add_repo(Location::Local(repo.path().to_path_buf()), cx)
+        })
+        .await
+        .expect("a repo");
+    settle(cx, &reviews);
+    reviews.read_with(cx, |reviews, _| {
+        let row = reviews.row(&added).unwrap();
+        let labels: Vec<(&ReviewId, &str)> = row
+            .reviews
+            .iter()
+            .filter_map(|review| match review {
+                ReviewRow::Ok { summary, label } => Some((&summary.id, label.as_str())),
+                ReviewRow::Err { .. } => None,
+            })
+            .collect();
+        // Listed from the main checkout (on main), it is still the feature worktree's.
+        assert_eq!(labels, [(&made.review.id, "working tree vs feature")]);
+    });
 }

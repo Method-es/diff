@@ -5,7 +5,10 @@
 //! (blob sizes from one `git cat-file --batch-check`, a working tree file's from the backend)
 //! decide `Binary` (the file list already knows) and `TooLarge`. Only then does git print the
 //! diff, with more context lines than the file has (the count comes from the size check: a file
-//! of `n` bytes has at most `n + 1` lines), so the output is both sides' complete text.
+//! of `n` bytes has at most `n + 1` lines), so the output is both sides' complete text. A listed
+//! file whose content didn't change (renamed or its mode changed, nothing else) gets no hunk from
+//! git; its text is read from the old side's blob and given as context lines, so it still holds
+//! both sides' complete text, which threads are placed against (PLAN §8).
 
 use std::collections::HashMap;
 
@@ -13,7 +16,7 @@ use super::list::git;
 use super::patch::{self, PatchFile};
 use super::{
     DIFF_PINS, DiffError, DiffLimits, DiffLine, FileDiff, FileEntry, FileMode, FileStatus,
-    LineKind, TextDiff, mark_intraline, no_index_path, side_args,
+    LineKind, TextDiff, mark_intraline, no_index_path, side_args, strays,
 };
 use crate::backend::GitOpts;
 use crate::git::{GitRepo, Oid};
@@ -100,6 +103,14 @@ pub fn file_diff(
     if file.binary {
         return Ok(FileDiff::Binary { old_len, new_len });
     }
+    if file.lines.is_empty() {
+        // Git printed the file's header (a rename, a mode change) but no hunk.
+        let text = unchanged_text(repo, entry)?;
+        if text.old_line_count() > limits.max_lines {
+            return Ok(FileDiff::TooLarge { old_len, new_len });
+        }
+        return Ok(FileDiff::Text(text));
+    }
     let mut text = TextDiff {
         lines: file.lines,
         old_eof_newline: file.old_eof_newline,
@@ -111,6 +122,54 @@ pub fn file_diff(
     }
     mark_intraline(&mut text.lines);
     Ok(FileDiff::Text(text))
+}
+
+/// The text of a listed file git printed no hunk for: both sides are the old side's blob (the
+/// content as git compares it, which a working tree side matches once converted, or git would
+/// have printed a hunk), as context lines. A file without an old blob (an empty file added) or
+/// without a new side (an empty file deleted) has no lines.
+fn unchanged_text(repo: &GitRepo, entry: &FileEntry) -> Result<TextDiff, DiffError> {
+    let blob = match (entry.old_mode, &entry.old_oid) {
+        (Some(FileMode::Regular | FileMode::Executable | FileMode::Symlink), Some(oid))
+            if entry.status != FileStatus::Deleted =>
+        {
+            oid
+        }
+        _ => return Ok(TextDiff::empty()),
+    };
+    let args = ["cat-file", "blob", blob.as_str()].map(String::from);
+    Ok(context_text(&git(repo, &args, None)?.stdout))
+}
+
+/// `content` as a diff that changes nothing: every line context, numbered alike on both sides,
+/// line endings as git's patch output gives them (`\r\n` stripped and reported).
+fn context_text(content: &[u8]) -> TextDiff {
+    let mut text = TextDiff::empty();
+    if content.is_empty() {
+        return text;
+    }
+    let ends_in_newline = content.ends_with(b"\n");
+    let body = content.strip_suffix(b"\n").unwrap_or(content);
+    for (index, line) in body.split(|&b| b == b'\n').enumerate() {
+        let line = match line.strip_suffix(b"\r") {
+            Some(stripped) => {
+                text.crlf = true;
+                stripped
+            }
+            None => line,
+        };
+        let number = u32::try_from(index + 1).unwrap_or(u32::MAX);
+        text.lines.push(DiffLine {
+            kind: LineKind::Context,
+            old_no: Some(number),
+            new_no: Some(number),
+            text: String::from_utf8_lossy(line).into_owned(),
+            words: Vec::new(),
+        });
+    }
+    text.old_eof_newline = ends_in_newline;
+    text.new_eof_newline = ends_in_newline;
+    text
 }
 
 /// The diff of a new symbolic link: its target path, added, without a newline.
@@ -166,7 +225,20 @@ fn run_diff(
     }
     let ok_codes: &[i32] = if untracked { &[0, 1] } else { &[0] };
     let str_args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let opts = GitOpts::new().with_ok_codes(ok_codes);
+    let mut opts = GitOpts::new().with_ok_codes(ok_codes);
+    // A file the old side holds that the working tree has untracked is compared with the file
+    // on disk through a temp index that names it (`super::strays`).
+    let index = match entry
+        .new_untracked
+        .then(|| strays::of_entry(entry))
+        .flatten()
+    {
+        Some(stray) => Some(strays::index(repo, &[stray])?),
+        None => None,
+    };
+    if let Some(index) = &index {
+        opts = opts.with_index_file(index.rel());
+    }
     Ok(repo.backend().git(&str_args, &opts)?.stdout)
 }
 

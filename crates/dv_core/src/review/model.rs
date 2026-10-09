@@ -279,6 +279,12 @@ pub struct Round {
     pub body: Option<String>,
     /// When the round closed, in ms since the Unix epoch.
     pub closed_at: u64,
+    /// The status the review had when the round closed, before its verdict moved it: derived
+    /// by the fold, never written in an event (PLAN §2.4: a round closed while the agent was
+    /// `in_progress` is one the agent hasn't seen). `None` only in state folded by a dv that
+    /// didn't derive it.
+    #[serde(default)]
+    pub closed_from: Option<ReviewStatus>,
 }
 
 /// The last state change a thread went through.
@@ -291,11 +297,33 @@ pub struct StateChange {
     pub at: u64,
 }
 
+/// The last `status` event that changed a review (PLAN §7): the status it set, and the note
+/// and author it carried — the agent's handoff note of `dv review done --note` (PLAN §3
+/// workflow A step 4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusChange {
+    pub status: ReviewStatus,
+    /// Markdown; `None` when the event carried none.
+    #[serde(default)]
+    pub note: Option<String>,
+    /// Who set it; `None` for an event that doesn't say (one written before `status` events
+    /// carried their author).
+    #[serde(default)]
+    pub author: Option<Author>,
+    pub at: u64,
+}
+
 /// An anchored thread (PLAN §2.5): the opening comment, its replies and its state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Thread {
     pub id: ThreadId,
+    /// Where the thread is attached now: the anchor it was opened with, or the one its latest
+    /// event recorded after relocation moved it (PLAN §8).
     pub anchor: Anchor,
+    /// The anchor the thread was opened with, kept once a later event recorded a relocated one
+    /// in [`Thread::anchor`]; `None` while it never moved.
+    #[serde(default)]
+    pub original_anchor: Option<Anchor>,
     /// The opening comment's author.
     pub author: Author,
     /// The opening comment, Markdown.
@@ -325,6 +353,11 @@ impl Thread {
 
     pub fn reply(&self, id: &CommentId) -> Option<&Comment> {
         self.replies.iter().find(|reply| &reply.id == id)
+    }
+
+    /// The anchor the thread was opened with, moved since or not.
+    pub fn first_anchor(&self) -> &Anchor {
+        self.original_anchor.as_ref().unwrap_or(&self.anchor)
     }
 }
 
@@ -364,6 +397,10 @@ pub struct Review {
     /// The latest timestamp of an event that changed something.
     pub updated_at: u64,
     pub status: ReviewStatus,
+    /// The last `status` event that changed the review, with its note and author; `None`
+    /// before the first one.
+    #[serde(default)]
+    pub status_change: Option<StatusChange>,
     /// Closed rounds, round 1 first; the round in progress is [`Review::current_round`].
     pub rounds: Vec<Round>,
     /// Per round, the paths the reviewer marked viewed.
@@ -392,6 +429,30 @@ impl Review {
         } else {
             self.current_round()
         }
+    }
+
+    /// The last round that closed, if any: what an interdiff compares the target with now
+    /// (PLAN §2.3).
+    pub fn last_round(&self) -> Option<&Round> {
+        self.rounds.last()
+    }
+
+    /// How many rounds have closed.
+    pub fn closed_rounds(&self) -> u32 {
+        u32::try_from(self.rounds.len()).unwrap_or(u32::MAX)
+    }
+
+    /// The round an agent handing the review back may not have seen (PLAN §2.4): the last
+    /// one, when the reviewer closed it while the agent was `in_progress` on the round before,
+    /// until the agent hands it back by its number (`dv review done --round n`, which moves
+    /// the review to `ready`). Nothing the log holds tells whether the agent's writes since
+    /// were about that round or still about the one before, so they don't count. A round
+    /// closed from `open` (the first) or from `ready` (after a handback) came when the agent
+    /// was waiting for it.
+    pub fn unseen_round(&self) -> Option<u32> {
+        let last = self.rounds.last()?;
+        (last.closed_from == Some(ReviewStatus::InProgress) && self.status != ReviewStatus::Ready)
+            .then_some(last.n)
     }
 
     /// Whether this is a PR review, as opposed to a local one: its target is a pull request.

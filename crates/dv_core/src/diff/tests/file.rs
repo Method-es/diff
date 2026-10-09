@@ -95,8 +95,42 @@ fn rename_without_edits() {
         listed.entry("new/name.txt").old_path.as_deref(),
         Some("old/name.txt")
     );
-    // Nothing changed inside: no lines, like GitHub's "renamed without changes".
-    assert_eq!(listed.text("new/name.txt"), TextDiff::empty());
+    // Nothing changed inside ("renamed without changes"), yet the diff still holds both sides'
+    // text, every line context, for threads to be placed against (PLAN §8).
+    let text = listed.text("new/name.txt");
+    assert!(!text.has_changes());
+    assert_eq!(render(&text)[0], " 1:1 line 1");
+    assert_eq!(render(&text)[9], " 10:10 line 10");
+    assert_eq!(text.lines.len(), 10);
+    assert!(text.old_eof_newline && text.new_eof_newline && !text.crlf);
+}
+
+#[test]
+fn a_rename_without_edits_in_the_working_tree_keeps_its_text() {
+    let repo = FixtureRepo::new();
+    repo.write("a.rs", "one\r\ntwo\r\nthree");
+    repo.commit("base");
+    repo.git(&["mv", "a.rs", "b.rs"]);
+    let listed = Listed::of(&repo, Target::Working);
+    assert_eq!(
+        listed.summary(),
+        [("b.rs", FileStatus::Renamed { similarity: 100 }, 0, 0)]
+    );
+    let text = listed.text("b.rs");
+    assert_eq!(render(&text), [" 1:1 one", " 2:2 two", " 3:3 three"]);
+    // As git's own patch output would give them: `\r\n` stripped and reported, no newline at
+    // the end on either side.
+    assert!(text.crlf);
+    assert!(!text.old_eof_newline && !text.new_eof_newline);
+    // Too many lines for the caps is too large, as for any diff.
+    let limits = DiffLimits {
+        max_lines: 2,
+        ..DiffLimits::default()
+    };
+    assert!(matches!(
+        listed.diff_with("b.rs", &limits),
+        FileDiff::TooLarge { .. }
+    ));
 }
 
 #[test]
@@ -428,7 +462,10 @@ fn mode_change_only() {
     let entry = staged.entry("run.sh");
     assert_eq!(entry.old_mode, Some(FileMode::Regular));
     assert_eq!(entry.new_mode, Some(FileMode::Executable));
-    assert_eq!(staged.text("run.sh"), TextDiff::empty(), "no hunks");
+    // No hunk: the text as context lines alone.
+    let text = staged.text("run.sh");
+    assert!(!text.has_changes());
+    assert_eq!(render(&text), [" 1:1 #!/bin/sh", " 2:2 echo hi"]);
 
     let chmod = repo.commit_staged("chmod");
     let committed = Listed::of(&repo, Target::Commit { rev: chmod });
@@ -436,7 +473,7 @@ fn mode_change_only() {
         committed.entry("run.sh").new_mode,
         Some(FileMode::Executable)
     );
-    assert_eq!(committed.text("run.sh"), TextDiff::empty());
+    assert_eq!(committed.text("run.sh"), text);
 }
 
 #[test]

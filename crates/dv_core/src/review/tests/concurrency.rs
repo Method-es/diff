@@ -31,6 +31,7 @@ fn write_as(store: &ReviewStore, review: &ReviewId, writer: &str) {
             &thread,
             &format!("{writer} reply {n}"),
             author.clone(),
+            None,
         )
         .unwrap_or_else(|err| panic!("{writer} reply {n}: {err}"));
         set_thread_state(
@@ -40,6 +41,7 @@ fn write_as(store: &ReviewStore, review: &ReviewId, writer: &str) {
             ThreadState::Addressed,
             Some(writer),
             author.clone(),
+            None,
         )
         .unwrap_or_else(|err| panic!("{writer} address {n}: {err}"));
     }

@@ -10,13 +10,16 @@ use gpui::{
 };
 use gpui_component::input::Textarea;
 
-use super::{FinishSheet, SHEET_WIDTH, SummaryTab, VERDICTS, verdict_label};
+use super::{
+    FinishSheet, SHEET_WIDTH, SummaryTab, VERDICTS, opened_in, round_comments, verdict_label,
+};
 use crate::automation::AutomationTargetExt as _;
 use crate::components::{button, count_badge, icon, kbd, kbd_on_accent, primary_button, totals};
 use crate::icons::DvIcon;
 use crate::keymap;
+use crate::session::ReviewSession;
 use crate::theme::{ActiveTheme as _, DvTheme, StyledText as _};
-use crate::thread::{first_line, location_label};
+use crate::thread::first_line;
 
 /// The left column's width (the board's `420px` grid column).
 const LEFT_WIDTH: f32 = 420.;
@@ -72,13 +75,21 @@ impl Render for FinishSheet {
     }
 }
 
+/// What the sheet's subtitle counts (DESIGN §4.2): the review's changed files and their
+/// totals, which the round finishes, whichever comparison the stream shows (an interdiff lists
+/// only what changed since the last round).
+pub(super) fn finished_changes(session: &ReviewSession) -> (usize, u64, u64) {
+    let files = session.target_files();
+    let additions = files.iter().map(|entry| u64::from(entry.additions)).sum();
+    let deletions = files.iter().map(|entry| u64::from(entry.deletions)).sum();
+    (files.len(), additions, deletions)
+}
+
 impl FinishSheet {
     fn render_header(&self, theme: &DvTheme, cx: &mut Context<Self>) -> AnyElement {
         let c = &theme.colors;
         let session = self.session.read(cx);
-        let files = session.files();
-        let additions: u64 = files.iter().map(|entry| u64::from(entry.additions)).sum();
-        let deletions: u64 = files.iter().map(|entry| u64::from(entry.deletions)).sum();
+        let (count, additions, deletions) = finished_changes(session);
         let repo = session.backend().repo().location.short_name();
         let hover = c.control_hover;
         let closable = !self.submitting;
@@ -142,9 +153,8 @@ impl FinishSheet {
                     )
                     .child(dot())
                     .child(format!(
-                        "{} {}",
-                        files.len(),
-                        if files.len() == 1 { "file" } else { "files" }
+                        "{count} {}",
+                        if count == 1 { "file" } else { "files" }
                     ))
                     .child(totals(additions, deletions, px(12.), theme)),
             )
@@ -386,13 +396,10 @@ impl FinishSheet {
         let session = self.session.read(cx);
         let review = session.review();
         let round = review.current_round();
-        let threads: Vec<_> = review
-            .live_threads()
-            .filter(|thread| thread.anchor.round == round || thread.state != ThreadState::Resolved)
-            .collect();
+        let threads = round_comments(review.live_threads(), round);
         let new = threads
             .iter()
-            .filter(|thread| thread.anchor.round == round)
+            .filter(|thread| opened_in(thread) == round)
             .count();
         let earlier = threads.len() - new;
         let rows: Vec<AnyElement> = threads
@@ -404,19 +411,23 @@ impl FinishSheet {
                     ThreadState::Addressed => (DvIcon::Check, c.blue),
                     ThreadState::Resolved => (DvIcon::CircleCheck, c.green),
                 };
-                let location = location_label(thread);
+                let location = session.location(thread);
+                // Not placed yet: the line it was written on, quietly, as the comments list
+                // shows it (DESIGN §4.1).
+                let pending = session.placement(thread).is_pending();
                 let (path, line) = match location.rsplit_once(':') {
                     Some((path, line)) => (path.to_string(), format!(":{line}")),
                     None => (location.clone(), String::new()),
                 };
-                let from = (thread.anchor.round != round).then(|| {
+                let opened = opened_in(thread);
+                let from = (opened != round).then(|| {
                     div()
                         .flex_none()
                         .ml_auto()
                         .font_family(theme.fonts.ui.clone())
                         .text_size(px(11.))
                         .text_color(c.fg3)
-                        .child(format!("round {}", thread.anchor.round))
+                        .child(format!("round {opened}"))
                 });
                 div()
                     .flex()
@@ -437,7 +448,7 @@ impl FinishSheet {
                                     .text_size(px(12.))
                                     .line_height(px(16.))
                                     .font_weight(FontWeight::MEDIUM)
-                                    .text_color(c.fg2)
+                                    .text_color(if pending { c.fg3 } else { c.fg2 })
                                     // At its start, so the file's name stays.
                                     .child(
                                         div()

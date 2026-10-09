@@ -29,16 +29,33 @@
 //!
 //! **Writes** go through `dv_core::review::ops` on a background thread, never as hand-built
 //! events, and the fold reloads afterwards (`writes`); the watch reports the same append, and
-//! both paths converge on the log. A viewed toggle that fails says why
+//! both paths converge on the log. A reply, Resolve or Reopen on a thread that moved, or whose
+//! file was renamed, records its relocated anchor (PLAN §8, `placement`). A viewed toggle that fails says why
 //! ([`ReviewSession::viewed_error`]), since its checkbox alone can't.
+//!
+//! **Comparison** (PLAN §2.3, `comparison`): what the files and diffs are, the interdiff since
+//! a closed round or all changes. Switching ([`ReviewSession::set_comparison`]) lists again
+//! from scratch under a new generation, the diffs shown meanwhile staying on screen until
+//! theirs land, so the stream keeps its place; a round snapshot that went missing falls back to
+//! all changes and says so ([`ReviewSession::comparison_error`]). An interdiff's listing also
+//! lists the target's own files ([`ReviewSession::target_files`]): a thread belongs to the
+//! review's file whatever is shown, and a comment anchors on it. Threads are placed through
+//! `dv_core::review::place_thread` with the interdiff's own rule (`placement`); placement runs
+//! on the UI thread, kept until what it read changes. Every file a thread shows in loads
+//! whatever the stream's viewport, and the review's own uncapped diff of a file is read in the
+//! background for the threads the stream can't place against what it shows (a file too large to
+//! show; in an interdiff, a file it doesn't list, or an old-side thread) (`load`).
 
+mod comparison;
 mod load;
+mod placement;
 mod watch;
 mod writes;
 
 #[cfg(test)]
 mod tests;
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,15 +63,20 @@ use std::time::Duration;
 use dv_core::diff::{FileDiff, FileEntry};
 use dv_core::review::{
     Anchor, AnchorError, AnchorPlace, AnchorSide, Author, LogWarning, Review, ReviewId,
-    ReviewStore, Thread, anchor_selection, side_lines,
+    ReviewStore, ThreadId, anchor_selection, side_lines,
 };
-use dv_core::{Backend, DiffSpec, GitRepo};
+use dv_core::{Backend, DiffSpec, GitRepo, Location};
 use gpui::{Context, EventEmitter, Task};
 
 use crate::failure::Failure;
-use crate::services::reviews::{LabelContext, OpenedReview, side_labels, target_label};
+use crate::services::reviews::OpenedReview;
 use crate::syntax::FileHighlights;
+pub use comparison::{Comparison, comparison_available, default_comparison};
+use dv_core::label::{LabelContext, side_labels, target_label};
 pub use load::Batch;
+use load::ReviewText;
+pub use placement::ThreadPlacement;
+use placement::{FileIndex, FuzzyTables};
 use watch::WatchState;
 use writes::ViewedIntent;
 
@@ -121,6 +143,14 @@ pub struct Shown {
     pub highlights: Option<Arc<FileHighlights>>,
 }
 
+/// The diff a file showed before it was sent to load again, and the comparison it was listed
+/// under (its old side is another text under the other one, `placement`).
+#[derive(Clone, Debug)]
+struct Previous {
+    shown: Shown,
+    comparison: Comparison,
+}
+
 /// `"text"`, `"binary"`, `"too_large"`, `"submodule"` or `"unmerged"`: what a loaded diff is,
 /// as automation state spells it.
 pub fn diff_kind(diff: &FileDiff) -> &'static str {
@@ -131,18 +161,6 @@ pub fn diff_kind(diff: &FileDiff) -> &'static str {
         FileDiff::Submodule { .. } => "submodule",
         FileDiff::Unmerged => "unmerged",
     }
-}
-
-/// Where a thread shows (decision of PLAN §8 until relocation exists).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Placement {
-    /// Its anchored text stands at its recorded lines: inline, after the range.
-    Inline,
-    /// It doesn't (or its file left the diff): listed as outdated with its original snippet
-    /// (DESIGN §4.1).
-    Outdated,
-    /// Its file's diff isn't loaded yet, so it can't be told.
-    Unknown,
 }
 
 /// What a session tells its subscribers.
@@ -161,7 +179,12 @@ pub enum SessionEvent {
 
 /// One open review (see the module docs).
 pub struct ReviewSession {
+    /// The review's home worktree's backend, where its target resolves (PLAN §2.4,
+    /// `Reviews::open`).
     backend: Arc<dyn Backend>,
+    /// The repository the review was opened from (a switcher row), which may be another
+    /// worktree of the same repository than the home.
+    origin: Location,
     repo: GitRepo,
     store: ReviewStore,
     review: Review,
@@ -170,11 +193,37 @@ pub struct ReviewSession {
     reviewer: Author,
     labels: LabelContext,
     spec: Option<DiffSpec>,
-    files: Vec<FileEntry>,
+    /// The target resolved at the last refresh: [`ReviewSession::spec`] for all changes; an
+    /// interdiff keeps its new side.
+    resolved: Option<DiffSpec>,
+    /// What `spec`, `files` and the diffs are.
+    comparison: Comparison,
+    /// The comparison asked for, which the next listing is made under.
+    asked: Comparison,
+    /// Why the comparison asked for couldn't be shown (a missing round snapshot).
+    comparison_error: Option<Failure>,
+    /// The files shown, by path and by the path a renamed file was renamed from.
+    list: FileIndex,
+    /// In an interdiff, the target's own files (all changes), which threads belong to
+    /// (`placement`); `None` when `list` is all changes.
+    target_list: Option<FileIndex>,
     states: HashMap<String, FileState>,
     /// The diff each file showed before a refresh (or Retry, "Load anyway") sent it to load
     /// again; it stays on screen until the new one lands.
-    previous: HashMap<String, Shown>,
+    previous: HashMap<String, Previous>,
+    /// Where each thread was last placed (`placement`).
+    placements: RefCell<HashMap<ThreadId, placement::Cached>>,
+    /// The fuzzy step's form of each side placed against, shared by its threads.
+    fuzzy: RefCell<FuzzyTables>,
+    /// The review's own uncapped diffs of files whose threads the stream can't place against
+    /// what it shows, read for those threads, by path (`load`).
+    review_texts: HashMap<String, ReviewText>,
+    /// How many placements were worked out (tests: what keeping them saves).
+    #[cfg(test)]
+    worked_out: std::cell::Cell<usize>,
+    /// Files queued to load wait while this is set (tests: what shows before a load lands).
+    #[cfg(test)]
+    loads_held: bool,
     /// Files the reviewer loaded anyway: they keep loading without caps after a refresh.
     unlimited: HashSet<String>,
     /// The files the stream asked for, which `settled` waits on.
@@ -220,16 +269,19 @@ impl ReviewSession {
     /// loading the file list at once.
     pub fn new(opened: OpenedReview, cx: &mut Context<Self>) -> Self {
         let OpenedReview {
+            origin,
             backend,
             loaded,
             reviewer,
             labels,
             ..
         } = opened;
+        let comparison = default_comparison(&loaded.review);
         let mut session = Self {
             repo: GitRepo::new(backend.clone()),
             store: ReviewStore::new(backend.clone()),
             backend,
+            origin,
             review: loaded.review,
             warnings: loaded.warnings,
             reviewer,
@@ -237,9 +289,21 @@ impl ReviewSession {
             // reads them again.
             labels,
             spec: None,
-            files: Vec::new(),
+            resolved: None,
+            comparison,
+            asked: comparison,
+            comparison_error: None,
+            list: FileIndex::default(),
+            target_list: None,
             states: HashMap::new(),
             previous: HashMap::new(),
+            placements: RefCell::new(HashMap::new()),
+            fuzzy: RefCell::new(HashMap::new()),
+            review_texts: HashMap::new(),
+            #[cfg(test)]
+            worked_out: std::cell::Cell::new(0),
+            #[cfg(test)]
+            loads_held: false,
             unlimited: HashSet::new(),
             wanted: Vec::new(),
             queue: VecDeque::new(),
@@ -268,8 +332,20 @@ impl ReviewSession {
         session
     }
 
+    /// The backend of the review's home worktree, where its target resolves.
     pub fn backend(&self) -> &Arc<dyn Backend> {
         &self.backend
+    }
+
+    /// The repository the review was opened from: the switcher row it belongs to.
+    pub fn origin(&self) -> &Location {
+        &self.origin
+    }
+
+    /// Whether the review was opened from its own home worktree's row, not another
+    /// worktree's.
+    pub fn is_home_origin(&self) -> bool {
+        self.backend.repo().location == self.origin
     }
 
     pub fn store(&self) -> &ReviewStore {
@@ -298,23 +374,107 @@ impl ReviewSession {
         target_label(&self.review.target, &self.labels)
     }
 
-    /// What the stream's side labels call the old and the new side (`main` / `working tree`).
+    /// What the stream's side labels call the old and the new side (`main` / `working tree`;
+    /// `round 1` / `working tree` in an interdiff, DESIGN §4.1).
     pub fn side_labels(&self) -> (String, String) {
-        side_labels(&self.review.target, &self.labels)
+        let (old, new) = side_labels(&self.review.target, &self.labels);
+        match self.comparison {
+            Comparison::SinceRound(n) => (format!("round {n}"), new),
+            Comparison::All => (old, new),
+        }
     }
 
-    /// The target resolved at the last refresh; `None` until one landed.
+    /// The spec the files were listed with at the last refresh (an interdiff's, in one);
+    /// `None` until one landed.
     pub fn spec(&self) -> Option<&DiffSpec> {
         self.spec.as_ref()
     }
 
-    /// The files of the last refresh, sorted by path.
+    /// What the files and diffs shown are: an interdiff or all changes.
+    pub fn comparison(&self) -> Comparison {
+        self.comparison
+    }
+
+    /// The comparison asked for: what [`ReviewSession::comparison`] becomes once the listing
+    /// under way lands (the toggle shows it at once).
+    pub fn asked_comparison(&self) -> Comparison {
+        self.asked
+    }
+
+    /// Whether the review offers the toggle between an interdiff and all changes.
+    pub fn comparison_available(&self) -> bool {
+        comparison_available(&self.review)
+    }
+
+    /// Why the interdiff asked for isn't shown (its round's snapshot is missing), until it is
+    /// dismissed or another comparison is asked for.
+    pub fn comparison_error(&self) -> Option<&Failure> {
+        self.comparison_error.as_ref()
+    }
+
+    /// Forgets [`ReviewSession::comparison_error`] (its banner's Dismiss).
+    pub fn dismiss_comparison_error(&mut self, cx: &mut Context<Self>) {
+        if self.comparison_error.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Shows `comparison` (all changes when the review offers no toggle, or names a round it
+    /// hasn't closed): the files are listed again from scratch under a new generation, a
+    /// listing already under way being dropped; the diffs shown stay until theirs land.
+    pub fn set_comparison(&mut self, comparison: Comparison, cx: &mut Context<Self>) {
+        let closed = |n: u32| n >= 1 && (n as usize) <= self.review.rounds.len();
+        let comparison = match comparison {
+            Comparison::SinceRound(n) if self.comparison_available() && closed(n) => comparison,
+            _ => Comparison::All,
+        };
+        if comparison == self.asked {
+            return;
+        }
+        self.asked = comparison;
+        self.comparison_error = None;
+        // Its result belongs to the comparison asked for before.
+        self.refreshing = None;
+        let mut batch = self.queued.take().unwrap_or_default();
+        batch.merge(Batch::everything());
+        self.refresh(batch, cx);
+    }
+
+    /// `I`: the interdiff since the last closed round, or all changes, whichever isn't asked
+    /// for; nothing when the review offers no toggle.
+    pub fn toggle_comparison(&mut self, cx: &mut Context<Self>) {
+        let Some(last) = self
+            .review
+            .last_round()
+            .map(|round| round.n)
+            .filter(|_| self.comparison_available())
+        else {
+            return;
+        };
+        let next = match self.asked {
+            Comparison::All => Comparison::SinceRound(last),
+            Comparison::SinceRound(_) => Comparison::All,
+        };
+        self.set_comparison(next, cx);
+    }
+
+    /// The files of the last refresh, sorted by path: what the stream shows.
     pub fn files(&self) -> &[FileEntry] {
-        &self.files
+        &self.list.files
+    }
+
+    /// The review's changed files as of the last refresh (all changes), whichever comparison is
+    /// shown: what finishing the round finishes (DESIGN §4.2).
+    pub fn target_files(&self) -> &[FileEntry] {
+        &self.target_index().files
+    }
+
+    fn target_index(&self) -> &FileIndex {
+        self.target_list.as_ref().unwrap_or(&self.list)
     }
 
     pub fn file(&self, path: &str) -> Option<&FileEntry> {
-        self.files.iter().find(|entry| entry.path == path)
+        self.list.get(path)
     }
 
     pub fn file_state(&self, path: &str) -> Option<&FileState> {
@@ -329,7 +489,22 @@ impl ReviewSession {
                 diff: diff.clone(),
                 highlights: highlights.clone(),
             }),
-            FileState::Unloaded | FileState::Loading { .. } => self.previous.get(path).cloned(),
+            FileState::Unloaded | FileState::Loading { .. } => self
+                .previous
+                .get(path)
+                .map(|previous| previous.shown.clone()),
+            FileState::Failed(_) => None,
+        }
+    }
+
+    /// The comparison [`ReviewSession::shown`]'s diff was listed under: the one shown, or for
+    /// the diff a file had while it loads again, the one it was listed under then.
+    pub fn shown_comparison(&self, path: &str) -> Option<Comparison> {
+        match self.states.get(path)? {
+            FileState::Loaded { .. } => Some(self.comparison),
+            FileState::Unloaded | FileState::Loading { .. } => {
+                self.previous.get(path).map(|previous| previous.comparison)
+            }
             FileState::Failed(_) => None,
         }
     }
@@ -339,7 +514,7 @@ impl ReviewSession {
         match self.states.get(path)? {
             FileState::Loaded { diff, .. } => Some(diff),
             FileState::Unloaded | FileState::Loading { .. } => {
-                self.previous.get(path).map(|shown| &shown.diff)
+                self.previous.get(path).map(|previous| &previous.shown.diff)
             }
             FileState::Failed(_) => None,
         }
@@ -401,37 +576,10 @@ impl ReviewSession {
 
     /// How many files of the list are viewed in the round [`ReviewSession::is_viewed`] reads.
     pub fn viewed_count(&self) -> usize {
-        self.files
+        self.list
+            .files
             .iter()
             .filter(|entry| self.is_viewed(&entry.path))
-            .count()
-    }
-
-    /// The live threads anchored in `path` (on either side), in the order they were added.
-    pub fn threads_in<'a>(&'a self, path: &'a str) -> impl Iterator<Item = &'a Thread> + 'a {
-        let entry = self.file(path);
-        self.review
-            .live_threads()
-            .filter(move |thread| entry.is_some_and(|entry| anchor_is_in(&thread.anchor, entry)))
-    }
-
-    /// The listed file `thread` is anchored in, if its file is still in the diff.
-    pub fn file_of(&self, thread: &Thread) -> Option<&FileEntry> {
-        self.files
-            .iter()
-            .find(|entry| anchor_is_in(&thread.anchor, entry))
-    }
-
-    /// Open threads anchored in `path` (on either side).
-    pub fn open_threads_in(&self, path: &str) -> usize {
-        self.review
-            .live_threads()
-            .filter(|thread| {
-                thread.state == dv_core::review::ThreadState::Open
-                    && self
-                        .file(path)
-                        .is_some_and(|entry| anchor_is_in(&thread.anchor, entry))
-            })
             .count()
     }
 
@@ -441,15 +589,16 @@ impl ReviewSession {
         self.watch.notice()
     }
 
-    /// Nothing is loading, waiting or writing, and every file the stream asked for has landed:
-    /// automation's `settled`.
+    /// Nothing is loading, waiting or writing, and every file the stream asked for, and every
+    /// file a thread shows in, has landed: automation's `settled`.
     pub fn is_settled(&self) -> bool {
+        let landed = |path: &String| {
+            self.states
+                .get(path)
+                .is_none_or(|state| !state.is_pending())
+        };
         let wanted_landed = self.spec.is_none()
-            || self.wanted.iter().all(|path| {
-                self.states
-                    .get(path)
-                    .is_none_or(|state| !state.is_pending())
-            });
+            || (self.wanted.iter().all(landed) && self.thread_files().iter().all(landed));
         self.refreshing.is_none()
             && self.queued.is_none()
             && self.watch.is_settled()
@@ -458,28 +607,16 @@ impl ReviewSession {
             && self.fold_task.is_none()
             && self.loads_in_flight == 0
             && self.highlighting.is_empty()
+            && !self.review_texts.values().any(ReviewText::is_loading)
             && wanted_landed
     }
 
-    /// Where `thread` shows: inline when its anchored text still stands at its recorded lines
-    /// of the diff shown ([`ReviewSession::shown`]), outdated when it doesn't or its file left
-    /// the diff.
-    pub fn placement(&self, thread: &Thread) -> Placement {
-        let Some(entry) = self
-            .files
-            .iter()
-            .find(|entry| anchor_is_in(&thread.anchor, entry))
-        else {
-            return Placement::Outdated;
-        };
-        match self.shown_diff(&entry.path) {
-            Some(diff) => placement_in(thread, diff),
-            None => Placement::Unknown,
-        }
-    }
-
     /// The anchor for lines `from` to `to` (either order) of `path`'s `side` in its loaded
-    /// text diff, in the round in progress (`dv_core::review::anchor_selection`).
+    /// text diff, in the round in progress (`dv_core::review::anchor_selection`), named by the
+    /// review's own entry for the file. An interdiff's old side is a round's snapshot, which no
+    /// anchor names: only its new side takes a comment (DESIGN §5), and only on a file among
+    /// the review's changes (one the agent reverted after the round is in the interdiff alone),
+    /// as `dv comment add` refuses one that isn't.
     pub fn anchor_for(
         &self,
         path: &str,
@@ -487,51 +624,30 @@ impl ReviewSession {
         from: u32,
         to: u32,
     ) -> Result<Anchor, Failure> {
-        let entry = self
-            .file(path)
+        if self.comparison.is_interdiff() && side == AnchorSide::Old {
+            return Err(Failure::new(
+                "the old side here is a round's snapshot: show all changes to comment on it",
+            ));
+        }
+        self.file(path)
             .ok_or_else(|| Failure::new(format!("{path} isn't in this review's diff")))?;
-        // The lines the reviewer sees: while the file loads again, the ones it showed before.
+        let entry = self.target_index().get(path).ok_or_else(|| {
+            Failure::new(format!(
+                "{path} isn't among this review's changes any more: nothing to comment on"
+            ))
+        })?;
+        // The lines the reviewer sees: while the file loads again, the ones it showed before
+        // (not an old side listed under the other comparison, which is another text).
         let text = self
-            .shown_diff(path)
+            .placement_diff(path, side)
             .and_then(|diff| diff.as_text())
             .ok_or_else(|| Failure::new(format!("{path}'s lines aren't loaded")))?;
-        let side_path = match side {
-            AnchorSide::New => entry.path.clone(),
-            AnchorSide::Old => entry.old_path.clone().unwrap_or_else(|| entry.path.clone()),
-        };
         anchor_selection(
-            AnchorPlace {
-                round: self.review.current_round(),
-                path: side_path,
-                old_path: entry.old_path.clone(),
-                side,
-            },
+            AnchorPlace::for_entry(entry, side, self.review.current_round()),
             &side_lines(text, side),
             from,
             to,
         )
         .map_err(|error: AnchorError| Failure::new(error.to_string()))
-    }
-}
-
-/// Where `thread` shows against `diff`, a diff of its file: inline when its anchored text stands
-/// at its recorded lines there, else outdated.
-pub fn placement_in(thread: &Thread, diff: &FileDiff) -> Placement {
-    match diff.as_text() {
-        Some(text) if thread.anchor.matches(&side_lines(text, thread.anchor.side)) => {
-            Placement::Inline
-        }
-        _ => Placement::Outdated,
-    }
-}
-
-/// Whether `anchor` is anchored in `entry`'s file: its path on the anchored side (a renamed
-/// file's old side by its old path), or the new path.
-fn anchor_is_in(anchor: &Anchor, entry: &FileEntry) -> bool {
-    match anchor.side {
-        AnchorSide::New => anchor.path == entry.path,
-        AnchorSide::Old => {
-            anchor.path == entry.path || entry.old_path.as_deref() == Some(anchor.path.as_str())
-        }
     }
 }
