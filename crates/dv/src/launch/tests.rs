@@ -27,7 +27,7 @@ fn gui(args: &[&str]) -> (Cli, Option<OpenArgs>) {
 
 fn startup_of(args: &[&str], cwd: &Path) -> Result<Startup, CliError> {
     let (cli, open) = gui(args);
-    startup(&cli, open.as_ref(), cwd)
+    startup(&cli, open.as_ref(), cwd, None)
 }
 
 fn cwd() -> PathBuf {
@@ -150,6 +150,25 @@ fn dv_open_names_a_repository_or_a_review() {
 }
 
 #[test]
+fn inside_a_distro_dv_open_takes_a_windows_drive_as_its_mount() {
+    let in_ubuntu = |args: &[&str]| {
+        let (cli, open) = gui(args);
+        startup(&cli, open.as_ref(), Path::new("/home/kyle"), Some("Ubuntu")).unwrap()
+    };
+    for args in [
+        &["open", r"D:\code\api"][..],
+        &["open", "d:/code/api"],
+        &["--repo", r"D:\code\api\", "open"],
+    ] {
+        assert_eq!(
+            in_ubuntu(args),
+            Startup::Repo(Location::Local(PathBuf::from("/mnt/d/code/api"))),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
 fn prs_and_mistakes_are_refused_before_any_window() {
     let cwd = cwd();
     for pr in [
@@ -250,7 +269,12 @@ fn a_detaching_dv_checks_the_repository_and_the_review_first() {
         distro: "Ubuntu".into(),
         path: "/srv/api".into(),
     };
-    assert_eq!(check(&Startup::Repo(wsl), options()), Ok(()));
+    assert_eq!(check(&Startup::Repo(wsl.clone()), options()), Ok(()));
+    assert_eq!(
+        check(&Startup::Review(wsl, missing.clone()), options()),
+        Ok(()),
+        "a WSL review is the app's to find, through the distro"
+    );
     assert_eq!(check(&Startup::Nothing, options()), Ok(()));
 }
 

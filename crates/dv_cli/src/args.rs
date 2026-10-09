@@ -20,7 +20,8 @@ pub struct GlobalArgs {
     #[arg(long, global = true, value_name = "PATH", conflicts_with = "wsl")]
     pub repo: Option<String>,
 
-    /// A repository inside a WSL distro, as <distro>:<absolute path>
+    /// A repository inside a WSL distro, as <distro>:<absolute path> (on Windows the command
+    /// then runs inside the distro)
     #[arg(long, global = true, value_name = "DISTRO:PATH")]
     pub wsl: Option<String>,
 
@@ -70,13 +71,14 @@ pub enum Command {
     #[command(subcommand)]
     Comment(CommentCommand),
 
-    /// Install what dv needs: the agent skill (`dv setup agents`); PATH and WSL come later
+    /// Install what dv needs: the agent skill (`dv setup agents`), dv in a WSL distro (`dv setup
+    /// wsl`); PATH comes later
     Setup(SetupArgs),
 
     /// Check dv's environment (a later version)
     Doctor,
 
-    /// Serve a repository to the Windows app over stdio (the Linux build, a later version)
+    /// Serve repositories to the dv app over stdin and stdout (the app starts it)
     Backend(BackendArgs),
 }
 
@@ -504,7 +506,7 @@ pub enum SetupCommand {
     /// Install the dv-review skill for each agent found (Claude Code, Codex)
     Agents(SetupAgentsArgs),
 
-    /// Install dv's backend in a WSL distro (a later version)
+    /// Install this dv in a WSL distro and put it on the distro's PATH (Windows)
     Wsl(SetupWslArgs),
 
     /// Everything above (a later version)
@@ -541,10 +543,10 @@ pub struct SetupWslArgs {
     pub yes: YesArg,
 }
 
-/// `dv backend`.
+/// `dv backend --stdio` (PLAN §5.1).
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
 pub struct BackendArgs {
-    /// Speak the backend protocol on stdin and stdout
+    /// Speak the backend protocol on stdin and stdout (required)
     #[arg(long)]
     pub stdio: bool,
 }

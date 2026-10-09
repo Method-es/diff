@@ -25,11 +25,11 @@ WSL; macOS and Linux supported. Agents read and answer reviews through the `dv` 
 
 | Crate | Role | gpui? |
 |---|---|---|
-| `dv` | bin: entry for the GUI, the CLI and (Linux) `dv backend --stdio`: one clap tree (`cli`, the headless commands flattened in from `dv_cli` and run before any gpui code), the GUI started detached and what `dv open` opens (`launch`); automation host (`automation` feature, on by default), which also seeds scenario repos with `dv_test_support` and plays a scenario's agent through its own CLI (`cli`, `cli_spawn`, `cli_join`: this executable as a child process) | yes |
-| `dv_ui` | views (`shell`, `switcher`, `file_list`, `comments_list`, `diff_pane`, `thread`, `submit`, …) and their keys (`keymap`, `actions`), services (`Settings`, `Locations`, `Reviews`, `ReviewUi`), the open review (`session::ReviewSession`: its comparison, interdiff or all changes, and where each thread shows, through `dv_core`'s placement), highlighting (`syntax`, token kinds) and comment Markdown (`markdown`, sanitised), the Glass theme (`theme`), window material (`appearance`, `platform`), assets, the `system` and `automation` seams (PLAN §11) | yes |
+| `dv` | bin: entry for the GUI (the `gui` feature), the CLI and `dv backend --stdio`, in three shapes: default (`gui` + `automation`), the shipped app (`--no-default-features --features gui`) and headless (`--no-default-features`: no gpui, the static musl build for WSL distros, whose `dv` and `dv open` exit 2 saying to open the repo from Windows, `windowless`); one clap tree (`cli`, the headless commands flattened in from `dv_cli` and run before any gpui code), the GUI started detached and what `dv open` opens (`launch`); automation host (`automation` feature, on by default), which also seeds scenario repos with `dv_test_support` (in process, or through a loopback `dv backend --stdio` it can kill and block: `backends`) and plays a scenario's agent through its own CLI (`cli`, `cli_spawn`, `cli_join`: this executable as a child process) | with `gui` |
+| `dv_ui` | views (`shell`, `switcher`, `file_list`, `comments_list`, `diff_pane`, `thread`, `submit`, …) and their keys (`keymap`, `actions`), services (`Settings`, `Locations` with the app's `Connections` and how WSL is reached, `WslAccess`; `Reviews`, `ReviewUi`), the open review (`session::ReviewSession`: its comparison, interdiff or all changes, where each thread shows, through `dv_core`'s placement, and its remote backend's connection, `session::connection`), highlighting (`syntax`, token kinds) and comment Markdown (`markdown`, sanitised), the Glass theme (`theme`), window material (`appearance`, `platform`), assets, the `system` and `automation` seams (PLAN §11) | yes |
 | `dv_core` | locations, the `Backend` trait and `LocalBackend` (PLAN §5.1), targets and their labels (`label`), git runner, diff pipeline, review event store, anchors, relocation and placement (`review::relocate`), GitHub via `gh` (PLAN §6–§9) | **never** |
-| `dv_backend` | the stdio protocol, the `dv backend --stdio` server loop, `RemoteBackend`, distro install (PLAN §5) | never |
-| `dv_cli` | the headless commands (`args`, clap) and what they run with (`Context`: cwd, env, streams, git env, so tests run them in-process), the repository and which review a command means (PLAN §10.2), who it acts as, thread placement, JSON DTOs (`dto`), exit and error codes (`error`), the `dv-review` agent skill (`skill/SKILL.md`, PLAN §10.5), setup/doctor checks (PLAN §10, §12) | never |
+| `dv_backend` | the stdio protocol (`proto`: JSON lines, bytes base64, `WireError` for every `BackendError`), the `dv backend --stdio` server loop (`server`), how a server starts (`launch`: `Launcher::Command` a child process such as a loopback `dv backend --stdio`, `Launcher::Wsl` a distro's through `wsl.exe`, `Launcher::InProcess` a thread over in-memory pipes for tests), `RemoteBackend` over a `Connection` with its lifecycle (`client`: state and `subscribe`, reconnect with backoff 1/2/5 s then `Failed` until `retry`, worktrees re-opened and watches resubscribed with a synthetic rescan, `kill` as a test seam) and the app's `Connections` registry, build hashes (`build`), WSL (`wsl`: the distros, the `/bin/sh` scripts run through `wsl.exe` as a `Shell`, the launch with its markers) and this app's Linux builds and their install, prune and check in a distro (`install`) (PLAN §5) | never |
+| `dv_cli` | the headless commands (`args`, clap) and what they run with (`Context`: the command line, cwd, env, streams, git env, so tests run them in-process), the repository and which review a command means (PLAN §10.2), a WSL repository's command run inside its distro on Windows (`reexec`, PLAN §10.4), who it acts as, thread placement, JSON DTOs (`dto`), exit and error codes (`error`), the `dv-review` agent skill (`skill/SKILL.md`, PLAN §10.5), setup (`setup agents`, `setup wsl`) and doctor checks (PLAN §10, §12) | never |
 | `gpui_automation` | JSONL automation over stdio + the `e2e` runner bin (PLAN §14) | yes |
 | `mock_gh` | bin: fake `gh` for tests (PLAN §14.2) | never |
 | `dv_test_support` | dev-only lib: `FixtureRepo` and shared test helpers (PLAN §14.2) | never |
@@ -37,9 +37,11 @@ WSL; macOS and Linux supported. Agents read and answer reviews through the `dv` 
 Direction: `dv` → {`dv_ui`, `dv_cli`, `dv_core`}; `dv_ui` → {`dv_cli`, `dv_backend`, `dv_core`,
 `gpui-component`}; `dv_cli` → {`dv_backend`, `dv_core`}; `dv_backend` → `dv_core`. `dv` and
 `dv_ui` reach `gpui_automation` only through their `automation` features; `dv`'s also brings
-`dv_test_support` (gpui-free) for the scenario repos it seeds, never in the shipped build. A gpui
-dependency in a "never" crate fails `script/check` (step 3, `cargo tree`), because those crates
-run headless: in the CLI, as the static musl backend inside WSL, and in fast tests.
+`dv_test_support` (gpui-free) for the scenario repos it seeds and `dv_backend` for their
+loopback, never in the shipped build. A gpui
+dependency in a "never" crate, or in `dv` built without `gui`, fails `script/check` (step 3,
+`cargo tree`), because those run headless: in the CLI, as the static musl backend inside WSL, and
+in fast tests.
 
 GPUI naming: `gpui` = crates.io `gpui-pre =0.3.6`, `gpui_platform` = `gpui-pre-platform =0.3.6`,
 components = `gpui-component =0.6.6` (PLAN D1). Don't guess APIs: grep the sources under
@@ -56,7 +58,8 @@ components = `gpui-component =0.6.6` (PLAN D1). Don't guess APIs: grep the sourc
 - **Errors.** `anyhow` in app/CLI code, `thiserror` enums in libraries. No `unwrap()`/`expect()`
   outside tests unless the message states the invariant.
 - **Style.** rustfmt defaults (a hook runs `cargo fmt --all` after every edit); clippy clean with
-  `-D warnings` in both feature shapes. Files stay under ~1,500 lines, split by responsibility
+  `-D warnings` in dv's three shapes (default, the shipped app, headless). Files stay under
+  ~1,500 lines, split by responsibility
   (`mod.rs` / `render.rs` / `tests.rs` per view).
 - **Comments** say what something is and why, in the present tense, citing `PLAN §N` / `DESIGN §N`
   for spec decisions. History (review findings, phase labels, "used to…") belongs in commit
@@ -82,21 +85,48 @@ components = `gpui-component =0.6.6` (PLAN D1). Don't guess APIs: grep the sourc
   control and bar heights, radii, the spacing scale, type) come from the theme too; a one-off
   pixel value copied from the design board may stay inline next to the element it sizes.
 - **Live checks are the owner's.** `DV_LIVE_WSL=1` and `DV_LIVE_GH=1` (PLAN §14.3) touch a real
-  distro and the `kylekz/difftest` repo; no agent, script or scenario sets them.
+  distro's home and the `kylekz/difftest` repo; no agent, script or scenario sets them.
+- **The owner's WSL home is off limits.** Nothing an agent, a test or a script runs installs
+  into, writes or deletes anything under the distro home's `~/.local/bin/dv`,
+  `~/.local/share/dv/**` or `~/.claude` / `~/.agents` / `~/.codex` (the first implementation's
+  install lives there). Every real `wsl.exe` run that installs or launches dv goes through the
+  sandbox seam `DV_WSL_HOME` (beside `DV_GH`): a POSIX path, a fresh folder under the distro's
+  `/tmp`, which every launch, install, prune and check then uses as `$HOME` (`… --exec
+  /usr/bin/env HOME=<it> /bin/sh -c …`, PLAN §5.2), removed afterwards. One check decides what
+  its value means (`dv_backend::wsl::sandbox`): set to anything but a plain absolute POSIX path
+  naming a folder other than `/` (blank, whitespace, `..` parts and `/.` included) it is an
+  error, never the real home, and no sandbox for an automation run. Tests that hand the CLI a
+  stand-in Linux build to check a guard name a distro that can't exist (`dv-no-such-distro`),
+  so a guard that regresses reaches no real distro. Never `wsl --shutdown`,
+  `-t`, `--unregister`, `--install` or `--set-default`, never `sudo`/`apt` in the distro, and
+  never run anything in a distro other than `Ubuntu`, even one already running (Docker
+  Desktop's `docker-desktop` is; `--wsl docker-desktop:…` crosses into it). The app holds to this under automation itself: an
+  `--automation` run without `DV_WSL_HOME` naming a scratch home reaches WSL only through a
+  stand-in that lists the distros a scenario names (`wsl_distros`) and refuses to start dv in
+  any (the e2e runner drops an inherited `DV_WSL_HOME`; only a scenario header's `env` sets one,
+  which dv checks as above), and `dv_ui`'s tests can't reach the real WSL at all (`WslAccess`,
+  PLAN §5.2). The app itself never boots a distro the owner stopped: only an explicit open does
+  (PLAN §5.2's connecting rule).
 
 ## Commands
 
 ```bash
-script/check                 # every gate (PLAN §13.2): fmt, clippy x2, gpui boundary, tests, e2e
+script/check                 # every gate (PLAN §13.2): fmt, clippy x3, gpui boundary, tests, e2e
 script/check --fast          # the same without the e2e scenarios
 script/check --foreground    # also tests/e2e/foreground: takes the focus for a few seconds
-script/check --linux         # also the headless crates' tests inside WSL Ubuntu
+script/check --linux         # also step 6: the headless crates and dv tested and linted in WSL
+                             # Ubuntu, script/build-linux, the real WSL sandboxed under /tmp
+script/build-linux [--aarch64]   # the static musl dv for WSL: target/{debug,release}/dv-linux-x86_64
 
 cargo build                  # the dv binary (default member)
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo clippy -p dv --no-default-features --all-targets -- -D warnings   # the shipped shape
+cargo clippy -p dv --no-default-features --features gui --all-targets -- -D warnings   # the shipped app
+cargo clippy -p dv --no-default-features --all-targets -- -D warnings   # headless (the WSL build)
+cargo test -p dv --no-default-features   # headless tests; relinks target/debug/dv without the app
+cargo test -p dv --test backend_loopback # the built `dv backend --stdio` as a child: the
+                             # handshake, a kill and the reconnect, Failed and retry, no leaked server
 cargo fmt --all
 cargo build -p dv -p mock_gh                           # the runner starts these; it doesn't build them
 cargo run -p gpui_automation --bin e2e -- tests/e2e    # background run; output in target/e2e/<scenario>/
@@ -104,11 +134,15 @@ cargo test -p gpui_automation --test harness_e2e -- --ignored
                              # the automation library's own e2e proof against its example harness
 ```
 
-The clippy run without default features is the build that ships (automation off). It drifts
-silently if only the default shape is linted, so `script/check` runs both.
+`dv` has three shapes (PLAN §13.1): the default one (`gui` + `automation`) for development and
+the e2e runner, the app as it ships (`--no-default-features --features gui`, automation off) and
+the headless build (`--no-default-features`: the CLI and `dv backend --stdio`, no gpui). Each
+drifts silently if only the default shape is linted, so `script/check` lints all three. Unit
+tests in `dv` that need gpui are gated on `gui`; `crates/dv/tests/*` run in every shape.
 
 Run `cargo build -p dv -p mock_gh` right before the e2e runner: a `cargo test` build relinks the
-binaries with gpui's test support, which the runner must not start. `script/check` does this itself.
+binaries with gpui's test support, and a headless build (`--no-default-features`) relinks `dv`
+without the app, neither of which the runner may start. `script/check` does this itself.
 
 ### The dv CLI
 
@@ -119,18 +153,32 @@ dv comment show <thread>     # --json on any command: one {"schema": 1, …} doc
 dv comment reply <thread> --body-file -    # also add, address, resolve, reopen (PLAN §10.1)
 dv review new | done | submit | close | delete | wait     # wait: exit 3 on --timeout
 dv setup agents --home <dir> --yes         # the dv-review skill; never without --home in tests
+dv setup wsl <distro> --yes  # Windows: this build into the distro; only with DV_WSL_HOME=/tmp/… here
+dv --wsl Ubuntu:/tmp/x status # Windows: runs inside the distro (installs dv there first); the same rule
 dv open <path>               # the GUI, detached; `dv` alone opens the working directory's repo
 ```
 
 Every command but `dv` and `dv open` is headless; its exit codes are PLAN §10.3's (2 usage or
-an unclear review, 4 a WSL repo). Test commands in-process (`dv_cli::main_with` with a
-`Context`, as `crates/dv_cli/src/tests/` does), or spawn the built binary with a headless
-subcommand only: `dv` alone or `dv open` opens a window on the owner's desktop, so no test runs
-them (the startup decisions are pure functions in `crates/dv/src/launch.rs`). `dv setup agents`
+an unclear review, 3 a wait's timeout, 4 a WSL distro dv can't reach). On Windows a command for
+a WSL repository (`--wsl`, `--repo \\wsl.localhost\…`, or a working directory there) runs
+inside the distro as this build, installing it into the distro home first when it is missing
+(PLAN §10.4): from this shell that is the owner's real home, so run such a command only with
+`DV_WSL_HOME=/tmp/…` (and `MSYS_NO_PATHCONV=1`, WSL below). Unless stdout and stderr are both
+a terminal, the crossing copies the distro's output into dv's own streams (`wsl.exe` would
+write the two over each other in one file, as this shell captures them), so `--json` output is
+whole here. The CLI's tests can't cross by
+accident: `dv_cli`'s `Fixture` and `crates/dv/tests/cli.rs` give every command a
+`DV_LINUX_DIR` without a Linux build, and the automation host's `cli` children get one unless
+the app is sandboxed. Test commands in-process (`dv_cli::main_with` with a `Context`, as
+`crates/dv_cli/src/tests/` does), or spawn the built binary with a headless subcommand only:
+`dv` alone or `dv open` opens a window on the owner's desktop, so no test runs them (the
+startup decisions are pure functions in `crates/dv/src/launch.rs`). `dv setup agents`
 writes into the home directory: tests pass the hidden `--home <temp dir>`, and nothing runs it
 against the real home (`~/.claude`, `~/.agents`, or `~/.codex` / `$CODEX_HOME`, which it reads
-to see whether Codex is installed). Every command line in `crates/dv_cli/skill/SKILL.md`
-is run by `crates/dv_cli/src/tests/skill.rs`; change both together.
+to see whether Codex is installed). `dv setup wsl` writes into a distro's home: tests set
+`DV_WSL_HOME` to a folder under its `/tmp` (WSL below). Every command line in
+`crates/dv_cli/skill/SKILL.md` is run by `crates/dv_cli/src/tests/skill.rs`; change both
+together.
 
 This shell runs inside Claude Code, which exports `CLAUDECODE=1`: any `dv` command run from it
 acts as the agent `claude-code` (PLAN §10.1). Run the CLI as the reviewer with
@@ -164,6 +212,9 @@ App windows open on the owner's real desktop.
 - Exploratory runs (looking at something no scenario covers yet) are scratch scenarios outside
   `tests/e2e`, e.g. `target/tmp/explore.jsonl`, run with the runner and their own `--out`.
   `tests/e2e/README.md` documents the protocol, the scenario format, the runner and dv's `state`.
+  The connection states (reconnecting, failed, the banner) are the loopback's in a scenario
+  (`seed_repo` with `"backend": "loopback"`, `backend_kill`, `backend_block`); a real WSL repo
+  only in an exploratory run (WSL below).
 
 ## WSL
 
@@ -175,10 +226,44 @@ App windows open on the owner's real desktop.
     'CARGO_TARGET_DIR=$HOME/.cache/dv-target cargo test -p dv_core'
   ```
 
-  `script/check --linux` runs the headless crates' tests this way. rustup installs the pinned
-  toolchain inside the distro on first use.
-- A WSL repo always goes through the Linux `dv` running as `dv backend --stdio` in the distro, one
-  `wsl.exe` child per distro; there is no per-command `wsl.exe` fallback (PLAN D6, §5).
+  `script/check --linux` runs the headless crates' and the headless `dv`'s tests and clippy this
+  way. rustup installs the pinned toolchain inside the distro on first use. Run inside a distro,
+  `script/check --linux` and `script/build-linux` work there directly (they test for Linux
+  first) and skip the real-WSL step, which needs Windows.
+- A WSL repo always goes through the Linux `dv`: in the app as `dv backend --stdio` in the
+  distro, one `wsl.exe` child per distro, with no per-command `wsl.exe` fallback (PLAN D6, §5);
+  in the CLI on Windows as the whole command run there, one `wsl.exe` for it (PLAN §10.4).
+- **The Linux build** is `script/build-linux` (`--aarch64` adds the arm build): the headless `dv`
+  for `x86_64-unknown-linux-musl`, built in Ubuntu, copied beside the Windows builds as
+  `target/debug/dv-linux-x86_64` and `target/release/dv-linux-x86_64`. The app and `dv setup
+  wsl` find it beside their executable, or in `DV_LINUX_DIR` (a Windows folder), and install it
+  into a distro by its sha256 (PLAN §5.2, §13.2).
+- **The real-WSL tests** run only when `DV_TEST_WSL_DISTRO` names a distro, and then only in
+  scratch homes under `DV_WSL_HOME`, which must be a folder under the distro's `/tmp` (anything
+  else fails the test rather than touch a real home); `script/check --linux` makes a fresh one
+  and runs them after `script/build-linux`. By hand, from Git Bash (`MSYS_NO_PATHCONV=1` keeps it
+  from rewriting `/tmp/…` into a Windows path, which the tests refuse):
+
+  ```bash
+  script/build-linux
+  MSYS_NO_PATHCONV=1 DV_TEST_WSL_DISTRO=Ubuntu DV_WSL_HOME=/tmp/dv-check-$$ \
+    cargo test -p dv_backend --test wsl -- --test-threads=1
+  # the same for `dv setup wsl` and the CLI run inside the distro:
+  #   cargo test -p dv_cli --lib -- setup_wsl reexec --test-threads=1
+  #   cargo test -p dv --test wsl_cli -- --test-threads=1
+  ```
+
+  Each test removes its own folder; remove the empty `DV_WSL_HOME` with `wsl.exe -d Ubuntu
+  --exec rmdir /tmp/dv-check-…`. Exploring the app against WSL: after `script/build-linux`, a
+  scratch scenario whose header sets `"env": {"DV_WSL_HOME": "/tmp/dv-explore-home"}` (a fresh
+  folder; the header's env reaches the app without Git Bash rewriting it) and opens a scratch
+  repo made under the distro's `/tmp` (`\\wsl.localhost\Ubuntu\tmp\…`); remove both folders
+  inside the distro afterwards.
+- **The owner's live check** (`crates/dv_backend/tests/live_wsl.rs`, PLAN §14.3) installs into
+  the real home: `DV_LIVE_WSL=1 cargo test -p dv_backend --test live_wsl -- --ignored
+  --test-threads=1` after `cargo build -p dv` and `script/build-linux` (it ends with
+  `target/debug/dv.exe` running a command inside the distro), `DV_LIVE_WSL_DISTRO` naming the
+  distro (default `Ubuntu`). The owner runs it; no agent does.
 
 ## Disk
 

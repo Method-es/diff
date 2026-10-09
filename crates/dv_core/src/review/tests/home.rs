@@ -3,8 +3,14 @@
 
 use super::*;
 use crate::git::GitRepo;
+use crate::location::Location;
 use crate::review::home::{Home, HomeError, home, same_worktree};
 use crate::testing::open_at;
+
+/// A local repository's location: what `Home::is` and `same_worktree` read is its case rule.
+fn local() -> Location {
+    Location::Local(std::env::temp_dir())
+}
 
 fn branch(name: &str) -> Target {
     Target::Branch {
@@ -27,16 +33,16 @@ fn a_working_review_is_homed_in_its_own_worktree_from_every_worktree() {
         for git in [&main_git, &linked_git] {
             let found = home(git, &target, &linked_root).unwrap();
             assert!(
-                found.is(&linked_root),
+                found.is(&local(), &linked_root),
                 "{target:?} from {}",
                 git.info().toplevel
             );
-            assert!(!found.is(main.worktree()));
+            assert!(!found.is(&local(), main.worktree()));
         }
         assert!(
             home(&linked_git, &target, main.worktree())
                 .unwrap()
-                .is(main.worktree())
+                .is(&local(), main.worktree())
         );
     }
 }
@@ -54,14 +60,14 @@ fn a_branch_review_is_homed_where_the_branch_is_checked_out_else_anywhere() {
             assert!(
                 home(git, &branch(name), main.worktree())
                     .unwrap()
-                    .is(&linked_root),
+                    .is(&local(), &linked_root),
                 "{name}"
             );
         }
         assert!(
             home(git, &branch("main"), &linked_root)
                 .unwrap()
-                .is(main.worktree())
+                .is(&local(), main.worktree())
         );
         // Checked out nowhere: its tip, the same from everywhere.
         assert_eq!(
@@ -112,7 +118,11 @@ fn a_branch_checked_out_in_several_worktrees_is_homed_where_it_is_worked_on() {
     // The worktree asking, whichever the review was made in.
     for (git, root) in [(&first_git, &first_root), (&second_git, &second_root)] {
         for made_in in [&first_root, &second_root, &main.worktree().to_string()] {
-            assert!(home(git, &branch("feat"), made_in).unwrap().is(root));
+            assert!(
+                home(git, &branch("feat"), made_in)
+                    .unwrap()
+                    .is(&local(), root)
+            );
         }
     }
     // Asked from elsewhere: the worktree it was made in, else one git lists with it (git
@@ -121,11 +131,14 @@ fn a_branch_checked_out_in_several_worktrees_is_homed_where_it_is_worked_on() {
         assert!(
             home(&main_git, &branch("feat"), made_in)
                 .unwrap()
-                .is(made_in)
+                .is(&local(), made_in)
         );
     }
     let found = home(&main_git, &branch("feat"), main.worktree()).unwrap();
-    assert!(found.is(&first_root) || found.is(&second_root), "{found:?}");
+    assert!(
+        found.is(&local(), &first_root) || found.is(&local(), &second_root),
+        "{found:?}"
+    );
 }
 
 #[test]
@@ -158,7 +171,11 @@ fn a_repository_with_its_git_dir_apart_is_homed_in_its_files_never_its_git_dir()
     let apart = git_at(&repo, &files);
     let root = apart.info().toplevel.clone();
     // git lists this worktree by its git dir; the home is the files.
-    assert!(home(&apart, &branch("feat"), &root).unwrap().is(&root));
+    assert!(
+        home(&apart, &branch("feat"), &root)
+            .unwrap()
+            .is(&local(), &root)
+    );
     // Detached, the branch is checked out nowhere: the git dir is never taken for a worktree.
     let mut detach = vec![os("-C"), files.as_os_str()];
     detach.extend([os("checkout"), os("-q"), os("--detach")]);
@@ -212,11 +229,22 @@ fn a_review_whose_worktree_is_gone_has_no_home() {
 
 #[test]
 fn worktree_roots_compare_however_they_are_spelled() {
-    assert!(same_worktree("D:/code/api", "D:/code/api/"));
-    assert!(same_worktree(r"D:\code\api", "D:/code/api"));
-    assert!(!same_worktree("/code/api", "/code/api2"));
+    let here = local();
+    assert!(same_worktree(&here, "D:/code/api", "D:/code/api/"));
+    assert!(same_worktree(&here, r"D:\code\api", "D:/code/api"));
+    assert!(!same_worktree(&here, "/code/api", "/code/api2"));
     assert_eq!(
-        same_worktree("/code/API", "/code/api"),
+        same_worktree(&here, "/code/API", "/code/api"),
         cfg!(any(windows, target_os = "macos"))
     );
+    // A WSL repository's roots are the distro's, on a Linux file system: case counts there,
+    // whatever this machine's file systems do.
+    let wsl = Location::Wsl {
+        distro: "Ubuntu".into(),
+        path: "/home/kyle/api".into(),
+    };
+    assert!(!same_worktree(&wsl, "/home/kyle/API", "/home/kyle/api"));
+    assert!(same_worktree(&wsl, "/home/kyle/api/", "/home/kyle/api"));
+    assert!(Home::Worktree("/home/kyle/api".into()).is(&wsl, "/home/kyle/api"));
+    assert!(!Home::Worktree("/home/kyle/Api".into()).is(&wsl, "/home/kyle/api"));
 }

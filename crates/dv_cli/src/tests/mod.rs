@@ -3,24 +3,28 @@
 //! environment (so neither this machine's `CLAUDECODE` nor its git configuration leaks in),
 //! and checks the exit code, the JSON document and the text.
 
+mod backend;
 mod comment;
 mod comment_write;
 mod errors;
 mod hand_back;
 mod home;
 mod placement;
+mod reexec;
 mod review;
 mod review_write;
+#[cfg(windows)]
+mod sandbox;
 mod setup;
+mod setup_wsl;
 mod skill;
 mod status;
 mod wait;
 
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+
 use std::sync::Arc;
 
 use dv_core::backend::{Backend, LocalBackend, LocalBackendOptions};
@@ -44,17 +48,17 @@ pub(crate) struct Input {
 
 /// A stream the test reads back.
 #[derive(Clone, Default)]
-pub(crate) struct Buffer(Rc<RefCell<Vec<u8>>>);
+pub(crate) struct Buffer(Arc<std::sync::Mutex<Vec<u8>>>);
 
 impl Buffer {
-    fn text(&self) -> String {
-        String::from_utf8(self.0.borrow().clone()).expect("the CLI prints UTF-8")
+    pub fn text(&self) -> String {
+        String::from_utf8(self.0.lock().unwrap().clone()).expect("the CLI prints UTF-8")
     }
 }
 
 impl Write for Buffer {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.borrow_mut().extend_from_slice(bytes);
+        self.0.lock().unwrap().extend_from_slice(bytes);
         Ok(bytes.len())
     }
 
@@ -121,8 +125,16 @@ impl Ran {
 /// `working` review has a file to comment on.
 pub(crate) struct Fixture {
     pub repo: FixtureRepo,
-    /// The variables commands see; nothing else from this process's environment.
+    /// The variables commands see; nothing else from this process's environment. It starts
+    /// with `DV_LINUX_DIR` naming a folder without a Linux build ([`no_linux_build`]), so a
+    /// command for a WSL repository stops at exit 4 before any `wsl.exe` starts; a test that
+    /// crosses into a distro names the builds itself, sandboxed (`sandbox`).
     pub env: BTreeMap<String, String>,
+}
+
+/// A folder without a Linux build of dv (module docs of [`Fixture::env`]).
+pub(crate) fn no_linux_build() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("no-linux-build")
 }
 
 /// The committed `src/app.ts`: twenty lines of distinct code.
@@ -176,7 +188,10 @@ impl Fixture {
         repo.write("src/app.ts", text_of(&edited_lines()));
         Self {
             repo,
-            env: BTreeMap::new(),
+            env: BTreeMap::from([(
+                "DV_LINUX_DIR".to_string(),
+                no_linux_build().display().to_string(),
+            )]),
         }
     }
 
@@ -222,13 +237,16 @@ impl Fixture {
     pub fn context(&self, cwd: &Path, input: &Input) -> (Context, Buffer, Buffer) {
         let (stdout, stderr) = (Buffer::default(), Buffer::default());
         let ctx = Context {
+            args: Vec::new(),
             cwd: cwd.to_path_buf(),
             env: Env::Vars(self.env.clone()),
             stdin: Box::new(std::io::Cursor::new(input.stdin.clone().into_bytes())),
             stdout: Box::new(stdout.clone()),
             stderr: Box::new(stderr.clone()),
             stdout_is_terminal: input.terminal,
+            stderr_is_terminal: input.terminal,
             stdin_is_terminal: input.terminal,
+            process_stdio: false,
             git_env: self.repo.env_overlay(),
         };
         (ctx, stdout, stderr)

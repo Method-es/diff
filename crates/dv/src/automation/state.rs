@@ -1,8 +1,9 @@
 //! The `state` document's parts (`tests/e2e/README.md` "dv's `state`" lists every key).
 
+use dv_backend::ConnectionState;
 use dv_core::diff::{FileEntry, FileStatus};
 use dv_core::review::{AnchorSide, Author, ReviewStatus, Thread};
-use dv_ui::services::reviews::{RepoRow, ReviewRow};
+use dv_ui::services::reviews::{OpenRequest, RepoRow, ReviewRow};
 use dv_ui::session::{Comparison, FileState, ReviewSession, diff_kind};
 use dv_ui::submit::SummaryTab;
 use dv_ui::switcher::items::{ItemKind, ReviewBadge};
@@ -40,7 +41,24 @@ pub fn shell(shell: &Shell, cx: &App) -> Value {
         "empty_state": shell.empty_state(cx).map(|empty| empty.key()),
         "window_material": shell.applied_material().key(),
         "opening": shell.opening().is_some(),
+        "pending": shell.pending_pick().map(|pending| json!({
+            "repo": pending.location.display_name(),
+            "target": match &pending.request {
+                OpenRequest::Target(target) => json!(target),
+                OpenRequest::Review(_) => Value::Null,
+            },
+            "review": match &pending.request {
+                OpenRequest::Review(id) => json!(id),
+                OpenRequest::Target(_) => Value::Null,
+            },
+            "connection": pending.connection().name(),
+        })),
         "banner": shell.banner().map(|banner| failure(Some(&banner.failure))),
+        "backend_banner": shell.backend_down(cx).map(|down| json!({
+            "message": down.failure.message,
+            "detail": down.failure.detail,
+            "action": down.action,
+        })),
         "status": {
             "health": status.health.key(),
             "location": status.location,
@@ -82,6 +100,7 @@ pub fn switcher(shell: &Shell, cx: &App) -> Value {
                     _ => None,
                 },
                 "label": item.label(),
+                "starting": item.is_starting(),
                 "repo": repo.map(|repo| repo.path.clone()),
                 "review": badge(item.review()),
             })
@@ -148,6 +167,46 @@ pub fn system(cx: &App) -> Value {
     json!({"requests": requests, "answers_left": answers_left})
 }
 
+/// `state.backends`: the app's connections to `dv backend --stdio` servers, WSL distros first.
+pub fn backends(cx: &App) -> Value {
+    let connections = cx.services().locations.read(cx).connections().all();
+    Value::Array(
+        connections
+            .iter()
+            .map(|connection| {
+                let state = connection.state();
+                json!({
+                    "name": connection.name(),
+                    "state": connection_state(&state),
+                    "attempt": match state {
+                        ConnectionState::Reconnecting { attempt } => Some(attempt),
+                        _ => None,
+                    },
+                    "generation": connection.generation(),
+                    "error": match &state {
+                        ConnectionState::Failed { error } => Some(error.clone()),
+                        _ => None,
+                    },
+                })
+            })
+            .collect(),
+    )
+}
+
+/// A connection's state as one word: `idle`, `connecting`, `installing`, `connected`,
+/// `reconnecting`, `stopped` or `failed`.
+pub fn connection_state(state: &ConnectionState) -> &'static str {
+    match state {
+        ConnectionState::Idle => "idle",
+        ConnectionState::Connecting => "connecting",
+        ConnectionState::Installing { .. } => "installing",
+        ConnectionState::Connected => "connected",
+        ConnectionState::Reconnecting { .. } => "reconnecting",
+        ConnectionState::Stopped => "stopped",
+        ConnectionState::Failed { .. } => "failed",
+    }
+}
+
 fn failure(failure: Option<&Failure>) -> Value {
     match failure {
         Some(failure) => json!({"message": failure.message, "detail": failure.detail}),
@@ -187,6 +246,10 @@ fn repo(row: &RepoRow) -> Value {
         "location": row.location,
         "loading": row.loading,
         "error": failure(row.error.as_ref()),
+        "stopped": row.stopped,
+        "retry": row.retry,
+        "reconnecting": row.reconnecting,
+        "starting": row.starting,
         "working": row.working.map(|working| json!({
             "files": working.files,
             "additions": working.additions,

@@ -109,7 +109,7 @@ impl ReviewSession {
                         if on { "viewed" } else { "not viewed" },
                         failure.message
                     ),
-                    detail: failure.detail.clone(),
+                    ..failure.clone()
                 });
                 // A failed write leaves the stored state as it was, which the next toggle then
                 // flips; an intent kept here would flip the state that failed to land instead.

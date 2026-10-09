@@ -47,6 +47,40 @@ fn write_out(ctx: &mut Context, text: &str) -> Result<(), CliError> {
         })
 }
 
+/// `text` as one argument of a command dv suggests to paste on Windows (`dv.exe --wsl …`, `dv
+/// open …`), where the user's shell is PowerShell or cmd: as it is when it holds only letters,
+/// digits and the characters paths usually have; else in double quotes, which keep spaces and
+/// the like together in both; but text with `$`, a backtick or a double quote, which PowerShell
+/// expands or ends inside double quotes, in PowerShell's literal single quotes (a `'` in it
+/// doubled), there being no quoting both shells read alike for those.
+pub fn windows_arg(text: &str) -> String {
+    let plain = !text.is_empty()
+        && text.chars().all(|c| {
+            c.is_alphanumeric() || matches!(c, '\\' | '/' | '.' | '_' | '-' | ':' | '~' | '+')
+        });
+    if plain {
+        text.to_string()
+    } else if text.contains(['$', '`', '"']) {
+        format!("'{}'", text.replace('\'', "''"))
+    } else {
+        format!("\"{text}\"")
+    }
+}
+
+/// Prints `dv: warning: <text>` on stderr: something a command that succeeded left as it was.
+/// Best effort, like [`error`].
+pub(crate) fn warning(ctx: &mut Context, text: &str) -> Result<(), CliError> {
+    notice(ctx, &format!("warning: {text}"));
+    Ok(())
+}
+
+/// Prints `dv: <text>` on stderr: what a command does besides its work, which a person waits
+/// on (installing dv in a distro). Best effort, like [`error`].
+pub(crate) fn notice(ctx: &mut Context, text: &str) {
+    let _ = ctx.stderr.write_all(format!("dv: {text}\n").as_bytes());
+    let _ = ctx.stderr.flush();
+}
+
 /// Reports `error`: `dv: <message>` on stderr, then its candidates (`id  label  status  round
 /// n  worktree`, PLAN §10.2: the worktree tells apart two worktrees' reviews whose labels read
 /// the same) and its detail; with `json` also the error document on stdout. Returns its exit

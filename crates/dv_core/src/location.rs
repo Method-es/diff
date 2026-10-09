@@ -2,15 +2,20 @@
 //! (docs/PLAN.md §2.1, §10.1).
 //!
 //! A [`Location`] is what the user names (`--repo`, `--wsl`, a pasted path) and what a review
-//! records. Opening one yields the [`Backend`] every other layer works through (PLAN §5.1).
+//! records. A local one opens as a [`LocalBackend`](crate::backend::LocalBackend); a WSL one
+//! only through the distro's own dv (PLAN D6): the app opens it over a connection to `dv
+//! backend --stdio` there (`dv_ui`'s `Locations`, PLAN §5.1), and the CLI on Windows runs the
+//! whole command there (PLAN §10.4).
+//!
+//! WSL mounts each Windows drive at its default automount root, `/mnt/<letter>`:
+//! [`drive_path`] spells such a POSIX path for Windows (`/mnt/d/code` → `D:\code`), and
+//! [`mount_path`] a drive's path for the distro (`D:\code` → `/mnt/d/code`), so a path given on
+//! the other side of the boundary still names its folder (PLAN §10.1).
 
 use std::fmt;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-
-use crate::backend::{Backend, BackendError, LocalBackend};
 
 /// A repository's location.
 ///
@@ -21,7 +26,7 @@ use crate::backend::{Backend, BackendError, LocalBackend};
 #[serde(rename_all = "snake_case")]
 pub enum Location {
     /// A path on this machine's filesystem, as given: it may be relative or point anywhere inside
-    /// the work tree ([`LocalBackend::open`] resolves the root).
+    /// the work tree ([`crate::backend::LocalBackend::open`] resolves the root).
     Local(PathBuf),
     /// A path inside a WSL distro. `path` is an absolute POSIX path (`/home/kyle/api`), never a
     /// UNC path.
@@ -97,6 +102,61 @@ impl Location {
         }
     }
 
+    /// The Windows spelling of a WSL location's path, through the share Windows exposes the
+    /// distro's filesystem on: `\\wsl.localhost\Ubuntu\home\kyle\api` (`\\wsl.localhost\Ubuntu\`
+    /// for its root). `None` for a local path, which is already spelled for this machine.
+    pub fn unc_path(&self) -> Option<String> {
+        match self {
+            Location::Local(_) => None,
+            Location::Wsl { distro, path } => {
+                let rest = path.trim_start_matches('/').replace('/', "\\");
+                Some(format!(r"\\wsl.localhost\{distro}\{rest}"))
+            }
+        }
+    }
+
+    /// The file `rel` (a `/`-separated path inside the repository whose worktree root this
+    /// location is) as this machine opens it, for "Reveal in folder": under a local root, or
+    /// through the share Windows exposes a distro's files on for a WSL one
+    /// (`\\wsl.localhost\Ubuntu\home\kyle\api\src\main.rs`, [`Location::unc_path`]). Never a
+    /// POSIX path read as one of this machine's.
+    pub fn file_path(&self, rel: &str) -> PathBuf {
+        let root = match self {
+            Location::Local(path) => path.clone(),
+            Location::Wsl { .. } => PathBuf::from(self.unc_path().unwrap_or_default()),
+        };
+        rel.split('/')
+            .filter(|part| !part.is_empty())
+            .fold(root, |at, part| at.join(part))
+    }
+
+    /// Whether paths in this repository compare without case: a local one's on Windows and
+    /// macOS, whose file systems usually ignore it; never a WSL one's, on the distro's Linux
+    /// file system, wherever the app runs.
+    pub fn folds_case(&self) -> bool {
+        match self {
+            Location::Local(_) => cfg!(any(windows, target_os = "macos")),
+            Location::Wsl { .. } => false,
+        }
+    }
+
+    /// Whether `self` and `other` name the same place: equal, or WSL locations whose distros
+    /// differ only in case (`wsl.exe` takes distro names without case, so `ubuntu:/srv/x` is
+    /// `Ubuntu:/srv/x`). What a list of repositories compares where WSL's own spelling of the
+    /// distro isn't known.
+    pub fn same_place(&self, other: &Location) -> bool {
+        match (self, other) {
+            (
+                Location::Wsl { distro, path },
+                Location::Wsl {
+                    distro: other_distro,
+                    path: other_path,
+                },
+            ) => path == other_path && distro.to_lowercase() == other_distro.to_lowercase(),
+            _ => self == other,
+        }
+    }
+
     /// The short name for lists: the last path component (`api`); the distro name for a distro's
     /// root, the whole path when it has no last component (`D:\`, `.`).
     pub fn short_name(&self) -> String {
@@ -111,25 +171,57 @@ impl Location {
             },
         }
     }
-
-    /// Opens the backend for this location (PLAN §5.1): a [`LocalBackend`] honouring the user's
-    /// own git configuration for a local path. A WSL location needs the in-distro backend
-    /// (PLAN D6), which this build doesn't have, so it fails with
-    /// [`BackendError::Unavailable`] and never falls back to running `wsl.exe` per command.
-    pub fn open_backend(&self) -> Result<Arc<dyn Backend>, BackendError> {
-        match self {
-            Location::Local(path) => Ok(Arc::new(LocalBackend::open(path)?)),
-            Location::Wsl { .. } => Err(BackendError::Unavailable {
-                location: self.display_name(),
-                reason: "WSL support arrives later".to_string(),
-            }),
-        }
-    }
 }
 
 impl fmt::Display for Location {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.display_name())
+    }
+}
+
+/// `path`, an absolute POSIX path, as the Windows path of the drive it is on when it is under
+/// WSL's default automount root (`/mnt/<letter>`, module docs): `/mnt/d/code` → `D:\code`,
+/// `/mnt/c` → `C:\`. `None` for any other path. The inverse of [`mount_path`].
+pub fn drive_path(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("/mnt/")?;
+    let (letter, rest) = rest.split_once('/').unwrap_or((rest, ""));
+    let drive = drive_letter(letter)?;
+    let parts: Vec<&str> = rest.split('/').filter(|part| !part.is_empty()).collect();
+    Some(format!(
+        r"{}:\{}",
+        drive.to_ascii_uppercase(),
+        parts.join(r"\")
+    ))
+}
+
+/// `path`, a Windows drive's path (`D:\code\api`, `d:/code/api`, `D:`), as WSL mounts it at its
+/// default automount root (module docs): `/mnt/d/code/api`, `/mnt/d` for the drive's root.
+/// Either slash separates, and empty and `.` components go (`..` stays: only the file system
+/// resolves it). `None` for anything else: a relative or POSIX path, a share, a drive-relative
+/// `D:code`. The inverse of [`drive_path`].
+pub fn mount_path(path: &str) -> Option<String> {
+    let (head, rest) = path.split_at_checked(2)?;
+    let drive = drive_letter(head.strip_suffix(':')?)?;
+    if !(rest.is_empty() || rest.starts_with(['\\', '/'])) {
+        return None;
+    }
+    let mut mounted = format!("/mnt/{}", drive.to_ascii_lowercase());
+    for part in rest
+        .split(['\\', '/'])
+        .filter(|part| !part.is_empty() && *part != ".")
+    {
+        mounted.push('/');
+        mounted.push_str(part);
+    }
+    Some(mounted)
+}
+
+/// The drive `letter` names: one ASCII letter.
+fn drive_letter(letter: &str) -> Option<char> {
+    let mut chars = letter.chars();
+    match (chars.next(), chars.next()) {
+        (Some(drive), None) if drive.is_ascii_alphabetic() => Some(drive),
+        _ => None,
     }
 }
 

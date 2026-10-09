@@ -25,10 +25,15 @@ pub enum Exit {
     Usage,
     /// `dv review wait --timeout` ran out.
     Timeout,
-    /// The repository's backend can't run here (a WSL repository, for now).
+    /// The repository is in a WSL distro dv can't reach from here, or WSL, the distro or this
+    /// app's Linux build is unavailable (a command run inside the distro, PLAN §10.4; `dv
+    /// setup wsl`).
     Unavailable,
     /// GitHub (through `gh`) failed.
     GitHub,
+    /// Another exit code, passed through from dv run inside a WSL distro (PLAN §10.4): a
+    /// signal's, say.
+    Other(u8),
 }
 
 impl Exit {
@@ -41,6 +46,20 @@ impl Exit {
             Self::Timeout => 3,
             Self::Unavailable => 4,
             Self::GitHub => 5,
+            Self::Other(code) => code,
+        }
+    }
+
+    /// The exit a process exiting with `code` means: one of dv's own, or [`Exit::Other`].
+    pub fn from_code(code: u8) -> Self {
+        match code {
+            0 => Self::Ok,
+            1 => Self::Failure,
+            2 => Self::Usage,
+            3 => Self::Timeout,
+            4 => Self::Unavailable,
+            5 => Self::GitHub,
+            other => Self::Other(other),
         }
     }
 }
@@ -76,7 +95,8 @@ pub mod code {
     pub const UNSEEN_ROUND: &str = "unseen_round";
     /// The person at the terminal said no (`dv setup agents`).
     pub const CANCELLED: &str = "cancelled";
-    /// The repository's backend can't run here (a WSL repository).
+    /// The repository is in a WSL distro dv can't reach from here, or WSL, the distro or this
+    /// app's Linux build is unavailable (a command run inside the distro, `dv setup wsl`).
     pub const BACKEND_UNAVAILABLE: &str = "backend_unavailable";
     /// The review's target no longer resolves (a deleted branch), or a round's snapshot is
     /// gone.
@@ -131,7 +151,8 @@ impl CliError {
         Self::new(Exit::Failure, code::NOT_FOUND, message)
     }
 
-    /// The repository's backend can't run here: exit 4.
+    /// WSL, a distro or this app's Linux build can't be reached or used (a WSL repository's
+    /// command, `dv setup wsl`): exit 4.
     pub fn unavailable(message: impl Into<String>) -> Self {
         Self::new(Exit::Unavailable, code::BACKEND_UNAVAILABLE, message)
     }
@@ -179,7 +200,9 @@ impl From<BackendError> for CliError {
         let message = error.to_string();
         let detail = error.detail();
         let (exit, code) = match &error {
-            BackendError::Unavailable { .. } => (Exit::Unavailable, code::BACKEND_UNAVAILABLE),
+            BackendError::Unavailable { .. } | BackendError::Disconnected { .. } => {
+                (Exit::Unavailable, code::BACKEND_UNAVAILABLE)
+            }
             BackendError::PathNotFound { .. }
             | BackendError::NotARepository { .. }
             | BackendError::BareRepository { .. }

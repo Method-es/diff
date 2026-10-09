@@ -3,9 +3,12 @@
 //! stdout and stderr.
 //!
 //! Only headless commands (and `--help`, `--version`) are run here: `dv` alone or `dv open`
-//! would start the app on the owner's desktop. Every child gets the fixture's git environment
+//! would start the app on the owner's desktop, except in the headless build
+//! (`--no-default-features`), which has no window to open. These tests run in every shape. Every child gets the fixture's git environment
 //! and none of this process's `CLAUDECODE`, `DV_AUTHOR` or `DV_REVIEW` (Claude Code exports
-//! `CLAUDECODE` to the commands it runs).
+//! `CLAUDECODE` to the commands it runs). None crosses into a WSL distro: each child's
+//! `DV_LINUX_DIR` names a folder without a Linux build, so a WSL repository stops at exit 4
+//! before any `wsl.exe` starts (`tests/wsl_cli.rs` crosses for real, sandboxed).
 
 use std::io::Write as _;
 use std::path::Path;
@@ -45,6 +48,8 @@ fn command(repo: &FixtureRepo, cwd: &Path, args: &[&str], env: &[(&str, &str)]) 
         .env_remove("CLAUDECODE")
         .env_remove("DV_AUTHOR")
         .env_remove("DV_REVIEW")
+        .env_remove("DV_WSL_HOME")
+        .env("DV_LINUX_DIR", no_linux_build())
         .env_remove("RUST_LOG");
     for (name, value) in repo.env_overlay() {
         match value {
@@ -54,6 +59,11 @@ fn command(repo: &FixtureRepo, cwd: &Path, args: &[&str], env: &[(&str, &str)]) 
     }
     command.envs(env.iter().copied());
     command
+}
+
+/// A folder without a Linux build of dv: what keeps these tests out of every WSL distro.
+fn no_linux_build() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("no-linux-build")
 }
 
 fn fixture() -> FixtureRepo {
@@ -152,15 +162,37 @@ fn errors_go_to_stderr_and_set_the_exit_code() {
     assert_eq!(json(&output)["error"]["code"], "usage");
     assert!(stderr(&output).contains("--bogus"));
 
-    // A WSL repository: exit 4, nothing started.
+    // A WSL repository dv can't run in (no Linux build to run there; on Linux, another
+    // distro's): exit 4, nothing started.
     let output = dv(
         &repo,
         repo.path(),
-        &["status", "--repo", r"\\wsl.localhost\Ubuntu\home\kyle\api"],
+        &[
+            "status",
+            "--repo",
+            r"\\wsl.localhost\dv-no-such-distro\home\kyle\api",
+            "--json",
+        ],
         &[],
     );
-    assert_eq!(output.status.code(), Some(4));
-    assert!(stderr(&output).starts_with("dv: Ubuntu:/home/kyle/api is inside WSL"));
+    assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
+    assert_eq!(json(&output)["error"]["code"], "backend_unavailable");
+    let message = json(&output)["error"]["message"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    if cfg!(windows) {
+        assert!(
+            message.starts_with("no Linux build of dv for x86_64: ")
+                && message.contains("no-linux-build"),
+            "{message}"
+        );
+    } else {
+        assert!(
+            message.starts_with("dv-no-such-distro:/home/kyle/api is in the WSL distro"),
+            "{message}"
+        );
+    }
 
     // Outside a repository: exit 1.
     let outside = repo.outside_dir("plain");
@@ -289,4 +321,121 @@ fn a_snapshot_cache_that_cant_be_written_logs_nothing_on_a_success() {
             "{args:?}: the cache is only an optimisation"
         );
     }
+}
+
+#[test]
+fn backend_stdio_serves_until_its_stdin_ends_whatever_still_runs() {
+    use std::io::{BufRead as _, BufReader};
+    use std::time::{Duration, Instant};
+
+    let repo = fixture();
+    let mut child = command(&repo, repo.path(), &["backend", "--stdio"], &[])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("dv starts");
+    let mut requests = child.stdin.take().unwrap();
+    let mut replies = BufReader::new(child.stdout.take().unwrap());
+    let mut call = |request: Value| -> Value {
+        writeln!(requests, "{request}").unwrap();
+        let mut line = String::new();
+        replies.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap_or_else(|error| panic!("{error}: {line:?}"))
+    };
+
+    let hello = call(serde_json::json!({"id": 1, "op": "hello", "proto": 1}));
+    assert_eq!(hello["id"], 1);
+    assert_eq!(hello["ok"]["proto"], 1);
+    assert_eq!(hello["ok"]["pid"], child.id());
+    assert_eq!(hello["ok"]["build_ok"], Value::Null);
+    let env: Vec<(String, Option<String>)> = repo
+        .env_overlay()
+        .into_iter()
+        .map(|(name, value)| {
+            let text = |text: std::ffi::OsString| text.into_string().unwrap();
+            (text(name), value.map(text))
+        })
+        .collect();
+    let opened = call(serde_json::json!({
+        "id": 2, "op": "open", "path": repo.path(), "env": env,
+    }));
+    let handle = opened["ok"]["repo"].clone();
+    assert!(handle.is_u64(), "{opened}");
+
+    // A git that runs for seconds doesn't keep the process once its input ends.
+    writeln!(
+        requests,
+        "{}",
+        serde_json::json!({
+            "id": 3, "op": "git", "repo": handle, "args": ["-c", "alias.slow=!sleep 3", "slow"],
+        })
+    )
+    .unwrap();
+    drop(requests);
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "dv backend --stdio outlived its input"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(status.code(), Some(0));
+    assert!(
+        started.elapsed() < Duration::from_millis(2500),
+        "it waited for git: {:?}",
+        started.elapsed()
+    );
+    let mut rest = String::new();
+    std::io::Read::read_to_string(&mut replies, &mut rest).unwrap();
+    assert_eq!(rest, "", "the abandoned call is never answered");
+}
+
+#[test]
+fn backend_without_stdio_is_a_usage_error() {
+    let repo = fixture();
+    let output = dv(&repo, repo.path(), &["backend"], &[]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stderr(&output).contains("`dv backend --stdio`"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+/// The headless build (`--no-default-features`) has no window: `dv` and `dv open` exit 2 with
+/// where to open the repository instead. In a build with the app these would open a window,
+/// so they run only here.
+#[cfg(not(feature = "gui"))]
+#[test]
+fn without_the_app_dv_and_dv_open_say_where_to_open_the_repository() {
+    let repo = fixture();
+    for args in [&[][..], &["open"], &["open", "."]] {
+        let output = dv(&repo, repo.path(), args, &[("WSL_DISTRO_NAME", "")]);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(
+            stderr(&output).starts_with("dv: this build of dv has no window"),
+            "{args:?}: {}",
+            stderr(&output)
+        );
+        assert_eq!(stdout(&output), "");
+    }
+    let output = dv(
+        &repo,
+        repo.path(),
+        &["open", "--json"],
+        &[("WSL_DISTRO_NAME", "Ubuntu")],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    let error = json(&output);
+    assert_eq!(error["error"]["code"], "unsupported");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains(r"open the repository from Windows: `dv open \\wsl.localhost\Ubuntu\"),
+        "{message}"
+    );
 }

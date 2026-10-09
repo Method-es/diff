@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# The Linux build of dv that WSL distros run (docs/PLAN.md §5.2, §13.2): the headless shape
+# (`-p dv --no-default-features`: the CLI and `dv backend --stdio`, no gpui), static, for musl,
+# release with stripped symbols. It ships beside dv.exe, not inside it, so the build lands
+# beside the Windows builds as target/debug/dv-linux-<arch> and target/release/dv-linux-<arch>
+# (CARGO_TARGET_DIR's when that is set), where the app finds it (or DV_LINUX_DIR names it).
+#
+#   script/build-linux            x86_64-unknown-linux-musl
+#   script/build-linux --aarch64  also aarch64-unknown-linux-musl, linked with rust-lld; when
+#                                 that can't link here it says so and the x86_64 build stands
+#
+# On Windows it builds inside WSL Ubuntu with the target dir on the distro's ext4 disk
+# ($HOME/.cache/dv-target; building onto /mnt is many times slower); on Linux, a WSL distro
+# included, it builds right there the same way. rustup adds the musl targets on first use. The release profile itself is left alone: stripping is this build's
+# alone (CARGO_PROFILE_RELEASE_STRIP).
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+usage: script/build-linux [--aarch64]
+
+  builds the static Linux dv (x86_64-unknown-linux-musl) inside WSL Ubuntu and copies it to
+  target/debug/dv-linux-x86_64 and target/release/dv-linux-x86_64
+  --aarch64   also aarch64-unknown-linux-musl (dv-linux-aarch64), linked with rust-lld
+EOF
+}
+
+aarch64=0
+for arg in "$@"; do
+    case "$arg" in
+        --aarch64) aarch64=1 ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "script/build-linux: unknown argument: $arg" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+target_dir="${CARGO_TARGET_DIR:-$root/target}"
+
+# The build, run by Linux's bash in the checkout: $1 is where the copies go (a Windows path is
+# translated), $2 is 1 to also build aarch64.
+read -r -d '' inner <<'EOF' || true
+set -euo pipefail
+case "$1" in
+    [A-Za-z]:\\* | [A-Za-z]:/*) out="$(wslpath -u "$1")" ;;
+    *) out="$1" ;;
+esac
+export CARGO_TARGET_DIR="$HOME/.cache/dv-target"
+export CARGO_PROFILE_RELEASE_STRIP=symbols
+
+# Builds triple $1 as dv-linux-$2 and copies it to $out/{debug,release}; returns non-zero when
+# any step fails.
+build() {
+    local triple="$1" arch="$2" bin
+    echo "==> rustup target add $triple"
+    rustup target add "$triple" || return 1
+    echo "==> cargo build -p dv --no-default-features --release --target $triple"
+    cargo build -p dv --no-default-features --release --target "$triple" || return 1
+    bin="$CARGO_TARGET_DIR/$triple/release/dv"
+    # Static: no program interpreter, so it runs in any distro of that architecture.
+    if ! readelf -h "$bin" > /dev/null; then
+        echo "build-linux: $bin isn't an ELF file" >&2
+        return 1
+    fi
+    if readelf -l "$bin" | grep -q 'program interpreter'; then
+        echo "build-linux: $bin is linked dynamically; the WSL build must be static" >&2
+        return 1
+    fi
+    for profile in debug release; do
+        mkdir -p "$out/$profile" || return 1
+        cp "$bin" "$out/$profile/.dv-linux-$arch.tmp" || return 1
+        mv -f "$out/$profile/.dv-linux-$arch.tmp" "$out/$profile/dv-linux-$arch" || return 1
+    done
+    echo "ok: dv-linux-$arch $(sha256sum "$bin" | cut -d' ' -f1) ($(stat -c %s "$bin") bytes)"
+}
+
+build x86_64-unknown-linux-musl x86_64
+echo "==> dv-linux-x86_64 --version"
+"$out/debug/dv-linux-x86_64" --version
+
+if [ "$2" = 1 ]; then
+    if CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld \
+        build aarch64-unknown-linux-musl aarch64; then
+        echo "ok: dv-linux-aarch64 built (it can't run on this machine)"
+    else
+        echo "build-linux: the aarch64 build didn't link here; the x86_64 build stands" >&2
+    fi
+fi
+EOF
+
+# Linux first: inside a WSL distro, interop puts wsl.exe on PATH too, and the build belongs to
+# the distro it runs in. The hop through wsl.exe is Windows' (Git Bash, MSYS, Cygwin).
+case "$(uname -s)" in
+    Linux)
+        bash -c "$inner" bash "$target_dir" "$aarch64"
+        ;;
+    MINGW* | MSYS* | CYGWIN*)
+        if ! command -v wsl.exe > /dev/null 2>&1; then
+            echo "script/build-linux: wsl.exe isn't here; it builds inside WSL Ubuntu" >&2
+            exit 1
+        fi
+        win_root="$(cygpath -w "$root")"
+        win_target="$(cygpath -w "$target_dir")"
+        MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu --cd "$win_root" --exec bash -lc "$inner" \
+            bash "$win_target" "$aarch64"
+        ;;
+    *)
+        echo "script/build-linux: needs Windows (with WSL Ubuntu) or a Linux host" >&2
+        exit 1
+        ;;
+esac

@@ -26,7 +26,7 @@ fn strings(args: &[&str]) -> Vec<String> {
 
 /// `request` started with `exe` and the environment a child gets, no seeded repo involved.
 fn start(exe: &Path, request: &Request) -> Running {
-    let env = child_env(None, &base(), &request.env);
+    let env = child_env(None, &base(), &request.env, false);
     Running::start(exe, request, &env).expect("the child starts")
 }
 
@@ -52,7 +52,7 @@ fn git(repo: &FixtureRepo, args: &[&str], stdin: Option<&str>, env: &[(&str, &st
             .map(|(name, value)| (name.to_string(), Some(value.to_string())))
             .collect(),
     };
-    let env = child_env(Some(repo.env_overlay()), &base(), &request.env);
+    let env = child_env(Some(repo.env_overlay()), &base(), &request.env, false);
     let mut running = Running::start(Path::new("git"), &request, &env).expect("git starts");
     finish(&mut running)
 }
@@ -150,6 +150,14 @@ fn requests_parse_strictly() {
             "can't change DV_GH",
         ),
         (
+            json!({"args": ["status"], "env": {"DV_LINUX_DIR": "D:/builds"}}),
+            "can't change DV_LINUX_DIR",
+        ),
+        (
+            json!({"args": ["status"], "env": {"DV_WSL_HOME": null}}),
+            "can't change DV_WSL_HOME",
+        ),
+        (
             json!({"args": ["status"], "env": {"A=B": "1"}}),
             "isn't an environment",
         ),
@@ -230,12 +238,13 @@ fn the_child_environment_is_the_fixtures_without_the_agents_variables() {
         ("GIT_DIR".into(), None),
     ];
     let env = child_env(
-        Some(overlay),
+        Some(overlay.clone()),
         Path::new("/data"),
         &[
             ("CLAUDECODE".into(), Some("1".into())),
             ("RUST_LOG".into(), None),
         ],
+        false,
     );
     let set = |name: &str, value: &str| (OsString::from(name), Some(OsString::from(value)));
     let unset = |name: &str| (OsString::from(name), None);
@@ -254,10 +263,21 @@ fn the_child_environment_is_the_fixtures_without_the_agents_variables() {
             unset("CLAUDECODE"),
             unset("DV_AUTHOR"),
             unset("DV_REVIEW"),
+            // No Linux build to run inside a distro: a WSL repository is exit 4.
+            set(
+                "DV_LINUX_DIR",
+                Path::new("/data").join("no-linux-build").to_str().unwrap()
+            ),
             // `env` comes last, so a scenario can make the child Claude Code on purpose.
             set("CLAUDECODE", "1"),
             unset("RUST_LOG"),
         ]
+    );
+    // An app sandboxed by its own `DV_WSL_HOME` passes it, and the Linux build, on.
+    let sandboxed = child_env(Some(overlay), Path::new("/data"), &[], true);
+    assert!(
+        !sandboxed.iter().any(|(name, _)| name == "DV_LINUX_DIR"),
+        "{sandboxed:?}"
     );
 }
 

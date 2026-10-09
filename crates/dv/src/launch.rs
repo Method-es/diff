@@ -58,10 +58,17 @@ pub enum Startup {
 }
 
 /// What the app should open for `cli`, whose subcommand was `open` (`open`'s arguments) or
-/// none, run in `cwd`. A PR, two locations at once, a malformed review id and the headless
-/// commands' `--json` and `--author` (the app prints nothing and acts as the reviewer, PLAN
-/// §10.1) are usage errors (exit 2), before any window opens.
-pub fn startup(cli: &Cli, open: Option<&OpenArgs>, cwd: &Path) -> Result<Startup, CliError> {
+/// none, run in `cwd`, inside the WSL distro `here` when it runs in one (`dv_cli::this_distro`:
+/// a Windows drive's path then names that drive's mount, as for the commands). A PR, two
+/// locations at once, a malformed review id and the headless commands' `--json` and `--author`
+/// (the app prints nothing and acts as the reviewer, PLAN §10.1) are usage errors (exit 2),
+/// before any window opens.
+pub fn startup(
+    cli: &Cli,
+    open: Option<&OpenArgs>,
+    cwd: &Path,
+    here: Option<&str>,
+) -> Result<Startup, CliError> {
     if cli.global.json {
         return Err(CliError::usage(
             "`dv` and `dv open` start the app, which prints no JSON: --json is for the commands \
@@ -94,7 +101,7 @@ pub fn startup(cli: &Cli, open: Option<&OpenArgs>, cwd: &Path) -> Result<Startup
             .or_else(|| cli.global.repo.clone()),
         ..cli.global.clone()
     };
-    let location = dv_cli::location(&global, cwd)?;
+    let location = dv_cli::location(&global, cwd, here)?;
     if let Some(id) = &cli.global.review {
         let id = ReviewId::parse(id.trim())
             .map_err(|error| CliError::usage(format!("--review: {error}")))?;
@@ -120,8 +127,10 @@ fn is_pr(target: &str) -> bool {
 
 /// Checks, before detaching, that `startup` names a repository that opens (the app passes the
 /// default `options`: the user's own git configuration, as the app will open it) and, for a
-/// review, one the repository has. A WSL location is left to the app, whose switcher says why
-/// it can't open yet; bare `dv` outside a repository is fine (the app opens on nothing).
+/// review, one the repository has. A WSL location is left to the app, which reaches it through
+/// its distro's `dv backend --stdio` (PLAN §5.2): its path means nothing to this machine's file
+/// system, and checking it here would start a server (and boot the distro) only for the app to
+/// start them again. Bare `dv` outside a repository is fine (the app opens on nothing).
 pub fn check(startup: &Startup, options: LocalBackendOptions) -> Result<(), CliError> {
     let (path, review) = match startup {
         Startup::Repo(Location::Local(path)) => (path, None),

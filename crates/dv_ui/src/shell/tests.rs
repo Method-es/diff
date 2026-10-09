@@ -1,12 +1,19 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+use dv_backend::{Connection, Launcher};
 use dv_core::{Location, Target};
 use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point};
 use pretty_assertions::assert_eq;
 
 use super::status_bar::Health;
 use super::*;
-use crate::services::Mode;
+use crate::services::{Mode, Route};
 use crate::test_support::{add_repo, bounds, fixture, open_shell, settle};
 use crate::theme::{ActiveTheme as _, Appearance};
+
+mod pending;
 
 #[gpui::test]
 fn the_empty_shell_shows_the_no_review_state(cx: &mut TestAppContext) {
@@ -318,11 +325,20 @@ fn a_review_that_does_not_open_shows_a_banner_with_retry(cx: &mut TestAppContext
         distro: "Ubuntu".into(),
         path: "/home/kyle/web".into(),
     };
+    // Tests reach WSL through the stand-in, which refuses to start anything there. The
+    // headline is one line; why, and the connection's diagnostics, are the detail.
     let failure = open_review(&shell, wsl, OpenRequest::Target(Target::Working), cx)
-        .expect_err("WSL can't be opened yet");
+        .expect_err("no distro starts in a test");
+    assert_eq!(failure.message, "couldn't open Ubuntu:/home/kyle/web");
+    let detail = failure.detail.as_deref().expect("why");
     assert!(
-        failure.message.contains("WSL support arrives later"),
-        "{failure}"
+        detail.contains(crate::services::locations::wsl::REFUSED)
+            && detail.contains(
+                "
+history:
+"
+            ),
+        "{detail}"
     );
     cx.update(|_, cx| {
         let view = shell.read(cx);
@@ -342,7 +358,10 @@ fn a_review_that_does_not_open_shows_a_banner_with_retry(cx: &mut TestAppContext
         shell.opening().is_none()
     });
     shell.read_with(cx, |shell, _| {
-        assert_eq!(shell.banner().map(|b| &b.failure), Some(&failure))
+        assert_eq!(
+            shell.banner().map(|b| &b.failure.message),
+            Some(&failure.message)
+        )
     });
 }
 
@@ -564,5 +583,224 @@ fn a_long_note_or_name_never_pushes_the_handoff_out_of_its_region(cx: &mut TestA
     assert!(
         main.bottom() - banner.bottom() > gpui::px(200.),
         "the stream keeps its room: {banner:?} in {main:?}"
+    );
+}
+
+/// A loopback connection over an in-process server whose starts fail while `blocked`: one
+/// respawn after its server dies, so a death while blocked fails it for good.
+fn blockable_loopback(blocked: Arc<AtomicBool>) -> Arc<Connection> {
+    let launcher = Launcher::custom("an in-process server tests block", move || {
+        if blocked.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other("blocked by the test"));
+        }
+        Launcher::InProcess.start()
+    });
+    Connection::with_backoff("loopback", launcher, vec![Duration::from_millis(10)])
+}
+
+#[gpui::test]
+fn a_remote_review_shows_its_connection_and_a_banner_once_it_fails(cx: &mut TestAppContext) {
+    let (_dir, shell, cx) = open_shell(cx);
+    let repo = fixture();
+    let blocked = Arc::new(AtomicBool::new(false));
+    let connection = blockable_loopback(blocked.clone());
+    let locations = cx.update(|_, cx| cx.services().locations.clone());
+    locations.update(cx, |locations, _| {
+        locations.register(
+            repo.path().to_path_buf(),
+            Route {
+                env: repo.env_overlay(),
+                connection: Some(connection.clone()),
+            },
+        )
+    });
+    let location = Location::Local(repo.path().to_path_buf());
+    open_review(&shell, location, OpenRequest::Target(Target::Working), cx)
+        .expect("it opens through the loopback");
+    settle(cx, &shell, "the file list", |shell, cx| {
+        shell
+            .session()
+            .is_some_and(|session| session.read(cx).files().len() == 3)
+    });
+    cx.update(|_, cx| {
+        let view = shell.read(cx);
+        let status = view.status_line(cx);
+        assert_eq!(status.health, Health::Live);
+        assert_eq!(status.location, "loopback · watching for changes");
+        assert_eq!(view.backend_down(cx), None);
+    });
+
+    // Its server dies and can't start again: the status bar and the banner say so.
+    blocked.store(true, Ordering::SeqCst);
+    connection.kill();
+    settle(cx, &shell, "the connection to fail", |shell, cx| {
+        shell.backend_down(cx).is_some()
+    });
+    // A refresh meanwhile fails too; the connection's banner is the one that shows.
+    let session = shell.read_with(cx, |shell, _| shell.session().cloned().unwrap());
+    session.update(cx, |session, cx| session.rescan(cx));
+    settle(cx, &shell, "the refresh", |_, _| true);
+    cx.update(|_, cx| {
+        let view = shell.read(cx);
+        let status = view.status_line(cx);
+        assert_eq!(status.health, Health::Failing);
+        assert_eq!(status.location, "loopback · disconnected");
+        let down = view.backend_down(cx).expect("the backend-down banner");
+        assert_eq!(
+            down.failure.message,
+            "Lost the connection to dv in loopback"
+        );
+        assert_eq!(down.action, "Retry");
+        assert!(!down.stopped);
+        let detail = down.failure.detail.expect("the error and the diagnostics");
+        assert!(detail.contains("blocked by the test"), "{detail}");
+        assert!(detail.contains("connection: loopback"), "{detail}");
+        assert!(detail.contains("history:"), "{detail}");
+    });
+
+    // Retry, once it can start: connected, and the banner goes.
+    blocked.store(false, Ordering::SeqCst);
+    shell.update(cx, |shell, cx| shell.retry_backend(cx));
+    settle(cx, &shell, "the retry", |shell, cx| {
+        shell.backend_down(cx).is_none() && shell.status_line(cx).health == Health::Live
+    });
+    cx.update(|_, cx| {
+        let view = shell.read(cx);
+        assert_eq!(
+            view.status_line(cx).location,
+            "loopback · watching for changes"
+        );
+        let session = view.session().unwrap().read(cx);
+        assert_eq!(session.error(), None);
+        assert_eq!(session.files().len(), 3);
+    });
+}
+
+#[gpui::test]
+fn a_remote_review_whose_host_stops_says_so_and_starts_it_when_asked(cx: &mut TestAppContext) {
+    let (_dir, shell, cx) = open_shell(cx);
+    let repo = fixture();
+    // A server on a host the test stops, as the user stops a distro: its launcher's host check
+    // reads `up`, and a start boots it.
+    let up = Arc::new(AtomicBool::new(true));
+    let launcher = Launcher::custom("an in-process server on a host the test stops", {
+        let up = up.clone();
+        move || {
+            up.store(true, Ordering::SeqCst);
+            Launcher::InProcess.start()
+        }
+    })
+    .with_host_check({
+        let up = up.clone();
+        move |_| up.load(Ordering::SeqCst)
+    });
+    let connection = Connection::with_backoff("Ubuntu", launcher, vec![Duration::from_millis(10)]);
+    let locations = cx.update(|_, cx| cx.services().locations.clone());
+    locations.update(cx, |locations, _| {
+        locations.register(
+            repo.path().to_path_buf(),
+            Route {
+                env: repo.env_overlay(),
+                connection: Some(connection.clone()),
+            },
+        )
+    });
+    let location = Location::Local(repo.path().to_path_buf());
+    open_review(&shell, location, OpenRequest::Target(Target::Working), cx)
+        .expect("it opens through the connection");
+    settle(cx, &shell, "the file list", |shell, cx| {
+        shell
+            .session()
+            .is_some_and(|session| session.read(cx).files().len() == 3)
+    });
+
+    // The user stops the distro: its server dies, and dv starts it again only when asked.
+    up.store(false, Ordering::SeqCst);
+    connection.kill();
+    settle(cx, &shell, "the connection to stop", |shell, cx| {
+        shell.backend_down(cx).is_some_and(|down| down.stopped)
+    });
+    // A refresh meanwhile starts nothing and raises nothing of its own.
+    let session = shell.read_with(cx, |shell, _| shell.session().cloned().unwrap());
+    session.update(cx, |session, cx| session.rescan(cx));
+    settle(cx, &shell, "the refresh", |_, _| true);
+    cx.update(|_, cx| {
+        let view = shell.read(cx);
+        let status = view.status_line(cx);
+        assert_eq!(status.health, Health::Failing);
+        assert_eq!(status.location, "Ubuntu · stopped");
+        let down = view.backend_down(cx).expect("the backend-down banner");
+        assert_eq!(down.failure.message, "Ubuntu stopped");
+        assert_eq!(down.action, "Start Ubuntu");
+        let detail = down.failure.detail.expect("why, and the diagnostics");
+        assert!(
+            detail.contains("isn't running, so dv wasn't started"),
+            "{detail}"
+        );
+        let session = view.session().unwrap().read(cx);
+        assert_eq!(session.error(), None);
+        assert!(session.is_disconnected());
+        assert_eq!(session.files().len(), 3, "what it showed stays");
+    });
+    assert_eq!(connection.state(), ConnectionState::Stopped);
+
+    // Start: the explicit start boots it, and the review reads everything again.
+    shell.update(cx, |shell, cx| shell.retry_backend(cx));
+    settle(cx, &shell, "the start", |shell, cx| {
+        shell.backend_down(cx).is_none() && shell.status_line(cx).health == Health::Live
+    });
+    assert!(up.load(Ordering::SeqCst));
+    cx.update(|_, cx| {
+        let session = shell.read(cx).session().unwrap().read(cx);
+        assert_eq!(session.error(), None);
+        assert!(!session.is_disconnected());
+    });
+}
+
+#[gpui::test]
+fn a_wsl_repo_spelled_two_ways_is_one_repo_named_as_wsl_spells_its_distro(cx: &mut TestAppContext) {
+    let (dir, shell, cx) = open_shell(cx);
+    let locations = cx.update(|_, cx| cx.services().locations.clone());
+    // WSL lists the distro as `Ubuntu` (the stand-in starts nothing in it).
+    locations.read_with(cx, |locations, _| {
+        locations.wsl().set_distros(vec![dv_backend::wsl::Distro {
+            name: "Ubuntu".into(),
+            running: true,
+        }])
+    });
+    let lower = Location::parse(r"\\wsl$\ubuntu\home\kyle\api").unwrap();
+    let upper = Location::parse(r"\\wsl.localhost\Ubuntu\home\kyle\api").unwrap();
+    for location in [&lower, &upper] {
+        let known = open_repo(&shell, location.clone(), IfNotOpened::Banner, cx)
+            .expect("known as given, its row saying why");
+        assert_eq!(known, upper, "{location:?}");
+        cx.update(|window, cx| shell.update(cx, |shell, cx| shell.close_menu(window, cx)));
+    }
+    let failure = open_review(&shell, lower, OpenRequest::Target(Target::Working), cx)
+        .expect_err("nothing starts in a test");
+    assert_eq!(failure.message, "couldn't open Ubuntu:/home/kyle/api");
+    cx.update(|_, cx| {
+        let view = shell.read(cx);
+        assert_eq!(view.status_line(cx).location, "Ubuntu · can't be opened");
+        let reviews = cx.services().reviews.read(cx);
+        let rows: Vec<&Location> = reviews.rows().iter().map(|row| &row.location).collect();
+        assert_eq!(rows, [&upper]);
+        let connections = cx.services().locations.read(cx).connections().all();
+        assert_eq!(connections.len(), 1);
+        assert_eq!(connections[0].name(), "Ubuntu");
+    });
+    settle(cx, &shell, "the known repos to be saved", |_, _| true);
+    let saved: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("known_repos.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        saved["repos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|repo| &repo["location"])
+            .collect::<Vec<_>>(),
+        [&serde_json::to_value(&upper).unwrap()]
     );
 }

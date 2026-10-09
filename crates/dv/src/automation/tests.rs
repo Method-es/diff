@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use dv_ui::platform::MaterialSupport;
-use dv_ui::services::ServicesConfig;
+use dv_ui::services::{ServicesConfig, WslAccess};
 use dv_ui::system::SystemShell;
 use gpui::{TestAppContext, VisualTestContext};
 use pretty_assertions::assert_eq;
@@ -24,7 +24,13 @@ fn open(
     cx.update(|cx| {
         dv_ui::init(cx).unwrap();
         dv_ui::system::install(SystemShell::scripted(), cx);
-        dv_ui::services::init(ServicesConfig { data_dir }, cx);
+        dv_ui::services::init(
+            ServicesConfig {
+                data_dir,
+                wsl: WslAccess::scripted(Vec::new()),
+            },
+            cx,
+        );
         dv_ui::appearance::init(MaterialSupport::ALL, cx);
     });
     let (shell, cx) = cx.add_window_view(Shell::new);
@@ -208,10 +214,13 @@ fn state_describes_the_empty_shell(cx: &mut TestAppContext) {
             "empty_state": "no_review",
             "window_material": Material::platform_default().key(),
             "opening": false,
+            "pending": null,
             "banner": null,
+            "backend_banner": null,
             "status": {"health": "idle", "location": "No repo", "review": null, "finish": false},
         })
     );
+    assert_eq!(state["backends"], json!([]));
     assert_eq!(
         state["switcher"],
         json!({"open": false, "query": null, "selected": null, "items": []})
@@ -743,4 +752,216 @@ fn the_cli_commands_run_children_off_the_ui_thread(cx: &mut TestAppContext) {
         agent_cli::lock(&children).spawned_state(),
         Vec::<Value>::new()
     );
+}
+
+/// Lets real time pass until `done` holds of the state, settled or not (a connection's
+/// respawns run on their own threads).
+fn wait_for_state(
+    host: &Entity<DvAutomation>,
+    cx: &mut VisualTestContext,
+    what: &str,
+    done: impl Fn(&Value) -> bool,
+) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        cx.executor().advance_clock(Duration::from_millis(200));
+        cx.run_until_parked();
+        let state = state(host, cx);
+        if done(&state) {
+            return state;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {what}: {:#}",
+            state["backends"]
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[gpui::test]
+fn a_loopback_repo_rides_out_a_kill_and_a_block(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let (_dir, host, cx) = open(cx);
+    // A test can't name the dv executable: the loopback's server runs on a thread here.
+    host.update(cx, |host, _| {
+        host.loopback = backends::Loopback {
+            server: Some(dv_backend::Launcher::InProcess),
+            backoff: vec![Duration::from_millis(50); 3],
+        }
+    });
+    let error = run(
+        &host,
+        "seed_repo",
+        json!({"name": "web", "backend": "wsl"}),
+        cx,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("\"loopback\""), "{error}");
+    let seeded = run(
+        &host,
+        "seed_repo",
+        json!({"name": "api", "backend": "loopback", "steps": [
+            {"write": "a.txt", "text": "a\n"},
+            {"commit": "base"},
+            {"write": "a.txt", "text": "b\n"},
+        ]}),
+        cx,
+    )
+    .unwrap();
+    let path = seeded["path"].as_str().unwrap().to_string();
+    assert_eq!(state(&host, cx)["backends"][0]["state"], "idle");
+    run(&host, "open_review", json!({"path": path}), cx).unwrap();
+    let state = wait_until(&host, cx, "the review", |state| {
+        state["session"]["total"] == 1
+    });
+    assert_eq!(
+        state["backends"],
+        json!([{"name": "loopback", "state": "connected", "attempt": null, "generation": 1, "error": null}])
+    );
+    assert_eq!(
+        state["shell"]["status"]["location"],
+        "loopback · watching for changes"
+    );
+
+    // A kill: it reconnects by itself, and the edit made meanwhile shows.
+    let killed = run_waiting(&host, "backend_kill", json!({"name": "loopback"}), cx).unwrap();
+    assert_eq!(killed["state"], "reconnecting");
+    run(
+        &host,
+        "repo_edit",
+        json!({"name": "api", "steps": [{"write": "b.txt", "text": "b\n"}]}),
+        cx,
+    )
+    .unwrap();
+    let state = wait_for_state(&host, cx, "the reconnect's rescan", |state| {
+        state["backends"][0]["state"] == "connected" && state["session"]["total"] == 2
+    });
+    assert_eq!(state["backends"][0]["generation"], 2);
+    assert_eq!(state["shell"]["backend_banner"], Value::Null);
+
+    // Blocked, a kill runs out of respawns: failed, the banner and the status bar say so.
+    let reply = cx
+        .update(|window, cx| {
+            host.update(cx, |host, cx| {
+                host.custom(
+                    "backend_block",
+                    json!({"name": "loopback", "blocked": true}),
+                    window,
+                    cx,
+                )
+            })
+        })
+        .expect("a dv command")
+        .unwrap();
+    assert_eq!(reply, json!({"name": "loopback", "blocked": true}));
+    run_waiting(&host, "backend_kill", json!({"name": "loopback"}), cx).unwrap();
+    let state = wait_for_state(&host, cx, "the connection to fail", |state| {
+        state["backends"][0]["state"] == "failed"
+    });
+    assert!(
+        state["backends"][0]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("backend_block")),
+        "{:#}",
+        state["backends"]
+    );
+    assert_eq!(
+        state["shell"]["backend_banner"]["message"],
+        "Lost the connection to dv in loopback"
+    );
+    assert_eq!(
+        state["shell"]["status"]["location"],
+        "loopback · disconnected"
+    );
+    assert_eq!(state["shell"]["status"]["health"], "failing");
+
+    // Unblocked, the banner's Retry connects again.
+    cx.update(|window, cx| {
+        host.update(cx, |host, cx| {
+            host.custom(
+                "backend_block",
+                json!({"name": "loopback", "blocked": false}),
+                window,
+                cx,
+            )
+        })
+    })
+    .expect("a dv command")
+    .unwrap();
+    let shell = host.read_with(cx, |host, _| host.shell.clone());
+    shell.update(cx, |shell, cx| shell.retry_backend(cx));
+    let state = wait_for_state(&host, cx, "the retry", |state| {
+        state["backends"][0]["state"] == "connected" && state["shell"]["backend_banner"].is_null()
+    });
+    assert_eq!(
+        state["shell"]["status"]["location"],
+        "loopback · watching for changes"
+    );
+
+    let error = run_waiting(&host, "backend_kill", json!({"name": "nowhere"}), cx).unwrap_err();
+    assert!(error.to_string().contains("no connection named"), "{error}");
+    let error = cx
+        .update(|window, cx| {
+            host.update(cx, |host, cx| {
+                host.custom(
+                    "backend_block",
+                    json!({"name": "nowhere", "blocked": true}),
+                    window,
+                    cx,
+                )
+            })
+        })
+        .expect("a dv command")
+        .unwrap_err();
+    assert!(error.to_string().contains("no loopback"), "{error}");
+
+    // `backend_hold` holds the loopback's starts (released here: a held start would wait on
+    // this test's thread, where its background work runs).
+    let hold = |args: Value, cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            host.update(cx, |host, cx| host.custom("backend_hold", args, window, cx))
+        })
+        .expect("a dv command")
+    };
+    assert_eq!(
+        hold(json!({"name": "loopback", "held": false}), cx).unwrap(),
+        json!({"name": "loopback", "held": false})
+    );
+    let error = hold(json!({"name": "loopback"}), cx).unwrap_err();
+    assert!(error.to_string().contains("boolean \"held\""), "{error}");
+    let error = hold(json!({"name": "nowhere", "held": true}), cx).unwrap_err();
+    assert!(error.to_string().contains("no loopback"), "{error}");
+}
+
+#[gpui::test]
+fn wsl_distros_script_the_stand_in(cx: &mut TestAppContext) {
+    let (_dir, host, cx) = open(cx);
+    let custom = |args: Value, cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            host.update(cx, |host, cx| host.custom("wsl_distros", args, window, cx))
+        })
+        .expect("a dv command")
+    };
+    let reply = custom(
+        json!({"distros": [{"name": "Ubuntu", "running": false}]}),
+        cx,
+    )
+    .unwrap();
+    assert_eq!(
+        reply,
+        json!({"distros": [{"name": "Ubuntu", "running": false}]})
+    );
+    let distros = cx.update(|_, cx| cx.services().locations.read(cx).wsl().distros());
+    assert_eq!(
+        distros.unwrap(),
+        [dv_backend::wsl::Distro {
+            name: "Ubuntu".into(),
+            running: false
+        }]
+    );
+    let error = custom(json!({"distros": [{"name": "Ubuntu"}]}), cx).unwrap_err();
+    assert!(error.to_string().contains("\"running\""), "{error}");
+    let error = custom(json!({}), cx).unwrap_err();
+    assert!(error.to_string().contains("needs a list"), "{error}");
 }

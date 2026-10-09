@@ -4,8 +4,12 @@
 //! A repository that opens offers its targets — uncommitted changes, staged changes and, when a
 //! branch other than the default one is checked out, that branch against the default — each
 //! beside its open review when it has one (picking it resumes that review, PLAN §2.4), then its
-//! other open reviews. A repository that can't be opened lists none and says why. "Open folder…"
-//! closes the list, whatever the filter.
+//! other open reviews. A repository that can't be opened lists none and says why; one whose
+//! distro isn't running offers one row, **Start Ubuntu**, and one whose connection failed one
+//! row, **Retry**, each of which connects and then lists the repository as usual (PLAN §5.2);
+//! while it does, the row stays, inert ([`Item::is_starting`]), so the selection stays on it
+//! and picking it again does nothing. One whose connection is reconnecting says so and keeps
+//! the rows it had. "Open folder…" closes the list, whatever the filter.
 //!
 //! The filter keeps the rows whose repository name, path and label hold every word typed,
 //! ignoring case; a repository whose header matches but offers nothing still shows its header.
@@ -108,6 +112,11 @@ pub enum ItemKind {
     Target(TargetOffer),
     /// Resume an open review of another target.
     Review { label: String, badge: ReviewBadge },
+    /// Start the WSL distro the repository is in, which isn't running; `starting` while that
+    /// start runs.
+    Start { label: String, starting: bool },
+    /// Connect again to the repository, whose connection failed; `starting` while that runs.
+    Retry { starting: bool },
     /// The folder picker, to add a repository.
     OpenFolder,
 }
@@ -116,8 +125,8 @@ pub enum ItemKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Item {
     /// A stable name for the row: `<repo>/working`, `<repo>/staged`, `<repo>/branch`,
-    /// `<repo>/review/<id>` or `open_folder`, where `<repo>` is the repository's name (its full
-    /// path when two known repositories share a name).
+    /// `<repo>/review/<id>`, `<repo>/start`, `<repo>/retry` or `open_folder`, where `<repo>`
+    /// is the repository's name (its full path when two known repositories share a name).
     pub key: String,
     /// Its repository, an index into [`Listing::repos`].
     pub repo: Option<usize>,
@@ -129,9 +138,19 @@ impl Item {
     pub fn label(&self) -> &str {
         match &self.kind {
             ItemKind::Target(offer) => &offer.label,
-            ItemKind::Review { label, .. } => label,
+            ItemKind::Review { label, .. } | ItemKind::Start { label, .. } => label,
+            ItemKind::Retry { .. } => "Retry",
             ItemKind::OpenFolder => "Open folder…",
         }
+    }
+
+    /// A **Start** or **Retry** row whose start runs: drawn inert, and picking it does nothing
+    /// (module docs).
+    pub fn is_starting(&self) -> bool {
+        matches!(
+            self.kind,
+            ItemKind::Start { starting: true, .. } | ItemKind::Retry { starting: true }
+        )
     }
 
     /// The open review the row stands for or resumes.
@@ -139,15 +158,17 @@ impl Item {
         match &self.kind {
             ItemKind::Target(offer) => offer.review.as_ref(),
             ItemKind::Review { badge, .. } => Some(badge),
-            ItemKind::OpenFolder => None,
+            ItemKind::Start { .. } | ItemKind::Retry { .. } | ItemKind::OpenFolder => None,
         }
     }
 
-    /// `"target"`, `"review"` or `"open_folder"`, for automation state.
+    /// `"target"`, `"review"`, `"start"`, `"retry"` or `"open_folder"`, for automation state.
     pub fn kind_key(&self) -> &'static str {
         match self.kind {
             ItemKind::Target(_) => "target",
             ItemKind::Review { .. } => "review",
+            ItemKind::Start { .. } => "start",
+            ItemKind::Retry { .. } => "retry",
             ItemKind::OpenFolder => "open_folder",
         }
     }
@@ -160,6 +181,11 @@ pub enum RepoSummary {
     Loading,
     /// It can't be opened; the few words why.
     Unreachable(String),
+    /// Its WSL distro isn't running: the distro, which the row's **Start** starts.
+    Stopped(String),
+    /// Its distro is being started, or its connection retried: the line ("Starting Ubuntu…",
+    /// "connecting…").
+    Starting(String),
     /// Part of the row couldn't be read.
     Error(String),
     Clean,
@@ -173,7 +199,11 @@ pub struct RepoHeader {
     /// The name rows are keyed by (see [`Item::key`]).
     pub key: String,
     pub name: String,
+    /// Its full location, `RepoRow::path`.
     pub path: String,
+    /// The path the header shows beside its location chip: a WSL repository's path inside
+    /// its distro (the chip names the distro), else the full path.
+    pub shown_path: String,
     /// The distro of a WSL repository, for its location chip.
     pub distro: Option<String>,
     pub summary: RepoSummary,
@@ -217,9 +247,26 @@ impl Listing {
         let request = match &item.kind {
             ItemKind::Target(offer) => OpenRequest::Target(offer.target.clone()),
             ItemKind::Review { badge, .. } => OpenRequest::Review(badge.id.clone()),
-            ItemKind::OpenFolder => return None,
+            ItemKind::Start { .. } | ItemKind::Retry { .. } | ItemKind::OpenFolder => {
+                return None;
+            }
         };
         Some((location, request))
+    }
+
+    /// The repository picking `item` connects to, when it is a **Start** or **Retry** row
+    /// (whose start doesn't run already).
+    pub fn start(&self, item: usize) -> Option<Location> {
+        let item = self.items.get(item)?;
+        match item.kind {
+            ItemKind::Start {
+                starting: false, ..
+            }
+            | ItemKind::Retry { starting: false } => {
+                Some(self.repos.get(item.repo?)?.location.clone())
+            }
+            _ => None,
+        }
     }
 
     /// The first row of the repository at `location`.
@@ -229,6 +276,20 @@ impl Listing {
             .iter()
             .position(|repo| &repo.location == location)?;
         self.items.iter().position(|item| item.repo == Some(repo))
+    }
+
+    /// The first row of the repository at `location` that can be picked: not a start that
+    /// runs.
+    pub fn first_ready_of(&self, location: &Location) -> Option<usize> {
+        let first = self.first_of(location)?;
+        let repo = self.items.get(first)?.repo;
+        self.items
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take_while(|(_, item)| item.repo == repo)
+            .find(|(_, item)| !item.is_starting())
+            .map(|(ix, _)| ix)
     }
 
     /// The row that stands for the open review `id`.
@@ -254,6 +315,19 @@ fn repo_keys(rows: &[&RepoRow]) -> Vec<String> {
 }
 
 fn summary(row: &RepoRow) -> RepoSummary {
+    if row.starting {
+        return RepoSummary::Starting(match (&row.stopped, &row.location) {
+            (Some(distro), _) => format!("Starting {distro}…"),
+            (None, Location::Wsl { distro, .. }) => format!("{distro} · connecting…"),
+            (None, Location::Local(_)) => "connecting…".to_string(),
+        });
+    }
+    if let Some(distro) = &row.stopped {
+        return RepoSummary::Stopped(distro.clone());
+    }
+    if row.reconnecting {
+        return RepoSummary::Unreachable("reconnecting…".to_string());
+    }
     if let Some(reason) = &row.unreachable {
         return RepoSummary::Unreachable(reason.clone());
     }
@@ -276,9 +350,9 @@ pub fn build(rows: &[&RepoRow], query: &str) -> Listing {
     let keys = repo_keys(rows);
     let mut listing = Listing::default();
     for (row, key) in rows.iter().zip(keys) {
-        let distro = match &row.location {
-            Location::Wsl { distro, .. } => Some(distro.clone()),
-            Location::Local(_) => None,
+        let (distro, shown_path) = match &row.location {
+            Location::Wsl { distro, path } => (Some(distro.clone()), path.clone()),
+            Location::Local(_) => (None, row.path.clone()),
         };
         let repo_text = format!("{} {}", row.name, row.path).to_lowercase();
         let mut items: Vec<Item> = target_offers(row)
@@ -289,6 +363,26 @@ pub fn build(rows: &[&RepoRow], query: &str) -> Listing {
                 kind: ItemKind::Target(offer),
             })
             .collect();
+        // A stopped distro's repository offers to start it, and one whose connection failed
+        // to retry it, and nothing else (PLAN §5.2); the row stays while the start runs.
+        if let Some(distro) = &row.stopped {
+            items.push(Item {
+                key: format!("{key}/start"),
+                repo: None,
+                kind: ItemKind::Start {
+                    label: format!("Start {distro}"),
+                    starting: row.starting,
+                },
+            });
+        } else if row.retry {
+            items.push(Item {
+                key: format!("{key}/retry"),
+                repo: None,
+                kind: ItemKind::Retry {
+                    starting: row.starting,
+                },
+            });
+        }
         let offered: Vec<ReviewId> = items
             .iter()
             .filter_map(|item| item.review().map(|badge| badge.id.clone()))
@@ -332,6 +426,7 @@ pub fn build(rows: &[&RepoRow], query: &str) -> Listing {
             key,
             name: row.name.clone(),
             path: row.path.clone(),
+            shown_path,
             distro,
             summary: summary(row),
         });

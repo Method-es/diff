@@ -68,6 +68,8 @@ dv_icons! {
     MessageSquare => "message-square",
     MessageSquarePlus => "message-square-plus",
     Package => "package",
+    Play => "play",
+    RotateCw => "rotate-cw",
     Rows => "rows-2",
     Search => "search",
     Terminal => "square-terminal",

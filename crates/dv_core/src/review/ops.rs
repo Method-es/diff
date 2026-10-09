@@ -774,11 +774,11 @@ pub fn in_context<'s>(
     repo: &GitRepo,
 ) -> Result<Vec<&'s ReviewSummary>, OpError> {
     let worktrees = Worktrees::read(repo)?;
-    let here = &repo.info().toplevel;
+    let (location, here) = (&repo.info().location, &repo.info().toplevel);
     let mut found = Vec::new();
     for summary in summaries {
         match worktrees.home(repo, &summary.target, &summary.worktree) {
-            Ok(home) if home.is(here) => found.push(summary),
+            Ok(home) if home.is(location, here) => found.push(summary),
             Ok(_) | Err(HomeError::Gone { .. }) => {}
             Err(HomeError::Git(error)) => return Err(error.into()),
         }

@@ -35,7 +35,7 @@ pub(crate) fn add(
     let repo = Repo::open(global, ctx)?;
     let author = identity::author(global, ctx, repo.backend.as_ref())?;
     let review = select::review(&repo, global, ctx, None)?;
-    let file = repo.relative_path(&args.file, &review);
+    let file = repo.relative_path(&args.file, &review, ctx);
     let side = match args.side {
         SideArg::Old => AnchorSide::Old,
         SideArg::New => AnchorSide::New,

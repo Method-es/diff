@@ -343,12 +343,18 @@ impl ReviewSession {
                 self.ensure_review_texts(cx);
                 self.ensure_watch(cx);
             }
-            Err(error) => {
-                log::warn!("review {}: refresh failed: {error}", self.review.id);
-                self.error = Some(error);
-                cx.emit(SessionEvent::Error);
-                self.ensure_watch(cx);
-            }
+            Err(error) => match self.lost_connection(&error) {
+                // Back already: list again.
+                Some(true) => self.queued.get_or_insert_default().merge(batch),
+                // The list stays as it was; the reconnect's rescan lists again.
+                Some(false) => {}
+                None => {
+                    log::warn!("review {}: refresh failed: {error}", self.review.id);
+                    self.error = Some(error);
+                    cx.emit(SessionEvent::Error);
+                    self.ensure_watch(cx);
+                }
+            },
         }
         if let Some(queued) = self.queued.take() {
             self.refresh(queued, cx);
@@ -434,7 +440,8 @@ impl ReviewSession {
 
     /// Starts queued loads while there is room.
     pub(super) fn pump(&mut self, cx: &mut Context<Self>) {
-        if self.spec.is_none() {
+        // While the connection is down every load would fail at once (`connection`).
+        if self.spec.is_none() || self.link.down {
             return;
         }
         #[cfg(test)]
@@ -495,7 +502,18 @@ impl ReviewSession {
     ) {
         let current =
             matches!(self.states.get(path), Some(FileState::Loading { token: t }) if *t == token);
-        if current {
+        let lost = match &loaded {
+            Err(failure) if current => self.lost_connection(failure),
+            _ => None,
+        };
+        if lost.is_some() {
+            // It loads again once the connection is back (at once when it is already), still
+            // showing the diff it had meanwhile.
+            self.states.insert(path.to_string(), FileState::Unloaded);
+            if !self.queue.iter().any(|queued| queued == path) {
+                self.queue.push_front(path.to_string());
+            }
+        } else if current {
             self.previous.remove(path);
             match loaded {
                 Ok(diff) => {
@@ -744,11 +762,16 @@ impl ReviewSession {
                     }
                 }
             }
-            Err(error) => {
-                log::warn!("review {}: reload failed: {error}", self.review.id);
-                self.fold_error = Some(error);
-                cx.emit(SessionEvent::Error);
-            }
+            Err(error) => match self.lost_connection(&error) {
+                Some(true) => self.fold_again = true,
+                // The reconnect's rescan reads it again.
+                Some(false) => {}
+                None => {
+                    log::warn!("review {}: reload failed: {error}", self.review.id);
+                    self.fold_error = Some(error);
+                    cx.emit(SessionEvent::Error);
+                }
+            },
         }
         if std::mem::take(&mut self.fold_again) {
             self.reload_fold(cx);

@@ -96,7 +96,7 @@ geometry, bundled as SVG paths). No emoji anywhere.
 │ Open comments  3       │   …                                                                 │
 │  ◯ users.ts:31 …       │   next-file footer: "Next: …   Mark viewed and go next  V J"        │
 ├ status bar (chrome, 28) ──────────────────────────────────────────────────────────────────┤
-│ Ubuntu · backend connected   Draft review · 3 open · 1 resolved        Ctrl Enter finish review │
+│ Ubuntu · watching for changes   Draft review · 3 open · 1 resolved     Ctrl Enter finish review │
 └──────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -142,11 +142,27 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   over the scrim (which covers everything below the title bar; a click on it closes the switcher),
   radius 12. A filter field (46 high, search glyph) has the keyboard: typing filters (every word must
   appear in the repo's name, path or the row's label), `↑`/`↓` move the selection (wrapping), `Enter`
-  opens, `Esc` closes. Per known repo, most recently used first: a header — folder glyph, name at 600,
-  the location chip, the path in `fg3` (truncated at its start) — over one line: "uncommitted changes ·
+  opens, `Esc` closes. Per known repo (one per worktree root, however its distro is spelled: a
+  subfolder added before it could be reached becomes its root's row once a listing reaches it,
+  PLAN §11), most recently used first: a header — folder glyph, name at 600,
+  the location chip, the path in `fg3` (truncated at its start; a WSL repo's path inside its
+  distro, `/home/kyle/api`, the chip naming the distro) — over one line: "uncommitted changes ·
   7 files `+n −m`", "Working tree clean", a skeleton bar while it is computed, or why it can't be
-  opened (a triangle in `yellow` for an unreachable repo, "Ubuntu · WSL support arrives later"; in
-  `red` for a read error). Then its rows (30 high, indented): **Uncommitted changes**, **Staged
+  opened (a triangle in `yellow` for an unreachable repo: "Ubuntu isn't running", "Ubuntu · the
+  connection to dv failed: …", "Ubuntu · reconnecting…"; in `red` for a read error). A WSL repo
+  whose distro isn't running, whatever its connection did before, offers one row, **Start
+  Ubuntu** (play glyph): it connects, booting the distro (PLAN §5.2: listing never boots one),
+  the line reading "Starting Ubuntu…" in `fg3` meanwhile and the row staying, dimmed (`fg3`,
+  no hover) and inert, with the selection — `Enter` or a click on it again does nothing, and
+  the selection never drops to the footer — then lists the repo as usual, its first row taking
+  the selection; a start that fails leaves the line saying why ("Ubuntu · the connection to dv
+  failed: …" once the distro runs, else "Ubuntu isn't running" again), the row's Start or Retry
+  keeping the selection. A repo whose connection failed, its distro running, offers one row,
+  **Retry** (rotate glyph), which connects again the same way ("Ubuntu · connecting…" in `fg3`
+  meanwhile, the row inert as Start's). One whose connection is reconnecting reads "Ubuntu ·
+  reconnecting…" and keeps the rows its last listing had, and picking one of them opens it once
+  the connection is back. A repo's rows follow its connection going down or coming back
+  whether or not the switcher is open, so it never opens on a stale Start or "reconnecting…". Then its rows (30 high, indented): **Uncommitted changes**, **Staged
   changes** and, with a branch other than the default checked out, **Branch `feat` vs `main`**, each
   beside its open review (status chip, "round n", open-comment badge; "New review" on the selected row
   without one), then the repo's other open reviews by their target label. Picking a row opens or
@@ -270,7 +286,13 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   ("Go to next file `J`" once viewed; the last file says "Last file" with "Mark viewed `V`").
 - **Status bar:** a dot and the location with the backend's state — green "Local · watching for
   changes", yellow "· refreshes when focused" (the watch can't follow the worktree), red "· refresh
-  failed" or "· can't be opened", `fg3` "No repo" / "· opening…"; then, after a `|`, the review's
+  failed" or "· can't be opened", `fg3` "No repo" / "· opening…". A remote repo is named by its
+  connection (the distro: "Ubuntu · watching for changes"), whose state comes first: `fg3`
+  "Ubuntu · installing dv (3.1 / 7.4 MB)…" (also while its review opens) and "· connecting…",
+  yellow "· reconnecting…", red "· stopped" (the distro was shut down, which dv leaves so until
+  asked) and "· disconnected" (each with the banner, §4.4); a connection closed for idleness
+  (PLAN §5.1) is up, so the review's own state shows, "· refreshes when focused" when its watch
+  couldn't start; then, after a `|`, the review's
   status, round and thread counts ("Changes requested · round 2 · 3 open · 1 resolved", "no comments"
   when there are none; an interdiff adds "· since round 1"); at the right, `Ctrl Enter finish
   review` while the review can still be finished.
@@ -325,7 +347,19 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   other regions, never raw stderr as the headline (the first implementation painted git's stderr across
   the sidebar). The banner is `redSoft` with a `red` outline at 35%, radius 6, 12 in from the
   region's edges. A review that didn't open shows one at the top of the main area (Retry, Dismiss;
-  the review open before stays open); a refresh that failed shows one there too (Retry), and so
+  the review open before stays open); one in a WSL repo whose connection is the trouble reads
+  "couldn't open Ubuntu:/home/kyle/api", the connection's error and diagnostics (its launcher,
+  state history, the server's last output) in Details and Copy diagnostics. A review picked
+  whose connection is the trouble is never lost and never reported twice (PLAN §5.2): it waits
+  for the connection as the pending pick, and opens by itself once the connection is back (its
+  banner going, menus and the keyboard left where they are), but never in place of unsaved
+  text: while the "Finish round" sheet is open or a composer holds a draft, it waits on until
+  the sheet closes or the draft is posted or cancelled; meanwhile the main area raises nothing
+  while the open review goes through the same connection (its status bar and the backend-down
+  banner below say it), and otherwise shows the "couldn't open …" banner, whose Retry runs the
+  pick at once (the reviewer's own pick, as from the switcher) and whose Dismiss drops it; the
+  Dismiss of any other banner there leaves the pick waiting. A
+  refresh that failed shows one there too (Retry), and so
   does a folder (or a `dv open` path) that isn't a repository (Dismiss). A review whose worktree
   is gone (PLAN §2.2: a working review of a linked worktree removed since) says so in its
   headline, "review r-… can't be opened: its worktree is gone (removed, moved or deleted)", the
@@ -346,8 +380,19 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   fade into the banner's colour sits there while more of the note lies below. It goes once the
   reviewer finishes the round. Each handoff (the next round's, or the agent's `dv review done`
   again with another note) is a new banner, its note closed.
-- **Backend down (WSL):** status bar shows "Ubuntu · reconnecting…" → banner with **Retry** and
-  **Open setup**.
+- **Backend down (WSL):** while the connection to the distro's dv reconnects (PLAN §5.2) the status
+  bar says "Ubuntu · reconnecting…" in `yellow` and nothing else changes: the stream, the list and
+  the threads stay, no banner is raised for the calls that fail meanwhile, and the reconnect reads
+  everything again. Once it has failed for good, the status bar says "Ubuntu · disconnected" in
+  `red` and the error banner heads the main area: "Lost the connection to dv in Ubuntu", the
+  error and the connection's diagnostics (its launcher, state history and the server's last
+  output) in Details, **Retry** (connects again; the banner goes while it tries and comes back if
+  it fails) and Copy diagnostics; the review's own "refresh failed" banner stays down meanwhile.
+  When the distro was shut down (`wsl --shutdown`, which dv never undoes by itself, PLAN §5.2),
+  the status bar says "Ubuntu · stopped" in `red` and the banner reads "Ubuntu stopped", why and
+  the diagnostics in Details, with **Start Ubuntu** (boots it and connects; the review then reads
+  everything again) and Copy diagnostics. A banner that comes back after its action opens with
+  its Details closed. **Open setup** joins it with the setup screen (phase 6).
 - **Empty:** no changes ("Working tree clean — nothing to review" for a `working` review, "No changes
   — nothing to review" for other targets), an empty interdiff ("No changes since round 1",
   "Nothing changed after the round was handed over.", and **Show all changes** with its `I`

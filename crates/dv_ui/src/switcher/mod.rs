@@ -1,12 +1,17 @@
 //! The switcher (PLAN §11 `switcher`, DESIGN §4.1; `Ctrl O`): every known repository with its
 //! uncommitted changes, the targets it offers and its open reviews, in an overlay hung under the
 //! title bar's switcher button over the scrim (DESIGN §3). Picking a row opens or resumes that
-//! review; "Open folder…" adds a repository through the folder picker (`crate::system`).
+//! review; "Open folder…" adds a repository through the folder picker (`crate::system`); a
+//! stopped WSL distro's **Start** row starts it, and a failed connection's **Retry** row
+//! connects again, the switcher staying open while it lists the repository, which then has
+//! the selection. Meanwhile the Start or Retry row stays, inert, with the selection: picking
+//! it again does nothing.
 //!
 //! A filter field has the keyboard while it is open: typing filters ([`items::build`]), `↑`/`↓`
 //! move the selection (wrapping), `Enter` picks, `Esc` closes. The switcher only reports what
 //! was picked ([`SwitcherEvent`]); the shell opens it. Rows refresh as the reviews service
-//! recomputes them (it does when the switcher opens), keeping the selected row.
+//! recomputes them (it does when the switcher opens, and when a connection a row goes through
+//! starts reconnecting, stops or fails, or comes back), keeping the selected row.
 //!
 //! [`source`] is the title bar's other menu, the current repository's targets.
 //!
@@ -47,6 +52,9 @@ pub enum SwitcherEvent {
     },
     /// "Open folder…".
     OpenFolder,
+    /// **Start** on the repository at `location`, whose WSL distro isn't running, or **Retry**
+    /// on one whose connection failed: both connect explicitly (`Reviews::start`).
+    Start { location: Location },
     /// Closed without picking (`Esc`).
     Dismiss,
 }
@@ -59,6 +67,9 @@ pub struct Switcher {
     listing: Listing,
     /// Into `listing.items`.
     selected: usize,
+    /// The repository a **Start** or **Retry** was picked on: its first row takes the
+    /// selection once it lists one.
+    started: Option<Location>,
     scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -82,6 +93,8 @@ impl Switcher {
                     this.query_changed(cx);
                 }
             }),
+            // The reviews service lists a row again when its connection goes down or comes
+            // back, whether or not the switcher is open.
             cx.observe(&reviews, |this, _, cx| this.rebuild(cx)),
         ];
         let mut this = Self {
@@ -90,6 +103,7 @@ impl Switcher {
             query: String::new(),
             listing: Listing::default(),
             selected: 0,
+            started: None,
             scroll: ScrollHandle::new(),
             _subscriptions: subscriptions,
         };
@@ -153,8 +167,18 @@ impl Switcher {
             return;
         }
         self.listing = listing;
-        self.selected = keep
-            .and_then(|key| self.listing.position(&key))
+        // While it starts its repository lists its Start or Retry alone, inert, which keeps
+        // the selection; then its first row has it: a target once it lists, or Start or Retry
+        // again when the start failed.
+        let started = self
+            .started
+            .as_ref()
+            .and_then(|location| self.listing.first_ready_of(location));
+        if started.is_some() {
+            self.started = None;
+        }
+        self.selected = started
+            .or_else(|| keep.and_then(|key| self.listing.position(&key)))
             .unwrap_or(0);
         self.scroll_to_selected();
         cx.notify();
@@ -206,12 +230,21 @@ impl Switcher {
         cx.emit(SwitcherEvent::Dismiss);
     }
 
-    /// Picks row `ix` (Enter on it, or a click).
+    /// Picks row `ix` (Enter on it, or a click); a start that runs already does nothing.
     fn pick(&mut self, ix: usize, cx: &mut Context<Self>) {
         let Some(item) = self.listing.items.get(ix) else {
             return;
         };
         self.selected = ix;
+        if item.is_starting() {
+            cx.notify();
+            return;
+        }
+        if let Some(location) = self.listing.start(ix) {
+            self.started = Some(location.clone());
+            cx.emit(SwitcherEvent::Start { location });
+            return;
+        }
         match self.listing.request(ix) {
             Some((location, request)) => cx.emit(SwitcherEvent::Open { location, request }),
             None if item.kind == items::ItemKind::OpenFolder => cx.emit(SwitcherEvent::OpenFolder),

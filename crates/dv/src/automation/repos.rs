@@ -1,7 +1,9 @@
-//! Fixture repos for scenarios (PLAN §14.2): `seed_repo {name, steps}` builds one at
+//! Fixture repos for scenarios (PLAN §14.2): `seed_repo {name, steps, backend?}` builds one at
 //! `<data_dir>/repos/<name>` with `dv_test_support::FixtureRepo::persistent`, and
 //! `repo_edit {name, steps}` runs more steps on it, which is how a scenario plays the agent
-//! editing and committing. Steps are small JSON objects over the fixture's own methods:
+//! editing and committing. `"backend": "loopback"` reaches it through the loopback
+//! `dv backend --stdio` (`super::backends`); a `<name>.loopback` file beside it says so after a
+//! restart. Steps are small JSON objects over the fixture's own methods:
 //!
 //! | Step | Does |
 //! |---|---|
@@ -34,10 +36,13 @@ use dv_ui::ActiveServices as _;
 use gpui::{AppContext as _, Context, Task};
 use serde_json::{Map, Value, json};
 
-use super::DvAutomation;
+use super::{DvAutomation, SeededBackend};
 
 /// Where seeded repos go, inside the data dir.
 const REPOS_DIR: &str = "repos";
+
+/// What marks a seeded repo reached through the loopback, beside it: `<name>.loopback`.
+const LOOPBACK_MARK: &str = "loopback";
 
 /// One step of a `seed_repo` or `repo_edit`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -275,8 +280,9 @@ pub fn roots(fixture: &FixtureRepo) -> Vec<PathBuf> {
     roots
 }
 
-/// The seeded repos already in `data_dir` (an earlier launch of the same scenario), by name.
-pub fn reopen_seeded(data_dir: &Path) -> Vec<(String, FixtureRepo)> {
+/// The seeded repos already in `data_dir` (an earlier launch of the same scenario), by name,
+/// with how each is reached.
+pub fn reopen_seeded(data_dir: &Path) -> Vec<(String, FixtureRepo, SeededBackend)> {
     let dir = data_dir.join(REPOS_DIR);
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return Vec::new();
@@ -291,8 +297,13 @@ pub fn reopen_seeded(data_dir: &Path) -> Vec<(String, FixtureRepo)> {
         {
             continue;
         }
+        let backend = if dir.join(format!("{name}.{LOOPBACK_MARK}")).is_file() {
+            SeededBackend::Loopback
+        } else {
+            SeededBackend::Local
+        };
         match catch_unwind(|| FixtureRepo::reopen(&path)) {
-            Ok(fixture) => found.push((name, fixture)),
+            Ok(fixture) => found.push((name, fixture, backend)),
             Err(_) => log::warn!("couldn't reopen the seeded repo {}", path.display()),
         }
     }
@@ -300,8 +311,9 @@ pub fn reopen_seeded(data_dir: &Path) -> Vec<(String, FixtureRepo)> {
 }
 
 impl DvAutomation {
-    /// `seed_repo {name, steps}`: builds `<data_dir>/repos/<name>` and runs `steps` on it;
-    /// replies `{path, commits}` once it is registered with `Locations`.
+    /// `seed_repo {name, steps, backend?}`: builds `<data_dir>/repos/<name>` and runs `steps`
+    /// on it; replies `{path, commits}` once it is registered with `Locations`, reached in
+    /// process or, with `"backend": "loopback"`, through the loopback server.
     pub(super) fn seed_repo(
         &mut self,
         args: Value,
@@ -310,9 +322,9 @@ impl DvAutomation {
         let args = args.as_object().cloned().unwrap_or_default();
         if let Some(unknown) = args
             .keys()
-            .find(|key| !["name", "steps"].contains(&key.as_str()))
+            .find(|key| !["name", "steps", "backend"].contains(&key.as_str()))
         {
-            bail!("seed_repo takes name and steps, not {unknown:?}");
+            bail!("seed_repo takes name, steps and backend, not {unknown:?}");
         }
         let name = args
             .get("name")
@@ -321,21 +333,35 @@ impl DvAutomation {
             .to_string();
         check_name(&name)?;
         let steps = parse_steps(&args)?;
-        let path: PathBuf = cx.services().data_dir().join(REPOS_DIR).join(&name);
+        let backend = match args.get("backend") {
+            None | Some(Value::Null) => SeededBackend::Local,
+            Some(Value::String(kind)) if kind == "local" => SeededBackend::Local,
+            Some(Value::String(kind)) if kind == "loopback" => SeededBackend::Loopback,
+            Some(other) => bail!("seed_repo's backend is \"local\" or \"loopback\", not {other}"),
+        };
+        let repos = cx.services().data_dir().join(REPOS_DIR);
+        let path: PathBuf = repos.join(&name);
         if self.seeded.contains_key(&name) || path.exists() {
             bail!("a repo named {name:?} is already seeded");
         }
+        let mark = repos.join(format!("{name}.{LOOPBACK_MARK}"));
         let job = cx.background_spawn(async move {
             let fixture = catch_unwind(|| FixtureRepo::persistent(&path))
                 .map_err(|_| anyhow!("couldn't build a repo at {}", path.display()))?;
             let commits = run_steps(&fixture, &steps)?;
             let roots = roots(&fixture);
+            if backend == SeededBackend::Loopback {
+                std::fs::write(&mark, "")
+                    .with_context(|| format!("couldn't write {}", mark.display()))?;
+            }
             anyhow::Ok((fixture, commits, roots))
         });
         Ok(cx.spawn(async move |this, cx| {
             let (fixture, commits, roots) = job.await?;
             let path = fixture.path().display().to_string();
-            this.update(cx, |this, cx| this.register(name, fixture, roots, cx))?;
+            this.update(cx, |this, cx| {
+                this.register(name, fixture, backend, roots, cx)
+            })?;
             Ok(json!({"path": path, "commits": commits}))
         }))
     }
@@ -358,7 +384,7 @@ impl DvAutomation {
             .and_then(Value::as_str)
             .context("repo_edit needs a \"name\"")?;
         let steps = parse_steps(&args)?;
-        let fixture: Arc<Mutex<FixtureRepo>> = self
+        let (fixture, backend): (Arc<Mutex<FixtureRepo>>, SeededBackend) = self
             .seeded
             .get(name)
             .cloned()
@@ -374,7 +400,7 @@ impl DvAutomation {
         Ok(cx.spawn(async move |this, cx| {
             let (path, commits, roots, env) = job.await?;
             // A worktree the steps added gets the fixture's environment from now on.
-            this.update(cx, |this, cx| this.register_roots(roots, env, cx))?;
+            this.update(cx, |this, cx| this.register_roots(roots, env, backend, cx))?;
             Ok(json!({"path": path.display().to_string(), "commits": commits}))
         }))
     }

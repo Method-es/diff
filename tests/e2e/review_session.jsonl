@@ -37,11 +37,13 @@
 {"cmd": "wait_for", "pointer": "/session/status", "equals": "ready", "timeout_ms": 10000}
 {"cmd": "review_op", "op": "address", "thread": "t-00000000000000000000000000", "expect_error": "no thread"}
 
-// A WSL location is listed with why it can't be opened, and never crashes.
+// A WSL location is listed with why it can't be opened, and never crashes: this run reaches WSL
+// through the stand-in (no DV_WSL_HOME), which never starts anything in a distro.
+{"cmd": "wsl_distros", "distros": [{"name": "Ubuntu", "running": true}]}
 {"cmd": "open", "path": "\\\\wsl.localhost\\Ubuntu\\home\\kyle\\web"}
 {"cmd": "settle", "timeout_ms": 20000}
-{"expect": [{"pointer": "/repos", "len": 2}, {"pointer": "/repos", "contains": {"name": "web", "location": {"wsl": {"distro": "Ubuntu", "path": "/home/kyle/web"}}, "error": {"message": "Ubuntu:/home/kyle/web can't be opened: WSL support arrives later"}, "working": null, "reviews": []}}]}
-{"cmd": "open_review", "path": "\\\\wsl.localhost\\Ubuntu\\home\\kyle\\web", "expect_error": "can't be opened"}
+{"expect": [{"pointer": "/repos", "len": 2}, {"pointer": "/repos", "contains": {"name": "web", "location": {"wsl": {"distro": "Ubuntu", "path": "/home/kyle/web"}}, "error": {"message": "Ubuntu can't be opened: the connection to dv failed: couldn't start dv: an automation run starts dv in a WSL distro only with DV_WSL_HOME set (a scratch home inside the distro)"}, "working": null, "reviews": []}}, {"pointer": "/backends", "contains": {"name": "Ubuntu", "state": "failed"}}]}
+{"cmd": "open_review", "path": "\\\\wsl.localhost\\Ubuntu\\home\\kyle\\web", "expect_error": "couldn't open Ubuntu:/home/kyle/web"}
 {"cmd": "open", "path": "${data_dir}/no-such-repo", "expect_error": "no such directory"}
 
 // After a restart the repos are still known and the seeded one still opens with its fixture's environment.

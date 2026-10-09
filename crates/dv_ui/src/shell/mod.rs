@@ -13,8 +13,12 @@
 //! ([`Shell::open`], which the switcher, the source picker and automation's `open_review` all
 //! go through). Opening runs
 //! in the background; until it lands the main area shows that it is opening, and a failure shows
-//! as a banner at the top of the main area with Retry (DESIGN §4.4). With no review open the
-//! main area shows "Pick a repo to start a review"; a review with nothing to show says so.
+//! as a banner at the top of the main area with Retry (DESIGN §4.4). A pick whose connection is
+//! the trouble waits for it as the pending pick ([`pending`]): it runs again by itself once the
+//! connection is back and the open review holds no unsaved text (an open sheet, a composer's
+//! draft), and the main area raises nothing for it while the open review's backend-down banner
+//! and status bar report that connection. With no review open the main area shows "Pick a repo
+//! to start a review"; a review with nothing to show says so.
 //!
 //! **Keyboard.** It rests on the main area, which always renders with the diff pane's focus
 //! handle and key context inside the shell's, so `Ctrl O` and `Ctrl B` work at once and the
@@ -35,6 +39,16 @@
 //! the shell's key context, and every key would go nowhere; the shell's focus-lost listener
 //! hands it to the nearest drawn ancestor that takes the keyboard, else the main area.
 //!
+//! **A remote repository's connection** (PLAN §5.2, DESIGN §4.4). Once the connection to the
+//! open review's `dv backend --stdio` has failed for good, the main area's top shows "Lost the
+//! connection to dv in Ubuntu" with Retry (`Connection::retry`, off the UI thread), the error
+//! and the connection's diagnostics in Details, and Copy diagnostics; the status bar says
+//! "disconnected". Once it found its distro stopped (the user shut it down), the banner reads
+//! "Ubuntu stopped" and offers **Start Ubuntu**, the same explicit start, and the status bar
+//! says "stopped". The review's own refresh banner stays down meanwhile: the connection says
+//! all there is. While it only reconnects there is no banner, the status bar saying
+//! "reconnecting…".
+//!
 //! A finished review shows "Approved · this review is finished" at the top of the main area,
 //! with "Start a new review"; a `ready` one the agent's handoff, "claude-code marked round 2
 //! ready" with the first line of its note and "Show note" for the rest; an interdiff whose
@@ -44,6 +58,7 @@
 //! **Panel.** `Ctrl B` shows or hides it; dragging its right edge resizes it within 220–420,
 //! saved in `settings.json` (DESIGN §2).
 
+pub mod pending;
 mod render;
 mod status_bar;
 pub mod title_bar;
@@ -52,6 +67,7 @@ pub mod title_bar;
 mod tests;
 
 use anyhow::{Context as _, Result};
+use dv_backend::ConnectionState;
 use dv_core::review::{Author, ReviewId, ReviewStatus};
 use dv_core::{Location, Target};
 use futures::channel::oneshot;
@@ -64,17 +80,20 @@ use gpui_component::Root;
 
 use crate::actions::shell::{FinishReview, TogglePanel, ToggleSwitcher};
 use crate::comments_list::CommentsList;
-use crate::diff_pane::DiffPane;
+use crate::diff_pane::{DiffPane, DiffPaneEvent};
 use crate::failure::Failure;
 use crate::file_list::{FileList, FileListEvent};
 use crate::platform;
 use crate::services::ActiveServices as _;
+use crate::services::LocationsEvent;
 use crate::services::reviews::OpenRequest;
 use crate::session::{Comparison, ReviewSession, SessionEvent};
 use crate::submit::{FinishSheet, SheetEvent};
 use crate::switcher::source::{SourcePicker, SourcePickerEvent};
 use crate::switcher::{Switcher, SwitcherEvent};
 use crate::theme::{ActiveTheme as _, Appearance, DvTheme, Material};
+
+pub use pending::PendingPick;
 
 /// What the main area shows when there is nothing to review (DESIGN §4.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,6 +139,19 @@ pub struct Opening {
     pub location: Location,
     pub request: OpenRequest,
     generation: u64,
+    /// How many times this pick has run again by itself ([`pending`]); 0 for a pick.
+    runs: u32,
+}
+
+/// The backend-down banner ([`Shell::backend_down`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BackendDown {
+    pub failure: Failure,
+    /// Its action's label: "Retry", or "Start Ubuntu" for a stopped distro; either is the
+    /// connection's explicit start ([`Shell::retry_backend`]).
+    pub action: String,
+    /// The connection found its host stopped (the action starts it).
+    pub stopped: bool,
 }
 
 /// A failure the main area's banner shows, and how to retry it.
@@ -130,6 +162,8 @@ pub struct MainBanner {
     pub retry: Option<(Location, OpenRequest)>,
     /// Whether its detail is disclosed.
     pub expanded: bool,
+    /// It reports the pending pick ([`pending`]), which its Dismiss drops too.
+    pub pick: bool,
 }
 
 /// What [`Shell::open_repo`] shows when the location doesn't open.
@@ -175,6 +209,8 @@ pub struct Shell {
     sheet: Option<Overlay<FinishSheet>>,
     panel_visible: bool,
     opening: Option<Opening>,
+    /// A pick that waits for its connection ([`pending`]).
+    pending: Option<PendingPick>,
     /// Bumped by every open: an open that lands after a newer one started is dropped.
     open_generation: u64,
     /// Folder-picker and [`Shell::open_repo`] flows still running.
@@ -182,6 +218,8 @@ pub struct Shell {
     banner: Option<MainBanner>,
     /// Whether the session's error banner shows its detail.
     session_banner_expanded: bool,
+    /// Whether the backend-down banner shows its detail.
+    backend_banner_expanded: bool,
     /// Whether the ready banner shows the agent's whole note.
     ready_note_open: bool,
     /// The handoff the banner's disclosure state belongs to ([`handoff`]): a new one starts
@@ -202,7 +240,21 @@ impl Shell {
         let file_list = cx.new(|cx| FileList::new(diff_pane.clone(), window, cx));
         let comments_list = cx.new(|cx| CommentsList::new(diff_pane.clone(), cx));
         let settings = cx.services().settings.clone();
+        let locations = cx.services().locations.clone();
         let subscriptions = vec![
+            // A connection's state shows in the status bar while a review opens.
+            cx.observe(&locations, |_, _, cx| cx.notify()),
+            // A connection back runs the pick that waits for it ([`pending`]).
+            cx.subscribe_in(
+                &locations,
+                window,
+                |this, _, event: &LocationsEvent, window, cx| match event {
+                    LocationsEvent::ConnectionChanged { key, up: true } => {
+                        this.connection_back(key, window, cx)
+                    }
+                    LocationsEvent::ConnectionChanged { up: false, .. } => {}
+                },
+            ),
             cx.observe_global_in::<DvTheme>(window, |this, window, cx| {
                 this.apply_window_theme(window, cx);
                 cx.notify();
@@ -230,6 +282,15 @@ impl Shell {
                 window,
                 |this, _, event, window, cx| match event {
                     FileListEvent::Done => this.focus_handle.focus(window, cx),
+                },
+            ),
+            // A composer gone, its draft with it, runs a pick that waited for it ([`pending`]).
+            cx.subscribe_in(
+                &diff_pane,
+                window,
+                |this, _, event: &DiffPaneEvent, window, cx| match event {
+                    DiffPaneEvent::ComposerClosed => this.run_pending(window, cx),
+                    DiffPaneEvent::CurrentFileChanged => {}
                 },
             ),
             // The keyboard never stays on an element that is no longer drawn (module docs).
@@ -265,10 +326,12 @@ impl Shell {
             sheet: None,
             panel_visible: true,
             opening: None,
+            pending: None,
             open_generation: 0,
             adding: 0,
             banner: None,
             session_banner_expanded: false,
+            backend_banner_expanded: false,
             ready_note_open: false,
             ready_note_for: None,
             ready_note_scroll: ScrollHandle::new(),
@@ -318,6 +381,48 @@ impl Shell {
         self.banner.as_ref()
     }
 
+    /// The backend-down banner (module docs): what it says once the open review's connection
+    /// has failed, or found its distro stopped, with why and the connection's diagnostics as
+    /// its detail, and the label of its action (Retry, or Start Ubuntu).
+    pub fn backend_down(&self, cx: &App) -> Option<BackendDown> {
+        let session = self.session.as_ref()?.read(cx);
+        let connection = session.connection()?;
+        let name = connection.name();
+        let diagnostics = connection.diagnostics();
+        let diagnostics = diagnostics.trim_end();
+        match session.connection_state()? {
+            ConnectionState::Failed { error } => Some(BackendDown {
+                failure: Failure::with_detail(
+                    format!("Lost the connection to dv in {name}"),
+                    format!("{error}\n\n{diagnostics}"),
+                ),
+                action: "Retry".to_string(),
+                stopped: false,
+            }),
+            ConnectionState::Stopped => Some(BackendDown {
+                failure: Failure::with_detail(
+                    format!("{name} stopped"),
+                    format!(
+                        "{name} was shut down, so dv stopped too; dv starts it again only when \
+                         asked.\n\n{diagnostics}"
+                    ),
+                ),
+                action: format!("Start {name}"),
+                stopped: true,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The backend-down banner's Retry or Start: the connection's explicit start. The banner
+    /// goes while it tries; one that comes back starts with its detail closed.
+    pub fn retry_backend(&mut self, cx: &mut Context<Self>) {
+        self.backend_banner_expanded = false;
+        if let Some(session) = &self.session {
+            session.update(cx, |session, cx| session.retry_connection(cx));
+        }
+    }
+
     /// Shows `session`'s review, replacing (and so closing) the one open before.
     pub fn open_session(&mut self, session: Entity<ReviewSession>, cx: &mut Context<Self>) {
         // The row the review belongs to in the switcher: the repository it was opened from.
@@ -342,6 +447,7 @@ impl Shell {
         ];
         self.session = Some(session.clone());
         self.session_banner_expanded = false;
+        self.backend_banner_expanded = false;
         self.reset_ready_note(handoff(session.read(cx).review()));
         // A sheet over the review that was open goes with it.
         self.sheet = None;
@@ -452,7 +558,8 @@ impl Shell {
     /// Opens or resumes a review (the switcher's rows, the source picker, `open_review`) and
     /// shows it; a review already open stays as it is, with its sheet if one is open. The work
     /// runs in the background and lands even if the returned task, which only carries the
-    /// result, is dropped. A failure shows as the main area's banner.
+    /// result, is dropped. A failure shows as the main area's banner, or waits for its
+    /// connection as the pending pick ([`pending`]), which this pick replaces.
     pub fn open(
         &mut self,
         location: Location,
@@ -471,13 +578,28 @@ impl Shell {
                 "a round is being finished; open the review once it lands",
             )));
         }
+        self.pending = None;
         self.close_menu(window, cx);
+        self.begin_open(location, request, 0, window, cx)
+    }
+
+    /// The open itself ([`Shell::open`]), for a pick that has run again by itself `runs`
+    /// times ([`pending`]).
+    fn begin_open(
+        &mut self,
+        location: Location,
+        request: OpenRequest,
+        runs: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Opened, Failure>> {
         self.open_generation += 1;
         let generation = self.open_generation;
         self.opening = Some(Opening {
             location: location.clone(),
             request: request.clone(),
             generation,
+            runs,
         });
         self.banner = None;
         let reviews = cx.services().reviews.clone();
@@ -512,13 +634,14 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<Opened, Failure> {
-        if self
+        let Some(runs) = self
             .opening
             .as_ref()
-            .is_none_or(|opening| opening.generation != generation)
-        {
+            .filter(|opening| opening.generation == generation)
+            .map(|opening| opening.runs)
+        else {
             return Err(Failure::new("another review was opened meanwhile"));
-        }
+        };
         self.opening = None;
         cx.notify();
         match opened {
@@ -539,18 +662,15 @@ impl Shell {
                     let session = cx.new(|cx| ReviewSession::new(opened, cx));
                     self.open_session(session, cx);
                 }
-                // A sheet still open (the same review, resumed) keeps the keyboard.
-                if self.sheet.is_none() {
+                // A sheet still open (the same review, resumed) keeps the keyboard, and so does
+                // a menu open while a pending pick ran again by itself.
+                if self.sheet.is_none() && self.switcher.is_none() && self.source_picker.is_none() {
                     self.focus_handle.focus(window, cx);
                 }
                 Ok(result)
             }
             Err(failure) => {
-                self.banner = Some(MainBanner {
-                    failure: failure.clone(),
-                    retry: Some((location, request)),
-                    expanded: false,
-                });
+                self.open_failed(location, request, &failure, runs, window, cx);
                 Err(failure)
             }
         }
@@ -666,6 +786,8 @@ impl Shell {
             }
             SheetEvent::Finished(_) => {
                 self.sheet = None;
+                // A pick that waited for the sheet runs now, if its connection is up.
+                self.run_pending(window, cx);
                 // The keyboard returns to the stream, which shows the new round: now, or when
                 // a menu open over the sheet closes.
                 let menu_focus = match (&mut self.switcher, &mut self.source_picker) {
@@ -719,6 +841,8 @@ impl Shell {
             return false;
         };
         self.restore_focus(sheet.return_focus, window, cx);
+        // A pick that waited for the sheet runs now, if its connection is up ([`pending`]).
+        self.run_pending(window, cx);
         cx.notify();
         true
     }
@@ -763,6 +887,7 @@ impl Shell {
                             failure: Failure::new(format!("the folder picker failed: {error}")),
                             retry: None,
                             expanded: false,
+                            pick: false,
                         });
                     }
                 }
@@ -804,6 +929,7 @@ impl Shell {
                                 failure: failure.clone(),
                                 retry: None,
                                 expanded: false,
+                                pick: false,
                             });
                         }
                         Err(failure) => log::info!("nothing to open: {}", failure.message),
@@ -842,6 +968,12 @@ impl Shell {
                     .detach();
             }
             SwitcherEvent::OpenFolder => self.pick_folder(window, cx),
+            SwitcherEvent::Start { location } => {
+                let reviews = cx.services().reviews.clone();
+                reviews
+                    .update(cx, |reviews, cx| reviews.start(location.clone(), cx))
+                    .detach();
+            }
             SwitcherEvent::Dismiss => {
                 self.close_menu(window, cx);
             }

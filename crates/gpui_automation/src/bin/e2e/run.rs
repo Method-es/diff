@@ -15,7 +15,7 @@ use crate::foreground::{self, Mark, Watch, WindowInfo};
 use crate::process::{self, ChildProcess, ReadError};
 use crate::scenario::{
     Action, DATA_DIR_VAR, GH_VAR, GIT_CEILING_VAR, MOCK_GH_LOG_VAR, MOCK_GH_VAR, Restart, Scenario,
-    Step, substitute,
+    Step, WSL_HOME_VAR, substitute,
 };
 
 /// The file in a scenario's output dir that `DV_MOCK_GH_LOG` names.
@@ -116,6 +116,9 @@ impl Launcher<'_> {
             .arg(self.scenario.window_size())
             .args(substituted_args(&self.app_args, &self.vars));
         command
+            // Never one inherited from the runner's environment: only a header names a distro
+            // home dv may install into.
+            .env_remove(WSL_HOME_VAR)
             .envs(&self.scenario.header.env)
             .env("E2E_OUT_DIR", &self.out_dir)
             .env("E2E_DATA_DIR", &self.data_dir)
@@ -946,6 +949,10 @@ mod tests {
             "removed, so mock_gh answers nothing and no inherited scenario applies"
         );
         assert_eq!(
+            envs[WSL_HOME_VAR], None,
+            "removed, so dv reaches WSL through its stand-in"
+        );
+        assert_eq!(
             path(&envs[MOCK_GH_LOG_VAR]),
             Some(Path::new("out/demo").join(GH_LOG_FILE))
         );
@@ -969,6 +976,17 @@ mod tests {
                 "1440x900"
             ]
         );
+    }
+
+    #[test]
+    fn only_a_header_names_a_wsl_home() {
+        let config = config();
+        // An exploratory run against a real distro names its scratch home in the header.
+        let wsl = scenario(
+            "{\"scenario\": {\"env\": {\"DV_WSL_HOME\": \"/tmp/dv-explore\"}}}\n{\"cmd\": \"state\"}",
+        );
+        let envs = envs(&launcher(&config, &wsl).command());
+        assert_eq!(envs[WSL_HOME_VAR].as_deref(), Some("/tmp/dv-explore"));
     }
 
     #[test]

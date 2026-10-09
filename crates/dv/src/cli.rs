@@ -1,9 +1,13 @@
 //! dv's one command tree (PLAN §10.1): the GUI's options and `dv open` here, the headless
 //! commands and the global flags from `dv_cli`, composed so `dv --help` lists every command.
 
+use std::ffi::OsString;
+#[cfg(feature = "gui")]
 use std::{fmt, path::PathBuf, str::FromStr};
 
-use clap::{ArgGroup, Args, Parser, Subcommand};
+#[cfg(feature = "gui")]
+use clap::ArgGroup;
+use clap::{Args, CommandFactory as _, Parser, Subcommand};
 
 /// Review diffs and GitHub PRs locally. `dv` alone opens the app on the current repository;
 /// every command but `open` runs without a window.
@@ -11,32 +15,51 @@ use clap::{ArgGroup, Args, Parser, Subcommand};
 // before the scenario's own `app_args`, which may give another (tests/e2e/README.md, `restart`).
 #[derive(Parser, Debug, Clone, PartialEq)]
 #[command(name = "dv", bin_name = "dv", version, args_override_self = true)]
-#[command(group(ArgGroup::new("automation_mode").args(["automation", "automation_pipe"]).multiple(true)))]
+#[cfg_attr(
+    not(feature = "gui"),
+    command(
+        about = "Review diffs locally. This build of dv has no window: it runs the commands and \
+                 `dv backend --stdio`, and the app opens its repositories from Windows.",
+        long_about = None
+    )
+)]
+#[cfg_attr(
+    feature = "gui",
+    command(group(ArgGroup::new("automation_mode").args(["automation", "automation_pipe"]).multiple(true)))
+)]
 pub struct Cli {
+    // The app's options exist only in a build with the app (`gui`); the headless build's
+    // `--help` lists the commands alone.
+    #[cfg(feature = "gui")]
     /// Where dv keeps its settings [default: %APPDATA%\dv on Windows, the config dir elsewhere;
     /// under automation a fresh temporary folder].
     #[arg(long, env = "DV_DATA_DIR", value_name = "PATH")]
     pub data_dir: Option<PathBuf>,
 
+    #[cfg(feature = "gui")]
     /// Accept automation commands as JSON lines on stdin (PLAN §14, tests/e2e/README.md).
     #[arg(long)]
     pub automation: bool,
 
+    #[cfg(feature = "gui")]
     /// Serve automation on the Windows named pipe `\\.\pipe\<NAME>` instead of stdio, so a
     /// driver can attach to a running app. Implies `--automation`.
     #[arg(long, value_name = "NAME")]
     pub automation_pipe: Option<String>,
 
+    #[cfg(feature = "gui")]
     /// Under automation, open every window unfocused, behind all other windows and out of the
     /// taskbar, so scripted runs never disturb the person using the machine. The e2e runner
     /// passes it unless given `--foreground`. Needs `--automation` or `--automation-pipe`.
     #[arg(long, requires = "automation_mode")]
     pub automation_background: bool,
 
+    #[cfg(feature = "gui")]
     /// Window size in logical pixels, e.g. 1440x900 (minimum 1100x700) [default: 1440x900].
     #[arg(long, value_name = "WxH")]
     pub window_size: Option<WindowSize>,
 
+    #[cfg(feature = "gui")]
     /// Run the app in this process rather than starting it detached: what a detaching `dv`
     /// passes the copy it starts (PLAN §13.1).
     #[arg(long, hide = true)]
@@ -49,6 +72,7 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
+#[cfg(feature = "gui")]
 impl Cli {
     /// Whether the automation driver runs, over stdio or a named pipe.
     pub fn automation_enabled(&self) -> bool {
@@ -76,13 +100,60 @@ pub struct OpenArgs {
     pub target: Option<String>,
 }
 
+/// The command line `args` (the program name first, as parsed) as `dv_cli`'s own tree reads
+/// it: without the app's options, which only the app reads, which come before the command's
+/// name, and which a build without the app doesn't have. A command run inside a WSL distro
+/// passes this line on to the distro's dv (PLAN §10.4). The options are clap's own: the
+/// tree's arguments that aren't global.
+pub fn headless_args(args: &[OsString]) -> Vec<OsString> {
+    let tree = Cli::command();
+    let mut out = Vec::with_capacity(args.len());
+    let mut rest = args.iter();
+    out.extend(rest.next().cloned());
+    while let Some(arg) = rest.next() {
+        let name = arg
+            .to_str()
+            .and_then(|text| text.strip_prefix("--"))
+            .filter(|name| !name.is_empty());
+        let Some(name) = name else {
+            // The command's name (or a lone `--`): the rest is the command's.
+            out.push(arg.clone());
+            out.extend(rest.cloned());
+            break;
+        };
+        let (name, inline) = match name.split_once('=') {
+            Some((name, _)) => (name, true),
+            None => (name, false),
+        };
+        let option = tree
+            .get_arguments()
+            .find(|option| option.get_long() == Some(name));
+        let Some(option) = option else {
+            out.push(arg.clone());
+            continue;
+        };
+        let value = if !inline && option.get_action().takes_values() {
+            rest.next()
+        } else {
+            None
+        };
+        if option.is_global_set() {
+            out.push(arg.clone());
+            out.extend(value.cloned());
+        }
+    }
+    out
+}
+
 /// A window size in logical pixels, written `WIDTHxHEIGHT`.
+#[cfg(feature = "gui")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WindowSize {
     pub width: u32,
     pub height: u32,
 }
 
+#[cfg(feature = "gui")]
 impl WindowSize {
     /// DESIGN §2's reference size.
     pub const DEFAULT: WindowSize = WindowSize {
@@ -104,12 +175,14 @@ impl WindowSize {
     }
 }
 
+#[cfg(feature = "gui")]
 impl fmt::Display for WindowSize {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}x{}", self.width, self.height)
     }
 }
 
+#[cfg(feature = "gui")]
 impl FromStr for WindowSize {
     type Err = String;
 
@@ -140,6 +213,7 @@ mod tests {
         Cli::try_parse_from(std::iter::once("dv").chain(args.iter().copied()))
     }
 
+    #[cfg(feature = "gui")]
     #[test]
     fn defaults() {
         // `data_dir` is left out: clap reads DV_DATA_DIR, which an e2e run sets.
@@ -151,6 +225,7 @@ mod tests {
         assert_eq!(cli.window_size, None);
     }
 
+    #[cfg(feature = "gui")]
     #[test]
     fn automation_pipe_implies_automation() {
         let cli = parse(&["--automation-pipe", "dv-e2e"]).unwrap();
@@ -161,6 +236,7 @@ mod tests {
         assert!(parse(&["--automation"]).unwrap().automation_enabled());
     }
 
+    #[cfg(feature = "gui")]
     #[test]
     fn all_flags() {
         let cli = parse(&[
@@ -184,6 +260,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "gui")]
     #[test]
     fn window_size_syntax() {
         let size = |s: &str| s.parse::<WindowSize>();
@@ -206,6 +283,7 @@ mod tests {
         assert!(parse(&["--window-size", "big"]).is_err());
     }
 
+    #[cfg(feature = "gui")]
     #[test]
     fn window_size_respects_the_minimum() {
         let small = WindowSize {
@@ -222,6 +300,7 @@ mod tests {
         assert_eq!(WindowSize::DEFAULT.at_least_min(), WindowSize::DEFAULT);
     }
 
+    #[cfg(feature = "gui")]
     #[test]
     fn a_repeated_option_takes_its_last_value() {
         let cli = parse(&["--window-size", "1440x900", "--window-size", "900x600"]).unwrap();
@@ -234,11 +313,56 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "gui")]
     #[test]
     fn background_needs_automation() {
         assert!(parse(&["--automation-background"]).is_err());
         assert!(parse(&["--automation", "--automation-background"]).is_ok());
         assert!(parse(&["--automation-pipe", "p", "--automation-background"]).is_ok());
+    }
+
+    fn words(line: &[&str]) -> Vec<OsString> {
+        line.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn the_headless_line_is_the_line_without_the_apps_options() {
+        let plain = words(&["dv", "--repo", "x", "status", "--json", "--", "--data-dir"]);
+        assert_eq!(headless_args(&plain), plain);
+        assert_eq!(
+            headless_args(&words(&["dv", "--wsl=Ubuntu:/a", "comment", "list"])),
+            words(&["dv", "--wsl=Ubuntu:/a", "comment", "list"])
+        );
+        assert_eq!(headless_args(&words(&["dv"])), words(&["dv"]));
+    }
+
+    #[cfg(feature = "gui")]
+    #[test]
+    fn the_apps_options_are_left_out_of_the_headless_line() {
+        let line = words(&[
+            "dv",
+            "--data-dir",
+            "D:/data",
+            "--automation",
+            "--repo",
+            "../api",
+            "--window-size=1440x900",
+            "--author",
+            "codex",
+            "review",
+            "list",
+            "--json",
+        ]);
+        assert!(
+            parse(&["--data-dir", "D:/data", "--automation", "review", "list"]).is_ok(),
+            "the app's options parse before a headless command"
+        );
+        assert_eq!(
+            headless_args(&line),
+            words(&[
+                "dv", "--repo", "../api", "--author", "codex", "review", "list", "--json",
+            ])
+        );
     }
 
     #[test]
@@ -247,10 +371,22 @@ mod tests {
     }
 
     #[test]
-    fn one_tree_holds_the_app_and_the_headless_commands() {
+    fn one_tree_holds_open_and_the_headless_commands() {
         let cli = parse(&[]).unwrap();
         assert_eq!(cli.command, None);
-        assert!(!cli.no_detach);
+        assert_eq!(
+            parse(&["open", "../api"]).unwrap().command,
+            Some(Command::Open(OpenArgs {
+                target: Some("../api".into())
+            }))
+        );
+        let cli = parse(&["backend", "--stdio"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Some(Command::Headless(dv_cli::Command::Backend(
+                dv_cli::args::BackendArgs { stdio: true }
+            )))
+        );
 
         let cli = parse(&["status", "--json"]).unwrap();
         assert_eq!(
@@ -264,6 +400,26 @@ mod tests {
                 dv_cli::args::ReviewCommand::List(_)
             )))
         ));
+    }
+
+    #[cfg(not(feature = "gui"))]
+    #[test]
+    fn a_build_without_the_app_has_none_of_its_options() {
+        for flag in [
+            "--automation",
+            "--no-detach",
+            "--automation-background",
+            "--window-size=1440x900",
+            "--data-dir=x",
+        ] {
+            assert!(parse(&[flag]).is_err(), "{flag}");
+        }
+    }
+
+    #[cfg(feature = "gui")]
+    #[test]
+    fn the_apps_options_belong_to_the_app() {
+        assert!(!parse(&[]).unwrap().no_detach);
 
         // The e2e runner's line: the app's flags first, then the scenario's `open`.
         let cli = parse(&[

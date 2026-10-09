@@ -17,6 +17,7 @@
 //! a banner and the CLI as exit 1, rather than resolving the target in some other worktree.
 
 use crate::git::{GitError, GitRepo, Worktree};
+use crate::location::Location;
 use crate::target::Target;
 
 /// Where a review's target resolves (module docs).
@@ -29,10 +30,11 @@ pub enum Home {
 }
 
 impl Home {
-    /// Whether this home is the worktree whose root is `root`.
-    pub fn is(&self, root: &str) -> bool {
+    /// Whether this home is the worktree whose root is `root`, a worktree of the repository at
+    /// `location` ([`same_worktree`]).
+    pub fn is(&self, location: &Location, root: &str) -> bool {
         match self {
-            Self::Worktree(home) => same_worktree(home, root),
+            Self::Worktree(home) => same_worktree(location, home, root),
             Self::Anywhere => false,
         }
     }
@@ -67,12 +69,14 @@ impl Worktrees {
     /// apart from its files (`git init --separate-git-dir`, a submodule), git lists the main
     /// worktree by its git dir, which holds no files; that entry is left out too.
     pub fn read(repo: &GitRepo) -> Result<Self, GitError> {
-        let common_dir = &repo.info().common_dir;
+        let (location, common_dir) = (&repo.info().location, &repo.info().common_dir);
         let live = repo
             .worktrees()?
             .into_iter()
             .filter(|worktree| {
-                !worktree.bare && !worktree.prunable && !same_worktree(&worktree.path, common_dir)
+                !worktree.bare
+                    && !worktree.prunable
+                    && !same_worktree(location, &worktree.path, common_dir)
             })
             .collect();
         Ok(Self {
@@ -85,13 +89,14 @@ impl Worktrees {
     /// it), read through `repo`, a worktree of the same repository (blocking: a `branch`
     /// target looks up the ref its name stands for).
     pub fn home(&self, repo: &GitRepo, target: &Target, worktree: &str) -> Result<Home, HomeError> {
+        let location = &repo.info().location;
         match target {
             Target::Working | Target::Staged => {
-                if same_worktree(worktree, &repo.info().toplevel)
+                if same_worktree(location, worktree, &repo.info().toplevel)
                     || self
                         .live
                         .iter()
-                        .any(|live| same_worktree(&live.path, worktree))
+                        .any(|live| same_worktree(location, &live.path, worktree))
                 {
                     Ok(Home::Worktree(worktree.to_string()))
                 } else {
@@ -126,7 +131,7 @@ impl Worktrees {
                     .live
                     .iter()
                     .filter(has_it)
-                    .find(|live| same_worktree(&live.path, worktree))
+                    .find(|live| same_worktree(location, &live.path, worktree))
                     .or_else(|| self.live.iter().find(has_it));
                 Ok(checked_out.map_or(Home::Anywhere, |live| Home::Worktree(live.path.clone())))
             }
@@ -139,7 +144,9 @@ impl Worktrees {
 /// [`Worktrees::read`] when it takes one, then [`Worktrees::home`]).
 pub fn home(repo: &GitRepo, target: &Target, worktree: &str) -> Result<Home, HomeError> {
     let needs_list = match target {
-        Target::Working | Target::Staged => !same_worktree(worktree, &repo.info().toplevel),
+        Target::Working | Target::Staged => {
+            !same_worktree(&repo.info().location, worktree, &repo.info().toplevel)
+        }
         Target::Branch { .. } => true,
         Target::Commit { .. } | Target::Range { .. } | Target::Pr { .. } => false,
     };
@@ -151,13 +158,19 @@ pub fn home(repo: &GitRepo, target: &Target, worktree: &str) -> Result<Home, Hom
     worktrees.home(repo, target, worktree)
 }
 
-/// Whether two spellings of a worktree root name the same folder: `\` and `/` alike, a
-/// trailing separator ignored, and case too on Windows and macOS, whose file systems usually
-/// ignore it.
-pub fn same_worktree(a: &str, b: &str) -> bool {
+/// Whether two spellings of a worktree root of the repository at `location` name the same
+/// folder: `\` and `/` alike, a trailing separator ignored, and case too where the repository's
+/// file system ignores it ([`Location::folds_case`]: a local repository on Windows or macOS,
+/// never a WSL one, whose roots the Windows app compares as the distro spells them).
+pub fn same_worktree(location: &Location, a: &str, b: &str) -> bool {
+    same_root(location.folds_case(), a, b)
+}
+
+/// [`same_worktree`] with the repository's case rule given: `fold_case` ignores ASCII case.
+pub(crate) fn same_root(fold_case: bool, a: &str, b: &str) -> bool {
     let norm = |path: &str| path.replace('\\', "/").trim_end_matches('/').to_string();
     let (a, b) = (norm(a), norm(b));
-    if cfg!(any(windows, target_os = "macos")) {
+    if fold_case {
         a.eq_ignore_ascii_case(&b)
     } else {
         a == b

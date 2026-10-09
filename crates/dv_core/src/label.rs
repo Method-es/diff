@@ -3,7 +3,7 @@
 //! (PLAN §10), all from one place so the GUI and the CLI agree.
 
 use crate::git::GitRepo;
-use crate::review::home::same_worktree as same_root;
+use crate::review::home::same_root;
 use crate::target::Target;
 
 /// What a target's label needs to know about the repository: the branch checked out (or a
@@ -57,6 +57,8 @@ pub struct Labels {
     pub here: LabelContext,
     /// Its root, as reviews record it (`ReviewSummary::worktree`).
     root: String,
+    /// Whether roots compare without case (`Location::folds_case` of the repository read).
+    fold_case: bool,
     /// The other worktrees' roots and contexts.
     others: Vec<(String, LabelContext)>,
     /// For a worktree that is gone: no `HEAD` to compare with.
@@ -69,11 +71,12 @@ impl Labels {
     pub fn read(repo: &GitRepo) -> Self {
         let here = LabelContext::read(repo);
         let root = repo.info().toplevel.clone();
+        let fold_case = repo.info().location.folds_case();
         let others = repo
             .worktrees()
             .unwrap_or_default()
             .into_iter()
-            .filter(|worktree| !same_root(&worktree.path, &root))
+            .filter(|worktree| !same_root(fold_case, &worktree.path, &root))
             .map(|worktree| {
                 let head = worktree
                     .branch
@@ -94,6 +97,7 @@ impl Labels {
         Self {
             here,
             root,
+            fold_case,
             others,
             gone,
         }
@@ -117,12 +121,12 @@ impl Labels {
     /// [`Labels::here`].
     pub fn of_review(&self, target: &Target, worktree: &str) -> &LabelContext {
         let bound = matches!(target, Target::Working | Target::Staged);
-        if !bound || self.root.is_empty() || same_root(worktree, &self.root) {
+        if !bound || self.root.is_empty() || same_root(self.fold_case, worktree, &self.root) {
             return &self.here;
         }
         self.others
             .iter()
-            .find(|(root, _)| same_root(root, worktree))
+            .find(|(root, _)| same_root(self.fold_case, root, worktree))
             .map_or(&self.gone, |(_, context)| context)
     }
 

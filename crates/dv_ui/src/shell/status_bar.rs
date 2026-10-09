@@ -1,7 +1,16 @@
 //! The status bar (DESIGN §2, §4.1): where the review's repository lives and how dv reaches it
 //! (the location and the backend's state), the review's status, round and threads, and the key
 //! that finishes the round.
+//!
+//! A remote repository (a WSL distro's, PLAN §5.2) is named by its connection, whose state
+//! comes first: "Ubuntu · installing dv (3.1 / 7.4 MB)…" and "· connecting…" in `fg3`,
+//! "· reconnecting…" in yellow, "· stopped" (the distro was shut down; dv starts it only when
+//! asked) and "· disconnected" in red (the backend-down banner says why and offers Start or
+//! Retry); once it is connected, the review's own state as for a local one. A connection closed
+//! for idleness (PLAN §5.1: an open review whose watch couldn't start holds none) is up too,
+//! since the next call starts it again: the review's own state shows.
 
+use dv_backend::ConnectionState;
 use dv_core::Location;
 use dv_core::review::ThreadCounts;
 use gpui::{
@@ -13,6 +22,7 @@ use super::Shell;
 use crate::automation::AutomationTargetExt as _;
 use crate::components::{kbd, status_label};
 use crate::keymap;
+use crate::services::ActiveServices as _;
 use crate::theme::{DvTheme, StyledText as _};
 
 /// How the backend is doing, as the status bar's dot shows it.
@@ -22,9 +32,10 @@ pub enum Health {
     Idle,
     /// Opened and following changes.
     Live,
-    /// Opened, but the watch can't follow the worktree (the review refreshes on focus).
+    /// Opened, but the watch can't follow the worktree (the review refreshes on focus), or the
+    /// connection to its remote backend is reconnecting.
     Degraded,
-    /// It couldn't be opened, or its last refresh failed.
+    /// It couldn't be opened, its last refresh failed, or its connection failed.
     Failing,
 }
 
@@ -63,12 +74,55 @@ pub struct StatusLine {
     pub finish: bool,
 }
 
-/// `Local`, or a WSL repository's distro.
-fn place(location: &Location) -> String {
-    match location {
+/// `Local`, or a WSL repository's distro as WSL spells it, as far as dv has seen
+/// (`Locations::canonical`).
+fn place(location: &Location, cx: &App) -> String {
+    match cx.services().locations.read(cx).canonical(location) {
         Location::Local(_) => "Local".to_string(),
-        Location::Wsl { distro, .. } => distro.clone(),
+        Location::Wsl { distro, .. } => distro,
     }
+}
+
+/// How a connection that isn't up reads, and its dot; `None` while it is up: connected, or
+/// closed for idleness, which the next call starts again (module docs).
+fn connection_line(state: &ConnectionState) -> Option<(Health, String)> {
+    Some(match state {
+        ConnectionState::Connected | ConnectionState::Idle => return None,
+        ConnectionState::Connecting => (Health::Idle, "connecting…".to_string()),
+        ConnectionState::Installing { done, total } => (
+            Health::Idle,
+            format!(
+                "installing dv ({} / {} MB)…",
+                megabytes(*done),
+                megabytes(*total)
+            ),
+        ),
+        ConnectionState::Reconnecting { .. } => (Health::Degraded, "reconnecting…".to_string()),
+        ConnectionState::Stopped => (Health::Failing, "stopped".to_string()),
+        ConnectionState::Failed { .. } => (Health::Failing, "disconnected".to_string()),
+    })
+}
+
+/// How an open review's backend reads, and its dot: its connection's state while that isn't up
+/// (`connection`, `None` for a review opened in process), else the review's own: its refresh
+/// failed (`failed`), its watch can't follow the worktree (`unwatched`, it refreshes when the
+/// window is focused), or it is watching for changes.
+fn review_line(
+    connection: Option<&ConnectionState>,
+    failed: bool,
+    unwatched: bool,
+) -> (Health, String) {
+    match connection.and_then(connection_line) {
+        Some(line) => line,
+        None if failed => (Health::Failing, "refresh failed".into()),
+        None if unwatched => (Health::Degraded, "refreshes when focused".into()),
+        None => (Health::Live, "watching for changes".into()),
+    }
+}
+
+/// `bytes` in megabytes (10^6) to one decimal: `3.1`.
+fn megabytes(bytes: u64) -> String {
+    format!("{:.1}", bytes as f64 / 1_000_000.0)
 }
 
 /// "3 open · 1 addressed · 1 resolved", leaving out what is zero; "no comments" when all are.
@@ -93,22 +147,34 @@ impl Shell {
     /// What the status bar says now.
     pub fn status_line(&self, cx: &App) -> StatusLine {
         if let Some(opening) = &self.opening {
+            // Opening a WSL repository may start its distro and install dv there first.
+            let connection = cx
+                .services()
+                .locations
+                .read(cx)
+                .connection_for(&opening.location);
+            let (health, state) = connection
+                .and_then(|connection| match connection.state() {
+                    state @ (ConnectionState::Installing { .. } | ConnectionState::Connecting) => {
+                        connection_line(&state)
+                    }
+                    _ => None,
+                })
+                .unwrap_or((Health::Idle, "opening…".to_string()));
             return StatusLine {
-                health: Health::Idle,
-                location: format!("{} · opening…", place(&opening.location)),
+                health,
+                location: format!("{} · {state}", place(&opening.location, cx)),
                 review: None,
                 finish: false,
             };
         }
         if let Some(session) = &self.session {
             let session = session.read(cx);
-            let (health, state) = if session.error().is_some() {
-                (Health::Failing, "refresh failed")
-            } else if session.watch_notice().is_some() {
-                (Health::Degraded, "refreshes when focused")
-            } else {
-                (Health::Live, "watching for changes")
-            };
+            let (health, state) = review_line(
+                session.connection_state(),
+                session.error().is_some(),
+                session.watch_notice().is_some(),
+            );
             let review = session.review();
             // An interdiff says so (PLAN §2.3).
             let since = session
@@ -119,7 +185,7 @@ impl Shell {
             // A finished review names the round that finished it, not one that never opens.
             return StatusLine {
                 health,
-                location: format!("{} · {state}", place(&session.backend().repo().location)),
+                location: format!("{} · {state}", session.backend_place()),
                 review: Some(format!(
                     "{} · round {} · {}{since}",
                     status_label(review.status),
@@ -132,7 +198,7 @@ impl Shell {
         if let Some((location, _)) = self.banner.as_ref().and_then(|b| b.retry.as_ref()) {
             return StatusLine {
                 health: Health::Failing,
-                location: format!("{} · can't be opened", place(location)),
+                location: format!("{} · can't be opened", place(location, cx)),
                 review: None,
                 finish: false,
             };
@@ -206,6 +272,73 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_connection_that_isnt_up_says_how_it_stands() {
+        assert_eq!(connection_line(&ConnectionState::Connected), None);
+        assert_eq!(connection_line(&ConnectionState::Idle), None);
+        assert_eq!(
+            connection_line(&ConnectionState::Connecting),
+            Some((Health::Idle, "connecting…".into()))
+        );
+        assert_eq!(
+            connection_line(&ConnectionState::Installing {
+                done: 3_100_000,
+                total: 7_430_000,
+            }),
+            Some((Health::Idle, "installing dv (3.1 / 7.4 MB)…".into()))
+        );
+        assert_eq!(
+            connection_line(&ConnectionState::Reconnecting { attempt: 2 }),
+            Some((Health::Degraded, "reconnecting…".into()))
+        );
+        assert_eq!(
+            connection_line(&ConnectionState::Stopped),
+            Some((Health::Failing, "stopped".into()))
+        );
+        assert_eq!(
+            connection_line(&ConnectionState::Failed {
+                error: "dv died".into()
+            }),
+            Some((Health::Failing, "disconnected".into()))
+        );
+    }
+
+    #[test]
+    fn an_open_review_whose_connection_idled_out_reads_as_its_own_state() {
+        // Its watch couldn't start, so nothing kept the server: the next call starts it again,
+        // and meanwhile the review refreshes when focused, which is what the bar says.
+        let idle = Some(&ConnectionState::Idle);
+        assert_eq!(
+            review_line(idle, false, true),
+            (Health::Degraded, "refreshes when focused".into())
+        );
+        assert_eq!(
+            review_line(idle, false, false),
+            (Health::Live, "watching for changes".into())
+        );
+        assert_eq!(
+            review_line(idle, true, true),
+            (Health::Failing, "refresh failed".into())
+        );
+        // A connection that is down still comes first.
+        assert_eq!(
+            review_line(
+                Some(&ConnectionState::Reconnecting { attempt: 1 }),
+                false,
+                true
+            ),
+            (Health::Degraded, "reconnecting…".into())
+        );
+        assert_eq!(
+            review_line(Some(&ConnectionState::Connecting), false, true),
+            (Health::Idle, "connecting…".into())
+        );
+        assert_eq!(
+            review_line(None, false, true),
+            (Health::Degraded, "refreshes when focused".into())
+        );
+    }
 
     #[test]
     fn thread_counts_leave_out_zeros() {

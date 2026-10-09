@@ -173,8 +173,8 @@ lines as they were).
   asked about with `--review <review-id>`. With `no_review` and no candidates there is no review
   to answer: tell the user.
 - `3`: `dv review wait` timed out.
-- `4`: the repository is inside WSL and dv runs on Windows: run dv inside the distro instead
-  (`wsl -d <distro> --cd <path> dv …`).
+- `4`: dv couldn't reach the WSL distro the repository is in (WSL, the distro or dv's Linux
+  build is missing; the message says which): tell the user.
 
 Errors go to stderr; with `--json`, stdout also carries `{"schema": 1, "error": {"code",
 "message"}}`.

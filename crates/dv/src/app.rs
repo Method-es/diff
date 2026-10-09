@@ -6,8 +6,8 @@ use std::{cell::Cell, path::PathBuf, process::ExitCode, rc::Rc};
 
 use anyhow::{Result, bail};
 use dv_ui::platform::MaterialSupport;
-use dv_ui::services::ServicesConfig;
 use dv_ui::services::reviews::OpenRequest;
+use dv_ui::services::{ServicesConfig, WslAccess};
 use dv_ui::shell::{IfNotOpened, MainWindow};
 use dv_ui::system::SystemShell;
 use gpui::{App, QuitMode, px, size};
@@ -126,7 +126,9 @@ fn start(startup: StartOptions, cx: &mut App) -> Result<()> {
         },
         cx,
     );
-    dv_ui::services::init(ServicesConfig { data_dir }, cx);
+    // An automation run reaches WSL only through the sandbox seam (`WslAccess::for_run`).
+    let wsl = WslAccess::for_run(automation);
+    dv_ui::services::init(ServicesConfig { data_dir, wsl }, cx);
     // The settings' material and mode, before the first frame.
     dv_ui::appearance::init(MaterialSupport::probe(), cx);
 
@@ -135,10 +137,12 @@ fn start(startup: StartOptions, cx: &mut App) -> Result<()> {
         size(px(window_size.width as f32), px(window_size.height as f32)),
         cx,
     )?;
-    open_startup(open, &main, cx)?;
+    // Automation first: its host registers the seeded repos' routes (a `<name>.loopback`
+    // repo goes through the loopback), which what `dv open` names must see.
     if automation {
-        start_automation(main, automation_pipe, cx)?;
+        start_automation(&main, automation_pipe, cx)?;
     }
+    open_startup(open, &main, cx)?;
     // A background run must never take the foreground from the person at the machine.
     if !dv_ui::automation::is_background() {
         cx.activate(true);
@@ -181,12 +185,12 @@ fn set_background(_background: bool) {
 }
 
 #[cfg(feature = "automation")]
-fn start_automation(main: MainWindow, pipe: Option<String>, cx: &mut App) -> Result<()> {
-    crate::automation::start(main.handle.into(), main.shell, pipe, cx)
+fn start_automation(main: &MainWindow, pipe: Option<String>, cx: &mut App) -> Result<()> {
+    crate::automation::start(main.handle.into(), main.shell.clone(), pipe, cx)
 }
 
 #[cfg(not(feature = "automation"))]
-fn start_automation(_main: MainWindow, _pipe: Option<String>, _cx: &mut App) -> Result<()> {
+fn start_automation(_main: &MainWindow, _pipe: Option<String>, _cx: &mut App) -> Result<()> {
     // `run` refuses `--automation` in this build before the app starts.
     Ok(())
 }

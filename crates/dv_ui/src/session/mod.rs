@@ -33,6 +33,10 @@
 //! file was renamed, records its relocated anchor (PLAN §8, `placement`). A viewed toggle that fails says why
 //! ([`ReviewSession::viewed_error`]), since its checkbox alone can't.
 //!
+//! **A remote repository** (a WSL distro's, PLAN §5.2, `connection`): the session follows its
+//! backend's connection. A call that fails because the connection was lost raises nothing (the
+//! status bar says "reconnecting…"); the reconnect's synthetic rescan reads everything again.
+//!
 //! **Comparison** (PLAN §2.3, `comparison`): what the files and diffs are, the interdiff since
 //! a closed round or all changes. Switching ([`ReviewSession::set_comparison`]) lists again
 //! from scratch under a new generation, the diffs shown meanwhile staying on screen until
@@ -47,6 +51,7 @@
 //! show; in an interdiff, a file it doesn't list, or an old-side thread) (`load`).
 
 mod comparison;
+mod connection;
 mod load;
 mod placement;
 mod watch;
@@ -260,6 +265,8 @@ pub struct ReviewSession {
     /// Why the last viewed toggle failed.
     viewed_error: Option<Failure>,
     watch: WatchState,
+    /// The connection to the repository's `dv backend --stdio`, when it is a remote one.
+    link: connection::Link,
 }
 
 impl EventEmitter<SessionEvent> for ReviewSession {}
@@ -274,6 +281,7 @@ impl ReviewSession {
             loaded,
             reviewer,
             labels,
+            connection,
             ..
         } = opened;
         let comparison = default_comparison(&loaded.review);
@@ -324,7 +332,9 @@ impl ReviewSession {
             viewed_intents: HashMap::new(),
             viewed_error: None,
             watch: WatchState::default(),
+            link: connection::Link::new(connection),
         };
+        session.follow_connection(cx);
         // The watch first, so it is registered as early as possible; what the first list reads
         // before then is read again once it is (`watch`).
         session.ensure_watch(cx);
@@ -597,11 +607,14 @@ impl ReviewSession {
                 .get(path)
                 .is_none_or(|state| !state.is_pending())
         };
+        // While the connection is down nothing loads: what waits for it can't land before.
         let wanted_landed = self.spec.is_none()
+            || self.link.down
             || (self.wanted.iter().all(landed) && self.thread_files().iter().all(landed));
         self.refreshing.is_none()
             && self.queued.is_none()
             && self.watch.is_settled()
+            && self.link.is_settled()
             && self.writes == 0
             && self.viewed_pending == 0
             && self.fold_task.is_none()

@@ -342,17 +342,18 @@ bringing dv to the front on the agent's working-tree review when the agent finis
 | Crate | Kind | Role | gpui? |
 |---|---|---|---|
 | `dv_core` | lib | Location, the `Backend` trait and `LocalBackend` (§5.1), Target and its labels, git runner, diff pipeline (§6), review events + fold (§7), anchors, relocation and placement (§8), GitHub via `gh` (§9) | **never** |
-| `dv_backend` | lib | The stdio protocol (§5), server loop, `RemoteBackend` client, distro install | never |
-| `dv_cli` | lib | clap command tree, JSON output DTOs, setup/doctor checks (§10, §12) | never |
+| `dv_backend` | lib | The stdio protocol (§5), server loop, `Connection`s (launch, reconnect) and the `Connections` registry, `RemoteBackend` client, distro install | never |
+| `dv_cli` | lib | clap command tree, JSON output DTOs, setup/doctor checks, a WSL repository's commands run inside its distro (§10, §12) | never |
 | `dv_ui` | lib | views + services (§11) | yes |
-| `dv` | bin | entry: GUI, CLI, and on Linux `dv backend`; on Windows also the console/GUI split (§13.1) | yes (GUI feature) |
+| `dv` | bin | entry: GUI (the `gui` feature), CLI and `dv backend --stdio`; on Windows also the console/GUI split; three shapes, one of them headless (§13.1) | with `gui` |
 | `gpui_automation` | lib + bin `e2e` | ported from the sibling app (§14) | yes |
 | `mock_gh` | bin | fake `gh` for tests (§14.2) | no |
 | `dv_test_support` | lib (dev) | fixture repo builder, shared by every crate's tests | no |
 
 Direction: `dv` → `dv_ui` → {`dv_cli`, `dv_backend`, `dv_core`, `gpui-component`};
 `dv_cli` → {`dv_backend`, `dv_core`}; `dv_backend` → `dv_core`. A gpui import outside `dv_ui`, `dv`
-and `gpui_automation` is a build failure (`script/check` verifies it with `cargo tree`, §13.2).
+and `gpui_automation`, or in `dv` built without `gui`, is a build failure (`script/check` verifies
+it with `cargo tree`, §13.2).
 
 Rules: errors are `anyhow` in app/CLI code and `thiserror` enums in libraries; no `unwrap()`/`expect()`
 outside tests unless the message states the invariant; files stay under ~1,500 lines (split by
@@ -421,15 +422,199 @@ of the index this way (§2.3), so the user's index is never written.
   `LocalBackend` running natively on Linux. Binary payloads are base64. Requests carry ids;
   responses and watch events interleave on stdout.
 
+**The wire** (`dv_backend::proto`, `PROTO = 1`): JSON, one object per line (`\n`), UTF-8, over the
+server's stdin and stdout. A request is `{"id": <u64>, "op": "<name>", …args}`; a response
+`{"id": n, "ok": <value>}` or `{"id": n, "err": <WireError>}`; a watch batch `{"watch": <u32>,
+"event": <WatchEvent>}`. The server runs each request on a thread of its own (a long `git` must
+not hold up a `store_read`) and answers in the order calls finish; the client matches ids. Every
+byte field (git's stdin, stdout and stderr, file contents, store lines and bytes) is base64
+(standard alphabet) in dedicated wire types: `GitOpts` and `GitOutput`, whose bytes would
+serialise as JSON number arrays, never cross as they are; `RepoInfo`, `WatchSpec`, `WatchEvent`
+and `TextStats` do. The ops:
+- `hello {proto, build}` → `{proto, build_ok, pid, os, arch, version}`: the client's first request.
+  `build_ok` says whether the sha256 of the server's own executable is `build` (§5.2), `null` when
+  none was sent; the executable is hashed only when asked.
+- `open {path, env}` → `{repo, info}`: a `LocalBackend::open_with(path, {env})` kept under the
+  handle `repo` (`env` is the overlay: the loopback tests send the fixture's, the app none);
+  `close {repo}` forgets it.
+- One op per `Backend` method, naming its `repo`: `git {args, opts}`, `worktree_read`,
+  `worktree_len`, `worktree_text_stats`, `store_append`, `store_read`, `store_list`,
+  `store_write_atomic`, `store_remove`, `copy_index_to_store`; `watch {repo, spec}` →
+  `{watch, worktree_error}`, whose batches the server holds back until that answer is out;
+  `unwatch {watch}`.
+
+`WireError` carries every `BackendError` variant with its fields (an `io::Error` as `{kind,
+message}`), so the client rebuilds the same variant, whose `Display` and `detail()` read as they
+did on the server; `protocol` answers a line that isn't a request (id 0 when none can be read),
+after which the server serves on, and reaches the caller as `Unavailable`. One writer thread
+owns the server's stdout and writes whole lines (logging goes to stderr). When stdin ends the
+server stops its watches, writes out what it has queued and exits, whatever calls are still in
+git: that is how a server dies with its client.
+
+**The client** (`dv_backend::client`): a `Connection` (one per distro, or a named loopback)
+starts its server through its `Launcher` (`dv_backend::launch`) on the first call and shakes
+hands; every `RemoteBackend` of that server shares it, each call blocking its thread until its
+reply comes. `Launcher::Command` runs a child process with piped stdio (`CREATE_NO_WINDOW` on
+Windows, where the detached app has no console), such as a loopback `dv backend --stdio`, and
+may name the build hash `hello` checks; `Launcher::InProcess` serves on a thread over in-memory
+pipes; `Launcher::Wsl` starts a distro's server through `wsl.exe`, installing this app's Linux
+build there first when it is missing (§5.2). A launcher also answers whether its host runs
+(`host_running`: a distro's state, listed afresh; `None` for this machine), which every
+automatic start asks first (§5.2's connecting rule). Every process a launcher starts, and every
+`wsl.exe` dv runs, joins a job object this process holds with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
+(`dv_backend::job`), so it dies with dv however dv ends. A reader thread routes replies by id and watch batches to their watch's channel, which
+delivers to the sink on a thread of the watch's own, so the `WatchHandle` contract (§5.3) holds
+over the wire. Before the first reply, lines that aren't the protocol are kept as diagnostics
+(`wsl.exe` can print warnings on stdout first); after it, such a line, or a reply nobody asked
+for, is a protocol failure. `repo().location` is `Location::Wsl { distro, path: <toplevel> }`
+through a distro and the server's own path through a loopback. A server that dies (its output
+ends, a read or write fails, a protocol failure, its process exits — watched on its own, since
+on Windows a git the server started inherits its stdout and can keep it open) fails every call
+in flight at once with `BackendError::Disconnected` ("lost the connection to dv in Ubuntu: …");
+what follows is §5.2's reconnect. A connection's `ConnectionState` (`Idle`, `Connecting`,
+`Installing { done, total }`, `Connected`, `Reconnecting { attempt }`, `Stopped`, `Failed {
+error }`) is readable and observable (`subscribe`, called in order on a thread of the connection's own,
+which the UI forwards to its executor); `diagnostics()` gives the launcher's command line, the
+state history and the servers' last stderr lines, and `kill()` kills the server as a crash
+would (a test seam). The app holds its connections in a `Connections` registry, one per distro
+(names compared without case, as `wsl.exe` takes them) and one per named loopback; the CLI
+never uses one (§10.4). Dropping the last handle on a connection (every `RemoteBackend` and
+remote watch holds one) closes its server's stdin, which ends the server, and reaps its
+process; so does a server with no live watch and no call in flight for 60 s, counted from when
+it last became unused — its last call ended, or its last watch went (the **idle close**: the
+state is `Idle` again, the `RemoteBackend`s stay valid, and the next call starts a server
+automatically), so a connection made for a listing keeps no process in a distro and WSL can
+shut an unused one down; an open review holds a watch, so its server stays (one whose watch
+couldn't start, an inotify limit in the distro say, holds none and may idle out: the next call,
+its refresh on focus, starts the server again, and its status bar shows the review's own state
+meanwhile, an idle connection being up). The
+conformance suite (§14.2) runs the same cases against both implementations.
+
 ### 5.2 Lifecycle (WSL)
-- One connection per distro, opened when the user first opens a repo in it (never at launch, never for
-  the switcher's listing — a stopped distro stays stopped until asked).
-- Handshake: the client sends its build hash; the server must match exactly (both come from the same
-  build — §13). Mismatch → reinstall once → if still mismatched, the banner.
-- Install: `~/.local/share/dv/bin/dv-<hash>` + `~/.local/bin/dv` symlink, verified by sha256; old hashes
-  pruned after a successful switch.
-- Death: in-flight requests fail with a typed error, the UI shows "Reconnecting…", the client respawns
-  with backoff (1s, 2s, 5s, then manual Retry), watches resubscribe and fire one synthetic change.
+- **The connecting rule: only an explicit open boots a distro.** One connection per distro.
+  A start is either *explicit* — the user opening a repo or a review in it (`dv open`, Open
+  folder…, the switcher's **Start** and **Retry** below, all `Locations::open`) or the banner's
+  Retry or Start, each `Connection::retry` — or *automatic*: the first call of a listing
+  (`Locations::reach`, for the switcher's rows), the first call after an idle close (§5.1), and
+  a respawn after a death (below). An explicit start connects whatever the state, booting a
+  stopped distro and starting a failed or stopped connection once more. An automatic start
+  first asks `wsl::running_now` — `wsl.exe --list` afresh, not the 2 s cache, since the death
+  that prompts a respawn just happened — and when the distro isn't running launches nothing:
+  the connection is `Stopped` (its calls fail with `Unavailable`, "Ubuntu isn't running") until
+  an explicit start. So `wsl --shutdown` or `wsl -t Ubuntu` stays done, and nothing connects at
+  launch for its own sake. A listing never starts a connection that failed or is reconnecting,
+  and makes a new one only for a distro that is running (from `wsl::distros`); a `Stopped` one
+  it starts again only once the distro runs again (the user started it). A listing asks a
+  stopped or failed connection's distro from `wsl::running` — the 2 s cache, one `wsl.exe
+  --list` shared by every listing asking at once — not afresh, so a stopped distro's rows don't
+  each list WSL. An explicit start made while a reconnect is under way waits for that
+  reconnect and takes its outcome; an open that fails only because its connection is down keeps
+  its `RemoteBackend` for when it is back. **A picked review is never lost and never reported
+  twice:** an open (`Reviews::open`: the connection, finding and loading the review, its home
+  worktree) whose connection is lost under any step waits for the reconnect, starting nothing
+  itself (`Connection::wait_for_reconnect`; a `retry` there would restart a failed connection,
+  and a server that dies on every open would then loop), and runs once more. If it still fails
+  for its connection (lost again, or the connection failed or found its distro stopped) the
+  shell keeps it as the connection's **pending pick** (one at most; a newer pick or the
+  Dismiss of its own banner drops it, another banner's Dismiss leaving it waiting): while the
+  open review goes through the same connection the main area raises nothing, its backend
+  banner and status bar saying what is wrong; otherwise the main area's banner reads "couldn't
+  open <repo>" (the connection's error and diagnostics in Details) with Retry. When the
+  connection comes back (or is back already when the open fails) the pick runs again by
+  itself, its banner going, keeping open menus and the keyboard where they are. **Running by
+  itself, it never replaces a review that holds unsaved text:** while the "Finish round" sheet
+  is open or a comment composer (a new thread or a reply) holds a draft, the pick waits on, and
+  runs once the sheet closes or the draft is posted or cancelled, if its connection is still up
+  then (connected, or closed for idleness, which the next call starts again); one that went
+  down again keeps it waiting. Its banner's Retry is the user's own pick and runs at once (an
+  explicit pick replaces the open review as `Ctrl O` does, DESIGN §4.2). One whose open kills
+  its connection every time runs again by itself at most three times, then fails in the banner
+  (DESIGN §4.4). What a WSL repo's
+  header says (DESIGN §4.1): a distro that isn't running, whatever its connection did before,
+  "Ubuntu isn't running" and one row, **Start Ubuntu**, which connects (booting it) and then
+  lists the repo as usual; a connection that failed, why, and one row, **Retry**; one that is
+  reconnecting, "Ubuntu · reconnecting…", keeping the rows of its last listing. A loopback
+  (§14.2) has no host to ask; the automation host's stands in for one (`backend_stop`). An
+  automation run reaches WSL only through the sandbox seam: without `DV_WSL_HOME` naming a
+  scratch home it gets a stand-in (`WslAccess::Scripted`) that lists the distros a scenario
+  names (`wsl_distros`, running or not as it says, which its connections' host check reads) and
+  refuses to start anything in one, and dv_ui's tests can't reach the real one at all
+  (CLAUDE.md).
+- **The Linux build** (`script/build-linux`, §13.2) ships beside `dv.exe` as `dv-linux-x86_64`
+  and `dv-linux-aarch64` (`DV_LINUX_DIR` names another folder; `dv_backend::install`). Its
+  **build hash** is the lowercase hex sha256 of that file, computed off the UI thread once per
+  process per file (cached by path, length and modification time).
+- **Launch** (`Launcher::Wsl`, `dv_backend::wsl`): `wsl.exe -d <distro> --cd / --exec /bin/sh -c
+  <launch script> sh <x86_64 hash|-> <aarch64 hash|->`, with no shell on the Windows side and
+  no login shell inside, so the arguments arrive as passed (checked against a real distro:
+  spaces, `$`, both quotes, backslashes, newlines, an empty one). The script picks the hash for
+  `uname -m` and, when `$HOME/.local/share/dv/bin/dv-<hash>` is there, prints `dv-exec <arch>`
+  and execs it as `backend --stdio`; otherwise it prints one line and exits: `dv-missing <arch>`
+  (120: the client installs it, then launches again), `dv-arch <machine>` (121: dv has no
+  build for that architecture) or `dv-no-build <arch>` (122: this app has none; `Unavailable`
+  naming the missing file and that `script/build-linux` makes it). The marker line tells a
+  server that started from `wsl.exe` failing to start the distro (no such distro, WSL not
+  installed): a launch whose output ends without one is `Unavailable` with `wsl.exe`'s own
+  words (UTF-16LE, decoded). `--cd /` keeps `wsl.exe` from translating the app's working
+  directory, which it warns about when it can't.
+- Handshake: `hello` carries the hash of the build the launch picked; the server hashes its own
+  executable. Mismatch → install it again once (the server's `arch` says which build) → if still
+  mismatched, `Failed` ("the dv in Ubuntu doesn't match this app") and the banner. A launch
+  that can't succeed until someone acts (no build for the architecture, no such distro) fails
+  the connection at once, a respawn too.
+- **Install** (`dv_backend::install`): one `wsl.exe … /bin/sh -c <install script> sh <hash>`
+  with the build streamed on its stdin, the connection `Installing { done, total }` meanwhile:
+  into a temporary file beside `~/.local/share/dv/bin/dv-<hash>`, `chmod 755`, its sha256
+  checked (a copy that isn't the build is exit 3, nothing installed), renamed into place; then
+  `~/.local/bin/dv` becomes a symbolic link to it, a temporary link renamed over whatever file
+  was there (the first implementation's regular file too), so the dv on the distro's `PATH` is
+  this app's. The link is a convenience — the launch and the CLI's run use the build itself —
+  so one that can't be made (a directory at `~/.local/bin/dv`, a `~/.local/bin` that isn't a
+  folder dv can write) is a warning on stderr (kept in the connection's diagnostics, printed
+  by the CLI), never a failed install. A script that fails before it reads all of the build
+  says why itself; the pipe it closed is no part of the error.
+- **Prune** after the first successful handshake per process and distro, in the background,
+  best effort: every `~/.local/share/dv/bin/dv-*` but this app's builds and the one
+  `~/.local/bin/dv` links to (another app's install may have pointed it there since; a running
+  server keeps its deleted file), and temporary copies an install left more than an hour ago.
+  `~/.local/share/dv`'s other folders are never touched.
+- **Sandbox** `DV_WSL_HOME` (a POSIX path): every launch, install, prune and check runs as `…
+  --exec /usr/bin/env HOME=<it> /bin/sh -c …`, so tests and agents' runs install into a scratch
+  folder under the distro's `/tmp`, never the user's own home. One check decides what it means,
+  everywhere (`dv_backend::wsl::sandbox`: the launcher, the CLI, `dv setup wsl`, the automation
+  guards): unset is the distro user's own home; set to a plain absolute POSIX path naming a
+  folder other than `/` (no `..` part, no backslash, no line break, nothing around it) it is
+  the scratch home, normalised (`.` parts and repeated slashes dropped); set to anything else —
+  blank, whitespace, relative, `/` in any spelling (`//`, `/.`, `/./`), a path Git Bash turned
+  into `C:/…`, a value that isn't Unicode — it is an error, never a fallback to the real home,
+  and no sandbox an automation run may reach a real distro with.
+- **Distros** (`wsl::distros`): `wsl.exe --list --quiet` and `wsl.exe --list --running --quiet`
+  (UTF-16LE), never the localised `--verbose` table, reused for 2 s, everyone asking while a
+  listing runs sharing it (`wsl::running_now` lists afresh); a `--running` that fails counts as
+  none running. Listing boots no distro. Every
+  `wsl.exe` dv starts is made without a console window (`CREATE_NO_WINDOW`, one builder,
+  `wsl::wsl_exe`), the CLI's crossing alone sharing its caller's console (§10.4). `dv setup wsl
+  <distro>` does the install ahead of time (§10.1).
+- Death (§5.1): in-flight requests fail with `BackendError::Disconnected`, the connection is
+  `Reconnecting { attempt }` and the UI shows "reconnecting…"; the client respawns after 1 s, 2 s
+  and 5 s, each an automatic start (the connecting rule above: a distro the user stopped ends the
+  connection `Stopped` at once, launching nothing), calls failing at once with `Disconnected`
+  meanwhile, also while an attempt installs the build again (its progress is still the state).
+  When a server answers, each `RemoteBackend` opens its worktree on it again with its next call
+  (a worktree's handle belongs to the server generation that issued it, and a worktree gone
+  meanwhile is that call's error), every live watch subscribes again and its sink gets one
+  synthetic `WatchEvent { rescan: true, .. }` for what changed while nobody watched. A watch the
+  new server refuses (its worktree gone), or watches differently than its handle says (the store
+  alone now, its `worktree_error`, or the worktree again), ends instead: its sink is dropped, and
+  its consumer starts a new watch, whose handle says what it covers; one interrupted by another
+  death waits for the next server. When the third attempt fails, or a server answers as another
+  protocol or build, the connection is `Failed`: calls fail with `Unavailable` and nothing
+  starts until `retry()` (the banner's Retry, an explicit start), which starts one server and
+  blocks until it answers or fails. A server that dies within 10 s of a respawn continues that
+  count instead of starting a new one, so one that dies on every start ends `Failed` rather
+  than looping; any other start (the first, an explicit one, the first after an idle close)
+  begins a fresh count. A server that can't start the first time fails the connection at
+  once.
 
 ### 5.3 Watching
 Worktree watch honours git's ignore rules — every `.gitignore` (nearest wins, nothing re-included
@@ -807,7 +992,7 @@ dv comment resolve | reopen <id>           reviewer
 
 dv setup [path | agents | wsl <distro> | all] [--yes]
 dv doctor [--json]
-dv backend --stdio                         (Linux build only; started by the GUI)
+dv backend --stdio                         (every build; started by the app, §5.1)
 ```
 
 Global flags: `--repo <path>` (also `\\wsl.localhost\<distro>\<path>`), `--wsl <distro>:<path>`,
@@ -817,18 +1002,29 @@ Global flags: `--repo <path>` (also `\\wsl.localhost\<distro>\<path>`), `--wsl <
   binary keeps the GUI's options (`--data-dir`, `--automation…`, `--window-size`, the hidden
   `--no-detach`) and `open`, and flattens `dv_cli::Command` into its own subcommands, so `dv
   --help` lists every command. A headless command goes to `dv_cli::run(&global, command, &mut
-  Context)` before any gpui code runs. `Context` carries the working directory, the environment
-  (`dv_cli::Env`: `$DV_REVIEW`, `$DV_AUTHOR` and `CLAUDECODE` are read through it, never by
-  clap), stdin, stdout, stderr, whether they are terminals, and the environment overlay every git
-  the command spawns gets (`LocalBackendOptions::env`), so tests run commands in-process and
+  Context)` before any gpui code runs. `Context` carries the command line (without the app's
+  options: what a command run inside a WSL distro passes on, §10.4), the working directory, the
+  environment (`dv_cli::Env`: `$DV_REVIEW`, `$DV_AUTHOR` and `CLAUDECODE` are read through it,
+  never by clap), stdin, stdout, stderr, whether they are the process's own (a child then
+  shares them) and whether they are terminals, and the environment overlay every git the
+  command spawns gets (`LocalBackendOptions::env`), so tests run commands in-process and
   hermetically (`dv_cli::main_with` parses too); a few binary tests in `crates/dv/tests/` check
   the real process.
 - **The repository** is `--wsl`, else `--repo` (relative to the working directory, the path
   that makes read as a location again, so a relative path from a working directory inside a
   distro, `\\wsl.localhost\…`, is a WSL location too), else the working directory's. Not
-  inside a work tree: exit 1. A WSL location (`\\wsl.localhost\…`,
-  `\\wsl$\…`, `--wsl`) is exit 4 until §10.4's routing exists (phase 4), without starting
-  `wsl.exe`.
+  inside a work tree: exit 1. On Windows a command for a WSL location (`\\wsl.localhost\…`,
+  `\\wsl$\…`, `--wsl`) runs inside its distro (§10.4); elsewhere, a location of the distro dv
+  runs in (Linux, `$WSL_DISTRO_NAME`) is its local path — a `--file` spelled through that
+  distro's share (`\\wsl.localhost\Ubuntu\…`) too — and a Windows drive's path given there
+  (`--repo D:\code\api`, `d:/code/api`, `dv open`'s path in a Linux build with the app) is that
+  drive where WSL's default automount root mounts it (`/mnt/d/code/api`,
+  `dv_core::location::mount_path`, the inverse of the headless `dv open`'s suggestion below)
+  rather than a folder under the working directory; any other WSL location is exit 4
+  (`backend_unavailable`), without starting anything, saying to run the command from Windows
+  (`dv.exe --wsl <distro>:<path> …`, the location quoted to paste there by the rule below),
+  the one dv that reaches every distro (inside a distro `wsl.exe -d` would need a dv installed
+  in the other one).
 - **Identity (§2.5):** an agent named by `--author <name>`, else `$DV_AUTHOR`, else
   `claude-code` when `CLAUDECODE` is set (Claude Code exports it to the commands it runs);
   otherwise the reviewer, by the repo's `user.name` (`review::reviewer_identity`, as the GUI).
@@ -915,10 +1111,25 @@ Global flags: `--repo <path>` (also `\\wsl.localhost\<distro>\<path>`), `--wsl <
   longer in context (§10.2), so a wait that may start after the verdict names the review (the
   skill passes the id `dv status` gave).
 - **`setup agents [--yes]`** installs the skill (§10.5).
+- **`setup wsl <distro> [--yes]`** (Windows; elsewhere exit 2, `unsupported`) installs this
+  build of dv in the distro, or checks that it is installed and intact (its sha256), and points
+  the distro's `~/.local/bin/dv` at it: §5.2's install, ahead of the app's first open there. It
+  finds the Linux build beside `dv.exe` (`DV_LINUX_DIR`) and the distro without booting it
+  (`wsl.exe --list`), then boots it to look. It asks as `setup agents` does (a terminal is shown
+  the plan and asked; a pipe or `--json` without `--yes` is exit 2; "no" is exit 1,
+  `cancelled`; nothing to change needs no answer). `--json`: `{distro, arch, build, installed,
+  linked, path}`, `installed` saying whether this run installed it and `linked` whether
+  `~/.local/bin/dv` runs it now: a link the install couldn't make (§5.2) is a warning on stderr
+  saying how to fix it, and the command still succeeds. WSL, the distro or the Linux build
+  unavailable (and a `DV_WSL_HOME` that isn't a POSIX path) is exit 4; an install that fails
+  exit 1 (`io`).
+- **`backend --stdio`** serves the protocol (§5.1) on stdin and stdout until stdin ends, then exits
+  0 at once; the app starts it (inside a distro, and as the tests' loopback). `dv backend` without
+  `--stdio` is exit 2 (`usage`).
 - **Recognised, not yet run:** `review new --pr` and `dv open` of a PR (a URL or `#n`: "GitHub
   PRs arrive in a later version", before any window opens), `review submit` of a PR review,
-  `setup` other than `agents`, `doctor` and `backend` exit 2 (`unsupported`) with what to do
-  instead; `setup wsl` is exit 4.
+  `setup` other than `agents` and `wsl`, and `doctor`, exit 2 (`unsupported`) with what to do
+  instead.
 - **`dv` and `dv open`** start the GUI detached (§13.1) and return 0 at once; `--automation`
   and `--no-detach` run it in the same process. It opens on the repository named (the path,
   `--repo` or `--wsl`; `dv open` alone: the working directory's): the repository becomes a known
@@ -931,7 +1142,20 @@ Global flags: `--repo <path>` (also `\\wsl.localhost\<distro>\<path>`), `--wsl <
   app, which prints no document and always acts as the reviewer: on a `dv` or `dv open` line
   they are exit 2 (`usage`, a JSON error document with `--json`), so an agent that asked for JSON
   gets JSON rather than a window. Starting detached hands the app none of this process's
-  standard handles (§13.1), so a caller capturing `dv open`'s output gets its end at once.
+  standard handles (§13.1), so a caller capturing `dv open`'s output gets its end at once. A
+  build without the app (§13.1's headless shape, the Linux `dv` inside WSL) has none of the app's
+  options, and its `dv` and `dv open` exit 2 (`unsupported`): inside a distro
+  (`$WSL_DISTRO_NAME`) saying to open the repository from Windows, `dv open <path>` with the
+  path as Windows spells it: `--wsl`'s, a path through a distro's share as it is (any
+  distro's), a Windows path as it is, else the POSIX path named (or the working directory's)
+  made absolute, as `\\wsl.localhost\<distro>\<path>` — but a path on a Windows drive under
+  WSL's default automount root (`/mnt/d/code/api`, in `--wsl` too) as that drive's path
+  (`D:\code\api`), which the app opens locally rather than through the distro over 9P; quoted
+  only when it must be, in double quotes, which PowerShell and cmd read alike, or in
+  PowerShell's literal single quotes for a path with `$`, a backtick or a double quote, which
+  PowerShell expands or ends inside double quotes (`dv_cli::output::windows_arg`: the one rule
+  for every command dv suggests to paste on Windows, the "another distro" error's too).
+  Elsewhere it says that this build has no window.
 
 ### 10.2 Which review a command means
 1. `--review <id>` (or the command's own `<id>` argument; naming two different reviews is a usage
@@ -972,14 +1196,18 @@ doesn't. A deleted thread is not found.
   `{changed, review}`; `review submit` `{review, round}`; `review delete` `{deleted}`; `comment
   add` `{thread}`; `comment reply` `{reply, thread}`; `comment address | resolve | reopen`
   `{changed, thread}`; `setup agents` `{agents: [{agent, path, action: installed | updated |
-  unchanged | skipped, reason}]}`; `review wait` as in §10.1.
+  unchanged | skipped, reason}]}`; `setup wsl` `{distro, arch, build, installed, linked,
+  path}`;
+  `review wait` as in §10.1.
 - Exit codes: `0` ok, `1` operation error, `2` usage / ambiguous review, `3` wait timeout, `4` backend
-  unavailable (WSL), `5` GitHub error (with `gh`'s message).
+  unavailable (the repository's WSL distro can't be reached: WSL, the distro or this app's Linux
+  build unavailable, §10.4), `5` GitHub error (with `gh`'s message). A command run inside a
+  distro (§10.4) exits with the code of the dv there, whatever it is.
 - Errors: stderr always (`dv: <message>`, then the candidates and the failed git command); with
   `--json` also `{"schema": 1, "error": {"code", "message", "detail"?, "candidates"?}}` on stdout.
   Codes (`dv_cli::error::code`): `usage`, `unsupported`, `ambiguous_review`, `no_review`,
   `not_found`, `not_a_repository`, `not_allowed`, `rejected`, `finished`, `unseen_round`,
-  `cancelled`, `backend_unavailable`, `target` (also a review whose home worktree is gone),
+  `cancelled`, `backend_unavailable` (exit 4), `target` (also a review whose home worktree is gone),
   `corrupt`, `git`, `io`, `internal`. clap's own parse errors
   are `usage` documents too whenever `--json` (or a `--json=…` spelling, which clap refuses for a
   flag) is anywhere on the line before a bare `--`, their message naming
@@ -994,10 +1222,60 @@ doesn't. A deleted thread is not found.
   one per line: `id  label  status  round n  worktree`.
 
 ### 10.4 WSL routing
-Inside a distro, `dv` is the native Linux binary. On Windows, a command whose repo is a WSL location
-re-executes itself as `wsl.exe -d <distro> --cd <path> --exec ~/.local/bin/dv <args>` and passes
-through stdio and the exit code. One crossing, no per-git-command spawns. Until that lands (phase
-4) such a command is exit 4, saying how to run dv inside the distro instead.
+Inside a distro, `dv` is the native Linux binary and runs every command itself; it never starts
+`wsl.exe`. On Windows, a command that reads a repository (`status`, `review …`, `comment …`; not
+`setup`, `doctor`, `backend`, nor `review new --pr`, refused first) whose repository is a WSL
+location (§10.1: `--wsl`, `--repo \\wsl.localhost\…` or `\\wsl$\…`, or a working directory in
+a distro) runs inside the distro instead (`dv_cli::reexec`): one crossing for the command, no
+per-git-command spawns (D6), and the app's `Connections` play no part.
+- **The line:** `wsl.exe -d <distro> --cd / --exec [/usr/bin/env HOME=<DV_WSL_HOME>] /bin/sh -c
+  <run script> sh <x86_64 hash|-> <aarch64 hash|-> <folder> <args…>` (`dv_backend::wsl::RUN`,
+  §5.2's launch with its choice of build): it runs `~/.local/share/dv/bin/dv-<hash>`, this
+  build exactly, never whatever `~/.local/bin/dv` is, in `<folder>`: the working directory's
+  path when that is in the distro, else the repository's (`/` when the folder isn't there:
+  `wsl.exe`'s own `--cd` prints an error and runs in `/` anyway, so the script changes folder
+  itself). The exit code is the command's, passed through. When stdout and stderr are both
+  terminals the child shares the caller's console (no console flags), so the distro's dv sees
+  a terminal. Otherwise (a pipe, a file, an agent's shell) dv pipes the child's stdout and
+  stderr and copies them into its own: `wsl.exe` relays the two streams with a write position
+  each, so a caller sending both to one file (`> out 2>&1`, Claude Code's shell on Windows)
+  would get them written over each other. stderr is copied as it arrives, stdout whole once the
+  child has exited (no command streams its stdout; `review wait` prints once, at its end). It
+  joins dv's kill-on-close job
+  (§5.1), so a `dv` that is killed (a tool's timeout, a `taskkill` without `/T`) takes its
+  `wsl.exe` with it, and with that the distro's `dv review wait`; Ctrl-C reaches it through the
+  console as before. The distro is named as given (`wsl.exe` takes names without case): no
+  `wsl.exe --list` runs first.
+- **The arguments** are the command line as parsed (without the app's own options, which a
+  build without the app lacks), the repository first as `--repo <its path in the distro>` and the
+  `--repo` and `--wsl` given dropped, a `--file` as one word, `--file=<path>` (so a path that
+  starts with `-` stays the option's value there), a path spelled through the distro's share
+  (`\\wsl.localhost\Ubuntu\…`) as its path there. A `--body-file` or `--note-file` is read on
+  Windows (stdin for `-`, else the file relative to the working directory, so a Windows path
+  works; a file must be UTF-8, checked here so the error names it) and handed to the child's
+  stdin as `-`, which also lets the second run after an install lose nothing; otherwise the
+  child's stdin is empty.
+- **Who it acts as** crosses too: `CLAUDECODE`, `DV_AUTHOR` and `DV_REVIEW`, those set, join
+  `WSLENV` as `NAME/u` after whatever else it lists, in its order. An entry it already has for
+  one of them, in any case or with any flags, gives way to that `NAME/u` (`/w` wouldn't pass the
+  value in, `/p` would translate it as a path, `dv_author` would export another name), so each
+  crosses verbatim under its own name.
+- **Missing pieces:** the run script exits 120 when this build isn't installed there; dv then
+  installs it (§5.2's install, the distro's architecture from the install check; "dv:
+  installing dv in Ubuntu…" on stderr) and runs the command once more. No `wsl.exe`, no such
+  distro, no Linux build beside `dv.exe` (or in `DV_LINUX_DIR`), none for the distro's
+  architecture, a `DV_WSL_HOME` that isn't a POSIX path, an install that fails, and `wsl.exe`
+  failing to start the distro (an exit code no Linux program has) are exit 4
+  (`backend_unavailable`, a JSON error under `--json`) saying what is missing. The Linux build
+  and `DV_WSL_HOME` are checked before any `wsl.exe` starts; only once `wsl.exe` couldn't start
+  the distro does `wsl.exe --list` (which boots nothing) word why: no such distro, or WSL not
+  installed. What `wsl.exe` itself printed then (UTF-16LE, on its stdout) is the error's
+  detail ("wsl.exe said: …"), never dv's stdout, which under `--json` is the error document
+  alone; on a console it shows there as `wsl.exe` printed it. An install whose
+  `~/.local/bin/dv` link couldn't be made is a warning on stderr, and the command runs.
+- `DV_WSL_HOME` is the sandbox seam of §5.2 here too, and the automation host's `cli` children
+  get a `DV_LINUX_DIR` without a Linux build unless the app is sandboxed itself, so no test or
+  scenario runs a command in a real distro home (§14.2).
 
 ### 10.5 The agent skill
 The `dv-review` skill is `crates/dv_cli/skill/SKILL.md`, embedded in the binary
@@ -1031,8 +1309,9 @@ user asks, text through `--body-file -` / `--note-file -` and a short note inlin
 quotes (double quotes run backticks in a POSIX shell, and a backtick is PowerShell's escape), a
 disagreement is a reply with reasons and still an address with a note saying so;
 and what each exit code means (1 `finished`: stop; 1 `unseen_round`: read the round, then `done
---round`; 2 with candidates: pick with `--review`, with none: tell the user; 4: run dv inside the
-distro). Every
+--round`; 2 with candidates: pick with `--review`, with none: tell the user; 4: dv couldn't
+reach the WSL distro the repository is in, so tell the user what the message says is missing).
+Every
 command line in it works as written: a test parses each fenced command and runs the loop
 against a fixture repo (`crates/dv_cli/src/tests/skill.rs`).
 
@@ -1046,7 +1325,7 @@ asked; anything else (a pipe, `--json`) is shown the plan and refused with exit 
 `--yes`"); a "no" is exit 1 (`cancelled`); nothing to change needs no answer. `--json` reports
 `{agent, path, action: installed | updated | unchanged | skipped, reason}` per agent. A hidden
 `--home <dir>` stands in for the home directory, so tests never write the real one. Cursor and
-per-environment setup (WSL distros) come with phase 6.
+the skill inside WSL distros come with phase 6 (`dv setup wsl` installs dv itself there).
 
 ---
 
@@ -1056,17 +1335,45 @@ The sibling app's shape: per-view directories, a services layer of entities inst
 typed events, and `is_settled()` on every service for automation.
 
 **Services** (`dv_ui::services`): `Locations` (one `Arc<dyn Backend>` per repo, opened off the UI
-thread and cached by the location asked for and its worktree root; an environment overlay can be
-registered for a path, which the automation host does for its seeded repos; a WSL location is
-`BackendError::Unavailable` until Phase 4 and never boots a distro), `Reviews` (the known repos and,
-per repo, its reviews (`ReviewStore::list`, an unreadable log a row of its own) and its uncommitted
-changes, computed in the background when a repo is added and when the switcher opens; it opens or
+thread and cached by the location asked for and its worktree root; a route can be registered for
+a path, an environment overlay and optionally a loopback connection, which the automation host
+does for its seeded repos; it holds the app's `Connections` (§5.1) and opens a WSL location
+through its distro's, a `RemoteBackend`, following each connection's state so the status bar
+repaints as it changes, and telling its subscribers when one goes down (reconnecting, stopped,
+failed) or comes back (`LocationsEvent::ConnectionChanged`). An explicit open (`open`) is the
+connection's explicit start, booting a stopped distro and starting a failed or stopped
+connection once more, and waiting out a reconnect; the listing's `reach` only ever starts one
+automatically, and reports a distro that isn't running, a connection reconnecting and one that
+failed instead (§5.2's connecting rule). A cached local backend is reused while its worktree is
+still on disk; a cached remote one is kept, its connection started as the open allows, also
+while that connection is down, a repo gone inside the distro surfacing as the next call's
+error. Which connection a location goes through (`key_for`, asked on the UI thread) is known
+without the file system: a distro's, else what the last open of it found, its route matched by
+canonical paths in that open's background job. A distro is named as WSL spells it
+(`canonical`): `wsl.exe` takes names without case, so `\\wsl$\ubuntu\…` and
+`\\wsl.localhost\Ubuntu\…` are one repo through one connection, which is named from `wsl.exe
+--list` — an explicit open of a distro dv hasn't seen lists WSL's distros first, off the UI
+thread — so every location it hands back is spelled WSL's way), `Reviews` (the known repos and, per repo, its
+reviews (`ReviewStore::list`, an unreadable log a row of its own) and its uncommitted changes,
+computed in the background when a repo is added, when the switcher opens, and when a
+connection a row goes through goes down or comes back, whether or not the switcher is open (one
+that comes back clears what its rows said about it at once), through `Locations::reach`: a
+stopped distro's repo a row of its own whose **Start** connects to the distro, a failed
+connection's whose **Retry** connects again, a reconnecting one's keeping its last listing
+(§5.2); it opens or
 resumes a target's review as the reviewer, whose name is the repo's `user.name`, or loads a review
-by id (the switcher's rows for reviews of other targets), either way bound to the review's home
+by id (the switcher's rows for reviews of other targets; a remote repo that can't be reached
+fails as "couldn't open Ubuntu:/home/kyle/api", the connection's error and diagnostics its
+detail), either way bound to the review's home
 worktree (§2.2: its backend, opened through `Locations`, which the session resolves, watches and
 snapshots, while the repo it was opened from is the one marked used, the row the switcher
 refreshes and the one the source picker offers); a row records why a repo can't be opened
-at all and the worktree root its reviews name, so the switcher shows each target beside its open
+at all and the worktree root its reviews name; a known repo is a worktree root, its distro
+spelled WSL's way, and one added before it could be resolved (a subfolder added while its
+connection was down, so its row could say why) or under another spelling of its distro becomes
+that root, row and `known_repos.json` re-keyed (or dropped when the root is known already), the
+first time a listing or an open resolves it; repos compare with the distro folded
+(`Location::same_place`), so a spelling WSL couldn't confirm never makes a second row; so the switcher shows each target beside its open
 review by the rule `open_review` resumes by (`review::ops::is_review_of`); it watches nothing
 itself), `ReviewUi` (what the reviewer chose per review: split or unified), `GitHub` (gh calls, PR
 cache), `Settings` (material, mode, panel width). The **system seam**
@@ -1116,7 +1423,18 @@ records its relocated anchor (§8; a thread whose file was renamed records the n
 session; switching reviews swaps sessions (a small LRU of 3 may keep the last ones warm). Every open
 goes through `Shell::open` — the switcher's rows, the source picker, automation's `open_review` —
 in the background: the main area shows that it is opening, a failure becomes its banner (with
-Retry), and resuming the review already open keeps its session. The shell hands the session to the
+Retry), and resuming the review already open keeps its session; a pick whose connection is the
+trouble waits for it (`shell::pending`, §5.2), never replacing by itself an open sheet or a
+composer's draft. A review whose backend is remote
+(a WSL distro's) follows its connection (`session::connection`): while it reconnects, a call that
+fails with `BackendError::Disconnected` raises no banner and loads wait, the status bar saying
+"reconnecting…"; the reconnect's synthetic rescan reads the list, the diffs and the fold again,
+and a watch that didn't survive starts again. Once the connection has failed for good the main
+area shows the backend-down banner (DESIGN §4.4), whose Retry is `Connection::retry` off the UI
+thread, and the review's own refresh banner stays down. Paths above the `Backend` trait are never
+read as this machine's for a WSL repo: worktree roots compare as the distro spells them
+(`review::same_worktree` takes the repo's `Location`), and "Reveal in folder" goes through the
+distro's share (`Location::file_path`). The shell hands the session to the
 panel's `file_list` and to the `diff_pane`; the file list highlights the stream's current file and
 asks the stream to show a file (`DiffPane::reveal_file` / `current_file`, the seam the stream
 implements; the current file is the cursor's while it is on screen, else the one at the top).
@@ -1215,28 +1533,64 @@ diagnostics". The repo banner for a dead WSL backend uses the same row.
 - **macOS:** `dv.app` containing one `dv` binary; the CLI is a symlink to it.
 - **Linux:** one `dv` binary (GUI + CLI + backend), plus the static musl build used inside WSL.
 
+**Shapes.** The `dv` crate's `gui` feature brings the app (`dv_ui`, gpui, gpui's platform with
+its Linux `x11` feature); `automation` implies it. Three shapes, each linted by `script/check`
+step 2:
+- **default** (`gui` + `automation`): development, the tests and the e2e runner;
+- **the shipped app** (`-p dv --no-default-features --features gui`): Windows, macOS, a Linux
+  desktop;
+- **headless** (`-p dv --no-default-features`): the CLI and `dv backend --stdio`, no gpui at all
+  (step 3 checks its tree), which is the static musl build installed into WSL distros. It has
+  none of the app's options, and `dv` and `dv open` exit 2 there (§10.1).
+
+The unit tests in `dv` that need gpui are gated on `gui`; `crates/dv/tests/*` run in every shape.
+
 ### 13.2 Builds: local only
 **No GitHub Actions runs until phase 9** (owner's rule, 2026-10-04: a Windows gpui build is slow and
 burns paid minutes). Phase 0 deletes `.github/workflows/`; nothing is pushed expecting CI to check it.
 Every gate runs locally through one script, `script/check` (bash; also used by agents):
 
 1. `cargo fmt --all --check`
-2. `cargo clippy --workspace --all-targets -- -D warnings`, and again with `-p dv --no-default-features`
-   (the shipped shape, automation off)
-3. the gpui-boundary check (`cargo tree`, §4)
+2. `cargo clippy --workspace --all-targets -- -D warnings`, then `-p dv` again in the other two
+   shapes (§13.1): `--no-default-features --features gui` (the shipped app) and
+   `--no-default-features` (headless)
+3. the gpui-boundary check (`cargo tree -e normal --target all`, §4): the headless crates with
+   every feature, and `dv` without its default features
 4. `cargo test --workspace`
 5. a plain `cargo build -p dv -p mock_gh` (step 4's test build links the binaries with gpui's test
    support), then the e2e scenarios (`cargo run -p gpui_automation --bin e2e -- tests/e2e`),
    background mode; `--fast` skips this step. `--foreground` also runs `tests/e2e/foreground/`,
    the scenarios that must take the focus (screen captures of the window materials, §14.2)
-6. `--linux`: `cargo test` of the headless crates (`dv_core`, `dv_cli`, `dv_test_support`, `mock_gh`) inside
-   WSL Ubuntu with `CARGO_TARGET_DIR` on ext4; phase 4 adds the musl backend, the Linux GUI build
-   and the backend loopback tests
+6. `--linux`: inside WSL Ubuntu with `CARGO_TARGET_DIR` on ext4, `cargo test -p dv_core -p
+   dv_backend -p dv_cli -p dv_test_support -p mock_gh`, `cargo test -p dv --no-default-features`
+   (the backend loopback tests among them) and `cargo clippy -p dv_backend -p dv_cli -p dv
+   --no-default-features --all-targets -- -D warnings`; then `script/build-linux`; then, on
+   Windows, the real WSL (`crates/dv_backend/tests/wsl.rs`, `dv setup wsl`'s check and the CLI
+   run inside the distro, in-process and as the built `dv`, §14.2) with `DV_TEST_WSL_DISTRO=Ubuntu`
+   and `DV_WSL_HOME` a fresh folder under the distro's `/tmp`, `--test-threads=1`. Run inside a
+   distro (Linux first: interop puts `wsl.exe` on its `PATH` too), the tests, the lint and the
+   build run right there and the real-WSL step, which needs Windows, is skipped with a message;
+   `script/build-linux` likewise builds where it runs on Linux and hops through `wsl.exe` only
+   from Windows. The Linux GUI build needs X11/Wayland/fontconfig development packages,
+   which take `sudo` to install in the distro, so it comes with phase 8's AppImage
+
+**The Linux build** WSL distros run (§5.2) is `script/build-linux [--aarch64]` (bash, like
+`script/check`): inside WSL Ubuntu, `rustup target add x86_64-unknown-linux-musl`, then `cargo
+build -p dv --no-default-features --release --target x86_64-unknown-linux-musl` with the target
+dir on ext4 and `CARGO_PROFILE_RELEASE_STRIP=symbols` (the release profile itself stays as the
+Windows build has it); the result, a static ELF of about 5 MB that `--version` runs, is copied
+beside the Windows builds as `target/debug/dv-linux-x86_64` and `target/release/dv-linux-x86_64`.
+`--aarch64` adds `aarch64-unknown-linux-musl` linked with `rust-lld` (`dv-linux-aarch64`; it links
+here, checked 2026-10-10; when it can't, the script says so and the x86_64 build stands). No
+dependency of the headless shape needs a C toolchain beyond what the musl target ships. **The
+Linux builds ship beside `dv.exe`, not embedded in it**: an embedded build would force a WSL
+build into every Windows build. The app looks in `DV_LINUX_DIR` when set, else its own folder;
+packaging (phase 8) puts them beside the installed `dv.exe`.
 
 macOS has no local machine: macOS-only code is kept compiling by `cargo check --target
 aarch64-apple-darwin` where that works without the SDK, and is otherwise unverified until a Mac or
-phase 9's CI is available. The Windows bundle embeds the musl builds it installs into distros, keyed by
-the same build hash (§5.2).
+phase 9's CI is available.
+
 
 ### 13.3 Install layout
 Windows per-user `%LOCALAPPDATA%\dv\` (Velopack), settings in `%APPDATA%\dv\`; macOS
@@ -1249,8 +1603,10 @@ Windows per-user `%LOCALAPPDATA%\dv\` (Velopack), settings in `%APPDATA%\dv\`; m
 
 ### 14.1 Principles
 Hermetic by default: every test and scenario uses its own data dir, its own fixture repos, `mock_gh`,
-and a local backend. Nothing touches `%APPDATA%\dv`, GitHub or a real distro unless an owner-only live
-switch is set.
+and a local backend. Nothing touches `%APPDATA%\dv` or GitHub unless an owner-only live switch is
+set. Nothing touches a real distro but the real-WSL tests, which `DV_TEST_WSL_DISTRO` turns on and
+which work only in a scratch home under the distro's `/tmp` (`DV_WSL_HOME`, §14.2), and the
+owner's live check (§14.3).
 
 ### 14.2 Pieces
 - **`dv_test_support::FixtureRepo`** — builds real git repos in temp dirs from a short script: files,
@@ -1263,8 +1619,70 @@ switch is set.
   recorded from `kylekz/difftest` (scrubbed), and appends every call + stdin to a log tests assert on
   ("exactly these 5 comments were posted with `REQUEST_CHANGES`"). Error scenarios: 422 line-not-in-diff,
   auth failure, rate limit.
-- **Backend loopback** — `RemoteBackend` tests spawn the native `dv backend --stdio` locally (no WSL),
-  so the protocol, reconnect and watch paths run locally on Windows and inside WSL, no distro setup needed.
+- **Backend conformance** — one suite (`crates/dv_backend/tests/conformance/`) runs the same cases
+  against `LocalBackend` and against `RemoteBackend` over a server on in-memory pipes
+  (`Launcher::InProcess`): repo info, git (failures, timeouts, ok codes, stdin, an index file),
+  worktree reads (missing, links, binary, a 5 MB file), the store (concurrent appends, atomic
+  writes, the index copy), invalid paths, every error's `Display` and `detail()`, and watches
+  (worktree, store, git state; dropping the handle, the sink gone when `drop` returns and a sink
+  in progress finishing first; from inside the sink too).
+- **Backend loopback** — `crates/dv/tests/backend_loopback.rs` starts the built `dv backend
+  --stdio` as a child (`Launcher::Command`, no WSL), in every shape of `dv`, so the protocol,
+  reconnect and watch paths run on Windows and inside WSL with no distro setup: the handshake with
+  and without a build (and a wrong one refused), a repository's git, store and watch, a kill
+  mid-call (`Disconnected` at once, the reconnect, the synthetic rescan, calls working again),
+  three blocked respawns ending `Failed` and `retry()` bringing it all back, and the server's end
+  when the last connection goes. Each test checks every server it met has exited (no child
+  leaks). `dv_backend`'s own unit tests cover the same lifecycle against in-process and fake
+  servers with a shortened backoff, and the connecting rule with a stand-in host check: a death
+  on a stopped host launching nothing and ending `Stopped` (on a running one, the respawn), a
+  first call on a stopped host likewise, an explicit start booting it, the idle close and the
+  automatic start after it (the idle period counted from the last watch's end, and a fresh
+  count of respawn attempts after it), a listing's host check taken from the cache, an
+  explicit start during a reconnect waiting for its outcome, calls failing at once while a
+  reconnect installs, and a watch the new server takes back differently (degraded, refused)
+  ending for its consumer; a child tied to the kill-on-close job is in it.
+- **WSL without a distro** — `dv_backend`'s unit tests decode `wsl.exe`'s UTF-16LE output, read
+  the launch markers and build the command lines everywhere, and on Linux run the launch,
+  install, prune and check scripts themselves with `/bin/sh` in a scratch home
+  (`wsl::Shell::local`), installing and starting a stand-in build; the connection's reinstall
+  and `Installing` progress run against a fake launcher.
+- **Real WSL** — `crates/dv_backend/tests/wsl.rs` (Windows; only when `DV_TEST_WSL_DISTRO` names
+  a distro, `--test-threads=1`) runs every script through the real `wsl.exe` in a home of each
+  test's own under `DV_WSL_HOME`, a fresh folder under the distro's `/tmp` (a value elsewhere
+  fails the test rather than touch a real home), removed at its end: the distro listed as
+  running, scripts and arguments arriving intact, an install streamed and checked (a wrong copy
+  refused), a connection installing then shaking hands (`build_ok: true`) and the next one not
+  installing again, a repository made under `/tmp` opening as `Location::Wsl` with its git,
+  store and a watch seeing an edit made inside the distro, a build changed in the distro
+  installed again, the prune, a `~/.local/bin` dv can't write (the install done with a
+  warning, the server started), and a distro that isn't there: an automatic start launching
+  nothing (`Stopped`), an explicit one `Unavailable` with `wsl.exe`'s words. `dv setup wsl`'s own check (`crates/dv_cli/src/tests/setup_wsl.rs`) runs the same way,
+  and so does the CLI run inside the distro (§10.4): in-process with captured streams
+  (`crates/dv_cli/src/tests/reexec.rs`), and as the built `dv` from Windows
+  (`crates/dv/tests/wsl_cli.rs`, where cargo builds and names it): a first command installing
+  this build in the scratch home, then `--wsl`, the share's spelling and a working directory
+  inside the distro naming the repository, an exit code passed through (`review wait --timeout
+  1` → 3, an error's 1 with its JSON), `--body-file -` over a pipe, `CLAUDECODE`, `DV_AUTHOR` and
+  `DV_REVIEW` crossing through `WSLENV`, a `dv` killed during `review wait` taking the distro's
+  `dv` with it (the kill-on-close job), stdout and stderr sent to one file coming out whole, a
+  `~/.local/bin` dv can't write leaving the crossing working, and a distro that isn't there as
+  exit 4 with its error document alone on stdout. Without a
+  distro, `dv_cli`'s tests cover which commands cross, the arguments, the folder and `WSLENV`,
+  the exit-4 paths that start no `wsl.exe`, and on Linux the run itself through `/bin/sh` with a
+  stand-in build (installed, then run). `script/check --linux` runs all of these after
+  `script/build-linux`.
+
+- **Remote reviews in the GUI** — `dv_ui`'s tests open repos through a loopback connection over
+  an in-process server (`Launcher::InProcess`, a route registered with `Locations`) and kill it,
+  block its respawns and retry it: the session riding out a lost connection and catching up
+  through the rescan, the status bar's states and the backend-down banner (also for a host found
+  stopped, through a launcher's stand-in host check, `Launcher::with_host_check`), the
+  switcher's reconnecting, Retry and Start rows, and the listing that never starts a stopped
+  distro (WSL's stand-in, `WslAccess::Scripted`), even after a death. The e2e scenario
+  `backend_loopback` does the same against this `dv`'s own `backend --stdio` as a child of the
+  app (`seed_repo` with `"backend": "loopback"`, `backend_kill`, `backend_block`,
+  `backend_stop`).
 - **`gpui_automation` + `e2e` runner** — ported from the sibling app: JSONL scenarios in `tests/e2e/`, named
   targets (`.automation_target("file_list/src/routes/users.ts")`), frame-synced replies,
   `wait_for`/`assert` JSON-pointer checks, background runs that never take focus, per-scenario output
@@ -1284,9 +1702,14 @@ switch is set.
   inherited `CLAUDECODE`, `DV_AUTHOR` and `DV_REVIEW` (a scenario sets them on purpose); `cli`
   runs one to its end and replies `{exit, stdout, stderr, json}`, `cli_spawn` starts one that
   blocks (`dv review wait`) and `cli_join` collects it, and a child still running when the app
-  quits is killed.
+  quits is killed. `seed_repo` with `"backend": "loopback"` reaches its repo through a loopback
+  `dv backend --stdio` the scenario can kill (`backend_kill`), stop from starting
+  (`backend_block`) and stop the host of, as `wsl --shutdown` stops a distro (`backend_stop`);
+  `wsl_distros` tells WSL's stand-in which distros there are and which run; `state.backends`
+  lists the connections.
   `workflow_a_agent` runs §3 workflow A end to end that way. The runner wires `mock_gh` itself:
-  every launch gets `DV_GH` = `mock_gh` and `DV_DATA_DIR` = the scenario's data dir, a scenario
+  every launch gets `DV_GH` = `mock_gh` and `DV_DATA_DIR` = the scenario's data dir and no inherited
+  `DV_WSL_HOME` (only a header's `env` names one, so dv reaches WSL through its stand-in), a scenario
   header's `gh` names the `mock_gh` scenario file (`DV_MOCK_GH`), and `{"gh_log": {}}` lines
   assert on its call log (`DV_MOCK_GH_LOG`) (tests/e2e/README.md).
 - **Screenshots of the window material:** the default capture (`PrintWindow`) includes Mica but
@@ -1303,8 +1726,18 @@ switch is set.
   may carry) unless it sets them on purpose.
 
 ### 14.3 Owner-only live checks
-`DV_LIVE_WSL=1` (real distro smoke: install, open, watch, CLI inside the distro) and `DV_LIVE_GH=1`
-(open + submit a review on `kylekz/difftest`). No agent or CI run sets these.
+`DV_LIVE_WSL=1` and `DV_LIVE_GH=1` (open + submit a review on `kylekz/difftest`). No agent, script
+or CI run sets these.
+
+The live WSL check is `crates/dv_backend/tests/live_wsl.rs`, `#[ignore]` and inert without
+`DV_LIVE_WSL=1`: after `script/build-linux`, `DV_LIVE_WSL=1 cargo test -p dv_backend --test
+live_wsl -- --ignored --test-threads=1` installs this build into the real home of
+`DV_LIVE_WSL_DISTRO` (default `Ubuntu`) through the app's own connection (replacing the first
+implementation's `~/.local/bin/dv` with the link, pruning other builds of `~/.local/share/dv/bin`,
+leaving its other folders), checks `~/.local/bin/dv --version` there, opens a scratch repository
+under `/tmp` (removed at the end) with a watch round trip, runs the distro's `dv` on it, and
+then the Windows `dv` (`target/debug/dv.exe`, so `cargo build -p dv` first) for it, which runs
+the command inside the distro (§10.4).
 
 ---
 
@@ -1347,11 +1780,11 @@ Each phase ends with its e2e scenarios green and a screenshot review against DES
 | 1 | `dv_core`: targets, git diff pipeline (§6 steps 1–3), event store (§7), `LocalBackend` | unit + fixture tests incl. CRLF/attributes/renames/binary |
 | 2 | Review screen: switcher, file list (viewed, totals), diff stream (split/unified, gaps, highlight), threads + composer, comments list | Workflow A steps 1–3 by keyboard, e2e |
 | 3 | CLI (§10) + skill + rounds/interdiff + relocation (§8) | Workflow A end to end with a scripted "agent" in an e2e scenario |
-| 4 | `dv backend`, `RemoteBackend`, WSL install + routing + watch (§5), CLI re-exec | loopback tests pass on Windows and in WSL (`script/check --linux`); owner's live WSL check passes |
+| 4 | `dv backend`, `RemoteBackend`, WSL install + routing + watch (§5), CLI re-exec (§10.4) | loopback tests pass on Windows and in WSL, and the real WSL ones (the app's connection, `dv setup wsl`, the CLI run inside the distro) in a sandboxed home (`script/check --linux`); the owner's live WSL check (§14.3) is ready for the owner to run |
 | 5 | GitHub: open PR, pull threads, submit sheet with validation and file-comment fallback (§9) | Workflow C against `mock_gh`; owner's live check |
 | 6 | Onboarding/setup/doctor (§12) | first run on a fresh data dir → onboarding → review, on Windows with a WSL distro |
 | 7 | Polish: settings, palette, light themes, empty states, performance pass on a 2,000-file PR | DESIGN review of every screen; perf budget (§17) met |
-| 8 | Packaging + updates with Velopack (D9), local feed; Linux AppImage built in WSL | install from `Setup.exe` → PATH set → a second local release updates the installed copy |
+| 8 | Packaging + updates with Velopack (D9), local feed; the Linux GUI build and its AppImage, built in WSL (§13.2) | install from `Setup.exe` → PATH set → a second local release updates the installed copy |
 | 9 | *(last, optional)* GitHub Actions: CI matrix incl. macOS, release workflow publishing to GitHub Releases, update feed switched over | owner asks for it |
 
 ---

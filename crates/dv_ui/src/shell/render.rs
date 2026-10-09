@@ -198,13 +198,31 @@ impl Shell {
             view.action(BannerAction::new(
                 "dismiss",
                 "Dismiss",
-                handler(cx, |this, _, cx| {
-                    this.banner = None;
-                    cx.notify();
-                }),
+                handler(cx, |this, _, cx| this.dismiss_banner(cx)),
             ))
         });
+        // The connection failed for good, or found its distro stopped (DESIGN §4.4): its
+        // banner says all there is, so the review's own refresh banner stays down.
+        let backend_down = self.backend_down(cx);
+        let backend_banner = backend_down.clone().map(|down| {
+            Banner::new("banner/backend", down.failure)
+                .disclosure(
+                    self.backend_banner_expanded,
+                    handler(cx, |this, _, cx| {
+                        this.backend_banner_expanded = !this.backend_banner_expanded;
+                        cx.notify();
+                    }),
+                )
+                .action(BannerAction::new(
+                    if down.stopped { "start" } else { "retry" },
+                    down.action,
+                    handler(cx, |this, _, cx| this.retry_backend(cx)),
+                ))
+        });
         let session_banner = self.session.as_ref().and_then(|session| {
+            if backend_down.is_some() {
+                return None;
+            }
             let failure = session.read(cx).error()?.clone();
             let session = session.clone();
             Some(
@@ -303,6 +321,7 @@ impl Shell {
             .bg(c.code)
             .debug_selector(|| "main".into())
             .children(banner)
+            .children(backend_banner)
             .children(session_banner)
             .children(viewed_banner)
             .children(comparison_banner)

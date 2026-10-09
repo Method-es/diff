@@ -93,7 +93,7 @@ fn join(root: &Path, rel: &str) -> PathBuf {
 fn invalid(rel: &str, reason: &'static str) -> BackendError {
     BackendError::InvalidPath {
         path: rel.to_string(),
-        reason,
+        reason: reason.into(),
     }
 }
 

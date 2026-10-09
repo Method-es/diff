@@ -94,6 +94,10 @@ const PREFETCH_BEHIND: usize = 1;
 pub enum DiffPaneEvent {
     /// [`DiffPane::current_file`] changed.
     CurrentFileChanged,
+    /// The composer went, its draft with it: posted, cancelled, or dropped with its file or
+    /// its thread (not replaced by another, nor gone with the review). A pick that waited for
+    /// the draft runs now (`crate::shell::pending`).
+    ComposerClosed,
 }
 
 /// The cursor: a line of a file's text diff and the side it is on.
@@ -617,6 +621,7 @@ impl DiffPane {
             !self.index.contains_key(&composer.target.path) && !in_review(&composer.target.path)
         }) {
             self.composer = None;
+            cx.emit(DiffPaneEvent::ComposerClosed);
         }
         self.list.reset(self.item_count());
         self.attach_composer_focus(cx);

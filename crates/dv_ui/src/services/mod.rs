@@ -4,7 +4,8 @@
 //!
 //! - [`Settings`] (`settings`): the window material, the light/dark mode and the panel's width,
 //!   saved in the data dir as they change.
-//! - [`Locations`] (`locations`): the one backend per repository, opened off the UI thread.
+//! - [`Locations`] (`locations`): the one backend per repository, opened off the UI thread,
+//!   and the connections to the `dv backend --stdio` servers remote ones go through (PLAN §5).
 //! - [`Reviews`] (`reviews`): the known repositories (`known_repos.json`) and, per repository,
 //!   its reviews and uncommitted changes, as the switcher lists them.
 //! - [`ReviewUi`] (`review_ui`): what the reviewer chose per review (`review_ui.json`: split or
@@ -25,16 +26,19 @@ use std::path::{Path, PathBuf};
 
 use gpui::{App, AppContext as _, Entity, Global};
 
-pub use locations::{EnvOverlay, Locations};
+pub use locations::{EnvOverlay, Locations, LocationsEvent, Reach, Route, WslAccess};
 pub use review_ui::{ReviewUi, ViewMode};
 pub use reviews::{Reviews, ReviewsEvent};
 pub use settings::{Mode, Settings, SettingsEvent, SettingsFile};
 
 /// What [`init`] needs from the binary.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ServicesConfig {
     /// Where dv keeps its files (`--data-dir`, `DV_DATA_DIR`, else the platform's; PLAN §13.3).
     pub data_dir: PathBuf,
+    /// How WSL repositories are reached: this machine's WSL, or a stand-in in tests and in
+    /// automation runs without `DV_WSL_HOME` ([`WslAccess::for_run`]).
+    pub wsl: WslAccess,
 }
 
 /// The app's services.
@@ -65,10 +69,10 @@ impl Services {
 /// Builds the services (reading the settings, the known repositories and the per-review
 /// choices synchronously) and installs them as a global.
 pub fn init(config: ServicesConfig, cx: &mut App) {
-    let ServicesConfig { data_dir } = config;
+    let ServicesConfig { data_dir, wsl } = config;
     let path = data_dir.join(settings::SETTINGS_FILE);
     let settings = cx.new(|cx| Settings::load(path, cx));
-    let locations = cx.new(|_| Locations::new());
+    let locations = cx.new(|cx| Locations::new(wsl, cx));
     let reviews = cx.new(|cx| Reviews::new(locations.clone(), &data_dir, cx));
     let review_ui = cx.new(|cx| ReviewUi::new(&data_dir, cx));
     cx.set_global(Services {

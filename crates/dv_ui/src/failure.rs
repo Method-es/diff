@@ -1,6 +1,11 @@
 //! Errors as views show them (DESIGN §4.4): a one-line headline from the error's `Display`, and
 //! the command that failed with what it printed for the disclosure and "Copy diagnostics".
 //! Never raw stderr as the headline.
+//!
+//! A failure also says whether it is a lost connection to `dv backend --stdio`
+//! ([`Failure::disconnected`], `BackendError::Disconnected`, PLAN §5.2): the connection is
+//! reconnecting, and what failed is read again once it is back, so a review raises no banner of
+//! its own for it.
 
 use std::fmt;
 
@@ -16,6 +21,8 @@ pub struct Failure {
     pub message: String,
     /// The failed command and its output, when there is more to show.
     pub detail: Option<String>,
+    /// The connection to a remote backend died under the call (module docs).
+    pub disconnected: bool,
 }
 
 impl Failure {
@@ -23,6 +30,15 @@ impl Failure {
         Self {
             message: message.into(),
             detail: None,
+            disconnected: false,
+        }
+    }
+
+    /// `message` with `detail` under it.
+    pub fn with_detail(message: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            detail: Some(detail.into()),
+            ..Self::new(message)
         }
     }
 
@@ -30,6 +46,7 @@ impl Failure {
         Self {
             message,
             detail: backend.and_then(BackendError::detail),
+            disconnected: matches!(backend, Some(BackendError::Disconnected { .. })),
         }
     }
 }
@@ -103,10 +120,7 @@ impl From<&OpError> for Failure {
             }
             OpError::Snapshot(
                 SnapshotError::Unmerged { detail } | SnapshotError::Unreadable { detail, .. },
-            ) => Self {
-                message,
-                detail: Some(detail.clone()),
-            },
+            ) => Self::with_detail(message, detail.clone()),
             _ => Self::new(message),
         }
     }
@@ -141,5 +155,28 @@ mod tests {
         });
         assert!(!plain.message.contains('\n'));
         assert_eq!(plain.detail, None);
+        assert!(!plain.disconnected);
+    }
+
+    #[test]
+    fn a_lost_connection_says_so_through_every_wrapper() {
+        let lost = || BackendError::Disconnected {
+            location: "Ubuntu".into(),
+            reason: "dv was killed".into(),
+        };
+        let direct = Failure::from(&lost());
+        assert!(direct.disconnected);
+        assert_eq!(
+            direct.message,
+            "lost the connection to dv in Ubuntu: dv was killed"
+        );
+        assert!(Failure::from(&DiffError::Git(GitError::Backend(lost()))).disconnected);
+        assert!(Failure::from(&StoreError::Backend(lost())).disconnected);
+        assert!(Failure::from(&OpError::Store(StoreError::Backend(lost()))).disconnected);
+        let unavailable = BackendError::Unavailable {
+            location: "Ubuntu".into(),
+            reason: "the connection to dv failed: no build".into(),
+        };
+        assert!(!Failure::from(&unavailable).disconnected);
     }
 }

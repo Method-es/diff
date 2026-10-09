@@ -9,6 +9,30 @@ description = "The stdio protocol, the dv backend --stdio server loop, RemoteBac
 # gpui: never, not even transitively (`script/check` step 3).
 [lib]
 path = "src/lib.rs"
+doctest = false
 
 [dependencies]
+base64.workspace = true
 dv_core.workspace = true
+log.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+# `RawValue`: the client's reader thread routes a reply without parsing its value, which the
+# waiting call parses into the type it expects (`client::link`).
+serde_json = { workspace = true, features = ["raw_value"] }
+sha2.workspace = true
+thiserror.workspace = true
+
+# Children that die with this process (`job`).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+dv_test_support.workspace = true
+pretty_assertions.workspace = true
+tempfile.workspace = true

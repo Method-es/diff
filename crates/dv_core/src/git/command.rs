@@ -161,7 +161,7 @@ pub fn run(
     if let Some(rel) = &opts.index_file {
         return Err(BackendError::InvalidPath {
             path: rel.clone(),
-            reason: "an index file is resolved by a backend",
+            reason: "an index file is resolved by a backend".into(),
         });
     }
     run_with_index(cwd, overlay, None, args, opts)

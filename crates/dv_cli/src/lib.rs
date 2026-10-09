@@ -13,10 +13,11 @@
 //!
 //! - [`skill`]: the `dv-review` agent skill `dv setup agents` installs (PLAN §10.5).
 //!
-//! Inside, `repo` finds and opens the repository (a WSL one is exit 4), `select` picks the
-//! review a command means (PLAN §10.2), `identity` who it acts as (PLAN §2.5), `placement`
-//! where threads stand now and where a write records them (PLAN §8), `body` reads a
-//! command's text (`--body`, `--body-file`, stdin), and `commands` does the work.
+//! Inside, `repo` finds and opens the repository, `reexec` runs a command for a repository
+//! inside a WSL distro there (on Windows, PLAN §10.4), `select` picks the review a command
+//! means (PLAN §10.2), `identity` who it acts as (PLAN §2.5), `placement` where threads stand
+//! now and where a write records them (PLAN §8), `body` reads a command's text (`--body`,
+//! `--body-file`, stdin), and `commands` does the work.
 
 pub mod args;
 mod body;
@@ -27,6 +28,7 @@ pub mod error;
 mod identity;
 pub mod output;
 mod placement;
+mod reexec;
 mod repo;
 mod select;
 pub mod skill;
@@ -39,7 +41,7 @@ pub use args::{Cli, Command, GlobalArgs};
 pub use context::{Context, Env};
 pub use error::{CliError, Exit};
 pub use identity::CLAUDE_CODE;
-pub use repo::location;
+pub use repo::{location, this_distro};
 
 /// Runs a parsed headless command with `ctx`; an error is reported on stderr (and, with
 /// `--json`, on stdout) before its exit code is returned (PLAN §10.3).
@@ -59,7 +61,10 @@ where
 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
     match Cli::try_parse_from(&args) {
-        Ok(cli) => run(&cli.global, cli.command, ctx),
+        Ok(cli) => {
+            ctx.args = args;
+            run(&cli.global, cli.command, ctx)
+        }
         Err(error) => output::parse_error(&error, &args, ctx),
     }
 }

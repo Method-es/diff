@@ -8,7 +8,7 @@ use pretty_assertions::assert_eq;
 
 use super::*;
 use crate::services::reviews::{OpenRequest, Reviews};
-use crate::services::{EnvOverlay, Locations};
+use crate::services::{EnvOverlay, Locations, WslAccess};
 
 /// The fixture with a linked worktree on `feature` whose working tree edits `src/a.rs` its own
 /// way and adds a file of its own.
@@ -27,7 +27,7 @@ fn services(
     data: &std::path::Path,
     cx: &mut TestAppContext,
 ) -> Entity<Reviews> {
-    let locations = cx.new(|_| Locations::new());
+    let locations = cx.new(|cx| Locations::new(WslAccess::scripted(Vec::new()), cx));
     locations.update(cx, |locations, _| {
         let env: EnvOverlay = repo.env_overlay();
         locations.register_env(repo.path().to_path_buf(), env.clone());
@@ -74,6 +74,7 @@ async fn another_worktrees_review_opens_in_its_own_worktree(cx: &mut TestAppCont
         .await
         .expect("it opens");
     assert!(dv_core::review::same_worktree(
+        &opened.backend.repo().location,
         &opened.backend.repo().toplevel,
         &linked.display().to_string()
     ));
@@ -173,6 +174,7 @@ async fn a_branch_review_opens_where_the_branch_is_checked_out(cx: &mut TestAppC
         .await
         .unwrap();
     assert!(dv_core::review::same_worktree(
+        &opened.backend.repo().location,
         &opened.backend.repo().toplevel,
         &repo.path().display().to_string()
     ));

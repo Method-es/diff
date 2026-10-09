@@ -49,6 +49,13 @@ pub const MOCK_GH_VAR: &str = "DV_MOCK_GH";
 /// Where `mock_gh` appends one JSON line per call; `gh_log` steps read it.
 pub const MOCK_GH_LOG_VAR: &str = "DV_MOCK_GH_LOG";
 
+/// The scratch home dv installs into and runs from inside a WSL distro (docs/PLAN.md §5.2).
+/// The runner removes an inherited one, so a scenario reaches WSL only through dv's stand-in
+/// unless its header's `env` sets it (an exploratory run against a real distro). The runner
+/// passes the value on as it is: dv alone decides what it means (`dv_backend::wsl::sandbox`),
+/// and anything but a scratch home leaves it on its stand-in.
+pub const WSL_HOME_VAR: &str = "DV_WSL_HOME";
+
 /// git stops looking for a repository at these directories. The runner sets
 /// it to the scenario's output dir: the data dir (the app's working
 /// directory) sits inside this checkout's `target/`, and a repository

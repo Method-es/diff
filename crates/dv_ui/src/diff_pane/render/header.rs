@@ -294,22 +294,16 @@ impl DiffPane {
         }
         let menu = self.menu.clone()?;
         let c = &theme.colors;
-        let toplevel = self
+        let root = self
             .session
             .as_ref()
-            .map(|session| session.read(cx).backend().repo().toplevel.clone())?;
+            .map(|session| session.read(cx).backend().repo().location.clone())?;
         let deleted = self
             .index
             .get(&menu.path)
             .and_then(|&block| self.entry_and_state(block, cx))
             .is_some_and(|(entry, _)| entry.status == FileStatus::Deleted);
-        let mut target = menu
-            .path
-            .split('/')
-            .fold(PathBuf::from(&toplevel), |at, part| at.join(part));
-        if deleted && let Some(parent) = target.parent() {
-            target = parent.to_path_buf();
-        }
+        let target = reveal_target(&root, &menu.path, deleted);
         let hover = c.control_hover;
         let item = |key: &'static str, label: &'static str, glyph: DvIcon| {
             div()
@@ -481,4 +475,43 @@ fn side_labels(
 /// the stream's rows rather than the window material: nothing scrolls through it.
 fn opaque(surface: gpui::Hsla, pinned: bool) -> gpui::Hsla {
     if pinned { surface.alpha(1.) } else { surface }
+}
+
+/// What "Reveal in folder" shows for the file `path` of the repository whose worktree root is
+/// `root`: the file, or for a deleted one the folder it was in, spelled as this machine opens
+/// it (through the distro's share for a WSL repository, `Location::file_path`).
+fn reveal_target(root: &dv_core::Location, path: &str, deleted: bool) -> PathBuf {
+    let target = root.file_path(path);
+    match target.parent() {
+        Some(parent) if deleted => parent.to_path_buf(),
+        _ => target,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use dv_core::Location;
+
+    use super::*;
+
+    #[test]
+    fn a_wsl_file_is_revealed_through_its_distros_share() {
+        let wsl = Location::Wsl {
+            distro: "Ubuntu".into(),
+            path: "/home/kyle/api".into(),
+        };
+        let share = wsl.unc_path().map(PathBuf::from).expect("a WSL location");
+        assert_eq!(
+            reveal_target(&wsl, "src/main.rs", false),
+            share.join("src").join("main.rs")
+        );
+        assert_eq!(reveal_target(&wsl, "src/gone.rs", true), share.join("src"));
+        let root = std::env::temp_dir().join("api");
+        let local = Location::Local(root.clone());
+        assert_eq!(
+            reveal_target(&local, "src/main.rs", false),
+            root.join("src").join("main.rs")
+        );
+        assert_eq!(reveal_target(&local, "README.md", true), root);
+    }
 }

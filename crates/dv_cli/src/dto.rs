@@ -20,6 +20,7 @@
 //! | `comment reply` | [`ReplyDoc`]: `reply`, `thread` |
 //! | `comment address`, `resolve`, `reopen` | [`ThreadChangeDoc`]: `changed`, `thread` |
 //! | `setup agents` | [`SetupAgentsDoc`]: `agents: [{agent, path, action, reason}]` |
+//! | `setup wsl` | [`SetupWslDoc`]: `distro`, `arch`, `build`, `installed`, `linked`, `path` |
 //! | any, failing | [`ErrorDoc`]: `error: {code, message, detail?, candidates?}` |
 //!
 //! A review ([`ReviewDto`]): `id`, `target` (`kind` and the spec's fields, plus `label`, e.g.
@@ -568,6 +569,25 @@ pub struct AgentSetupDto {
     pub action: &'static str,
     /// Why it was skipped, else `null`.
     pub reason: Option<String>,
+}
+
+/// `dv setup wsl`.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct SetupWslDoc {
+    /// The distro, as `wsl.exe --list` names it.
+    pub distro: String,
+    /// Its architecture: `x86_64` or `aarch64`.
+    pub arch: &'static str,
+    /// The build installed: the sha256 of this app's Linux build for `arch`.
+    pub build: String,
+    /// Whether this run installed it (`false`: it was installed and intact already).
+    pub installed: bool,
+    /// Whether `~/.local/bin/dv` runs it now (`false`: a link the install couldn't make, which
+    /// a warning says how to fix; the app and the CLI run the build itself either way).
+    pub linked: bool,
+    /// Where it is inside the distro: `~/.local/share/dv/bin/dv-<build>`, which
+    /// `~/.local/bin/dv` links to.
+    pub path: String,
 }
 
 /// A failure.

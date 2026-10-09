@@ -26,7 +26,13 @@ pub fn open_shell(
     cx.update(|cx| {
         crate::init(cx).expect("dv_ui initialises");
         crate::system::install(SystemShell::scripted(), cx);
-        crate::services::init(ServicesConfig { data_dir }, cx);
+        crate::services::init(
+            ServicesConfig {
+                data_dir,
+                wsl: crate::services::WslAccess::scripted(Vec::new()),
+            },
+            cx,
+        );
         crate::appearance::init(MaterialSupport::ALL, cx);
     });
     let mut shell = None;

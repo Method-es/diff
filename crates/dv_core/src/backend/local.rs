@@ -236,7 +236,7 @@ impl Backend for LocalBackend {
         let path = paths::store_path(&self.store_root, rel, false)?;
         if line.contains(&b'\n') {
             return Err(BackendError::InvalidLine {
-                reason: "contains a newline",
+                reason: "contains a newline".into(),
             });
         }
         create_parent(&path)?;

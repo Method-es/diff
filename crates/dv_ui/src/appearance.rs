@@ -129,7 +129,13 @@ mod tests {
         let data_dir = dir.path().to_path_buf();
         cx.update(|cx| {
             crate::init(cx).unwrap();
-            crate::services::init(ServicesConfig { data_dir }, cx);
+            crate::services::init(
+                ServicesConfig {
+                    data_dir,
+                    wsl: crate::services::WslAccess::scripted(Vec::new()),
+                },
+                cx,
+            );
             init(support, cx);
         });
         dir

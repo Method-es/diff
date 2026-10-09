@@ -19,6 +19,10 @@ fn row(name: &str, path: &str) -> RepoRow {
         loading: false,
         error: None,
         unreachable: None,
+        stopped: None,
+        retry: false,
+        reconnecting: false,
+        starting: false,
         toplevel: Some(path.to_string()),
         working: Some(WorkingSummary {
             files: 2,
@@ -138,8 +142,45 @@ fn rows_say_why_a_repo_has_nothing_to_offer() {
         distro: "Ubuntu".into(),
         path: "/home/kyle/web".into(),
     };
-    wsl.unreachable = Some("WSL support arrives later".into());
+    wsl.unreachable = Some("Ubuntu isn't running".into());
+    wsl.stopped = Some("Ubuntu".into());
+    wsl.error = Some(Failure::new("Ubuntu isn't running"));
     wsl.working = None;
+    // A distro being started: its Start row stays, inert, and nothing else is offered yet.
+    let mut starting = row("site", "Ubuntu:/srv/site");
+    starting.location = Location::Wsl {
+        distro: "Ubuntu".into(),
+        path: "/srv/site".into(),
+    };
+    starting.starting = true;
+    starting.stopped = Some("Ubuntu".into());
+    starting.working = None;
+    // A connection that failed: why, and Retry.
+    let mut failed = row("docs", "Debian:/srv/docs");
+    failed.location = Location::Wsl {
+        distro: "Debian".into(),
+        path: "/srv/docs".into(),
+    };
+    failed.unreachable = Some("the connection to dv failed: no build".into());
+    failed.error = Some(Failure::new("Debian can't be opened"));
+    failed.retry = true;
+    failed.working = None;
+    // Its Retry picked: connecting.
+    let mut retrying = failed.clone();
+    retrying.name = "notes".into();
+    retrying.path = "Debian:/srv/notes".into();
+    retrying.location = Location::Wsl {
+        distro: "Debian".into(),
+        path: "/srv/notes".into(),
+    };
+    retrying.starting = true;
+    // A connection that is reconnecting: it says so, and keeps the rows it had; without a
+    // listing before, there are none.
+    let mut reconnecting = row("cache", "D:\\cache");
+    reconnecting.reconnecting = true;
+    let mut reconnecting_unlisted = row("fresh", "D:\\fresh");
+    reconnecting_unlisted.reconnecting = true;
+    reconnecting_unlisted.working = None;
     let mut clean = row("clean", "D:\\clean");
     clean.working = Some(WorkingSummary::default());
     // On the default branch there is no branch to compare.
@@ -159,23 +200,93 @@ fn rows_say_why_a_repo_has_nothing_to_offer() {
         label: "abc".into(),
     });
 
-    let listing = build(&[&wsl, &clean, &loading, &broken], "");
+    let listing = build(
+        &[
+            &wsl,
+            &clean,
+            &loading,
+            &broken,
+            &starting,
+            &failed,
+            &retrying,
+            &reconnecting,
+            &reconnecting_unlisted,
+        ],
+        "",
+    );
     let summaries: Vec<&RepoSummary> = listing.repos.iter().map(|repo| &repo.summary).collect();
     assert_eq!(
         summaries,
         [
-            &RepoSummary::Unreachable("WSL support arrives later".into()),
+            &RepoSummary::Stopped("Ubuntu".into()),
             &RepoSummary::Clean,
             &RepoSummary::Loading,
             &RepoSummary::Error("git status failed".into()),
+            &RepoSummary::Starting("Starting Ubuntu…".into()),
+            &RepoSummary::Unreachable("the connection to dv failed: no build".into()),
+            &RepoSummary::Starting("Debian · connecting…".into()),
+            &RepoSummary::Unreachable("reconnecting…".into()),
+            &RepoSummary::Unreachable("reconnecting…".into()),
         ]
     );
     assert_eq!(listing.repos[0].distro.as_deref(), Some("Ubuntu"));
     assert_eq!(
-        listing.first_of(&wsl.location),
-        None,
-        "nothing to open there"
+        listing.repos[0].shown_path, "/home/kyle/web",
+        "the chip names the distro; the path is the distro's"
     );
+    // A stopped distro's repository offers to start it, and nothing else.
+    let start = listing.first_of(&wsl.location).expect("its Start row");
+    assert_eq!(listing.items[start].key, "web/start");
+    assert_eq!(listing.items[start].label(), "Start Ubuntu");
+    assert_eq!(listing.items[start].kind_key(), "start");
+    assert_eq!(listing.start(start), Some(wsl.location.clone()));
+    assert_eq!(listing.request(start), None, "it opens no review");
+    assert!(
+        !keys(&listing)
+            .iter()
+            .any(|key| key.starts_with("web/") && *key != "web/start"),
+        "{:?}",
+        keys(&listing)
+    );
+    let busy = listing.first_of(&starting.location).expect("its Start row");
+    assert_eq!(listing.items[busy].key, "site/start");
+    assert_eq!(listing.items[busy].label(), "Start Ubuntu");
+    assert!(listing.items[busy].is_starting());
+    assert_eq!(listing.start(busy), None, "picking it again does nothing");
+    assert_eq!(listing.first_ready_of(&starting.location), None);
+    assert!(!listing.items[start].is_starting());
+    assert_eq!(listing.first_ready_of(&wsl.location), Some(start));
+    // A failed connection offers Retry, and nothing else.
+    let retry = listing.first_of(&failed.location).expect("its Retry row");
+    assert_eq!(listing.items[retry].key, "docs/retry");
+    assert_eq!(listing.items[retry].label(), "Retry");
+    assert_eq!(listing.items[retry].kind_key(), "retry");
+    assert_eq!(listing.start(retry), Some(failed.location.clone()));
+    assert_eq!(listing.request(retry), None, "it opens no review");
+    assert!(
+        !keys(&listing)
+            .iter()
+            .any(|key| key.starts_with("docs/") && *key != "docs/retry"),
+        "{:?}",
+        keys(&listing)
+    );
+    let busy = listing.first_of(&retrying.location).expect("its Retry row");
+    assert_eq!(listing.items[busy].key, "notes/retry");
+    assert!(listing.items[busy].is_starting());
+    assert_eq!(listing.start(busy), None, "picking it again does nothing");
+    assert!(
+        !keys(&listing)
+            .iter()
+            .any(|key| key.starts_with("notes/") && *key != "notes/retry"),
+        "{:?}",
+        keys(&listing)
+    );
+    // Reconnecting, the rows of the last listing stay.
+    let kept = listing
+        .first_of(&reconnecting.location)
+        .expect("the rows it had");
+    assert_eq!(listing.items[kept].key, "cache/working");
+    assert_eq!(listing.first_of(&reconnecting_unlisted.location), None);
     assert_eq!(
         listing.first_of(&broken.location),
         None,
@@ -420,4 +531,229 @@ fn the_source_picker_switches_the_target_by_keyboard(cx: &mut TestAppContext) {
             "feat vs main"
         );
     });
+}
+
+#[gpui::test]
+fn a_start_keeps_its_row_and_the_selection_and_enter_again_does_nothing(cx: &mut TestAppContext) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    use dv_backend::{Connection, ConnectionState, Launcher};
+    use gpui::Keystroke;
+
+    use crate::services::{ActiveServices as _, Route};
+    use crate::test_support::fixture;
+
+    let (_dir, shell, cx) = open_shell(cx);
+    let repo = fixture();
+    // A host the test stops, as the user stops a distro; respawns it may block.
+    let up = Arc::new(AtomicBool::new(true));
+    let blocked = Arc::new(AtomicBool::new(false));
+    let launcher = Launcher::custom("an in-process server on a host the test stops", {
+        let (up, blocked) = (up.clone(), blocked.clone());
+        move || {
+            if blocked.load(Ordering::SeqCst) {
+                return Err(std::io::Error::other("blocked by the test"));
+            }
+            up.store(true, Ordering::SeqCst);
+            Launcher::InProcess.start()
+        }
+    })
+    .with_host_check({
+        let up = up.clone();
+        move |_| up.load(Ordering::SeqCst)
+    });
+    let connection =
+        Connection::with_backoff("loopback", launcher, vec![Duration::from_millis(20)]);
+    let (locations, reviews) = cx.update(|_, cx| {
+        (
+            cx.services().locations.clone(),
+            cx.services().reviews.clone(),
+        )
+    });
+    locations.update(cx, |locations, _| {
+        locations.register(
+            repo.path().to_path_buf(),
+            Route {
+                env: repo.env_overlay(),
+                connection: Some(connection.clone()),
+            },
+        )
+    });
+    let location = Location::Local(repo.path().to_path_buf());
+    let added = reviews.update(cx, |reviews, cx| reviews.add_repo(location.clone(), cx));
+    settle(cx, &shell, "the repo's row", |_, _| true);
+    assert!(cx.foreground_executor().block_test(added).is_ok());
+    let window = cx.update(|window, _| window.window_handle());
+
+    for (case, row) in [("stopped", "start"), ("failed", "retry")] {
+        // Stopped by the user; or failed, its respawns blocked.
+        match case {
+            "stopped" => up.store(false, Ordering::SeqCst),
+            _ => blocked.store(true, Ordering::SeqCst),
+        }
+        connection.kill();
+        settle(cx, &shell, "the connection down", |_, _| {
+            matches!(
+                connection.state(),
+                ConnectionState::Stopped | ConnectionState::Failed { .. }
+            )
+        });
+        blocked.store(false, Ordering::SeqCst);
+        cx.simulate_keystrokes("ctrl-o");
+        settle(cx, &shell, "the Start or Retry row", |shell, cx| {
+            shell.switcher().is_some_and(|switcher| {
+                switcher
+                    .read(cx)
+                    .selected_key()
+                    .is_some_and(|key| key.ends_with(&format!("/{row}")))
+            })
+        });
+        let picked = selected(&shell, cx).unwrap();
+        let key = picked.trim_end_matches(&format!("/{row}")).to_string();
+        let view = switcher(&shell, cx).unwrap();
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let _subscription = cx.update(|_, cx| {
+            let events = events.clone();
+            cx.subscribe(&view, move |_, event: &SwitcherEvent, _| {
+                events.borrow_mut().push(event.clone())
+            })
+        });
+
+        // Enter starts it. Before the start lands its row stays, inert, with the selection,
+        // and Enter again picks nothing: no second start, never the folder picker.
+        cx.dispatch_keystroke(window, Keystroke::parse("enter").unwrap());
+        assert_eq!(
+            *events.borrow(),
+            [SwitcherEvent::Start {
+                location: location.clone()
+            }],
+            "{case}"
+        );
+        let item = view.read_with(cx, |view, _| {
+            let listing = view.listing();
+            listing
+                .position(&picked)
+                .map(|ix| listing.items[ix].clone())
+        });
+        assert!(item.expect("the row stays").is_starting(), "{case}");
+        assert_eq!(selected(&shell, cx).as_deref(), Some(picked.as_str()));
+        cx.dispatch_keystroke(window, Keystroke::parse("enter").unwrap());
+        assert_eq!(events.borrow().len(), 1, "{case}");
+        assert_eq!(selected(&shell, cx).as_deref(), Some(picked.as_str()));
+
+        // Connected: the repo lists, and its first row has the selection.
+        let working = format!("{key}/working");
+        settle(cx, &shell, "the repo's rows", |shell, cx| {
+            shell
+                .switcher()
+                .is_some_and(|switcher| switcher.read(cx).selected_key() == Some(working.as_str()))
+        });
+        assert_eq!(events.borrow().len(), 1, "{case}");
+        let (requests, _) = cx.update(|_, cx| crate::system::requests(cx));
+        assert!(requests.is_empty(), "{case}: {requests:?}");
+        assert_eq!(connection.state(), ConnectionState::Connected);
+        cx.simulate_keystrokes("escape");
+    }
+}
+
+#[gpui::test]
+fn an_open_switcher_follows_a_connection_going_down_and_coming_back(cx: &mut TestAppContext) {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    use dv_backend::{Connection, ConnectionState, Launcher};
+
+    use crate::services::{ActiveServices as _, Route};
+    use crate::test_support::fixture;
+
+    let (_dir, shell, cx) = open_shell(cx);
+    let repo = fixture();
+    let blocked = Arc::new(AtomicBool::new(false));
+    let launcher = Launcher::custom("an in-process server tests block", {
+        let blocked = blocked.clone();
+        move || {
+            if blocked.load(Ordering::SeqCst) {
+                return Err(std::io::Error::other("blocked by the test"));
+            }
+            Launcher::InProcess.start()
+        }
+    });
+    let connection =
+        Connection::with_backoff("loopback", launcher, vec![Duration::from_millis(1500)]);
+    let (locations, reviews) = cx.update(|_, cx| {
+        (
+            cx.services().locations.clone(),
+            cx.services().reviews.clone(),
+        )
+    });
+    locations.update(cx, |locations, _| {
+        locations.register(
+            repo.path().to_path_buf(),
+            Route {
+                env: repo.env_overlay(),
+                connection: Some(connection.clone()),
+            },
+        )
+    });
+    let location = Location::Local(repo.path().to_path_buf());
+    let added = reviews.update(cx, |reviews, cx| reviews.add_repo(location.clone(), cx));
+    settle(cx, &shell, "the repo's row", |_, _| true);
+    assert!(cx.foreground_executor().block_test(added).is_ok());
+    cx.simulate_keystrokes("ctrl-o");
+    settle(cx, &shell, "the rows", |_, _| true);
+    let listing = |cx: &mut VisualTestContext| {
+        switcher(&shell, cx)
+            .expect("open")
+            .read_with(cx, |switcher, _| switcher.listing().clone())
+    };
+    let key = listing(cx).repos[0].key.clone();
+    let working = format!("{key}/working");
+    assert!(keys(&listing(cx)).contains(&working.as_str()));
+
+    // Its connection dies: the open switcher hears it, says so, and keeps the rows.
+    connection.kill();
+    settle(cx, &shell, "the reconnecting row", |shell, cx| {
+        shell.switcher().is_some_and(|switcher| {
+            switcher.read(cx).listing().repos[0].summary
+                == RepoSummary::Unreachable("reconnecting…".into())
+        })
+    });
+    assert!(keys(&listing(cx)).contains(&working.as_str()));
+    // Back: listed as before.
+    settle(cx, &shell, "the row back", |shell, cx| {
+        shell.switcher().is_some_and(|switcher| {
+            matches!(
+                switcher.read(cx).listing().repos[0].summary,
+                RepoSummary::Changes(_)
+            )
+        })
+    });
+
+    // Down for good: Retry, which connects again.
+    blocked.store(true, Ordering::SeqCst);
+    connection.kill();
+    let retry = format!("{key}/retry");
+    settle(cx, &shell, "the Retry row", |shell, cx| {
+        shell
+            .switcher()
+            .is_some_and(|switcher| switcher.read(cx).listing().position(&retry).is_some())
+    });
+    blocked.store(false, Ordering::SeqCst);
+    let picked = switcher(&shell, cx)
+        .unwrap()
+        .update(cx, |switcher, cx| switcher.select_key(&retry, cx));
+    assert!(picked);
+    cx.simulate_keystrokes("enter");
+    settle(cx, &shell, "the row back", |shell, cx| {
+        shell.switcher().is_some_and(|switcher| {
+            let listing = switcher.read(cx).listing();
+            listing.position(&working).is_some() && listing.position(&retry).is_none()
+        })
+    });
+    assert_eq!(connection.state(), ConnectionState::Connected);
 }

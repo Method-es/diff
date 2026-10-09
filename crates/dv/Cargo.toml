@@ -10,13 +10,32 @@ description = "dv: local diff and PR review (docs/PLAN.md)"
 name = "dv"
 path = "src/main.rs"
 
+# Three shapes (docs/PLAN.md §13.1), all linted by `script/check` step 2:
+# - default (`gui` + `automation`): development, tests and the e2e runner;
+# - `--no-default-features --features gui`: the app as it ships on Windows, macOS and a Linux
+#   desktop;
+# - `--no-default-features`: headless, the CLI and `dv backend --stdio` without gpui, which is
+#   the static musl build installed into WSL distros (`script/check` step 3 keeps gpui out).
 [features]
-default = ["automation"]
+default = ["gui", "automation"]
+# The app: `dv` alone and `dv open` open a window. Without it they exit 2 and say to open the
+# repository from Windows (`windowless`).
+gui = [
+    "dep:anyhow",
+    "dep:dirs",
+    "dep:dv_ui",
+    "dep:gpui",
+    "dep:gpui_platform",
+    "dep:windows-sys",
+]
 # `--automation`: the JSONL driver used by the e2e scenarios (docs/PLAN.md §14). Shipped builds
-# are built with `--no-default-features` and carry none of it (PLAN D9).
+# are built without it (PLAN D9).
 # It also seeds fixture repos for scenarios (`seed_repo`, PLAN §14.2) with `dv_test_support`,
-# which, like `dv_core`, never depends on gpui.
+# which, like `dv_core`, never depends on gpui, and reaches them through a loopback
+# `dv backend --stdio` it can kill and block (`dv_backend`, PLAN §5.2).
 automation = [
+    "gui",
+    "dep:dv_backend",
     "dep:dv_test_support",
     "dep:gpui_automation",
     "dep:serde",
@@ -25,18 +44,19 @@ automation = [
 ]
 
 [dependencies]
-anyhow.workspace = true
+anyhow = { workspace = true, optional = true }
 clap.workspace = true
-dirs.workspace = true
+dirs = { workspace = true, optional = true }
+dv_backend = { workspace = true, optional = true }
 # The headless commands (PLAN §10), dispatched before any gpui code runs.
 dv_cli.workspace = true
 dv_core.workspace = true
 dv_test_support = { workspace = true, optional = true }
-dv_ui.workspace = true
+dv_ui = { workspace = true, optional = true }
 env_logger.workspace = true
-gpui.workspace = true
+gpui = { workspace = true, optional = true }
 gpui_automation = { workspace = true, optional = true }
-gpui_platform.workspace = true
+gpui_platform = { workspace = true, optional = true }
 log.workspace = true
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
@@ -44,7 +64,7 @@ serde_json = { workspace = true, optional = true }
 [target.'cfg(windows)'.dependencies]
 # The fatal-error message box of the detached app, which has no console (`fatal.rs`), and the
 # flags and handle inheritance it is started detached with (`launch.rs`, PLAN §13.1).
-windows-sys = { workspace = true, features = [
+windows-sys = { workspace = true, optional = true, features = [
     "Win32_Foundation",
     "Win32_System_Console",
     "Win32_System_Threading",
@@ -52,9 +72,11 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-gpui_platform = { workspace = true, features = ["x11"] }
+gpui_platform = { workspace = true, optional = true, features = ["x11"] }
 
+# The unit tests that need gpui are gated on `gui`; `tests/*` run in every shape.
 [dev-dependencies]
+dv_backend.workspace = true
 dv_test_support.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 pretty_assertions.workspace = true

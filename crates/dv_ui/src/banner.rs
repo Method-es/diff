@@ -204,10 +204,10 @@ mod tests {
 
     #[test]
     fn diagnostics_carry_the_headline_and_the_command() {
-        let failure = Failure {
-            message: "git diff failed (exit code 128)".into(),
-            detail: Some("$ git diff --raw\nfatal: bad object".into()),
-        };
+        let failure = Failure::with_detail(
+            "git diff failed (exit code 128)",
+            "$ git diff --raw\nfatal: bad object",
+        );
         assert_eq!(
             diagnostics(&failure),
             "git diff failed (exit code 128)\n\n$ git diff --raw\nfatal: bad object"

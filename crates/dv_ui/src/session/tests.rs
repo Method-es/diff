@@ -21,8 +21,10 @@ use super::watch::watch_spec;
 use super::*;
 use crate::syntax::TokenKind;
 
+mod ended;
 mod home;
 mod placement;
+mod remote;
 mod rounds;
 
 fn backend(repo: &FixtureRepo) -> Arc<dyn Backend> {
@@ -57,6 +59,7 @@ fn session(repo: &FixtureRepo, target: Target, cx: &mut TestAppContext) -> Entit
                 created: opened.created,
                 reviewer: reviewer(),
                 labels,
+                connection: None,
             },
             cx,
         )
@@ -683,6 +686,7 @@ fn session_over(
                 created: opened.created,
                 reviewer: reviewer(),
                 labels: LabelContext::default(),
+                connection: None,
             },
             cx,
         )

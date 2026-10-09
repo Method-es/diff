@@ -15,7 +15,9 @@
 //! rendered, and the keys work, while the stream scrolls it out of view; typing brings it back
 //! into view. A composer whose row is gone (its file collapsed or failed to load) keeps its
 //! text, but never the keyboard, which goes back to the stream; `C` opens its file again and
-//! takes it up. One whose file left the diff, or whose thread was deleted, is dropped.
+//! takes it up. One whose file left the diff, or whose thread was deleted, is dropped. A
+//! composer that goes for good, its draft with it, says so ([`DiffPaneEvent::ComposerClosed`]):
+//! a pick waiting for the draft runs then (`crate::shell::pending`).
 
 use dv_core::diff::{DiffLine, FileDiff};
 use dv_core::review::{AnchorSide, ThreadId, ThreadState};
@@ -23,7 +25,7 @@ use gpui::{App, AppContext as _, Context, FocusHandle, Focusable as _, Window};
 use gpui_component::input::{InputEvent, TextareaState};
 
 use super::rows::{Dir, Insert, InsertItem, Row, side_number};
-use super::{DiffPane, rows};
+use super::{DiffPane, DiffPaneEvent, rows};
 use crate::failure::Failure;
 use crate::session::{Comparison, ReviewSession};
 use crate::thread::{COMPOSER_ROWS, Composer, ComposerTarget, REPLY_ROWS};
@@ -155,6 +157,14 @@ impl DiffPane {
         self.composer
             .as_ref()
             .map(|composer| composer.input.read(cx).value().to_string())
+    }
+
+    /// Whether a composer holds a draft: text other than whitespace, which nothing but the
+    /// reviewer replaces ([`DiffPane::keep_composer`], `crate::shell::pending`).
+    pub fn has_draft(&self, cx: &gpui::App) -> bool {
+        self.composer
+            .as_ref()
+            .is_some_and(|composer| !composer.input.read(cx).value().trim().is_empty())
     }
 
     /// The keyboard's thread.
@@ -290,11 +300,7 @@ impl DiffPane {
     /// can't hold (its file isn't in it, or it is on the old side) switches the stream to all
     /// changes, and takes the keyboard once its row is there.
     fn keep_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let has_text = self
-            .composer
-            .as_ref()
-            .is_some_and(|composer| !composer.input.read(cx).value().trim().is_empty());
-        if !has_text {
+        if !self.has_draft(cx) {
             return false;
         }
         if self.composer_needs_all_changes(cx)
@@ -404,9 +410,19 @@ impl DiffPane {
         }
     }
 
-    /// Closes the composer: its row goes (a reply's card drops its handle) and the file's rows
-    /// are rebuilt. The keyboard is the caller's to place.
+    /// Closes the composer for good ([`DiffPane::release_composer`]), saying so
+    /// ([`DiffPaneEvent::ComposerClosed`]). The keyboard is the caller's to place.
     fn close_composer(&mut self, cx: &mut Context<Self>) -> Option<Composer> {
+        let closed = self.release_composer(cx);
+        if closed.is_some() {
+            cx.emit(DiffPaneEvent::ComposerClosed);
+        }
+        closed
+    }
+
+    /// Takes the composer away: its row goes (a reply's card drops its handle) and the file's
+    /// rows are rebuilt.
+    fn release_composer(&mut self, cx: &mut Context<Self>) -> Option<Composer> {
         let item = self
             .composer
             .as_ref()
@@ -476,8 +492,9 @@ impl DiffPane {
                 cx.notify();
             }
         });
-        // The composer this one replaces lets go of its row first.
-        self.close_composer(cx);
+        // The composer this one replaces (one without text, [`DiffPane::keep_composer`]) lets go
+        // of its row first.
+        self.release_composer(cx);
         self.composer_focus = Some(input.focus_handle(cx));
         self.composer = Some(Composer {
             target: target.clone(),

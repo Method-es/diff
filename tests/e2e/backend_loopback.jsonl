@@ -1,0 +1,183 @@
+{"scenario": {"window_size": "1440x900", "description": "A repo reached through the loopback dv backend --stdio (this dv's own server, a child of the app), as a WSL repo is through its distro's (PLAN §5.2): its review opens and a comment posts through the connection; the remote watch follows the agent's edit; a kill reconnects by itself (the status bar says reconnecting, no banner) and a file edited while it was down shows after the synthetic rescan; with respawns blocked a kill runs out of attempts: the switcher's row says reconnecting (keeping its rows), then the connection fails, the row offers Retry, the status bar says disconnected and the backend-down banner offers Retry, which connects once unblocked; a stopped host (backend_stop, as wsl --shutdown stops a distro) is never started again by the respawn: the status bar says stopped, the banner and the switcher offer Start, and the banner's Start boots it; stopped again, the switcher's Start runs held (backend_hold): its row stays, inert, with the selection, and Enter again does nothing; a review picked while the connection reconnects opens once it is back, with no banner; one picked while the reconnect then fails waits for the connection as the pending pick, the open review's backend banner the only banner, and, a round summary typed in the sheet meanwhile, waits on after the switcher's Retry brings the connection back, the review under the sheet staying, then opens by itself once the sheet is cancelled; a restart as dv open <repo> reaches the repo through the loopback again, and a review picked there with no review open whose server is killed at once opens once the connection is back. Screenshots of the review over the loopback, while reconnecting, of the switcher reconnecting, offering Retry and Start and while its Start runs, of the banner and status bar disconnected and stopped in dark Mica, dark Opaque and light, and of a pick waiting for its connection under the backend banner and then for the sheet's unsaved summary."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "settle"}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+
+// A repo reached through the loopback. Nothing starts until it is opened.
+{"cmd": "seed_repo", "name": "api-server", "backend": "loopback", "steps": [{"write": "README.md", "text": "# api-server\n"}, {"write": "src/lib/cache.ts", "text": "const entries = new Map<string, unknown>();\n\nexport const cache = {\n  get(key: string) {\n    return entries.get(key);\n  },\n};\n"}, {"commit": "base"}, {"write": "README.md", "text": "# api-server\n\nThe users API, with a cache.\n"}, {"write": "src/lib/cache.ts", "text": "const entries = new Map<string, unknown>();\n\nexport const cache = {\n  get(key: string) {\n    return entries.get(key);\n  },\n  set(key: string, value: unknown) {\n    entries.set(key, value);\n  },\n};\n"}, {"write": "src/routes/users.ts", "text": "import { cache } from \"../lib/cache\";\n\nexport function user(id: string) {\n  return cache.get(`user:${id}`);\n}\n"}], "save": {"repo": "/path"}}
+{"expect": {"pointer": "/backends", "equals": [{"name": "loopback", "state": "idle", "attempt": null, "generation": 0, "error": null}]}}
+{"cmd": "open_review", "path": "${repo}", "expect_result": {"pointer": "/created", "equals": true}}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 3, "timeout_ms": 20000}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/backends", "equals": [{"name": "loopback", "state": "connected", "attempt": null, "generation": 1, "error": null}]}, {"pointer": "/shell/status", "equals": {"health": "live", "location": "loopback · watching for changes", "review": "Open · round 1 · no comments", "finish": true}}, {"pointer": "/shell/backend_banner", "equals": null}, {"pointer": "/session/files/1/path", "equals": "src/lib/cache.ts"}]}
+
+// A comment, posted through the server.
+{"cmd": "click", "target": "stream/line/src/lib/cache.ts/new/8"}
+{"cmd": "settle", "expect": {"pointer": "/session/cursor", "equals": {"path": "src/lib/cache.ts", "side": "new", "line": 8}}}
+{"cmd": "key", "keystroke": "c"}
+{"cmd": "type", "text": "Entries never expire; add a TTL."}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/session/composer", "equals": null}, {"pointer": "/session/threads", "len": 1}, {"pointer": "/session/threads/0/start_line", "equals": 8}, {"pointer": "/shell/status/review", "equals": "Open · round 1 · 1 open"}]}
+
+// The remote watch follows the agent.
+{"cmd": "repo_edit", "name": "api-server", "steps": [{"write": "src/lib/ttl.ts", "text": "export const TTL = 60_000;\n"}]}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 4, "timeout_ms": 10000}
+{"cmd": "settle", "timeout_ms": 20000}
+{"cmd": "screenshot", "name": "loopback-dark-mica"}
+
+// A kill: calls fail at once, and the connection respawns its server after 1 s. No banner
+// meanwhile; the status bar says it is reconnecting. A file the agent writes while no server
+// watches shows after the reconnect's synthetic rescan.
+{"cmd": "backend_kill", "name": "loopback", "expect_result": {"pointer": "/state", "equals": "reconnecting"}}
+{"cmd": "repo_edit", "name": "api-server", "steps": [{"write": "src/lib/while-down.ts", "text": "export const down = true;\n"}]}
+{"cmd": "wait_for", "pointer": "/shell/status/location", "equals": "loopback · reconnecting…", "timeout_ms": 5000}
+{"expect": [{"pointer": "/shell/status/health", "equals": "degraded"}, {"pointer": "/shell/backend_banner", "equals": null}, {"pointer": "/shell/banner", "equals": null}, {"pointer": "/session/error", "equals": null}]}
+{"cmd": "wait_for", "pointer": "/backends/0/state", "equals": "connected", "timeout_ms": 10000}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 5, "timeout_ms": 10000}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/backends/0/generation", "equals": 2}, {"pointer": "/shell/status/location", "equals": "loopback · watching for changes"}, {"pointer": "/session/files", "contains": {"path": "src/lib/while-down.ts", "status": "untracked"}}, {"pointer": "/session/threads", "len": 1}, {"pointer": "/session/error", "equals": null}]}
+
+// With respawns blocked, a kill runs out of attempts (a server that dies soon after a
+// reconnect continues its count: attempts 2 and 3, after 2 s and 5 s; PLAN §5.2).
+{"cmd": "backend_block", "name": "loopback", "blocked": true, "expect_result": {"pointer": "", "equals": {"name": "loopback", "blocked": true}}}
+{"cmd": "backend_kill", "name": "loopback"}
+{"cmd": "wait_for", "pointer": "/shell/status/location", "equals": "loopback · reconnecting…", "timeout_ms": 5000}
+{"expect": [{"pointer": "/backends/0/state", "equals": "reconnecting"}, {"pointer": "/backends/0/attempt", "gte": 1}, {"pointer": "/shell/backend_banner", "equals": null}]}
+{"cmd": "screenshot", "name": "reconnecting-dark-mica"}
+// The switcher says so too, keeping the repo's rows (DESIGN §4.1); once the connection fails
+// it hears of it, and the row offers Retry instead.
+{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "wait_for", "pointer": "/repos/0/reconnecting", "equals": true, "timeout_ms": 5000}
+{"expect": [{"pointer": "/switcher/items", "contains": {"key": "api-server/working", "kind": "target"}}, {"pointer": "/repos/0/working", "not_equals": null}, {"pointer": "/repos/0/error", "equals": null}]}
+{"cmd": "screenshot", "name": "switcher-reconnecting-dark-mica"}
+{"cmd": "wait_for", "pointer": "/backends/0/state", "equals": "failed", "timeout_ms": 20000}
+{"cmd": "wait_for", "pointer": "/repos/0/retry", "equals": true, "timeout_ms": 10000}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/switcher/items", "contains": {"key": "api-server/retry", "kind": "retry", "label": "Retry"}}, {"pointer": "/repos/0/working", "equals": null}, {"pointer": "/repos/0/reconnecting", "equals": false}]}
+{"cmd": "bounds", "target": "switcher/api-server/retry", "expect_result": {"pointer": "/visible", "not_equals": null}}
+{"cmd": "screenshot", "name": "switcher-retry-dark-mica"}
+{"cmd": "key", "keystroke": "escape", "expect": {"pointer": "/switcher/open", "equals": false}}
+{"cmd": "wait_for", "pointer": "/shell/status/location", "equals": "loopback · disconnected", "timeout_ms": 5000}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/shell/status/health", "equals": "failing"}, {"pointer": "/shell/backend_banner/message", "equals": "Lost the connection to dv in loopback"}, {"pointer": "/shell/backend_banner/action", "equals": "Retry"}, {"pointer": "/shell/banner", "equals": null}, {"pointer": "/backends/0/error", "equals": "couldn't start dv: the scenario blocks dv backend --stdio from starting (backend_block)"}]}
+{"cmd": "bounds", "target": "banner/backend", "expect_result": [{"pointer": "/x", "gte": 280}, {"pointer": "/y", "gte": 40}, {"pointer": "/y", "lte": 60}]}
+{"cmd": "bounds", "target": "banner/backend/retry", "expect_result": {"pointer": "/visible", "not_equals": null}}
+{"cmd": "click", "target": "banner/backend/details"}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "disconnected-dark-mica"}
+{"cmd": "click", "target": "banner/backend/copy"}
+{"expect": [{"pointer": "/system/requests", "len": 1}, {"pointer": "/system/requests/0/kind", "equals": "clipboard"}]}
+{"cmd": "set_setting", "key": "material", "value": "opaque"}
+{"cmd": "screenshot", "name": "disconnected-dark-opaque"}
+{"cmd": "set_setting", "key": "material", "value": "mica"}
+{"cmd": "set_setting", "key": "mode", "value": "light"}
+{"cmd": "screenshot", "name": "disconnected-light"}
+
+// Unblocked, the banner's Retry connects again; the review reads everything again and the
+// watch follows the agent once more.
+{"cmd": "backend_block", "name": "loopback", "blocked": false}
+{"cmd": "click", "target": "banner/backend/retry"}
+{"cmd": "wait_for", "pointer": "/backends/0/state", "equals": "connected", "timeout_ms": 10000}
+{"cmd": "wait_for", "pointer": "/shell/status/location", "equals": "loopback · watching for changes", "timeout_ms": 10000}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/shell/backend_banner", "equals": null}, {"pointer": "/shell/status/health", "equals": "live"}, {"pointer": "/session/threads", "len": 1}, {"pointer": "/session/total", "equals": 5}, {"pointer": "/session/error", "equals": null}]}
+{"cmd": "repo_edit", "name": "api-server", "steps": [{"write": "src/lib/after.ts", "text": "export const after = true;\n"}]}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 6, "timeout_ms": 10000}
+{"cmd": "settle", "timeout_ms": 20000}
+{"cmd": "screenshot", "name": "reconnected-light"}
+
+// A stopped host (PLAN §5.2): backend_stop stops the loopback's host as `wsl --shutdown` stops
+// a distro. Its server dies and the respawn, finding the host stopped, starts nothing: the
+// status bar says stopped, the banner offers Start and so does the switcher's row; the
+// banner's Start (an explicit start) boots it again and the review reads everything again.
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "backend_stop", "name": "loopback"}
+{"cmd": "wait_for", "pointer": "/backends/0/state", "equals": "stopped", "timeout_ms": 10000}
+{"cmd": "wait_for", "pointer": "/shell/status/location", "equals": "loopback · stopped", "timeout_ms": 5000}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/shell/status/health", "equals": "failing"}, {"pointer": "/shell/backend_banner/message", "equals": "loopback stopped"}, {"pointer": "/shell/backend_banner/action", "equals": "Start loopback"}, {"pointer": "/shell/banner", "equals": null}, {"pointer": "/session/error", "equals": null}, {"pointer": "/session/total", "equals": 6}]}
+{"cmd": "bounds", "target": "banner/backend/start", "expect_result": {"pointer": "/visible", "not_equals": null}}
+{"cmd": "screenshot", "name": "stopped-dark-mica"}
+{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/repos/0/stopped", "equals": "loopback"}, {"pointer": "/switcher/items", "contains": {"key": "api-server/start", "kind": "start", "label": "Start loopback"}}, {"pointer": "/backends/0/state", "equals": "stopped"}]}
+{"cmd": "screenshot", "name": "switcher-stopped-dark-mica"}
+{"cmd": "key", "keystroke": "escape", "expect": {"pointer": "/switcher/open", "equals": false}}
+{"cmd": "click", "target": "banner/backend/start"}
+{"cmd": "wait_for", "pointer": "/backends/0/state", "equals": "connected", "timeout_ms": 10000}
+{"cmd": "wait_for", "pointer": "/shell/status/location", "equals": "loopback · watching for changes", "timeout_ms": 10000}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/shell/backend_banner", "equals": null}, {"pointer": "/session/error", "equals": null}, {"pointer": "/session/total", "equals": 6}]}
+
+// Stopped again, this time started from the switcher's Start row, the start held (as a
+// distro takes seconds to boot, backend_hold): the row stays, inert, with the selection, and
+// Enter again does nothing (DESIGN §4.1); released, the repo lists and its first row has the
+// selection.
+{"cmd": "backend_stop", "name": "loopback"}
+{"cmd": "wait_for", "pointer": "/backends/0/state", "equals": "stopped", "timeout_ms": 10000}
+{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/switcher/selected", "equals": "api-server/start"}, {"pointer": "/switcher/items", "contains": {"key": "api-server/start", "kind": "start", "starting": false}}]}
+{"cmd": "backend_hold", "name": "loopback", "held": true, "expect_result": {"pointer": "", "equals": {"name": "loopback", "held": true}}}
+{"cmd": "key", "keystroke": "enter"}
+{"cmd": "wait_for", "pointer": "/repos/0/starting", "equals": true, "timeout_ms": 5000}
+{"expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/switcher/selected", "equals": "api-server/start"}, {"pointer": "/switcher/items", "contains": {"key": "api-server/start", "kind": "start", "label": "Start loopback", "starting": true}}]}
+{"cmd": "screenshot", "name": "switcher-starting-dark-mica"}
+{"cmd": "key", "keystroke": "enter"}
+{"expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/switcher/selected", "equals": "api-server/start"}, {"pointer": "/system/requests", "len": 1}, {"pointer": "/repos/0/starting", "equals": true}]}
+{"cmd": "backend_hold", "name": "loopback", "held": false}
+{"cmd": "wait_for", "pointer": "/backends/0/state", "equals": "connected", "timeout_ms": 15000}
+{"cmd": "wait_for", "pointer": "/switcher/selected", "equals": "api-server/working", "timeout_ms": 15000}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/repos/0/starting", "equals": false}, {"pointer": "/repos/0/stopped", "equals": null}, {"pointer": "/shell/backend_banner", "equals": null}, {"pointer": "/system/requests", "len": 1}]}
+{"cmd": "key", "keystroke": "escape", "expect": {"pointer": "/switcher/open", "equals": false}}
+
+// Picked while its connection reconnects (PLAN §5.2): the switcher keeps the repo's rows, and
+// the open waits for the reconnect and goes on once the connection is back, raising no banner
+// of its own (respawns blocked meanwhile, so the pick lands while it reconnects).
+{"cmd": "backend_block", "name": "loopback", "blocked": true}
+{"cmd": "backend_kill", "name": "loopback", "expect_result": {"pointer": "/state", "equals": "reconnecting"}}
+{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "wait_for", "pointer": "/repos/0/reconnecting", "equals": true, "timeout_ms": 5000}
+{"expect": {"pointer": "/switcher/items", "contains": {"key": "api-server/staged", "kind": "target"}}}
+{"cmd": "click", "target": "switcher/api-server/staged"}
+{"expect": [{"pointer": "/switcher/open", "equals": false}, {"pointer": "/shell/banner", "equals": null}, {"pointer": "/backends/0/state", "equals": "reconnecting"}]}
+{"cmd": "backend_block", "name": "loopback", "blocked": false}
+{"cmd": "wait_for", "pointer": "/backends/0/state", "equals": "connected", "timeout_ms": 15000}
+{"cmd": "wait_for", "pointer": "/session/target", "equals": "staged", "timeout_ms": 15000}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/shell/banner", "equals": null}, {"pointer": "/shell/backend_banner", "equals": null}, {"pointer": "/shell/status/location", "equals": "loopback · watching for changes"}]}
+
+// Picked while it reconnects, the reconnect then failing (PLAN §5.2): the pick is never lost
+// and never reported twice. The open review's backend banner and status bar report the
+// connection, the main area raises nothing more, and the pick waits for the connection; once
+// it is back the pick opens by itself, no banner left.
+{"cmd": "backend_block", "name": "loopback", "blocked": true}
+{"cmd": "backend_kill", "name": "loopback", "expect_result": {"pointer": "/state", "equals": "reconnecting"}}
+{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "wait_for", "pointer": "/repos/0/reconnecting", "equals": true, "timeout_ms": 5000}
+{"cmd": "click", "target": "switcher/api-server/working"}
+{"cmd": "wait_for", "pointer": "/backends/0/state", "equals": "failed", "timeout_ms": 20000}
+{"cmd": "wait_for", "pointer": "/shell/pending/connection", "equals": "loopback", "timeout_ms": 10000}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/shell/banner", "equals": null}, {"pointer": "/shell/backend_banner/action", "equals": "Retry"}, {"pointer": "/shell/pending/target", "equals": "working"}, {"pointer": "/session/target", "equals": "staged"}, {"pointer": "/shell/status/location", "equals": "loopback · disconnected"}]}
+{"cmd": "screenshot", "name": "pick-waits-dark-mica"}
+// The reviewer goes on meanwhile, writing a round summary in the sheet. The pick never replaces
+// unsaved text by itself (PLAN §5.2): the switcher's Retry brings the connection back, and the
+// review under the sheet stays, the pick waiting on until the sheet is cancelled.
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "tab"}
+{"cmd": "type", "text": "An unsaved round summary."}
+{"cmd": "settle", "expect": {"pointer": "/session/sheet/summary", "equals": "An unsaved round summary."}}
+{"cmd": "backend_block", "name": "loopback", "blocked": false}
+{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "wait_for", "pointer": "/repos/0/retry", "equals": true, "timeout_ms": 10000}
+{"cmd": "click", "target": "switcher/api-server/retry"}
+{"cmd": "wait_for", "pointer": "/backends/0/state", "equals": "connected", "timeout_ms": 15000}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/session/target", "equals": "staged"}, {"pointer": "/session/sheet/summary", "equals": "An unsaved round summary."}, {"pointer": "/shell/pending/target", "equals": "working"}, {"pointer": "/switcher/open", "equals": true}, {"pointer": "/shell/backend_banner", "equals": null}, {"pointer": "/shell/status/location", "equals": "loopback · watching for changes"}]}
+{"cmd": "key", "keystroke": "escape", "expect": {"pointer": "/switcher/open", "equals": false}}
+{"cmd": "settle", "expect": [{"pointer": "/session/target", "equals": "staged"}, {"pointer": "/session/sheet/summary", "equals": "An unsaved round summary."}, {"pointer": "/shell/pending/target", "equals": "working"}]}
+{"cmd": "screenshot", "name": "pick-waits-for-the-sheet-dark-mica"}
+{"cmd": "click", "target": "sheet/cancel"}
+{"cmd": "wait_for", "pointer": "/session/target", "equals": "working", "timeout_ms": 15000}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/session/sheet", "equals": null}, {"pointer": "/shell/banner", "equals": null}, {"pointer": "/shell/backend_banner", "equals": null}, {"pointer": "/shell/pending", "equals": null}, {"pointer": "/shell/status/location", "equals": "loopback · watching for changes"}]}
+
+// Started as `dv open <the repo>` (a restart): the seeded repo's route is in place before that
+// open runs, so the repo goes through the loopback again, not in process.
+{"restart": {"app_args": ["open", "${repo}"]}}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/switcher/selected", "equals": "api-server/working"}, {"pointer": "/shell/banner", "equals": null}, {"pointer": "/backends", "equals": [{"name": "loopback", "state": "connected", "attempt": null, "generation": 1, "error": null}]}]}
+// Picked with no review open, its server killed at once, under the open (PLAN §5.2): the open
+// waits for the reconnect and runs again, and the review opens once the connection is back.
+{"cmd": "key", "keystroke": "enter"}
+{"cmd": "backend_kill", "name": "loopback"}
+{"cmd": "wait_for", "pointer": "/session/target", "equals": "working", "timeout_ms": 20000}
+{"cmd": "wait_for", "pointer": "/backends/0/state", "equals": "connected", "timeout_ms": 15000}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/shell/status/location", "equals": "loopback · watching for changes"}, {"pointer": "/session/threads", "len": 1}, {"pointer": "/backends/0/generation", "equals": 2}, {"pointer": "/shell/banner", "equals": null}, {"pointer": "/shell/pending", "equals": null}]}

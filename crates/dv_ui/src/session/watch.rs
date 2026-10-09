@@ -16,6 +16,12 @@
 //! **Stopping never blocks a frame.** Dropping a [`WatchHandle`] joins its thread, which may be
 //! inside git loading the ignore rules, so the session drops handles on a thread of their own
 //! ([`stop_in_background`]): when the watch restarts, and with the session itself.
+//!
+//! **A watch that ends by itself** (its sink dropped while the session still holds its handle:
+//! a remote watch the new server couldn't take back as it was after a reconnect, PLAN §5.2)
+//! starts again through [`ReviewSession::ensure_watch`], whose new handle says what it covers
+//! now (`worktree_error`), and what was read meanwhile is read again; while the connection is
+//! down it starts again once it is back.
 
 use dv_core::backend::{WatchEvent, WatchHandle, WatchSpec};
 use dv_core::{BackendError, DiffSpec, Side, Target};
@@ -37,6 +43,8 @@ pub(super) struct WatchState {
     events: Option<Task<()>>,
     /// Tells this watch's batches and start from a superseded one's.
     generation: u64,
+    /// The watch of this generation ended before its start landed (module docs).
+    ended: Option<u64>,
     notice: Option<String>,
     /// A file list was read while no registered watch covered it (module docs).
     unwatched_list: bool,
@@ -72,6 +80,11 @@ impl WatchState {
 
     pub(super) fn is_settled(&self) -> bool {
         self.starting.is_none() && self.debounce.is_none()
+    }
+
+    /// Whether a watch is registered or starting.
+    pub(super) fn is_running(&self) -> bool {
+        self.handle.is_some() || self.starting.is_some()
     }
 
     /// Whether a registered watch reports every change from now on.
@@ -173,10 +186,38 @@ impl ReviewSession {
                     .update(cx, |this, cx| this.on_watch_event(generation, event, cx))
                     .is_err()
                 {
-                    break;
+                    return;
                 }
             }
+            // The sink is gone: the watch ended by itself, or was stopped.
+            this.update(cx, |this, cx| this.watch_ended(generation, cx))
+                .ok();
         }));
+    }
+
+    /// The watch of `generation` delivers nothing more (module docs): when it is the current
+    /// one, it starts again. A watch that never started is `watch_started`'s to report.
+    fn watch_ended(&mut self, generation: u64, cx: &mut Context<Self>) {
+        if generation != self.watch.generation {
+            return;
+        }
+        let Some(handle) = self.watch.handle.take() else {
+            if self.watch.starting.is_some() {
+                self.watch.ended = Some(generation);
+            }
+            return;
+        };
+        log::info!(
+            "review {}: the watch ended; it starts again",
+            self.review.id
+        );
+        stop_in_background(handle);
+        self.watch.notice = None;
+        // Down, it starts again once the connection is back (`connection`).
+        if !self.link.down {
+            self.ensure_watch(cx);
+        }
+        cx.notify();
     }
 
     pub(super) fn watch_started(
@@ -194,14 +235,31 @@ impl ReviewSession {
         }
         self.watch.starting = None;
         match started {
+            Ok(handle) if self.watch.ended == Some(generation) => {
+                // It ended before it landed: start it again.
+                self.watch.ended = None;
+                stop_in_background(handle);
+                if !self.link.down {
+                    self.ensure_watch(cx);
+                }
+            }
             Ok(handle) => {
                 self.watch.notice = handle.worktree_error().map(str::to_string);
                 self.watch.handle = Some(handle);
                 self.catch_up(cx);
             }
             Err(error) => {
-                log::warn!("review {}: no watch: {error}", self.review.id);
-                self.watch.notice = Some(Failure::from(&error).message);
+                let failure = Failure::from(&error);
+                match self.lost_connection(&failure) {
+                    // The connection came back meanwhile: start it on the new server.
+                    Some(true) => self.ensure_watch(cx),
+                    // It starts again once the connection is back (`connection`).
+                    Some(false) => {}
+                    None => {
+                        log::warn!("review {}: no watch: {error}", self.review.id);
+                        self.watch.notice = Some(failure.message);
+                    }
+                }
             }
         }
         cx.notify();

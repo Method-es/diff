@@ -5,7 +5,8 @@
 //! data dir with another shape. Read leniently ([`super::super::persist`]): unknown keys, at the
 //! top and in each entry, are kept and written back; an entry this version can't read (no
 //! location, another version's shape) is kept as it was, after a warning; a repeated location
-//! counts once.
+//! counts once, a WSL location's distro compared without case (`Location::same_place`: `wsl.exe`
+//! takes distro names so).
 
 use dv_core::Location;
 use serde::{Deserialize, Serialize};
@@ -88,7 +89,7 @@ impl KnownReposFile {
         let mut file = Self::default();
         for (index, value) in entries.into_iter().enumerate() {
             match serde_json::from_value::<KnownRepo>(value.clone()) {
-                Ok(repo) if file.get(&repo.location).is_none() => {
+                Ok(repo) if file.find_place(&repo.location).is_none() => {
                     file.entries.push(Entry::Known(repo))
                 }
                 Ok(repo) => problems.push(format!(
@@ -117,6 +118,12 @@ impl KnownReposFile {
         self.repos().find(|repo| &repo.location == location)
     }
 
+    /// The known repo at the place `location` names, however its WSL distro is spelled
+    /// (`Location::same_place`).
+    pub fn find_place(&self, location: &Location) -> Option<&KnownRepo> {
+        self.repos().find(|repo| repo.location.same_place(location))
+    }
+
     fn get_mut(&mut self, location: &Location) -> Option<&mut KnownRepo> {
         self.entries.iter_mut().find_map(|entry| match entry {
             Entry::Known(repo) if &repo.location == location => Some(repo),
@@ -124,9 +131,10 @@ impl KnownReposFile {
         })
     }
 
-    /// Adds `location` (added now) unless it is known; `true` when it was added.
+    /// Adds `location` (added now) unless it is known, however its WSL distro is spelled
+    /// ([`KnownReposFile::find_place`]); `true` when it was added.
     pub fn add(&mut self, location: Location, now: u64) -> bool {
-        if self.get(&location).is_some() {
+        if self.find_place(&location).is_some() {
             return false;
         }
         self.entries
@@ -143,6 +151,37 @@ impl KnownReposFile {
             }
             None => false,
         }
+    }
+
+    /// Knows `old` as `new` from now on (the worktree root it resolved to, or WSL's spelling of
+    /// its distro), its times kept; when `new` is known already (however spelled), `old` goes,
+    /// the later of the two opens kept. `true` when anything changed.
+    pub fn rekey(&mut self, old: &Location, new: &Location) -> bool {
+        if old == new || self.get(old).is_none() {
+            return false;
+        }
+        let known = self
+            .repos()
+            .find(|repo| &repo.location != old && repo.location.same_place(new))
+            .map(|repo| repo.location.clone());
+        match known {
+            Some(known) => {
+                let opened = self.get(old).and_then(|repo| repo.opened_at);
+                self.remove(old);
+                if let Some(repo) = self.get_mut(&known) {
+                    repo.opened_at = repo.opened_at.max(opened);
+                    if &known != new {
+                        repo.location = new.clone();
+                    }
+                }
+            }
+            None => {
+                if let Some(repo) = self.get_mut(old) {
+                    repo.location = new.clone();
+                }
+            }
+        }
+        true
     }
 
     /// Forgets `location`; `true` when it was known.

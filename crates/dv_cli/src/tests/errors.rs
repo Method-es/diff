@@ -1,38 +1,11 @@
 //! Exit codes and error documents (docs/PLAN.md §10.3): repositories that can't be used, parse
-//! errors under `--json`, and the commands of later versions.
+//! errors under `--json`, and the commands of later versions. A WSL repository's are
+//! `reexec`'s.
 
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
 use super::*;
-
-#[test]
-fn a_wsl_repository_is_exit_4_without_starting_anything() {
-    let fixture = Fixture::new();
-    for args in [
-        ["status", "--repo", r"\\wsl.localhost\Ubuntu\home\kyle\api"],
-        ["status", "--repo", r"\\wsl$\Ubuntu\home\kyle\api"],
-        ["status", "--wsl", "Ubuntu:/home/kyle/api"],
-    ] {
-        let mut line = args.to_vec();
-        line.push("--json");
-        let error = fixture
-            .run(&line)
-            .error(Exit::Unavailable, "backend_unavailable");
-        assert_eq!(
-            error["message"],
-            "Ubuntu:/home/kyle/api is inside WSL: run dv inside the distro for now \
-             (wsl -d Ubuntu --cd /home/kyle/api dv …); dv on Windows reaches WSL repositories in \
-             a later version"
-        );
-    }
-    fixture
-        .run(&["comment", "list", "--wsl", "Ubuntu:relative", "--json"])
-        .error(Exit::Usage, "usage");
-    fixture
-        .run(&["setup", "wsl", "Ubuntu", "--json"])
-        .error(Exit::Unavailable, "backend_unavailable");
-}
 
 #[test]
 fn outside_a_repository_is_exit_1() {
@@ -210,45 +183,11 @@ fn later_commands_are_refused_with_what_to_do() {
         "{message}"
     );
     refused(&["doctor"], Exit::Usage, "unsupported");
-    refused(&["backend", "--stdio"], Exit::Usage, "unsupported");
+    // `dv backend` runs only as the app starts it.
+    refused(&["backend"], Exit::Usage, "usage");
     refused(&["setup", "path"], Exit::Usage, "unsupported");
     refused(&["setup", "all"], Exit::Usage, "unsupported");
     refused(&["setup"], Exit::Usage, "usage");
-}
-
-#[test]
-fn a_relative_path_from_a_working_directory_inside_wsl_is_exit_4() {
-    let fixture = Fixture::new();
-    // PowerShell can stand in a distro's folder; nothing there is opened or started.
-    let inside = std::path::PathBuf::from(r"\\wsl.localhost\Ubuntu\home\kyle");
-    for args in [
-        vec!["status", "--json"],
-        vec!["status", "--repo", ".", "--json"],
-        vec!["comment", "list", "--repo", "api", "--json"],
-        vec!["review", "list", "--repo", "../kyle/api", "--json"],
-    ] {
-        let error = fixture
-            .run_in(&inside, &args)
-            .error(Exit::Unavailable, "backend_unavailable");
-        assert!(
-            error["message"]
-                .as_str()
-                .unwrap()
-                .starts_with("Ubuntu:/home/kyle"),
-            "{args:?}: {error}"
-        );
-    }
-    let global = crate::GlobalArgs {
-        repo: Some("api".to_string()),
-        ..crate::GlobalArgs::default()
-    };
-    assert_eq!(
-        crate::location(&global, &inside).unwrap(),
-        dv_core::location::Location::Wsl {
-            distro: "Ubuntu".to_string(),
-            path: "/home/kyle/api".to_string(),
-        }
-    );
 }
 
 #[test]

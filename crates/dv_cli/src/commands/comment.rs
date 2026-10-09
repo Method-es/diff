@@ -30,7 +30,7 @@ pub(crate) fn list(
     let file = args
         .file
         .as_deref()
-        .map(|file| repo.relative_path(file, &review));
+        .map(|file| repo.relative_path(file, &review, ctx));
     let threads: Vec<&Thread> = review.live_threads().collect();
     let located = placement::locate(&repo, &review, &threads, ctx)?;
     let states: HashSet<ThreadStatusArg> = args.status.iter().copied().collect();

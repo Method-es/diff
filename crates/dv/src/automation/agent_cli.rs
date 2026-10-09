@@ -23,9 +23,13 @@
 //! own `HOME`),
 //! `DV_DATA_DIR` set to the app's data dir, `CLAUDECODE`, `DV_AUTHOR` and `DV_REVIEW` removed
 //! (Claude Code exports `CLAUDECODE` to what it runs, and the CLI takes it for the agent's
-//! identity, PLAN §2.5), then `env` (`{"NAME": "value"}` sets, `{"NAME": null}` removes; the
-//! runner's own variables can't be changed). `stdin` is written to the child's stdin, which is
-//! then closed; without it stdin is empty.
+//! identity, PLAN §2.5), `DV_LINUX_DIR` naming a folder without a Linux build unless the app
+//! itself runs sandboxed (`DV_WSL_HOME` naming a scratch home, as `dv_backend::wsl::sandbox`
+//! reads it), so a command for a WSL repository stops at exit 4
+//! rather than run inside a distro's real home (PLAN §10.4, CLAUDE.md), then `env`
+//! (`{"NAME": "value"}` sets, `{"NAME": null}` removes; the runner's own variables,
+//! `DV_LINUX_DIR` and `DV_WSL_HOME` can't be changed). `stdin` is written to the child's stdin,
+//! which is then closed; without it stdin is empty.
 //!
 //! Children start and are waited for off the UI thread, never count against `settled`, are
 //! listed in `state.cli` until joined, and any still running when the app quits (a `quit` or a
@@ -55,6 +59,11 @@ pub type EnvOverlay = Vec<(OsString, Option<OsString>)>;
 /// The variables the e2e runner sets for every launch (tests/e2e/README.md, "Runner"); `env`
 /// can't change them, so a child stays as hermetic as the app.
 const RUNNER_VARS: &[&str] = &["DV_DATA_DIR", "DV_GH", "DV_MOCK_GH", "DV_MOCK_GH_LOG"];
+
+/// The variables that decide whether a child's CLI reaches into a WSL distro, and whose home
+/// it uses there (PLAN §10.4): `env` can't change them, so a scenario's commands reach WSL
+/// only when the app itself runs sandboxed (module docs).
+const WSL_VARS: &[&str] = &["DV_LINUX_DIR", "DV_WSL_HOME"];
 
 /// The variables that make the CLI an agent or pick its review (PLAN §2.5, §10.2): never
 /// inherited, set through `env` when a scenario means them.
@@ -147,6 +156,12 @@ fn env_change(cmd: &str, name: &str, value: &Value) -> Result<(String, Option<St
     if RUNNER_VARS.contains(&name) {
         bail!("{cmd} can't change {name}: the e2e runner sets it for every launch");
     }
+    if WSL_VARS.contains(&name) {
+        bail!(
+            "{cmd} can't change {name}: a command reaches WSL only as the app does (a \
+             scenario header's DV_WSL_HOME)"
+        );
+    }
     if name.is_empty() || name.contains('=') {
         bail!("{name:?} isn't an environment variable name");
     }
@@ -230,11 +245,13 @@ pub fn overlay_for(cwd: &Path, roots: Vec<(PathBuf, EnvOverlay)>) -> Option<EnvO
         .map(|(_, env)| env)
 }
 
-/// The changes a child's environment gets over the app's, in order (module docs).
+/// The changes a child's environment gets over the app's, in order (module docs); `sandboxed`
+/// when the app runs with a `DV_WSL_HOME` of its own.
 pub fn child_env(
     overlay: Option<EnvOverlay>,
     data_dir: &Path,
     env: &[(String, Option<String>)],
+    sandboxed: bool,
 ) -> EnvOverlay {
     let home = data_dir.join("home");
     let mut changes: EnvOverlay = HOME_VARS
@@ -244,6 +261,10 @@ pub fn child_env(
     changes.extend(overlay.unwrap_or_default());
     changes.push(("DV_DATA_DIR".into(), Some(data_dir.as_os_str().to_owned())));
     changes.extend(AGENT_VARS.iter().map(|name| (OsString::from(name), None)));
+    if !sandboxed {
+        let nowhere = data_dir.join("no-linux-build");
+        changes.push(("DV_LINUX_DIR".into(), Some(nowhere.into_os_string())));
+    }
     changes.extend(
         env.iter()
             .map(|(name, value)| (name.into(), value.as_ref().map(OsString::from))),
@@ -591,7 +612,10 @@ impl Start {
             .flatten()
             .collect();
         let overlay = overlay_for(&self.request.cwd, roots);
-        let env = child_env(overlay, &self.data_dir, &self.request.env);
+        // `DV_WSL_HOME` means what dv_backend's one check says it does: blank or not a POSIX
+        // path is no sandbox, never the distro user's own home.
+        let sandboxed = dv_backend::wsl::is_sandbox(dv_backend::wsl::home_var());
+        let env = child_env(overlay, &self.data_dir, &self.request.env, sandboxed);
         Running::start(&self.exe, &self.request, &env)
     }
 }
@@ -607,7 +631,11 @@ impl DvAutomation {
             exe,
             request,
             data_dir: cx.services().data_dir().to_path_buf(),
-            seeded: self.seeded.values().cloned().collect(),
+            seeded: self
+                .seeded
+                .values()
+                .map(|(fixture, _)| fixture.clone())
+                .collect(),
         })
     }
 

@@ -196,7 +196,7 @@ fn install(path: &Path) -> Result<(), CliError> {
 }
 
 /// Asks `question` on the terminal; `true` for an answer starting with `y`.
-fn confirm(ctx: &mut Context, question: &str) -> Result<bool, CliError> {
+pub(crate) fn confirm(ctx: &mut Context, question: &str) -> Result<bool, CliError> {
     ctx.stdout
         .write_all(question.as_bytes())
         .and_then(|()| ctx.stdout.flush())
@@ -208,6 +208,6 @@ fn confirm(ctx: &mut Context, question: &str) -> Result<bool, CliError> {
     Ok(answer.trim().to_ascii_lowercase().starts_with('y'))
 }
 
-fn io_error(message: String) -> CliError {
+pub(crate) fn io_error(message: String) -> CliError {
     CliError::new(Exit::Failure, code::IO, message)
 }

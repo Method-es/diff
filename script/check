@@ -5,7 +5,10 @@
 #   script/check               steps 1-5
 #   script/check --fast        steps 1-4 (skips the e2e scenarios)
 #   script/check --foreground  also the foreground scenarios in tests/e2e/foreground (step 5)
-#   script/check --linux       also step 6: the headless crates' tests inside WSL Ubuntu
+#   script/check --linux       also step 6: the headless crates and dv inside WSL Ubuntu, the
+#                              Linux build (script/build-linux) and the real WSL from Windows:
+#                              the app's connection, `dv setup wsl` and the CLI run inside it;
+#                              run inside a distro, the first two there and no real-WSL step
 set -euo pipefail
 
 usage() {
@@ -13,12 +16,14 @@ usage() {
 usage: script/check [--fast] [--foreground] [--linux]
 
   1. cargo fmt --all --check
-  2. cargo clippy, default features and the shipped shape (-p dv --no-default-features)
-  3. gpui boundary: no gpui in the headless crates' dependency trees
+  2. cargo clippy in dv's three shapes: default (gui + automation), the shipped app
+     (-p dv --no-default-features --features gui), headless (-p dv --no-default-features)
+  3. gpui boundary: no gpui in the headless crates' or the headless dv's dependency trees
   4. cargo test --workspace
   5. e2e scenarios in tests/e2e (background windows)          skipped with --fast
      and tests/e2e/foreground (takes the focus; hands off)    only with --foreground
-  6. headless crates' tests inside WSL Ubuntu                 only with --linux
+  6. the headless crates and the headless dv tested and linted inside WSL Ubuntu,
+     script/build-linux, then the real WSL (sandboxed under /tmp)  only with --linux
 EOF
 }
 
@@ -60,27 +65,39 @@ headless_crates=(dv_core dv_backend dv_cli mock_gh dv_test_support)
 step 1 "cargo fmt --all --check"
 cargo fmt --all --check
 
-step 2 "cargo clippy --workspace --all-targets -- -D warnings"
+# dv's three shapes (PLAN §13.1): each drifts silently unless it is linted on its own.
+step 2 "cargo clippy --workspace --all-targets -- -D warnings  (dv: gui + automation)"
 cargo clippy --workspace --all-targets -- -D warnings
-step 2 "cargo clippy -p dv --no-default-features --all-targets -- -D warnings  (the shipped shape)"
+step 2 "cargo clippy -p dv --no-default-features --features gui --all-targets -- -D warnings  (the shipped app)"
+cargo clippy -p dv --no-default-features --features gui --all-targets -- -D warnings
+step 2 "cargo clippy -p dv --no-default-features --all-targets -- -D warnings  (headless: the WSL build)"
 cargo clippy -p dv --no-default-features --all-targets -- -D warnings
 
-step 3 "gpui boundary: ${headless_crates[*]}"
+step 3 "gpui boundary: ${headless_crates[*]} and the headless dv"
 boundary_ok=1
-for crate in "${headless_crates[@]}"; do
-    # Normal dependencies only (dev-dependencies may use gpui's test support), every feature and
-    # every target platform, one crate per line without tree drawing.
-    tree="$(cargo tree -p "$crate" -e normal --all-features --target all --prefix none)"
+# Normal dependencies only (dev-dependencies may use gpui's test support), every target
+# platform, one crate per line without tree drawing. `$1` names the check, the rest are
+# `cargo tree`'s package and feature arguments.
+check_boundary() {
+    local name="$1"
+    shift
+    local tree offenders
+    tree="$(cargo tree "$@" -e normal --target all --prefix none)"
     offenders="$(printf '%s\n' "$tree" | grep -E '^gpui' | sed 's/ (\*)$//' | sort -u || true)"
     if [[ -n "$offenders" ]]; then
         boundary_ok=0
-        echo "error: $crate depends on gpui:" >&2
+        echo "error: $name depends on gpui:" >&2
         printf '%s\n' "$offenders" | sed 's/^/  /' >&2
-        echo "  (cargo tree -p $crate -e normal --target all -i <name> shows the path to one)" >&2
+        echo "  (cargo tree $* -e normal --target all -i <name> shows the path to one)" >&2
     else
-        echo "ok: $crate"
+        echo "ok: $name"
     fi
+}
+for crate in "${headless_crates[@]}"; do
+    check_boundary "$crate" -p "$crate" --all-features
 done
+# The static musl build installed into WSL distros: the CLI and `dv backend --stdio`.
+check_boundary "dv --no-default-features" -p dv --no-default-features
 if [[ "$boundary_ok" -ne 1 ]]; then
     exit 1
 fi
@@ -117,22 +134,76 @@ else
 fi
 
 if [[ "$linux" -eq 1 ]]; then
-    linux_crates=(-p dv_core -p dv_cli -p dv_test_support -p mock_gh)
-    if command -v wsl.exe > /dev/null 2>&1; then
-        # Inside Ubuntu, on the same checkout through /mnt, with the target dir on the distro's
-        # ext4 disk: building onto /mnt (9P) is many times slower. rustup installs the toolchain
-        # from rust-toolchain.toml on first use.
-        step 6 "WSL Ubuntu: cargo test ${linux_crates[*]}"
-        win_root="$(cygpath -w "$root" 2> /dev/null || echo "$root")"
-        MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu --cd "$win_root" --exec bash -lc \
-            "CARGO_TARGET_DIR=\"\$HOME/.cache/dv-target\" cargo test ${linux_crates[*]}"
-    elif [[ "$(uname -s)" == "Linux" ]]; then
-        step 6 "Linux: cargo test ${linux_crates[*]}"
-        cargo test "${linux_crates[@]}"
-    else
-        echo "script/check: --linux needs wsl.exe (Windows) or a Linux host" >&2
-        exit 1
-    fi
+    # The headless crates and the headless dv (PLAN §13.1), the WSL build's own code, tested and
+    # linted on Linux; then the static Linux build (script/build-linux); then, on Windows, the
+    # real WSL through it (crates/dv_backend/tests/wsl.rs, `dv setup wsl`'s own check, and the
+    # CLI run inside the distro: dv_cli's in-process crossing and crates/dv/tests/wsl_cli.rs).
+    linux_tests=(
+        "cargo test -p dv_core -p dv_backend -p dv_cli -p dv_test_support -p mock_gh"
+        "cargo test -p dv --no-default-features"
+        "cargo clippy -p dv_backend -p dv_cli -p dv --no-default-features --all-targets -- -D warnings"
+    )
+    # Linux first: inside a WSL distro, interop puts wsl.exe on PATH too, and the tests belong
+    # to the distro they run in. The hop through wsl.exe, and the real-WSL step, are Windows'.
+    case "$(uname -s)" in
+        Linux)
+            for command in "${linux_tests[@]}"; do
+                step 6 "Linux: $command"
+                bash -c "$command"
+            done
+            step 6 "script/build-linux"
+            bash script/build-linux
+            echo "script/check: skipped the real-WSL step (the app's connection, dv setup wsl," \
+                "the CLI's crossing): it runs from Windows"
+            ;;
+        MINGW* | MSYS* | CYGWIN*)
+            if ! command -v wsl.exe > /dev/null 2>&1; then
+                echo "script/check: --linux needs wsl.exe and WSL Ubuntu" >&2
+                exit 1
+            fi
+            # Inside Ubuntu, on the same checkout through /mnt, with the target dir on the
+            # distro's ext4 disk: building onto /mnt (9P) is many times slower. rustup installs
+            # the toolchain from rust-toolchain.toml on first use.
+            win_root="$(cygpath -w "$root")"
+            for command in "${linux_tests[@]}"; do
+                step 6 "WSL Ubuntu: $command"
+                MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu --cd "$win_root" --exec bash -lc \
+                    "CARGO_TARGET_DIR=\"\$HOME/.cache/dv-target\" $command"
+            done
+            step 6 "script/build-linux  (target/debug/dv-linux-x86_64)"
+            bash script/build-linux
+            # Every script the tests run in the distro gets this fresh folder under its /tmp
+            # as $HOME (DV_WSL_HOME), never the distro user's own; each test removes its part
+            # of it. MSYS_NO_PATHCONV keeps Git Bash from rewriting the POSIX path into a
+            # Windows one.
+            wsl_home="/tmp/dv-check-$$-$RANDOM"
+            step 6 "Windows: the real WSL in Ubuntu, sandboxed in $wsl_home"
+            wsl_status=0
+            MSYS_NO_PATHCONV=1 DV_TEST_WSL_DISTRO=Ubuntu DV_WSL_HOME="$wsl_home" \
+                cargo test -p dv_backend --test wsl -- --test-threads=1 || wsl_status=$?
+            if [[ "$wsl_status" -eq 0 ]]; then
+                MSYS_NO_PATHCONV=1 DV_TEST_WSL_DISTRO=Ubuntu DV_WSL_HOME="$wsl_home" \
+                    cargo test -p dv_cli --lib -- setup_wsl reexec --test-threads=1 ||
+                    wsl_status=$?
+            fi
+            if [[ "$wsl_status" -eq 0 ]]; then
+                MSYS_NO_PATHCONV=1 DV_TEST_WSL_DISTRO=Ubuntu DV_WSL_HOME="$wsl_home" \
+                    cargo test -p dv --test wsl_cli -- --test-threads=1 || wsl_status=$?
+            fi
+            if ! MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu --cd / --exec rmdir "$wsl_home" \
+                2> /dev/null; then
+                echo "script/check: $wsl_home in Ubuntu wasn't empty or wasn't made; look" \
+                    "at it" >&2
+            fi
+            if [[ "$wsl_status" -ne 0 ]]; then
+                exit "$wsl_status"
+            fi
+            ;;
+        *)
+            echo "script/check: --linux needs Windows (with WSL Ubuntu) or a Linux host" >&2
+            exit 1
+            ;;
+    esac
 fi
 
 printf '\nscript/check: all steps passed\n'

@@ -1,4 +1,4 @@
-{"scenario": {"window_size": "1440x900", "description": "The screen around the stream: dv open on a seeded repo opens the switcher with its uncommitted changes, the keyboard filters and opens the working review, the file list (current file, viewed checkbox, filter), Ctrl B and the panel's resize, the source picker, the status bar, a WSL repo's row and banner, a long repo name at the minimum width, a repo whose .git went away; screenshots in dark Mica, dark Opaque and light."}}
+{"scenario": {"window_size": "1440x900", "description": "The screen around the stream: dv open on a seeded repo opens the switcher with its uncommitted changes, the keyboard filters and opens the working review, the file list (current file, viewed checkbox, filter), Ctrl B and the panel's resize, the source picker, the status bar, a WSL repo's row and banner (and after a restart its stopped distro's Start row, then with the distro running its failed connection's Retry row), a long repo name at the minimum width, a repo whose .git went away; screenshots in dark Mica, dark Opaque and light."}}
 {"cmd": "wait_ready", "timeout_ms": 20000}
 {"cmd": "settle"}
 {"expect": [{"pointer": "/switcher/open", "equals": false}, {"pointer": "/shell/empty_state", "equals": "no_review"}, {"pointer": "/shell/status/location", "equals": "No repo"}, {"pointer": "/file_list/shown", "equals": []}]}
@@ -10,7 +10,7 @@
 {"cmd": "open", "path": "${repo}", "expect_result": {"pointer": "/path", "equals": "${repo}"}}
 {"cmd": "wait_for", "pointer": "/repos/0/working/files", "equals": 7, "timeout_ms": 20000}
 {"cmd": "settle", "timeout_ms": 20000}
-{"expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/switcher/query", "equals": ""}, {"pointer": "/switcher/selected", "equals": "api-server/working"}, {"pointer": "/switcher/items/0", "equals": {"key": "api-server/working", "kind": "target", "target": "working", "label": "Uncommitted changes", "repo": "${repo}", "review": null}}, {"pointer": "/switcher/items/1/key", "equals": "api-server/staged"}, {"pointer": "/switcher/items/2/key", "equals": "open_folder"}, {"pointer": "/repos/0/working", "equals": {"files": 7, "additions": 34, "deletions": 6}}]}
+{"expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/switcher/query", "equals": ""}, {"pointer": "/switcher/selected", "equals": "api-server/working"}, {"pointer": "/switcher/items/0", "equals": {"key": "api-server/working", "kind": "target", "target": "working", "label": "Uncommitted changes", "starting": false, "repo": "${repo}", "review": null}}, {"pointer": "/switcher/items/1/key", "equals": "api-server/staged"}, {"pointer": "/switcher/items/2/key", "equals": "open_folder"}, {"pointer": "/repos/0/working", "equals": {"files": 7, "additions": 34, "deletions": 6}}]}
 {"cmd": "bounds", "target": "switcher/repo/api-server", "expect_result": {"pointer": "/visible", "not_equals": null}}
 {"cmd": "bounds", "target": "switcher", "expect_result": [{"pointer": "/w", "equals": 560}, {"pointer": "/y", "gte": 40}, {"pointer": "/y", "lte": 46}]}
 {"cmd": "screenshot", "name": "switcher-dark-mica"}
@@ -67,21 +67,32 @@
 {"expect": [{"pointer": "/source_picker/open", "equals": true}, {"pointer": "/source_picker/selected", "equals": "working"}, {"pointer": "/source_picker/items/0/label", "equals": "Uncommitted changes"}, {"pointer": "/source_picker/items/0/review/status", "equals": "open"}, {"pointer": "/source_picker/items/1/label", "equals": "Staged changes"}]}
 {"cmd": "key", "keystroke": "escape", "expect": {"pointer": "/source_picker/open", "equals": false}}
 
-// A WSL repo is listed with why it can't be opened, and opening it shows a banner over the main area only.
+// A WSL repo (PLAN §5.2). This run reaches WSL through the stand-in (no DV_WSL_HOME), which
+// lists the distros it is told of and never starts anything in one: `open` connects, the
+// stand-in refuses, and since the distro still isn't running the row offers Start again,
+// keeping why the start failed (the row `open` named has the selection: its Start); opening
+// its review shows a banner over the main area only, its headline one line, why and the
+// connection's diagnostics in Details (DESIGN §4.4).
+{"cmd": "wsl_distros", "distros": [{"name": "Ubuntu", "running": false}]}
 {"cmd": "open", "path": "\\\\wsl.localhost\\Ubuntu\\home\\kyle\\web"}
 {"cmd": "settle", "timeout_ms": 20000}
-{"expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/repos", "contains": {"name": "web", "error": {"message": "Ubuntu:/home/kyle/web can't be opened: WSL support arrives later"}, "working": null}}, {"pointer": "/switcher/selected", "equals": "api-server/working"}]}
+{"expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/repos", "contains": {"name": "web", "error": {"message": "Ubuntu can't be opened: the connection to dv failed: couldn't start dv: an automation run starts dv in a WSL distro only with DV_WSL_HOME set (a scratch home inside the distro)"}, "working": null, "stopped": "Ubuntu", "retry": false}}, {"pointer": "/switcher/items", "contains": {"key": "web/start", "kind": "start", "label": "Start Ubuntu"}}, {"pointer": "/backends", "contains": {"name": "Ubuntu", "state": "failed"}}, {"pointer": "/switcher/selected", "equals": "web/start"}]}
 {"cmd": "bounds", "target": "switcher/repo/web", "expect_result": {"pointer": "/visible", "not_equals": null}}
 {"cmd": "screenshot", "name": "switcher-wsl-dark-mica"}
 {"cmd": "key", "keystroke": "escape", "expect": {"pointer": "/switcher/open", "equals": false}}
-{"cmd": "open_review", "path": "\\\\wsl.localhost\\Ubuntu\\home\\kyle\\web", "expect_error": "WSL support arrives later"}
+{"cmd": "open_review", "path": "\\\\wsl.localhost\\Ubuntu\\home\\kyle\\web", "expect_error": "couldn't open Ubuntu:/home/kyle/web"}
 {"cmd": "settle"}
-{"expect": [{"pointer": "/shell/banner/message", "equals": "Ubuntu:/home/kyle/web can't be opened: WSL support arrives later"}, {"pointer": "/session/target", "equals": "working"}]}
+{"expect": [{"pointer": "/shell/banner/message", "equals": "couldn't open Ubuntu:/home/kyle/web"}, {"pointer": "/shell/banner/detail", "contains": "Ubuntu can't be opened: the connection to dv failed: couldn't start dv: an automation run starts dv in a WSL distro only with DV_WSL_HOME set (a scratch home inside the distro)\n\nconnection: Ubuntu\nlauncher: automation's stand-in for dv in Ubuntu"}, {"pointer": "/session/target", "equals": "working"}]}
 {"cmd": "bounds", "target": "banner/main", "expect_result": [{"pointer": "/x", "gte": 280}, {"pointer": "/y", "gte": 40}, {"pointer": "/y", "lte": 60}]}
 {"cmd": "bounds", "target": "banner/main/retry", "expect_result": {"pointer": "/visible", "not_equals": null}}
 {"cmd": "click", "target": "banner/main/copy"}
-{"expect": {"pointer": "/system/requests", "contains": {"kind": "clipboard", "text": "Ubuntu:/home/kyle/web can't be opened: WSL support arrives later"}}}
+{"expect": [{"pointer": "/system/requests", "len": 1}, {"pointer": "/system/requests/0/kind", "equals": "clipboard"}, {"pointer": "/system/requests/0/text", "contains": "couldn't open Ubuntu:/home/kyle/web\n"}, {"pointer": "/system/requests/0/text", "contains": "only with DV_WSL_HOME set"}, {"pointer": "/system/requests/0/text", "contains": "\nhistory:\n"}]}
 {"cmd": "screenshot", "name": "banner-dark-mica"}
+// Details: why it didn't open, and the connection's diagnostics.
+{"cmd": "click", "target": "banner/main/details"}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "banner-details-dark-mica"}
+{"cmd": "click", "target": "banner/main/details"}
 
 // The same screen over Opaque, and in light.
 {"cmd": "set_setting", "key": "material", "value": "opaque"}
@@ -130,4 +141,34 @@
 {"expect": [{"pointer": "/repos/0/name", "equals": "gone"}, {"pointer": "/repos/0/error", "not_equals": null}, {"pointer": "/repos/0/working", "equals": null}, {"pointer": "/switcher/items/0/key", "equals": "customer-portal-frontend-service/working"}]}
 {"cmd": "query", "prefix": "switcher/gone/", "expect_result": {"pointer": "", "len": 0}}
 {"cmd": "screenshot", "name": "switcher-gone-dark-mica"}
+{"cmd": "key", "keystroke": "escape", "expect": {"pointer": "/switcher/open", "equals": false}}
+
+// After a restart nothing is connected: the WSL repo, its distro not running, lists as
+// "Ubuntu isn't running" with one row, Start Ubuntu (PLAN §5.2), which connects (booting the
+// distro) and then lists the repo as usual; the stand-in refuses and boots nothing, so the row
+// keeps why and offers Start again. Once the distro runs, the failed connection's row offers
+// Retry instead, which connects again (and fails the same way).
+{"restart": {}}
+{"cmd": "settle", "timeout_ms": 20000}
+{"cmd": "wsl_distros", "distros": [{"name": "Ubuntu", "running": false}]}
+{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"expect": [{"pointer": "/repos", "contains": {"name": "web", "stopped": "Ubuntu", "starting": false, "error": {"message": "Ubuntu isn't running"}}}, {"pointer": "/switcher/items", "contains": {"key": "web/start", "kind": "start", "target": null, "label": "Start Ubuntu", "review": null}}, {"pointer": "/backends", "equals": []}]}
+{"cmd": "bounds", "target": "switcher/web/start", "expect_result": {"pointer": "/visible", "not_equals": null}}
+{"cmd": "screenshot", "name": "switcher-wsl-stopped-dark-mica"}
+{"cmd": "click", "target": "switcher/web/start"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/repos", "contains": {"name": "web", "stopped": "Ubuntu", "starting": false, "retry": false, "error": {"message": "Ubuntu can't be opened: the connection to dv failed: couldn't start dv: an automation run starts dv in a WSL distro only with DV_WSL_HOME set (a scratch home inside the distro)"}}}, {"pointer": "/backends", "contains": {"name": "Ubuntu", "state": "failed"}}, {"pointer": "/switcher/selected", "equals": "web/start"}]}
+{"cmd": "query", "prefix": "switcher/web/", "expect_result": [{"pointer": "", "len": 1}, {"pointer": "/0/target", "equals": "switcher/web/start"}]}
+{"cmd": "screenshot", "name": "switcher-wsl-start-failed-dark-mica"}
+{"cmd": "key", "keystroke": "escape", "expect": {"pointer": "/switcher/open", "equals": false}}
+{"cmd": "wsl_distros", "distros": [{"name": "Ubuntu", "running": true}]}
+{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"expect": [{"pointer": "/repos", "contains": {"name": "web", "stopped": null, "retry": true, "starting": false, "error": {"message": "Ubuntu can't be opened: the connection to dv failed: couldn't start dv: an automation run starts dv in a WSL distro only with DV_WSL_HOME set (a scratch home inside the distro)"}}}, {"pointer": "/switcher/items", "contains": {"key": "web/retry", "kind": "retry", "target": null, "label": "Retry", "review": null}}]}
+{"cmd": "bounds", "target": "switcher/web/retry", "expect_result": {"pointer": "/visible", "not_equals": null}}
+{"cmd": "screenshot", "name": "switcher-wsl-retry-dark-mica"}
+{"cmd": "click", "target": "switcher/web/retry"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/repos", "contains": {"name": "web", "retry": true, "starting": false}}, {"pointer": "/backends", "contains": {"name": "Ubuntu", "state": "failed", "generation": 2}}, {"pointer": "/switcher/selected", "equals": "web/retry"}]}
 {"cmd": "key", "keystroke": "escape", "expect": {"pointer": "/switcher/open", "equals": false}}

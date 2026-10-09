@@ -5,14 +5,37 @@
 //! ("uncommitted changes · 7 files", from the `working` target's file list).
 //!
 //! A repository's row is computed in the background ([`Reviews::refresh`]): when it is added,
-//! and whenever the switcher opens ([`Reviews::refresh_all`]). Nothing here watches a
-//! repository: an open review's session does that for its own repository (PLAN §11), and a
-//! WSL repository is never touched beyond what [`Locations`] reports, so listing never boots a
-//! distro.
+//! whenever the switcher opens ([`Reviews::refresh_all`]), and when the connection a row is
+//! reached through starts reconnecting, stops or fails, or comes back, whether or not the
+//! switcher is open ([`LocationsEvent::ConnectionChanged`]): a connection that comes back
+//! clears what its rows said about it being down at once, so the switcher never opens on a
+//! stale **Start** or "reconnecting…". Nothing here watches a repository: an open review's
+//! session does that for its own repository (PLAN §11). A row is read through
+//! [`Locations::reach`], which never boots a distro (PLAN §5.2's connecting rule):
+//! - a WSL repository whose distro isn't running lists as "Ubuntu isn't running" and offers
+//!   **Start Ubuntu**, whatever its connection did before;
+//! - one whose connection failed says why and offers **Retry**;
+//! - one whose connection is reconnecting reads "reconnecting…" and keeps the rows its last
+//!   listing had.
+//!
+//! Start and Retry are the same explicit open ([`Reviews::start`]): it connects, booting the
+//! distro, and then lists the repository as usual.
 //!
 //! [`Reviews::open_review`] opens or resumes a target's review (PLAN §2.4: at most one open
 //! review per target) as the reviewer, records that the repository was used, and hands back
-//! what a `ReviewSession` starts from.
+//! what a `ReviewSession` starts from. An open whose connection is lost under it, at any of its
+//! steps, waits for the reconnect (starting nothing itself) and runs once more (PLAN §5.2). A
+//! remote repository that can't be reached, or whose connection is lost again, fails with a
+//! one-line headline ("couldn't open Ubuntu:/home/kyle/api"), the connection's error and
+//! diagnostics in its detail (DESIGN §4.4).
+//!
+//! **One row per repository.** A known location is a worktree root, its WSL distro spelled as
+//! WSL spells it (`Locations::canonical`). One added before it could be resolved (a subfolder
+//! added while its connection was down, so its row could say why) or under another spelling of
+//! its distro becomes that root the first time a listing or an open resolves it
+//! ([`Reviews::resolved`]): its row and `known_repos.json` are re-keyed, or it goes when the
+//! root is known already. Locations are compared with the distro folded
+//! (`Location::same_place`), so a spelling WSL couldn't confirm never adds a second row.
 
 pub mod known_repos;
 
@@ -23,6 +46,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use dv_backend::{Connection, ConnectionKey};
 use dv_core::diff::file_list;
 use dv_core::label::{LabelContext, Labels};
 use dv_core::review::{
@@ -31,9 +55,11 @@ use dv_core::review::{
 };
 use dv_core::{Backend, BackendError, GitRepo, Location, Target};
 use futures::channel::oneshot;
-use gpui::{App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
+use gpui::{
+    App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, Subscription, Task, WeakEntity,
+};
 
-use super::locations::Locations;
+use super::locations::{Locations, LocationsEvent, Reach};
 use super::persist::{JsonFile, ReadObject, read_object};
 use crate::failure::Failure;
 pub use known_repos::{KNOWN_REPOS_FILE, KnownRepo, KnownReposFile};
@@ -86,10 +112,20 @@ pub struct RepoRow {
     pub loading: bool,
     /// Why the repository (or part of its row) couldn't be read, from the last refresh.
     pub error: Option<Failure>,
-    /// Why the last refresh couldn't open the repository at all, in a few words ("WSL support
-    /// arrives later", "no such directory: …"); `None` while it opens. Such a row lists no
-    /// targets to review.
+    /// Why the last refresh couldn't open the repository at all, in a few words ("Ubuntu isn't
+    /// running", "no such directory: …"); `None` while it opens. Such a row lists no targets
+    /// to review.
     pub unreachable: Option<String>,
+    /// The distro to start, when the repository's host isn't running (a WSL distro, or a
+    /// connection found stopped): its row offers **Start** (DESIGN §4.1).
+    pub stopped: Option<String>,
+    /// The repository's connection failed: its row offers **Retry** (DESIGN §4.1).
+    pub retry: bool,
+    /// The repository's connection is reconnecting: the row says so and keeps what its last
+    /// listing had.
+    pub reconnecting: bool,
+    /// Its distro is being started, or its connection retried ([`Reviews::start`]).
+    pub starting: bool,
     /// The worktree root as its reviews record it (`ReviewSummary::worktree`), once a refresh
     /// opened the repository: which `working` and `staged` reviews are this worktree's.
     pub toplevel: Option<String>,
@@ -118,9 +154,13 @@ impl RepoRow {
     }
 
     /// Whether the last refresh could read the repository: it opened, and its changes were
-    /// listed (or haven't been yet). One that can't be read offers no rows (DESIGN §4.1).
+    /// listed (or haven't been yet); while its connection reconnects, whether a listing before
+    /// did. One that can't be read offers no rows (DESIGN §4.1).
     pub fn is_readable(&self) -> bool {
-        self.unreachable.is_none() && !(self.error.is_some() && self.working.is_none())
+        self.unreachable.is_none()
+            && !self.starting
+            && !(self.error.is_some() && self.working.is_none())
+            && !(self.reconnecting && self.working.is_none())
     }
 
     fn new(repo: &KnownRepo) -> Self {
@@ -131,6 +171,10 @@ impl RepoRow {
             loading: false,
             error: None,
             unreachable: None,
+            stopped: None,
+            retry: false,
+            reconnecting: false,
+            starting: false,
             toplevel: None,
             working: None,
             reviews: Vec::new(),
@@ -146,17 +190,39 @@ struct Scan {
     reviews: Result<Vec<ReviewRow>, Failure>,
     labels: LabelContext,
     toplevel: String,
+    /// The repository's location as its backend resolved it: its worktree root.
+    root: Location,
 }
 
-/// Why a refresh couldn't open a repository: the failure, and the few words a switcher row
-/// shows for it.
+impl Scan {
+    /// The connection died under the scan: what it read is the reconnect's to read again.
+    fn lost_connection(&self) -> bool {
+        [self.working.as_ref().err(), self.reviews.as_ref().err()]
+            .into_iter()
+            .flatten()
+            .any(|failure| failure.disconnected)
+    }
+}
+
+/// What a refresh found.
+enum Refreshed {
+    Scanned(Scan),
+    /// The repository's connection is reconnecting: the row keeps what it had.
+    Reconnecting,
+    Unopened(Unopened),
+}
+
+/// Why a refresh couldn't open a repository: the failure, the few words a switcher row shows
+/// for it, the distro to start when that is why, and whether its connection failed (Retry).
 struct Unopened {
     failure: Failure,
     reason: String,
+    stopped: Option<String>,
+    retry: bool,
 }
 
 impl Unopened {
-    fn new(error: &BackendError) -> Self {
+    fn new(error: &BackendError, retry: bool) -> Self {
         let reason = match error {
             BackendError::Unavailable { reason, .. } => reason.clone(),
             other => other.to_string(),
@@ -164,6 +230,20 @@ impl Unopened {
         Self {
             failure: Failure::from(error),
             reason,
+            stopped: None,
+            retry,
+        }
+    }
+
+    /// A repository whose host isn't running (`Reach::Stopped`); `error` is why its
+    /// connection failed, when it did (a start that didn't boot it).
+    fn stopped(distro: String, error: Option<&BackendError>) -> Self {
+        let reason = format!("{distro} isn't running");
+        Self {
+            failure: error.map_or_else(|| Failure::new(reason.clone()), Failure::from),
+            reason,
+            stopped: Some(distro),
+            retry: false,
         }
     }
 }
@@ -186,6 +266,10 @@ pub struct OpenedReview {
     pub created: bool,
     /// Who the reviewer is in this repository.
     pub reviewer: Author,
+    /// The connection `backend` reaches its repository through (a WSL distro's, a
+    /// loopback's); `None` for a repository opened in process. The session follows it (PLAN
+    /// §5.2).
+    pub connection: Option<Arc<Connection>>,
     /// The repository's labels as the review opened, so its target is named in full
     /// ("working tree vs main") from the start rather than once its files are listed.
     pub labels: LabelContext,
@@ -202,6 +286,7 @@ pub struct Reviews {
     generation: u64,
     /// `add_repo` and `open_review` calls running.
     opening: usize,
+    _locations: Subscription,
 }
 
 impl EventEmitter<ReviewsEvent> for Reviews {}
@@ -243,6 +328,16 @@ impl Reviews {
             .collect();
         let file = cx.new(|cx| JsonFile::new(path, unsaveable, cx));
         cx.observe(&file, |_, _, cx| cx.notify()).detach();
+        // A connection going down or coming back changes its rows (module docs).
+        let subscription =
+            cx.subscribe(
+                &locations,
+                |this, _, event: &LocationsEvent, cx| match event {
+                    LocationsEvent::ConnectionChanged { key, up } => {
+                        this.connection_changed(key, *up, cx)
+                    }
+                },
+            );
         Self {
             locations,
             known,
@@ -251,6 +346,7 @@ impl Reviews {
             refreshing: HashMap::new(),
             generation: 0,
             opening: 0,
+            _locations: subscription,
         }
     }
 
@@ -279,10 +375,12 @@ impl Reviews {
         self.refreshing.is_empty() && self.opening == 0 && self.file.read(cx).is_settled()
     }
 
-    /// Adds the repository at `location` (like `dv open <path>`): its worktree root becomes a
-    /// known repository and its row is computed. A WSL location, which can't be opened yet, is
-    /// added as given, so its row says why; any other location that doesn't open is refused.
-    /// Resolves to the location as known.
+    /// Adds the repository at `location` (like `dv open <path>`), opened explicitly (a WSL
+    /// one's distro is started, PLAN §5.2): its worktree root becomes a known repository and
+    /// its row is computed. A location whose backend can't be reached (its connection failed
+    /// or is down) is added as given (its distro spelled as WSL spells it), so its row says
+    /// why, until a listing resolves it (module docs); any other location that doesn't open is
+    /// refused. Resolves to the location as known.
     pub fn add_repo(
         &mut self,
         location: Location,
@@ -298,11 +396,22 @@ impl Reviews {
                 this.opening -= 1;
                 cx.notify();
                 let known = match opened {
-                    Ok(backend) => backend.repo().location.clone(),
-                    Err(error) if matches!(*error, BackendError::Unavailable { .. }) => location,
+                    Ok(backend) => {
+                        let root = backend.repo().location.clone();
+                        this.resolved(&location, &root, cx);
+                        root
+                    }
+                    Err(error)
+                        if matches!(
+                            *error,
+                            BackendError::Unavailable { .. } | BackendError::Disconnected { .. }
+                        ) =>
+                    {
+                        this.locations.read(cx).canonical(&location)
+                    }
                     Err(error) => return Err(Failure::from(&*error)),
                 };
-                this.add_known(known.clone(), cx);
+                let known = this.add_known(known, cx);
                 this.refresh(known.clone(), cx);
                 Ok(known)
             })
@@ -333,6 +442,12 @@ impl Reviews {
     /// files, place threads at the same lines and snapshot the same content. A home worktree
     /// that is gone is a failure, the banner's. The repository marked as used is `location`'s,
     /// the row it was opened from.
+    ///
+    /// When the connection is lost under any step (the server dies while the review is found
+    /// or loaded), the open waits for the reconnect, starting nothing itself
+    /// (`Connection::wait_for_reconnect`), and runs once more from the start; lost again, or
+    /// the reconnect failing, it fails as "couldn't open <location>" (module docs), flagged
+    /// [`Failure::disconnected`] when the connection was lost under it.
     pub fn open(
         &mut self,
         location: Location,
@@ -343,49 +458,37 @@ impl Reviews {
         let locations = self.locations.clone();
         let open = self
             .locations
-            .update(cx, |locations, cx| locations.open(location, cx));
+            .update(cx, |locations, cx| locations.open(location.clone(), cx));
         detached(cx, async move |this, cx| {
-            let result: Result<OpenedReview, Failure> = async {
-                let origin = open.await.map_err(|error| Failure::from(&*error))?;
-                let job = cx.background_spawn({
-                    let backend = origin.clone();
-                    async move { find_blocking(backend, request) }
-                });
-                let Found { id, created, home } = job.await?;
-                let backend = match &home {
-                    Home::Worktree(root) if !home.is(&origin.repo().toplevel) => {
-                        let there = sibling(&origin.repo().location, root);
-                        locations
-                            .update(cx, |locations, cx| locations.open(there, cx))
-                            .await
-                            .map_err(|error| Failure::from(&*error))?
+            let mut result = open_once(&locations, &location, request.clone(), open, cx).await;
+            let lost = result.as_ref().is_err_and(|failure| failure.disconnected);
+            let connection =
+                locations.read_with(cx, |locations, _| locations.connection_for(&location));
+            if lost && let Some(connection) = connection {
+                let waited = cx
+                    .background_spawn({
+                        let connection = connection.clone();
+                        async move { connection.wait_for_reconnect() }
+                    })
+                    .await;
+                result = match waited {
+                    Ok(()) => {
+                        let open = locations
+                            .update(cx, |locations, cx| locations.open(location.clone(), cx));
+                        open_once(&locations, &location, request, open, cx).await
                     }
-                    Home::Worktree(_) | Home::Anywhere => origin.clone(),
+                    Err(error) => {
+                        let named =
+                            locations.read_with(cx, |locations, _| locations.canonical(&location));
+                        Err(open_failure(&named, &error, Some(&connection)))
+                    }
                 };
-                let job = cx.background_spawn({
-                    let backend = backend.clone();
-                    async move { load_blocking(backend, &id) }
-                });
-                let Loading {
-                    loaded,
-                    reviewer,
-                    labels,
-                } = job.await?;
-                Ok(OpenedReview {
-                    origin: origin.repo().location.clone(),
-                    backend,
-                    loaded,
-                    created,
-                    reviewer,
-                    labels,
-                })
             }
-            .await;
             this.update(cx, |this, cx| {
                 this.opening -= 1;
                 if let Ok(opened) = &result {
-                    let known = opened.origin.clone();
-                    this.add_known(known.clone(), cx);
+                    this.resolved(&location, &opened.origin, cx);
+                    let known = this.add_known(opened.origin.clone(), cx);
                     if this
                         .known
                         .mark_opened(&known, dv_core::review::event::now_ms())
@@ -412,8 +515,54 @@ impl Reviews {
         }
     }
 
+    /// Recomputes the rows of the repositories reached through the connection of `key`.
+    pub fn refresh_connection(&mut self, key: &ConnectionKey, cx: &mut Context<Self>) {
+        for location in self.rows_through(key, cx) {
+            self.refresh(location, cx);
+        }
+    }
+
+    /// The known repositories reached through the connection of `key` (`Locations::key_for`,
+    /// which reads no file system).
+    fn rows_through(&self, key: &ConnectionKey, cx: &App) -> Vec<Location> {
+        let locations = self.locations.read(cx);
+        self.rows
+            .keys()
+            .filter(|location| locations.key_for(location).as_ref() == Some(key))
+            .cloned()
+            .collect()
+    }
+
+    /// The connection of `key` went down, or (`up`) came back
+    /// (`LocationsEvent::ConnectionChanged`, module docs): its rows are listed again; back,
+    /// what they said about it being down goes at once, so they read as loading meanwhile
+    /// rather than as stopped, failed or reconnecting. A row whose Start or Retry runs keeps
+    /// its row until its own listing lands ([`Reviews::start`]).
+    fn connection_changed(&mut self, key: &ConnectionKey, up: bool, cx: &mut Context<Self>) {
+        let through = self.rows_through(key, cx);
+        if up {
+            for location in &through {
+                let Some(row) = self.rows.get_mut(location).filter(|row| !row.starting) else {
+                    continue;
+                };
+                if row.unreachable.is_some() {
+                    row.error = None;
+                }
+                row.unreachable = None;
+                row.stopped = None;
+                row.retry = false;
+                row.reconnecting = false;
+            }
+        }
+        for location in through {
+            self.refresh(location, cx);
+        }
+    }
+
     /// Recomputes `location`'s row in the background: its reviews, its uncommitted changes and
-    /// what its target labels need. A refresh already running for it is superseded.
+    /// what its target labels need. A refresh already running for it is superseded. The
+    /// repository is reached as a listing reaches it ([`Locations::reach`]): a stopped distro
+    /// stays stopped.
     pub fn refresh(&mut self, location: Location, cx: &mut Context<Self>) {
         let Some(row) = self.rows.get_mut(&location) else {
             return;
@@ -421,18 +570,31 @@ impl Reviews {
         row.loading = true;
         self.generation += 1;
         let generation = self.generation;
-        let open = self
+        let reach = self
             .locations
-            .update(cx, |locations, cx| locations.open(location.clone(), cx));
+            .update(cx, |locations, cx| locations.reach(location.clone(), cx));
         let task = cx.spawn({
             let location = location.clone();
             async move |this, cx| {
-                let scan = match open.await {
-                    Ok(backend) => Ok(cx.background_spawn(async move { scan(backend) }).await),
-                    Err(error) => Err(Unopened::new(&error)),
+                let refreshed = match reach.await {
+                    Reach::Opened(backend) => {
+                        let scan = cx.background_spawn(async move { scan(backend) }).await;
+                        if scan.lost_connection() {
+                            Refreshed::Reconnecting
+                        } else {
+                            Refreshed::Scanned(scan)
+                        }
+                    }
+                    Reach::Stopped { distro, error } => {
+                        Refreshed::Unopened(Unopened::stopped(distro, error.as_deref()))
+                    }
+                    Reach::Reconnecting => Refreshed::Reconnecting,
+                    Reach::Failed { error, retry } => {
+                        Refreshed::Unopened(Unopened::new(&error, retry))
+                    }
                 };
                 this.update(cx, |this, cx| {
-                    this.finish_refresh(&location, generation, scan, cx)
+                    this.finish_refresh(&location, generation, refreshed, cx)
                 })
                 .ok();
             }
@@ -446,7 +608,7 @@ impl Reviews {
         &mut self,
         location: &Location,
         generation: u64,
-        scan: Result<Scan, Unopened>,
+        refreshed: Refreshed,
         cx: &mut Context<Self>,
     ) {
         if self
@@ -461,10 +623,17 @@ impl Reviews {
             return;
         };
         row.loading = false;
-        match scan {
-            Ok(scan) => {
+        // A Start or Retry ends with the listing that follows it ([`Reviews::start`]).
+        row.starting = false;
+        let mut resolved = None;
+        match refreshed {
+            Refreshed::Scanned(scan) => {
+                resolved = Some(scan.root);
                 row.labels = scan.labels;
                 row.unreachable = None;
+                row.stopped = None;
+                row.retry = false;
+                row.reconnecting = false;
                 row.toplevel = Some(scan.toplevel);
                 row.error = scan.reviews.as_ref().err().cloned();
                 row.reviews = scan.reviews.unwrap_or_default();
@@ -476,26 +645,147 @@ impl Reviews {
                     }
                 };
             }
-            Err(Unopened { failure, reason }) => {
+            // The rows the last listing had stay, read again once it is back.
+            Refreshed::Reconnecting => {
+                row.reconnecting = true;
+                row.unreachable = None;
+                row.stopped = None;
+                row.retry = false;
+            }
+            Refreshed::Unopened(Unopened {
+                failure,
+                reason,
+                stopped,
+                retry,
+            }) => {
                 row.error = Some(failure);
                 row.unreachable = Some(reason);
+                row.stopped = stopped;
+                row.retry = retry;
+                row.reconnecting = false;
                 row.working = None;
                 row.reviews.clear();
             }
+        }
+        // The listing resolved the repository: known by its root from now on (module docs).
+        if let Some(root) = resolved {
+            self.resolved(location, &root, cx);
         }
         cx.emit(ReviewsEvent::Changed);
         cx.notify();
     }
 
-    fn add_known(&mut self, location: Location, cx: &mut Context<Self>) {
+    /// **Start** on a repository whose host isn't running, or **Retry** on one whose
+    /// connection failed (module docs): an explicit open, which connects, booting a stopped
+    /// distro, then refreshes every known row reached through the same connection. The row
+    /// says it is starting meanwhile, until the listing after the start lands; a start that
+    /// fails leaves the row saying why.
+    pub fn start(
+        &mut self,
+        location: Location,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), Failure>> {
+        let Some(key) = self.locations.read(cx).key_for(&location) else {
+            return Task::ready(Err(Failure::new(format!(
+                "{} isn't reached through dv backend --stdio: there is nothing to start",
+                location.display_name()
+            ))));
+        };
+        if let Some(row) = self.rows.get_mut(&location) {
+            row.starting = true;
+            row.unreachable = None;
+            row.error = None;
+        }
+        // A listing begun before the start would end it before its own listing lands.
+        self.refreshing.remove(&location);
+        self.opening += 1;
+        cx.emit(ReviewsEvent::Changed);
+        cx.notify();
+        let open = self
+            .locations
+            .update(cx, |locations, cx| locations.open(location.clone(), cx));
+        detached(cx, async move |this, cx| {
+            let opened = open.await;
+            this.update(cx, |this, cx| {
+                this.opening -= 1;
+                // Resolved: known by its root from now on (module docs).
+                let location = match &opened {
+                    Ok(backend) => {
+                        let root = backend.repo().location.clone();
+                        this.resolved(&location, &root, cx);
+                        root
+                    }
+                    Err(_) => location,
+                };
+                // Every row that shares the connection: the distro's other repositories. The
+                // row stays starting until its listing lands, so it never shows rows it
+                // doesn't have meanwhile.
+                this.refresh_connection(&key, cx);
+                this.refresh(location, cx);
+                cx.notify();
+                opened.map(drop).map_err(|error| Failure::from(&*error))
+            })
+            .unwrap_or_else(|_| Err(closing()))
+        })
+    }
+
+    /// Knows `location` from now on, unless it is known already however its WSL distro is
+    /// spelled (module docs); the location as known.
+    fn add_known(&mut self, location: Location, cx: &mut Context<Self>) -> Location {
+        if let Some(known) = self.known.find_place(&location) {
+            return known.location.clone();
+        }
         let now = dv_core::review::event::now_ms();
         if self.known.add(location.clone(), now) {
             if let Some(repo) = self.known.get(&location) {
-                self.rows.insert(location, RepoRow::new(repo));
+                self.rows.insert(location.clone(), RepoRow::new(repo));
             }
             self.save(cx);
             cx.emit(ReviewsEvent::Changed);
         }
+        location
+    }
+
+    /// A listing or an open of `given` reached the repository whose worktree root is `root`
+    /// (`RepoInfo::location`, its distro spelled WSL's way): every known location that names
+    /// it otherwise — `given` (a subfolder, another spelling of the distro) and any other
+    /// spelling of `root` — is known as `root` from now on, its row re-keyed with what it
+    /// listed, or dropped when `root` has a row already (module docs).
+    fn resolved(&mut self, given: &Location, root: &Location, cx: &mut Context<Self>) {
+        let stale: Vec<Location> = self
+            .known
+            .repos()
+            .map(|repo| &repo.location)
+            .filter(|known| *known != root && (*known == given || known.same_place(root)))
+            .cloned()
+            .collect();
+        if stale.is_empty() {
+            return;
+        }
+        for old in stale {
+            self.known.rekey(&old, root);
+            self.refreshing.remove(&old);
+            let Some(mut row) = self.rows.remove(&old) else {
+                continue;
+            };
+            if self.rows.contains_key(root) {
+                continue;
+            }
+            let fresh = self.known.get(root).map(RepoRow::new);
+            if let Some(fresh) = fresh {
+                row.location = fresh.location;
+                row.name = fresh.name;
+                row.path = fresh.path;
+                row.last_used = fresh.last_used;
+                self.rows.insert(root.clone(), row);
+            }
+        }
+        if let Some(row) = self.rows.get_mut(root) {
+            row.last_used = self.known.get(root).map_or(0, KnownRepo::last_used);
+        }
+        self.save(cx);
+        cx.emit(ReviewsEvent::Changed);
+        cx.notify();
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
@@ -550,15 +840,13 @@ fn find_blocking(backend: Arc<dyn Backend>, request: OpenRequest) -> Result<Foun
         match error {
             HomeError::Git(error) => Failure::from(&error),
             // The headline says what is wrong; the path, long, is the detail.
-            HomeError::Gone { worktree } => Failure {
-                message: format!(
+            HomeError::Gone { worktree } => Failure::with_detail(
+                format!(
                     "review {} can't be opened: its worktree is gone (removed, moved or deleted)",
                     review.id
                 ),
-                detail: Some(format!(
-                    "{worktree} is no longer one of the repository's worktrees"
-                )),
-            },
+                format!("{worktree} is no longer one of the repository's worktrees"),
+            ),
         }
     })?;
     Ok(Found {
@@ -590,6 +878,121 @@ fn load_blocking(backend: Arc<dyn Backend>, id: &ReviewId) -> Result<Loading, Fa
     })
 }
 
+/// One run of [`Reviews::open`]: `open` (the location's own, begun) and then the review found,
+/// its home worktree opened when it is another one, and the review loaded. A failure of the
+/// later steps that lost the connection under it reads as the open's ([`couldnt_open`]).
+async fn open_once(
+    locations: &Entity<Locations>,
+    location: &Location,
+    request: OpenRequest,
+    open: Task<super::locations::OpenResult>,
+    cx: &mut AsyncApp,
+) -> Result<OpenedReview, Failure> {
+    let origin = match open.await {
+        Ok(origin) => origin,
+        Err(error) => {
+            let (named, connection) = locations.read_with(cx, |locations, _| {
+                (
+                    locations.canonical(location),
+                    locations.connection_for(location),
+                )
+            });
+            return Err(open_failure(&named, &error, connection.as_deref()));
+        }
+    };
+    let found = async {
+        let job = cx.background_spawn({
+            let backend = origin.clone();
+            async move { find_blocking(backend, request) }
+        });
+        let Found { id, created, home } = job.await?;
+        let backend = match &home {
+            Home::Worktree(root) if !home.is(&origin.repo().location, &origin.repo().toplevel) => {
+                let there = sibling(&origin.repo().location, root);
+                locations
+                    .update(cx, |locations, cx| locations.open(there, cx))
+                    .await
+                    .map_err(|error| Failure::from(&*error))?
+            }
+            Home::Worktree(_) | Home::Anywhere => origin.clone(),
+        };
+        let job = cx.background_spawn({
+            let backend = backend.clone();
+            async move { load_blocking(backend, &id) }
+        });
+        let loading = job.await?;
+        Ok::<_, Failure>((backend, created, loading))
+    }
+    .await;
+    let (backend, created, loading) = match found {
+        Ok(found) => found,
+        Err(failure) if failure.disconnected => {
+            let connection =
+                locations.read_with(cx, |locations, _| locations.connection_of(&origin));
+            return Err(couldnt_open(
+                &origin.repo().location,
+                failure,
+                connection.as_deref(),
+            ));
+        }
+        Err(failure) => return Err(failure),
+    };
+    let Loading {
+        loaded,
+        reviewer,
+        labels,
+    } = loading;
+    let connection = locations.read_with(cx, |locations, _| locations.connection_of(&backend));
+    Ok(OpenedReview {
+        origin: origin.repo().location.clone(),
+        backend,
+        loaded,
+        created,
+        reviewer,
+        labels,
+        connection,
+    })
+}
+
+/// Why the repository at `location` didn't open, for the main area's banner (DESIGN §4.4): a
+/// remote repository whose connection is the trouble reads "couldn't open <location>"
+/// ([`couldnt_open`]); anything else as the error says.
+fn open_failure(
+    location: &Location,
+    error: &BackendError,
+    connection: Option<&Connection>,
+) -> Failure {
+    let down = matches!(
+        error,
+        BackendError::Unavailable { .. } | BackendError::Disconnected { .. }
+    );
+    let remote = matches!(location, Location::Wsl { .. }) || connection.is_some();
+    if !down || !remote {
+        return Failure::from(error);
+    }
+    couldnt_open(location, Failure::from(error), connection)
+}
+
+/// "couldn't open <location>": one line for the headline, `failure` (what the connection's
+/// trouble was) and the connection's diagnostics in the detail, which Copy diagnostics carries;
+/// still flagged [`Failure::disconnected`] when the connection was lost under the open.
+fn couldnt_open(location: &Location, failure: Failure, connection: Option<&Connection>) -> Failure {
+    let mut detail = failure.message;
+    if let Some(more) = &failure.detail {
+        detail.push('\n');
+        detail.push_str(more);
+    }
+    if let Some(connection) = connection {
+        detail.push_str("\n\n");
+        detail.push_str(connection.diagnostics().trim_end());
+    }
+    Failure {
+        message: format!("couldn't open {}", location.display_name()),
+        detail: Some(detail),
+        disconnected: failure.disconnected,
+    }
+}
+
 /// The location of the worktree whose root is `root` (as git lists it), another worktree of
 /// the repository at `location`: a path on this machine, or in the same distro.
 fn sibling(location: &Location, root: &str) -> Location {
@@ -605,6 +1008,7 @@ fn sibling(location: &Location, root: &str) -> Location {
 /// Reads a repository's row (blocking): its reviews, its uncommitted changes and its labels.
 fn scan(backend: Arc<dyn Backend>) -> Scan {
     let toplevel = backend.repo().toplevel.clone();
+    let root = backend.repo().location.clone();
     let repo = GitRepo::new(backend.clone());
     // Another worktree's `working` or `staged` review is named by that worktree's HEAD.
     let all_labels = Labels::read(&repo);
@@ -642,5 +1046,6 @@ fn scan(backend: Arc<dyn Backend>) -> Scan {
         reviews,
         labels,
         toplevel,
+        root,
     }
 }

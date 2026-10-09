@@ -154,6 +154,8 @@ impl Switcher {
                 TargetKind::Branch => DvIcon::GitBranch,
             },
             ItemKind::Review { .. } => DvIcon::GitCommit,
+            ItemKind::Start { .. } => DvIcon::Play,
+            ItemKind::Retry { .. } => DvIcon::RotateCw,
             ItemKind::OpenFolder => DvIcon::FolderOpen,
         };
         let right: Option<AnyElement> = match item.review() {
@@ -188,7 +190,15 @@ impl Switcher {
             None => None,
         };
         let footer = item.kind == ItemKind::OpenFolder;
+        // A Start or Retry whose start runs is inert (DESIGN §4.1): dimmed, no hover, and a
+        // click (like Enter) does nothing.
+        let inert = item.is_starting();
         let hover = c.control_hover;
+        let glyph_color = match (inert, selected) {
+            (true, _) => c.fg3,
+            (false, true) => c.fg,
+            (false, false) => c.fg2,
+        };
         div()
             .id(ElementId::NamedInteger("switcher-item".into(), ix as u64))
             .flex()
@@ -198,21 +208,24 @@ impl Switcher {
             .pl(if footer { theme.spacing.md } else { px(30.) })
             .pr(theme.spacing.md)
             .rounded(theme.radii.control)
-            .cursor_pointer()
+            .when(!inert, |this| this.cursor_pointer())
             .map(|this| {
                 if selected {
                     this.bg(c.sel)
+                } else if inert {
+                    this
                 } else {
                     this.hover(move |style| style.bg(hover))
                 }
             })
             .on_click(cx.listener(move |this, _, _, cx| this.pick(ix, cx)))
-            .child(icon(glyph, px(14.), if selected { c.fg } else { c.fg2 }))
+            .child(icon(glyph, px(14.), glyph_color))
             .child(
                 div()
                     .min_w_0()
                     .truncate()
                     .when(footer, |this| this.font_weight(FontWeight::MEDIUM))
+                    .when(inert, |this| this.text_color(c.fg3))
                     .child(SharedString::from(item.label().to_string())),
             )
             .child(div().flex_1())
@@ -279,6 +292,13 @@ fn repo_header(header: &RepoHeader, first: bool, theme: &DvTheme) -> AnyElement 
             };
             problem(&text, c.yellow, theme)
         }
+        RepoSummary::Stopped(distro) => {
+            problem(&format!("{distro} isn't running"), c.yellow, theme)
+        }
+        RepoSummary::Starting(line) => div()
+            .text_color(c.fg3)
+            .child(SharedString::from(line.clone()))
+            .into_any_element(),
         RepoSummary::Error(message) => problem(message, c.red, theme),
         RepoSummary::Clean => div()
             .text_color(c.fg3)
@@ -338,7 +358,7 @@ fn repo_header(header: &RepoHeader, first: bool, theme: &DvTheme) -> AnyElement 
                         .text_ellipsis_start()
                         .text_spec(&theme.text.secondary)
                         .text_color(c.fg3)
-                        .child(SharedString::from(header.path.clone())),
+                        .child(SharedString::from(header.shown_path.clone())),
                 ),
         )
         .child(

@@ -3,10 +3,15 @@
 //! - Reading: [`status`], [`review`] (`list`, `show`) and [`comment`] (`list`, `show`).
 //! - Writing: [`review_write`] (`new`, `done`, `submit`, `close`, `delete`) and
 //!   [`comment_write`] (`add`, `reply`, `address`, `resolve`, `reopen`).
-//! - Waiting for the reviewer: [`wait`]; installing the agent skill: [`setup`].
+//! - Waiting for the reviewer: [`wait`]; installing the agent skill: [`setup`]; installing dv in
+//!   a WSL distro: [`setup_wsl`].
+//! - Serving the app's remote backend over stdio: [`backend`].
 //!
 //! Commands of later versions are recognised and refused with what to do instead ([`later`]).
+//! On Windows, a command for a repository inside a WSL distro runs there instead
+//! (`crate::reexec`, PLAN §10.4).
 
+mod backend;
 mod comment;
 pub(crate) mod comment_write;
 mod format;
@@ -14,6 +19,7 @@ mod later;
 mod review;
 pub(crate) mod review_write;
 pub(crate) mod setup;
+mod setup_wsl;
 mod status;
 pub(crate) mod wait;
 
@@ -22,13 +28,18 @@ use dv_core::review::ThreadState;
 use crate::args::{Command, CommentCommand, GlobalArgs, ReviewCommand, SetupCommand};
 use crate::context::Context;
 use crate::error::{CliError, Exit};
+use crate::reexec;
 
-/// Runs `command`, printing its output; an error is returned for the caller to report.
+/// Runs `command`, printing its output; an error is returned for the caller to report. A
+/// command for a WSL repository runs inside its distro when this is Windows (PLAN §10.4).
 pub(crate) fn run(
     global: &GlobalArgs,
     command: Command,
     ctx: &mut Context,
 ) -> Result<Exit, CliError> {
+    if let Some((distro, path)) = reexec::wsl_repository(global, &command, ctx)? {
+        return reexec::run(&distro, &path, ctx);
+    }
     match command {
         Command::Status => status::status(global, ctx),
         Command::Review(command) => match command {
@@ -64,11 +75,11 @@ pub(crate) fn run(
         Command::Setup(args) => match &args.what {
             Some(SetupCommand::Agents(agents)) => setup::agents(global, agents, ctx),
             Some(SetupCommand::Path(_)) => Err(later::setup_path()),
-            Some(SetupCommand::Wsl(wsl)) => Err(later::setup_wsl(&wsl.distro)),
+            Some(SetupCommand::Wsl(wsl)) => setup_wsl::wsl(global, wsl, ctx),
             Some(SetupCommand::All(_)) => Err(later::setup_all()),
             None => Err(later::setup_what()),
         },
         Command::Doctor => Err(later::doctor()),
-        Command::Backend(_) => Err(later::backend()),
+        Command::Backend(args) => backend::backend(&args, ctx),
     }
 }

@@ -7,7 +7,11 @@ use gpui::TestAppContext;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 
+use dv_backend::wsl::Distro;
+
 use super::*;
+use crate::services::WslAccess;
+use crate::services::locations::wsl::REFUSED;
 
 fn object(value: Value) -> serde_json::Map<String, Value> {
     match value {
@@ -79,8 +83,73 @@ fn known_repos_add_mark_and_remove() {
     assert_eq!(file.repos().count(), 0);
 }
 
+fn wsl_at(distro: &str, path: &str) -> Location {
+    Location::Wsl {
+        distro: distro.into(),
+        path: path.into(),
+    }
+}
+
+#[test]
+fn a_wsl_repo_is_known_once_however_its_distro_is_spelled() {
+    // Two runs that spelled the distro differently.
+    let (mut file, problems) = KnownReposFile::from_object(object(json!({
+        "v": 1,
+        "repos": [
+            {"location": {"wsl": {"distro": "ubuntu", "path": "/srv/api"}}, "added_at": 1},
+            {"location": {"wsl": {"distro": "Ubuntu", "path": "/srv/api"}}, "added_at": 2},
+        ],
+    })))
+    .unwrap();
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert_eq!(file.repos().count(), 1);
+    assert!(!file.add(wsl_at("UBUNTU", "/srv/api"), 3));
+    assert_eq!(
+        file.find_place(&wsl_at("Ubuntu", "/srv/api"))
+            .map(|repo| &repo.location),
+        Some(&wsl_at("ubuntu", "/srv/api"))
+    );
+    // WSL's own spelling, once known, replaces it.
+    assert!(file.rekey(&wsl_at("ubuntu", "/srv/api"), &wsl_at("Ubuntu", "/srv/api")));
+    let repos: Vec<&KnownRepo> = file.repos().collect();
+    assert_eq!(repos.len(), 1);
+    assert_eq!(repos[0].location, wsl_at("Ubuntu", "/srv/api"));
+    assert_eq!(repos[0].added_at, 1, "its times stay");
+}
+
+#[test]
+fn a_subfolder_known_as_a_repo_becomes_its_root_once_resolved() {
+    let mut file = KnownReposFile::default();
+    assert!(file.add(local("D:\\api\\src"), 10));
+    assert!(file.rekey(&local("D:\\api\\src"), &local("D:\\api")));
+    assert_eq!(
+        file.repos().map(|repo| &repo.location).collect::<Vec<_>>(),
+        [&local("D:\\api")]
+    );
+    assert_eq!(file.get(&local("D:\\api")).unwrap().added_at, 10);
+    // The root known already: the subfolder goes, and the later open is kept.
+    assert!(file.add(local("D:\\api\\lib"), 11));
+    assert!(file.mark_opened(&local("D:\\api\\lib"), 30));
+    assert!(file.rekey(&local("D:\\api\\lib"), &local("D:\\api")));
+    let repos: Vec<&KnownRepo> = file.repos().collect();
+    assert_eq!(repos.len(), 1);
+    assert_eq!(repos[0].location, local("D:\\api"));
+    assert_eq!(repos[0].opened_at, Some(30));
+    assert!(!file.rekey(&local("D:\\nowhere"), &local("D:\\api")));
+    assert!(!file.rekey(&local("D:\\api"), &local("D:\\api")));
+}
+
 fn services(cx: &mut TestAppContext, data_dir: &Path) -> (Entity<Locations>, Entity<Reviews>) {
-    let locations = cx.new(|_| Locations::new());
+    services_with(cx, data_dir, Vec::new())
+}
+
+/// [`services`] with WSL's stand-in knowing `distros`.
+fn services_with(
+    cx: &mut TestAppContext,
+    data_dir: &Path,
+    distros: Vec<Distro>,
+) -> (Entity<Locations>, Entity<Reviews>) {
+    let locations = cx.new(|cx| Locations::new(WslAccess::scripted(distros), cx));
     let reviews = cx.new(|cx| Reviews::new(locations.clone(), data_dir, cx));
     (locations, reviews)
 }
@@ -281,41 +350,119 @@ async fn an_unreadable_review_log_is_a_row_of_its_own(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-async fn wsl_and_missing_repos_fail_typed_without_panicking(cx: &mut TestAppContext) {
+async fn a_wsl_repo_lists_without_starting_its_distro_and_start_connects(cx: &mut TestAppContext) {
+    // A connection reports its state from a thread of its own.
+    cx.executor().allow_parking();
     let data = tempfile::tempdir().unwrap();
-    let (_, reviews) = services(cx, data.path());
     let wsl = Location::Wsl {
         distro: "Ubuntu".into(),
         path: "/home/kyle/api".into(),
     };
-    // Added as given, so its row says why it can't be shown.
-    let added = reviews
-        .update(cx, |reviews, cx| reviews.add_repo(wsl.clone(), cx))
-        .await
-        .unwrap();
-    assert_eq!(added, wsl);
+    // Known from an earlier run; its distro has stopped since.
+    std::fs::write(
+        data.path().join(KNOWN_REPOS_FILE),
+        json!({"v": 1, "repos": [{"location": wsl, "added_at": 1}]}).to_string(),
+    )
+    .unwrap();
+    let stopped = vec![Distro {
+        name: "Ubuntu".into(),
+        running: false,
+    }];
+    let (locations, reviews) = services_with(cx, data.path(), stopped);
+    reviews.update(cx, |reviews, cx| reviews.refresh_all(cx));
     settle(cx, &reviews);
     reviews.read_with(cx, |reviews, _| {
         let row = reviews.row(&wsl).unwrap();
-        let error = row.error.as_ref().expect("unavailable");
-        assert!(error.message.contains("can't be opened"), "{error:?}");
-        assert_eq!(
-            row.unreachable.as_deref(),
-            Some("WSL support arrives later"),
-            "the few words a switcher row shows"
-        );
-        assert_eq!(row.toplevel, None);
-        assert_eq!(row.working, None);
+        assert_eq!(row.unreachable.as_deref(), Some("Ubuntu isn't running"));
+        assert_eq!(row.stopped.as_deref(), Some("Ubuntu"));
+        assert!(!row.is_readable(), "no targets until it runs");
         assert_eq!(row.name, "api");
+        assert_eq!(row.working, None);
     });
+    locations.read_with(cx, |locations, _| {
+        assert!(
+            locations.connections().all().is_empty(),
+            "the listing started nothing"
+        )
+    });
+
+    // Start connects, booting the distro; the stand-in refuses, and the row says why.
+    let started = reviews.update(cx, |reviews, cx| reviews.start(wsl.clone(), cx));
+    reviews.read_with(cx, |reviews, _| {
+        let row = reviews.row(&wsl).unwrap();
+        assert!(row.starting);
+        assert_eq!(row.stopped.as_deref(), Some("Ubuntu"), "Starting Ubuntu…");
+    });
+    let failure = started.await.expect_err("nothing starts in a test");
+    assert!(failure.message.contains(REFUSED), "{failure:?}");
+    settle(cx, &reviews);
+    reviews.read_with(cx, |reviews, _| {
+        let row = reviews.row(&wsl).unwrap();
+        assert!(!row.starting);
+        // Its distro still isn't running (the stand-in boots nothing): Start again, whatever
+        // its connection did, the start's failure kept as the row's error.
+        assert_eq!(row.stopped.as_deref(), Some("Ubuntu"));
+        assert!(!row.retry);
+        assert_eq!(row.unreachable.as_deref(), Some("Ubuntu isn't running"));
+        let error = row.error.as_ref().expect("the connection failed");
+        assert!(error.message.contains(REFUSED), "{error:?}");
+    });
+    // Running (as a real start would leave it), the failed connection is one to retry.
+    locations.read_with(cx, |locations, _| {
+        locations.wsl().set_distros(vec![Distro {
+            name: "Ubuntu".into(),
+            running: true,
+        }])
+    });
+    reviews.update(cx, |reviews, cx| reviews.refresh(wsl.clone(), cx));
+    settle(cx, &reviews);
+    reviews.read_with(cx, |reviews, _| {
+        let row = reviews.row(&wsl).unwrap();
+        assert_eq!(row.stopped, None);
+        assert!(row.retry);
+        assert!(!row.is_readable());
+        let error = row.error.as_ref().expect("the connection failed");
+        assert!(error.message.contains(REFUSED), "{error:?}");
+        assert!(
+            row.unreachable
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("the connection to dv failed")),
+            "{row:?}"
+        );
+    });
+    // Opening its review tries again, and fails the same way: a one-line headline, the
+    // connection's error and diagnostics in the detail (DESIGN §4.4).
     let failure = reviews
         .update(cx, |reviews, cx| {
-            reviews.open_review(wsl, Target::Working, cx)
+            reviews.open_review(wsl.clone(), Target::Working, cx)
         })
         .await
         .err()
-        .expect("no WSL backend yet");
-    assert!(failure.message.contains("can't be opened"), "{failure:?}");
+        .expect("refused");
+    assert_eq!(failure.message, "couldn't open Ubuntu:/home/kyle/api");
+    assert!(!failure.disconnected);
+    let detail = failure.detail.as_deref().expect("why, and the diagnostics");
+    assert!(
+        detail.starts_with("Ubuntu can't be opened: the connection to dv failed: ")
+            && detail.contains(REFUSED)
+            && detail.contains(
+                "
+
+connection: Ubuntu
+launcher: automation's stand-in"
+            ),
+        "{detail}"
+    );
+    // A WSL repository whose connection fails is known as given, its row saying why.
+    let web = Location::Wsl {
+        distro: "Ubuntu".into(),
+        path: "/srv/web".into(),
+    };
+    let added = reviews
+        .update(cx, |reviews, cx| reviews.add_repo(web.clone(), cx))
+        .await
+        .unwrap();
+    assert_eq!(added, web);
 
     let missing = Location::Local(data.path().join("nowhere"));
     let failure = reviews
@@ -328,6 +475,8 @@ async fn wsl_and_missing_repos_fail_typed_without_panicking(cx: &mut TestAppCont
 
 #[gpui::test]
 async fn a_file_dv_cant_read_is_never_saved_over(cx: &mut TestAppContext) {
+    // The WSL repo's connection reports its state from a thread of its own.
+    cx.executor().allow_parking();
     let data = tempfile::tempdir().unwrap();
     let path = data.path().join(KNOWN_REPOS_FILE);
     for original in ["[\"a list\"]\n", "{\"repos\": \"text\"}\n"] {
@@ -402,4 +551,327 @@ async fn another_worktrees_working_review_is_named_by_its_own_head(cx: &mut Test
         // Listed from the main checkout (on main), it is still the feature worktree's.
         assert_eq!(labels, [(&made.review.id, "working tree vs feature")]);
     });
+}
+
+#[gpui::test]
+async fn a_row_follows_its_connection_reconnecting_failed_and_retried(cx: &mut TestAppContext) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use dv_backend::{Connection, ConnectionState, Launcher};
+
+    use crate::services::Route;
+
+    cx.executor().allow_parking();
+    let data = tempfile::tempdir().unwrap();
+    let repo = fixture();
+    let blocked = Arc::new(AtomicBool::new(false));
+    let launcher = Launcher::custom("an in-process server tests block", {
+        let blocked = blocked.clone();
+        move || {
+            if blocked.load(Ordering::SeqCst) {
+                return Err(std::io::Error::other("blocked by the test"));
+            }
+            Launcher::InProcess.start()
+        }
+    });
+    let connection =
+        Connection::with_backoff("loopback", launcher, vec![Duration::from_millis(1500)]);
+    let (locations, reviews) = services(cx, data.path());
+    locations.update(cx, |locations, _| {
+        locations.register(
+            repo.path().to_path_buf(),
+            Route {
+                env: repo.env_overlay(),
+                connection: Some(connection.clone()),
+            },
+        )
+    });
+    let location = Location::Local(repo.path().to_path_buf());
+    reviews
+        .update(cx, |reviews, cx| reviews.add_repo(location.clone(), cx))
+        .await
+        .expect("added");
+    settle(cx, &reviews);
+    let listed = reviews.read_with(cx, |reviews, _| reviews.row(&location).unwrap().working);
+    assert!(listed.is_some());
+
+    // Reconnecting: the row says so and keeps what it listed.
+    connection.kill();
+    reviews.update(cx, |reviews, cx| reviews.refresh(location.clone(), cx));
+    settle(cx, &reviews);
+    reviews.read_with(cx, |reviews, _| {
+        let row = reviews.row(&location).unwrap();
+        assert!(row.reconnecting, "{row:?}");
+        assert_eq!(row.working, listed, "the rows it had stay");
+        assert_eq!(row.error, None);
+        assert!(row.is_readable());
+    });
+
+    // Failed: why, and Retry.
+    blocked.store(true, Ordering::SeqCst);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !matches!(connection.state(), ConnectionState::Failed { .. }) {
+        assert!(Instant::now() < deadline, "{:?}", connection.state());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    reviews.update(cx, |reviews, cx| reviews.refresh(location.clone(), cx));
+    settle(cx, &reviews);
+    reviews.read_with(cx, |reviews, _| {
+        let row = reviews.row(&location).unwrap();
+        assert!(!row.reconnecting);
+        assert!(row.retry, "{row:?}");
+        assert_eq!(row.stopped, None, "this machine never stops");
+        assert_eq!(row.working, None);
+        assert!(
+            row.unreachable.as_deref().is_some_and(|reason| reason
+                == "the connection to dv failed: couldn't start dv: blocked by the test"),
+            "{row:?}"
+        );
+    });
+
+    // Retry: the explicit open connects, and the row lists as before.
+    blocked.store(false, Ordering::SeqCst);
+    reviews
+        .update(cx, |reviews, cx| reviews.start(location.clone(), cx))
+        .await
+        .expect("retried");
+    settle(cx, &reviews);
+    reviews.read_with(cx, |reviews, _| {
+        let row = reviews.row(&location).unwrap();
+        assert!(!row.retry && !row.reconnecting && !row.starting, "{row:?}");
+        assert_eq!(row.working, listed);
+        assert_eq!(row.error, None);
+    });
+    assert_eq!(connection.state(), ConnectionState::Connected);
+}
+
+#[gpui::test]
+async fn a_row_follows_its_connection_with_the_switcher_closed(cx: &mut TestAppContext) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use dv_backend::{Connection, ConnectionState, Launcher};
+
+    use crate::services::Route;
+
+    cx.executor().allow_parking();
+    let data = tempfile::tempdir().unwrap();
+    let repo = fixture();
+    // A host the test stops, as the user stops a distro.
+    let up = Arc::new(AtomicBool::new(true));
+    let launcher = Launcher::custom("an in-process server on a host the test stops", {
+        let up = up.clone();
+        move || {
+            up.store(true, Ordering::SeqCst);
+            Launcher::InProcess.start()
+        }
+    })
+    .with_host_check({
+        let up = up.clone();
+        move |_| up.load(Ordering::SeqCst)
+    });
+    let connection =
+        Connection::with_backoff("loopback", launcher, vec![Duration::from_millis(20)]);
+    let (locations, reviews) = services(cx, data.path());
+    locations.update(cx, |locations, _| {
+        locations.register(
+            repo.path().to_path_buf(),
+            Route {
+                env: repo.env_overlay(),
+                connection: Some(connection.clone()),
+            },
+        )
+    });
+    let location = Location::Local(repo.path().to_path_buf());
+    reviews
+        .update(cx, |reviews, cx| reviews.add_repo(location.clone(), cx))
+        .await
+        .expect("added");
+    settle(cx, &reviews);
+    let listed = reviews.read_with(cx, |reviews, _| reviews.row(&location).unwrap().working);
+    assert!(listed.is_some());
+
+    // Stopped: no switcher asks, yet the row hears it and offers Start.
+    up.store(false, Ordering::SeqCst);
+    connection.kill();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        settle(cx, &reviews);
+        let stopped = reviews.read_with(cx, |reviews, _| {
+            reviews.row(&location).unwrap().stopped.clone()
+        });
+        if stopped.is_some() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the row never heard the stop");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(connection.state(), ConnectionState::Stopped);
+
+    // Started elsewhere (the backend-down banner's Start): the row is live again before any
+    // switcher opens.
+    connection.retry().expect("started");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        settle(cx, &reviews);
+        let row = reviews.read_with(cx, |reviews, _| reviews.row(&location).unwrap().clone());
+        if row.working.is_some() {
+            assert_eq!(row.stopped, None);
+            assert!(!row.retry && !row.reconnecting, "{row:?}");
+            assert_eq!(row.unreachable, None);
+            assert_eq!(row.error, None);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the row never came back: {row:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The locations `known_repos.json` holds.
+fn saved_locations(data_dir: &Path) -> Vec<Location> {
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(data_dir.join(KNOWN_REPOS_FILE)).unwrap())
+            .unwrap();
+    saved["repos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|repo| serde_json::from_value(repo["location"].clone()).unwrap())
+        .collect()
+}
+
+#[gpui::test]
+async fn a_subfolder_added_while_its_connection_is_down_becomes_its_repos_row(
+    cx: &mut TestAppContext,
+) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use dv_backend::{Connection, Launcher};
+
+    use crate::services::Route;
+
+    cx.executor().allow_parking();
+    // Resolved by the switcher's Retry, by a listing once the connection is back, or by
+    // opening a review from its row.
+    for how in ["retry", "listing", "open"] {
+        let data = tempfile::tempdir().unwrap();
+        let repo = fixture();
+        let blocked = Arc::new(AtomicBool::new(true));
+        let launcher = Launcher::custom("an in-process server tests block", {
+            let blocked = blocked.clone();
+            move || {
+                if blocked.load(Ordering::SeqCst) {
+                    return Err(std::io::Error::other("blocked by the test"));
+                }
+                Launcher::InProcess.start()
+            }
+        });
+        let connection =
+            Connection::with_backoff("loopback", launcher, vec![Duration::from_millis(10)]);
+        let (locations, reviews) = services(cx, data.path());
+        locations.update(cx, |locations, _| {
+            locations.register(
+                repo.path().to_path_buf(),
+                Route {
+                    env: repo.env_overlay(),
+                    connection: Some(connection.clone()),
+                },
+            )
+        });
+        let root = Location::Local(repo.path().to_path_buf());
+        let sub = Location::Local(repo.path().join("src"));
+        let added = reviews
+            .update(cx, |reviews, cx| reviews.add_repo(sub.clone(), cx))
+            .await
+            .expect("known as given, its row saying why");
+        assert_eq!(added, sub, "{how}");
+        settle(cx, &reviews);
+        reviews.read_with(cx, |reviews, _| {
+            assert!(reviews.row(&sub).is_some_and(|row| row.retry), "{how}")
+        });
+
+        blocked.store(false, Ordering::SeqCst);
+        match how {
+            "retry" => reviews
+                .update(cx, |reviews, cx| reviews.start(sub.clone(), cx))
+                .await
+                .expect("it connects"),
+            "listing" => connection.retry().expect("it connects"),
+            _ => {
+                reviews
+                    .update(cx, |reviews, cx| {
+                        reviews.open_review(sub.clone(), Target::Working, cx)
+                    })
+                    .await
+                    .expect("its review opens");
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            settle(cx, &reviews);
+            let listed = reviews.read_with(cx, |reviews, _| {
+                reviews.row(&root).is_some_and(|row| row.working.is_some())
+            });
+            if listed {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{how}: never listed by its root");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // Opening a review from the row keeps one row, known once.
+        reviews
+            .update(cx, |reviews, cx| {
+                reviews.open_review(root.clone(), Target::Staged, cx)
+            })
+            .await
+            .expect("its review opens");
+        settle(cx, &reviews);
+        reviews.read_with(cx, |reviews, _| {
+            let rows: Vec<&Location> = reviews.rows().iter().map(|row| &row.location).collect();
+            assert_eq!(rows, [&root], "{how}");
+            let row = reviews.row(&root).unwrap();
+            assert_eq!(row.name, "repo", "{how}");
+            assert!(!row.retry && !row.starting, "{how}: {row:?}");
+            assert_eq!(
+                reviews
+                    .known()
+                    .repos()
+                    .map(|repo| &repo.location)
+                    .collect::<Vec<_>>(),
+                [&root],
+                "{how}"
+            );
+        });
+        assert_eq!(saved_locations(data.path()), [root], "{how}");
+    }
+}
+
+#[gpui::test]
+fn a_known_repo_spelled_otherwise_becomes_the_spelling_wsl_resolves(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let lower = wsl_at("ubuntu", "/srv/api");
+    let upper = wsl_at("Ubuntu", "/srv/api");
+    // Known from a run that spelled it in lower case.
+    std::fs::write(
+        data.path().join(KNOWN_REPOS_FILE),
+        json!({"v": 1, "repos": [{"location": lower, "added_at": 1}]}).to_string(),
+    )
+    .unwrap();
+    let (_, reviews) = services(cx, data.path());
+    // A listing (or an open) of it reached the repository WSL names `Ubuntu:/srv/api`.
+    reviews.update(cx, |reviews, cx| reviews.resolved(&lower, &upper, cx));
+    settle(cx, &reviews);
+    reviews.read_with(cx, |reviews, _| {
+        let rows: Vec<&Location> = reviews.rows().iter().map(|row| &row.location).collect();
+        assert_eq!(rows, [&upper]);
+        assert_eq!(reviews.row(&upper).unwrap().path, "Ubuntu:/srv/api");
+    });
+    assert_eq!(saved_locations(data.path()), std::slice::from_ref(&upper));
+    // Another spelling added later is the same repository.
+    reviews.update(cx, |reviews, cx| {
+        assert_eq!(reviews.add_known(lower.clone(), cx), upper);
+    });
+    assert_eq!(reviews.read_with(cx, |reviews, _| reviews.rows().len()), 1);
 }

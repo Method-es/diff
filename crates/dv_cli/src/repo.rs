@@ -1,7 +1,10 @@
 //! The repository a command works on (docs/PLAN.md §10.1, §10.4): `--wsl <distro>:<path>`,
-//! else `--repo <path>`, else the working directory's. A WSL location can't be served from
-//! Windows yet (PLAN D6: only through `dv backend --stdio` in the distro), so it is
-//! exit 4 at once, without starting `wsl.exe`.
+//! else `--repo <path>`, else the working directory's. On Windows a command for a WSL location
+//! runs inside its distro before it gets here (`crate::reexec`). Inside that distro, a location
+//! of the distro itself is its local path (a `--repo` or a `--file` spelled through
+//! `\\wsl.localhost\<this distro>\…` too), a Windows drive's path given as `--repo` is that
+//! drive as WSL mounts it (`D:\code` → `/mnt/d/code`), and any other WSL location is exit 4 at
+//! once.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -9,12 +12,13 @@ use std::sync::Arc;
 use dv_core::backend::{Backend, LocalBackend, LocalBackendOptions};
 use dv_core::git::GitRepo;
 use dv_core::label::Labels;
-use dv_core::location::Location;
+use dv_core::location::{Location, mount_path};
 use dv_core::review::{Home, HomeError, Review, ReviewStore, home, same_worktree as home_is};
 
 use crate::args::GlobalArgs;
-use crate::context::Context;
+use crate::context::{Context, Env};
 use crate::error::{CliError, Exit, code};
+use crate::output::windows_arg;
 
 /// An open repository: its backend, git queries over it and its review store.
 #[derive(Clone)]
@@ -28,10 +32,11 @@ impl Repo {
     /// The repository the command means (module docs), opened with the context's git
     /// environment.
     pub fn open(global: &GlobalArgs, ctx: &Context) -> Result<Self, CliError> {
-        let location = location(global, &ctx.cwd)?;
+        let location = location(global, &ctx.cwd, this_distro(&ctx.env).as_deref())?;
         let path = match location {
             Location::Local(path) => path,
-            Location::Wsl { distro, path } => return Err(wsl_unavailable(&distro, &path)),
+            Location::Wsl { distro, path } if in_distro(ctx, &distro) => path.into(),
+            Location::Wsl { distro, path } => return Err(elsewhere(ctx, &distro, &path)),
         };
         Self::open_at(Path::new(&path), ctx)
     }
@@ -70,7 +75,9 @@ impl Repo {
             }
         };
         let root = match home {
-            Home::Worktree(root) if !home_is(&root, self.root()) => root,
+            Home::Worktree(root) if !home_is(&self.backend.repo().location, &root, self.root()) => {
+                root
+            }
             Home::Worktree(_) | Home::Anywhere => return Ok(self.clone()),
         };
         let there = Self::open_at(Path::new(&root), ctx).map_err(|error| CliError {
@@ -105,9 +112,14 @@ impl Repo {
     /// record paths: an absolute path inside the worktree the review was made in (where a
     /// `working` or `staged` review is read, [`Repo::for_review`]) or the one the command runs
     /// in loses that root, the longer one when both hold it, `\` becomes `/`, and a leading
-    /// `./` goes; any other path is taken as already relative to the root.
-    pub fn relative_path(&self, path: &str, review: &Review) -> String {
-        let path = path.trim().replace('\\', "/");
+    /// `./` goes; any other path is taken as already relative to the root. Inside a WSL
+    /// distro, a path spelled through that distro's share (`\\wsl.localhost\Ubuntu\…`) is its
+    /// path there first.
+    pub fn relative_path(&self, path: &str, review: &Review, ctx: &Context) -> String {
+        let path = match Location::parse(path.trim()) {
+            Ok(Location::Wsl { distro, path }) if in_distro(ctx, &distro) => path,
+            _ => path.trim().replace('\\', "/"),
+        };
         let roots = [review.worktree.as_str(), self.root()]
             .map(|root| format!("{}/", root.replace('\\', "/").trim_end_matches('/')));
         let inside = roots
@@ -132,11 +144,14 @@ impl Repo {
     }
 }
 
-/// Where the repository is, from the flags or the working directory `cwd`. A relative
-/// `--repo` resolves against `cwd`, and the path that makes is read as a location again, so a
-/// relative path from a working directory inside WSL (`\\wsl.localhost\…`, where PowerShell
-/// can stand) is a WSL location too. Nothing is opened: a WSL location is returned as it is.
-pub fn location(global: &GlobalArgs, cwd: &Path) -> Result<Location, CliError> {
+/// Where the repository is, from the flags or the working directory `cwd`, for a dv that runs
+/// inside the WSL distro `here` ([`this_distro`]) or none. A relative `--repo` resolves against
+/// `cwd`, and the path that makes is read as a location again, so a relative path from a
+/// working directory inside WSL (`\\wsl.localhost\…`, where PowerShell can stand) is a WSL
+/// location too. Inside a distro, a Windows drive's path (`D:\code`, `d:/code`) is that drive
+/// as WSL mounts it (`/mnt/d/code`, `dv_core::location::mount_path`) rather than a relative
+/// path. Nothing is opened: a WSL location is returned as it is.
+pub fn location(global: &GlobalArgs, cwd: &Path, here: Option<&str>) -> Result<Location, CliError> {
     if let Some(wsl) = &global.wsl {
         return Location::parse_wsl(wsl)
             .map_err(|error| CliError::usage(format!("--wsl: {error}")));
@@ -159,6 +174,10 @@ pub fn location(global: &GlobalArgs, cwd: &Path) -> Result<Location, CliError> {
             error.to_string()
         })
     })?;
+    // A drive's path is no WSL location, so it parsed as a local one.
+    if let Some(mounted) = here.and_then(|_| mount_path(&text)) {
+        return Ok(Location::Local(mounted.into()));
+    }
     match location {
         Location::Local(path) if path.is_relative() => {
             let joined = cwd.join(&path);
@@ -178,11 +197,32 @@ fn same_path_text(a: &str, b: &str) -> bool {
     }
 }
 
-/// The exit-4 error for a repository inside a WSL distro.
-pub(crate) fn wsl_unavailable(distro: &str, path: &str) -> CliError {
+/// The WSL distro this dv runs in: `$WSL_DISTRO_NAME` in `env`, on Linux, when it names one.
+pub fn this_distro(env: &Env) -> Option<String> {
+    env.var("WSL_DISTRO_NAME")
+        .filter(|here| cfg!(target_os = "linux") && !here.trim().is_empty())
+}
+
+/// Whether this dv runs inside the WSL distro `distro` ([`this_distro`], naming it without
+/// regard to case, as `wsl.exe` takes names), where its paths are local ones.
+fn in_distro(ctx: &Context, distro: &str) -> bool {
+    this_distro(&ctx.env).is_some_and(|here| here.eq_ignore_ascii_case(distro))
+}
+
+/// The exit-4 error for a repository in a WSL distro this dv can't reach: another distro than
+/// the one it runs in, or any distro where there is no WSL (Linux, macOS). Only dv on Windows
+/// reaches every distro, running the command inside it (PLAN §10.4), so that is what it says
+/// to use, quoted to paste there ([`windows_arg`]); inside a distro `wsl.exe -d` would need a
+/// dv installed in the other one.
+fn elsewhere(ctx: &Context, distro: &str, path: &str) -> CliError {
+    let location = format!("{distro}:{path}");
+    let quoted = windows_arg(&location);
+    let reach = match this_distro(&ctx.env) {
+        Some(here) => format!("which dv in {here} can't reach"),
+        None => "which only dv on Windows reaches".to_string(),
+    };
     CliError::unavailable(format!(
-        "{distro}:{path} is inside WSL: run dv inside the distro for now \
-         (wsl -d {distro} --cd {path} dv …); dv on Windows reaches WSL repositories in a later \
-         version"
+        "{location} is in the WSL distro {distro}, {reach}: run the command from Windows \
+         (`dv.exe --wsl {quoted} …`), which runs it inside {distro}"
     ))
 }

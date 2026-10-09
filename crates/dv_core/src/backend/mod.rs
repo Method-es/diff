@@ -11,6 +11,7 @@ mod local;
 mod paths;
 mod watch;
 
+use std::borrow::Cow;
 use std::fmt;
 use std::io;
 
@@ -416,12 +417,20 @@ impl fmt::Debug for WatchHandle {
 /// `Display` is a one-line summary fit for a banner headline; the failed command and git's
 /// stderr are in the fields and in [`BackendError::detail`], for a disclosure or "Copy
 /// diagnostics" (DESIGN §4.4).
+///
+/// Every field is plain data (an [`io::Error`] aside, which is its kind and message), so the
+/// remote backend rebuilds the same variant on the client's side of the wire, reading the same
+/// (`dv_backend::proto::WireError`, PLAN §5.1).
 #[derive(Debug, thiserror::Error)]
 pub enum BackendError {
-    /// The location's backend can't run here (a WSL location in a build without the in-distro
-    /// backend).
+    /// The location's backend can't run here, or can't be reached: a WSL location without the
+    /// in-distro backend, a connection to it that failed for good.
     #[error("{location} can't be opened: {reason}")]
     Unavailable { location: String, reason: String },
+    /// The connection to `dv backend --stdio` died while the call was in flight, or is being
+    /// re-established (PLAN §5.2). `location` names where that dv runs (the distro).
+    #[error("lost the connection to dv in {location}: {reason}")]
+    Disconnected { location: String, reason: String },
     #[error("no such directory: {path}")]
     PathNotFound { path: String },
     #[error("not a git repository: {path}")]
@@ -451,12 +460,15 @@ pub enum BackendError {
     #[error("unexpected output from git {}: {detail}", subcommand(.args))]
     UnexpectedOutput { args: Vec<String>, detail: String },
     #[error("invalid path {path:?}: {reason}")]
-    InvalidPath { path: String, reason: &'static str },
+    InvalidPath {
+        path: String,
+        reason: Cow<'static, str>,
+    },
     #[error("invalid store line: {reason}")]
-    InvalidLine { reason: &'static str },
+    InvalidLine { reason: Cow<'static, str> },
     #[error("{op} {path} failed: {source}")]
     Io {
-        op: &'static str,
+        op: Cow<'static, str>,
         path: String,
         #[source]
         source: io::Error,
@@ -488,7 +500,7 @@ impl BackendError {
 
     pub(crate) fn io(op: &'static str, path: &std::path::Path, source: io::Error) -> Self {
         BackendError::Io {
-            op,
+            op: op.into(),
             path: path.display().to_string(),
             source,
         }
