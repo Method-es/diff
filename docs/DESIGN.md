@@ -233,7 +233,13 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   while loading, and a failed load's banner (§4.4: one line, Details, Retry, Copy diagnostics).
   Each open file ends with the next-file footer. The **cursor** marks its line number in
   `accentText` at 600 with a 2px accent bar, and its line on `sel`; a selection is `sel` over the
-  selected lines of one side. Inline thread cards go between rows, and the lines a card sits
+  selected lines of one side. **Commenting with the mouse** is GitHub's gesture: the pointer over a
+  line (a unified row, a split row's half) shows a `+` over its marker column, an 18 square on
+  `accent` with a 12px plus in `accentFg` (radius `small`); a click opens the composer on that
+  line, and pressing it and dragging over other lines of the same file and side selects them as
+  the drag goes, the composer opening on them when the button comes up (anywhere). A line takes
+  no `+` where `C` takes no comment: a finished review, an interdiff's old column. Inline thread
+  cards go between rows, and the lines a card sits
   on stay shown (a thread relocation moved can stand on lines no change is near, which would
   otherwise fold into a gap).
 - **Interdiff** (round n+1 of a live target, PLAN §2.3): the stream, the file list and its
@@ -415,7 +421,7 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
 | `]` / `[` | focus the next / previous thread that isn't resolved (open or addressed), scrolling to it, on into the next files (in an interdiff, the threads it shows) |
 | `I` | switch between the interdiff since the last round and all changes (the panel's toggle; while the review offers it, PLAN §2.3) |
 | `V` | toggle viewed on the current file (`V` then `J`: mark viewed and go next); each press flips the state the last one asked for, however fast they come |
-| `C` | comment on the selected lines, else the cursor's line, else (no cursor yet) the first line in view, where the cursor goes too (click a line number to put the cursor there, shift-click to select to it); a composer holding a draft takes the keyboard instead, wherever the cursor is. In an interdiff it comments on the new side only: on the old column (the round's snapshot, which no anchor names) it does nothing |
+| `C` | comment on the selected lines, else the cursor's line, else (no cursor yet) the first line in view, where the cursor goes too (click a line number to put the cursor there, shift-click to select to it; a line's `+` does it all with the mouse, §4.1); a composer holding a draft takes the keyboard instead, wherever the cursor is. In an interdiff it comments on the new side only: on the old column (the round's snapshot, which no anchor names) it does nothing |
 | `R` | reply to the focused thread (the reply composer opens in its card) |
 | `X` | resolve the focused thread, or reopen it when it is resolved |
 | `↑` / `↓` | move the cursor a line (the stream scrolls to keep it in view; it crosses into the next file) |

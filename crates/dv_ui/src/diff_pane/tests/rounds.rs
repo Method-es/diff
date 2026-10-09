@@ -112,6 +112,9 @@ fn i_and_the_panel_toggle_switch_the_comparison_keeping_the_reading_position(
     let pane = pane(&shell, cx);
     round_one_then_an_edit(&repo, &shell, cx);
     assert_eq!(comparison(&shell, cx), Comparison::SinceRound(1));
+    // The interdiff's old column is the round's snapshot: no comment starts there.
+    assert!(plus("a/long.txt", "new", 40, cx).is_some());
+    assert_eq!(plus("a/long.txt", "old", 40, cx), None);
     let index = new_index(&pane, "a/long.txt", 40, cx);
     pane.update(cx, |pane, cx| {
         pane.click_line(

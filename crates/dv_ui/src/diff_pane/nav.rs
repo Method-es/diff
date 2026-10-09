@@ -1,5 +1,6 @@
 //! The stream's keys and pointer moves (DESIGN §5 and its keyboard additions): files and change
-//! blocks, the cursor and the selection, gaps, viewed, split / unified and pages.
+//! blocks, the cursor and the selection, gaps, viewed, split / unified and pages, and the lines a
+//! comment's `+` picks with the mouse.
 
 use dv_core::diff::Expand;
 use dv_core::review::AnchorSide;
@@ -7,9 +8,9 @@ use gpui::{App, Context, Entity, InteractiveElement, ListOffset, Window, px};
 
 use super::rows::{
     Dir, LinePos, Row, cell_pos, change_pos, change_starts, end_cell, find_row, heights,
-    nearest_gap, other, step,
+    nearest_gap, on_side, other, step,
 };
-use super::{Cursor, DiffPane, SelectionAnchor};
+use super::{Cursor, DiffPane, LineDrag, SelectionAnchor};
 use crate::actions::diff_pane::{
     ClearSelection, Comment, CursorDown, CursorLeft, CursorRight, CursorUp, ExpandGap,
     ExpandGapFully, NextChange, NextFile, NextThread, PageDown, PageUp, PreviousChange,
@@ -612,5 +613,57 @@ impl DiffPane {
         });
         self.viewport_changed(cx);
         cx.notify();
+    }
+
+    /// A press on a line's `+` (DESIGN §4.1): the cursor goes to the line, and while the button
+    /// stays down the lines it passes over join the selection ([`DiffPane::drag_over_row`]).
+    pub(super) fn start_line_drag(&mut self, path: &str, pos: LinePos, cx: &mut Context<Self>) {
+        self.click_line(path, pos, false, cx);
+        self.line_drag = Some(LineDrag {
+            path: path.to_string(),
+            side: pos.side,
+        });
+    }
+
+    /// The pointer over a code row while a line drag is on: `old` and `new` are the row's lines
+    /// (indexes into `path`'s lines) on each side. The selection reaches from where the drag
+    /// started to the row's line on the drag's side, when the row is in the drag's file and
+    /// has a line on that side; any other row leaves it as it is.
+    pub(super) fn drag_over_row(
+        &mut self,
+        path: &str,
+        old: Option<usize>,
+        new: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(drag) = self.line_drag.as_ref().filter(|drag| drag.path == path) else {
+            return;
+        };
+        let side = drag.side;
+        let line = match side {
+            AnchorSide::Old => old,
+            AnchorSide::New => new,
+        };
+        let Some(line) = line.filter(|&line| {
+            self.line(path, line)
+                .is_some_and(|diff_line| on_side(diff_line, side))
+        }) else {
+            return;
+        };
+        let here = self
+            .cursor
+            .as_ref()
+            .is_some_and(|cursor| cursor.path == path && cursor.pos.line == line);
+        if !here {
+            self.click_line(path, LinePos { line, side }, true, cx);
+        }
+    }
+
+    /// The button came up after a press on a line's `+`: the composer opens on the lines the
+    /// drag picked, as `C` opens it (a draft elsewhere takes the keyboard instead).
+    pub(super) fn finish_line_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.line_drag.take().is_some() {
+            self.comment(window, cx);
+        }
     }
 }

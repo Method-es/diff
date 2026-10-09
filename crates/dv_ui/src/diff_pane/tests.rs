@@ -5,7 +5,7 @@
 use dv_core::review::AnchorSide;
 use dv_core::{Location, Target};
 use dv_test_support::FixtureRepo;
-use gpui::{Entity, TestAppContext, VisualTestContext};
+use gpui::{Bounds, Entity, Pixels, TestAppContext, VisualTestContext};
 use pretty_assertions::assert_eq;
 
 mod rounds;
@@ -14,7 +14,7 @@ mod threads;
 use super::*;
 use crate::services::reviews::OpenRequest;
 use crate::shell::Shell;
-use crate::test_support::{add_repo, open_shell, settle};
+use crate::test_support::{add_repo, bounds, open_shell, settle};
 
 /// `a/long.txt` (80 lines, two lines edited far apart), `b.txt` (a change block and an
 /// addition) and `c.txt` (deleted).
@@ -110,6 +110,13 @@ fn summary(pane: &Entity<DiffPane>, path: &str, cx: &mut VisualTestContext) -> F
             .find(|file| file.path == path)
             .expect("the file is in the stream")
     })
+}
+
+/// Where the comment `+` of `path`'s line `number` on `side` (`"old"`, `"new"`) drew, after a
+/// fresh frame; `None` when it didn't.
+fn plus(path: &str, side: &str, number: u32, cx: &mut VisualTestContext) -> Option<Bounds<Pixels>> {
+    let name = format!("comment/{path}/{side}/{number}");
+    bounds(cx, Box::leak(name.into_boxed_str()))
 }
 
 fn new_line(path: &str, line: u32) -> Option<(String, AnchorSide, u32)> {

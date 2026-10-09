@@ -10,9 +10,9 @@ use dv_core::diff::{DiffLine, EXPAND_STEP, Expand, FileEntry, LineKind};
 use dv_core::review::AnchorSide;
 use gpui::{
     AnyElement, Context, FontFeatures, FontWeight, HighlightStyle, Hsla, InteractiveElement as _,
-    IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Render, ScrollWheelEvent,
-    StatefulInteractiveElement as _, Styled as _, StyledText, Window, div, linear_color_stop,
-    linear_gradient, prelude::FluentBuilder as _, px,
+    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
+    Render, ScrollWheelEvent, StatefulInteractiveElement as _, Styled as _, StyledText, Window,
+    div, linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px,
 };
 use std::rc::Rc;
 
@@ -37,6 +37,11 @@ const MARKER_WIDTH: f32 = 16.;
 const TEXT_INSET: f32 = 4.;
 /// The fade over text that runs on past the right edge.
 const FADE_WIDTH: f32 = 28.;
+/// The comment `+`'s square, over the marker column.
+const COMMENT_BUTTON: f32 = 18.;
+/// The hover groups a comment `+` shows in: a unified row, a split row's half.
+const ROW_GROUP: &str = "code-row";
+const HALF_GROUP: &str = "code-half";
 
 impl Render for DiffPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -89,6 +94,17 @@ impl Render for DiffPane {
                     this.scroll_sideways(-f32::from(delta.x), cx);
                 }
             }))
+            // A line drag (a press on a comment `+`) ends wherever the button comes up: over
+            // the stream, before anything in it hears the release, or outside it.
+            .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                if event.button == MouseButton::Left {
+                    this.finish_line_drag(window, cx);
+                }
+            }))
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.finish_line_drag(window, cx)),
+            )
             .child(list)
             .children(pinned)
             .children(menu)
@@ -109,12 +125,22 @@ struct CodeCx<'a> {
     cursor: Option<LinePos>,
     /// The selected lines (indexes into `lines`) on a side.
     selection: Option<(AnchorSide, usize, usize)>,
+    /// Whether a comment can start on the old / the new side: the review isn't finished, and
+    /// an interdiff's old column (a round's snapshot, which no anchor names) takes none.
+    commentable: [bool; 2],
 }
 
 impl CodeCx<'_> {
     fn is_cursor(&self, line: usize, side: AnchorSide, mode: ViewMode) -> bool {
         self.cursor
             .is_some_and(|c| c.line == line && (mode == ViewMode::Unified || c.side == side))
+    }
+
+    fn can_comment(&self, side: AnchorSide) -> bool {
+        match side {
+            AnchorSide::Old => self.commentable[0],
+            AnchorSide::New => self.commentable[1],
+        }
     }
 
     fn is_selected(&self, line: usize, side: AnchorSide) -> bool {
@@ -213,6 +239,7 @@ impl DiffPane {
                 anchor.line.max(cursor.line),
             ))
         });
+        let writable = !self.read_only(cx);
         let code = CodeCx {
             theme,
             path: &path,
@@ -223,14 +250,37 @@ impl DiffPane {
             count: self.code_columns,
             cursor,
             selection,
+            commentable: [writable && !self.comparison(cx).is_interdiff(), writable],
         };
+        // The row's lines on each side, for a line drag passing over it.
+        let (old, new) = match *row {
+            Row::Line(line) => (Some(line), Some(line)),
+            Row::Pair { old, new } => (old, new),
+            _ => (None, None),
+        };
+        let drag_path = path.clone();
         // Code shows the characters as typed: no ligatures (`=>` stays two characters).
         let row_element = div()
+            .relative()
+            .group(ROW_GROUP)
             .flex()
             .h(px(heights::CODE))
             .w_full()
             .text_spec(&theme.text.code)
-            .font_features(FontFeatures::disable_ligatures());
+            .font_features(FontFeatures::disable_ligatures())
+            .on_mouse_move(
+                cx.listener(move |this, event: &MouseMoveEvent, window, cx| {
+                    if this.line_drag.is_none() {
+                        return;
+                    }
+                    if event.pressed_button == Some(MouseButton::Left) {
+                        this.drag_over_row(&drag_path, old, new, cx);
+                    } else {
+                        // The button came up where the stream didn't hear it.
+                        this.finish_line_drag(window, cx);
+                    }
+                }),
+            );
         match *row {
             Row::Line(line) => row_element
                 .children(self.unified_cells(&code, line, cx))
@@ -267,14 +317,24 @@ impl DiffPane {
         let mut number = |side: AnchorSide| {
             self.number_cell(code, Some(line), side, gutter, marked == Some(side), cx)
         };
+        let numbers = div()
+            .relative()
+            .flex()
+            .flex_none()
+            .bg(bg)
+            .child(number(AnchorSide::Old))
+            .child(number(AnchorSide::New))
+            .child(marker(diff_line.kind, code.theme));
         vec![
-            div()
-                .flex()
-                .flex_none()
-                .bg(bg)
-                .child(number(AnchorSide::Old))
-                .child(number(AnchorSide::New))
-                .child(marker(diff_line.kind, code.theme))
+            numbers
+                .children(self.comment_button(
+                    code,
+                    line,
+                    side,
+                    2. * NUMBER_WIDTH - 1.,
+                    ROW_GROUP,
+                    cx,
+                ))
                 .into_any_element(),
             text_cell(code, Some(line), side, bg, cursor || selected, c.code).into_any_element(),
         ]
@@ -290,6 +350,8 @@ impl DiffPane {
     ) -> AnyElement {
         let c = &code.theme.colors;
         let half = div()
+            .relative()
+            .group(HALF_GROUP)
             .flex()
             .w_1_2()
             .min_w_0()
@@ -315,7 +377,58 @@ impl DiffPane {
                 cursor || selected,
                 c.code,
             ))
+            .children(self.comment_button(code, line, side, NUMBER_WIDTH - 1., HALF_GROUP, cx))
             .into_any_element()
+    }
+
+    /// The `+` that starts a comment on `line`'s `side` with the mouse (DESIGN §4.1), `left` in
+    /// from its row's (or half's) edge over the marker column, shown while the pointer is over
+    /// `group`. A press puts the cursor on the line and starts the drag that picks the
+    /// comment's lines; the release opens the composer on them. None where no comment can start.
+    fn comment_button(
+        &self,
+        code: &CodeCx,
+        line: usize,
+        side: AnchorSide,
+        left: f32,
+        group: &'static str,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !code.can_comment(side) {
+            return None;
+        }
+        let number = code.lines.get(line).and_then(|l| side_number(l, side))?;
+        let c = &code.theme.colors;
+        let path = code.path.to_string();
+        let side_key = side_key(side);
+        let name = format!("stream/comment/{}/{side_key}/{number}", code.path);
+        let selector = format!("comment/{}/{side_key}/{number}", code.path);
+        Some(
+            div()
+                .absolute()
+                .top(px((heights::CODE - COMMENT_BUTTON) / 2.))
+                .left(px(left))
+                .size(px(COMMENT_BUTTON))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(code.theme.radii.small)
+                .bg(c.accent)
+                .cursor_pointer()
+                .opacity(0.)
+                .group_hover(group, |style| style.opacity(1.))
+                .child(icon(DvIcon::Plus, px(12.), c.accent_fg))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                        // The line number under the button's edge doesn't hear the press.
+                        cx.stop_propagation();
+                        this.start_line_drag(&path, LinePos { line, side }, cx);
+                    }),
+                )
+                .debug_selector(move || selector)
+                .automation_target(name),
+        )
     }
 
     /// A line number: `fg3`, or the accent at 600 on the cursor's line. A click puts the
@@ -358,10 +471,7 @@ impl DiffPane {
             return cell.into_any_element();
         };
         let path = code.path.to_string();
-        let side_key = match side {
-            AnchorSide::Old => "old",
-            AnchorSide::New => "new",
-        };
+        let side_key = side_key(side);
         cell.cursor_pointer()
             .child(number.to_string())
             .on_mouse_down(
@@ -837,5 +947,13 @@ pub fn byte_size(bytes: u64) -> String {
         format!("{:.1} KB", value / KB)
     } else {
         format!("{:.1} MB", value / (KB * KB))
+    }
+}
+
+/// A side as automation targets name it.
+fn side_key(side: AnchorSide) -> &'static str {
+    match side {
+        AnchorSide::Old => "old",
+        AnchorSide::New => "new",
     }
 }

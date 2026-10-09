@@ -326,7 +326,10 @@ copy `stream/pinned` with the same parts (`stream/pinned/viewed`, …);
 `stream/gap/<path>/<n>` (the file's n-th gap row from the top, 28 high) with
 `/expand` (shown when it hides more than 20 lines) and `/expand_all`;
 `stream/line/<path>/<old|new>/<n>` (a line number in view: a click puts the
-cursor on the line, a shift-click selects to it); `stream/notice/<path>` (with
+cursor on the line, a shift-click selects to it); `stream/comment/<path>/<old|new>/<n>`
+(the line's comment `+`, there whenever the line is in view and takes a comment, drawn
+only under the pointer: a click opens the composer on the line, a `drag` from it to
+another line's opens it on the lines between); `stream/notice/<path>` (with
 `/load_anyway` for a file too large, and a failed load's banner parts `/retry`,
 `/details` and `/copy`); `stream/footer/<path>` and its `/next`.
 

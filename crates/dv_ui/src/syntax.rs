@@ -13,15 +13,17 @@
 //! capped: a side over [`MAX_HIGHLIGHT_BYTES`] isn't highlighted at all, and a line over
 //! [`MAX_LINE_BYTES`] keeps no tokens (one minified line would otherwise carry thousands of
 //! runs). The language comes from the path ([`language_for_path`]); a path dv has no grammar
-//! for is plain text.
+//! for is plain text. Two of gpui-component's grammars are corrected first
+//! ([`register_languages`]).
 
 use std::ops::Range;
+use std::sync::Once;
 
 use dv_core::diff::TextDiff;
 use dv_core::review::{AnchorSide, side_lines};
 use gpui::{HighlightStyle, Hsla};
 use gpui_component::Rope;
-use gpui_component::highlighter::SyntaxHighlighter;
+use gpui_component::highlighter::{LanguageConfig, LanguageRegistry, SyntaxHighlighter};
 use gpui_component::input::HighlightStyleResolver;
 
 use crate::theme::SyntaxColors;
@@ -223,6 +225,62 @@ pub fn language_for_path(path: &str) -> Option<&'static str> {
     })
 }
 
+/// JSX's own captures, which neither of gpui-component's JavaScript and TypeScript queries has:
+/// an element's name is a tag when it is lower case (`div`, an intrinsic element) and a type
+/// when it is capitalised (`Card`, a component), an attribute's name is a property, and the
+/// element's angle brackets are tag punctuation. The patterns go before the language's own, so
+/// they win over its `(identifier) @variable` for the same node.
+const JSX_HIGHLIGHTS: &str = r#"
+(jsx_opening_element name: (identifier) @tag (#match? @tag "^[a-z]"))
+(jsx_closing_element name: (identifier) @tag (#match? @tag "^[a-z]"))
+(jsx_self_closing_element name: (identifier) @tag (#match? @tag "^[a-z]"))
+(jsx_opening_element name: (identifier) @type (#match? @type "^[A-Z]"))
+(jsx_closing_element name: (identifier) @type (#match? @type "^[A-Z]"))
+(jsx_self_closing_element name: (identifier) @type (#match? @type "^[A-Z]"))
+(jsx_attribute (property_identifier) @tag.attribute)
+(jsx_opening_element ["<" ">"] @tag.delimiter)
+(jsx_closing_element ["</" ">"] @tag.delimiter)
+(jsx_self_closing_element ["<" "/>"] @tag.delimiter)
+"#;
+
+/// Corrects gpui-component's TSX and JavaScript grammars in its language registry, once per
+/// process, before anything highlights with them (the diff stream, and comment Markdown's
+/// fenced code). gpui-component pairs the TSX grammar with tree-sitter-typescript's bare query,
+/// which only adds TypeScript's syntax to JavaScript's and so leaves most of a file plain: TSX
+/// takes the query `.ts` files use instead. Both TSX and JavaScript (`.jsx` included) gain
+/// [`JSX_HIGHLIGHTS`].
+pub fn register_languages() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let registry = LanguageRegistry::singleton();
+        let with_jsx = |highlights: &str| format!("{JSX_HIGHLIGHTS}\n{highlights}").into();
+        if let (Some(typescript), Some(tsx)) =
+            (registry.language("typescript"), registry.language("tsx"))
+        {
+            let highlights = with_jsx(&typescript.highlights);
+            registry.register(
+                "tsx",
+                &LanguageConfig {
+                    name: tsx.name,
+                    language: tsx.language,
+                    highlights,
+                    ..typescript
+                },
+            );
+        }
+        if let Some(javascript) = registry.language("javascript") {
+            let highlights = with_jsx(&javascript.highlights);
+            registry.register(
+                "javascript",
+                &LanguageConfig {
+                    highlights,
+                    ..javascript
+                },
+            );
+        }
+    });
+}
+
 /// One token on a line: a byte range of the line's text and its kind. Lines keep only their
 /// non-plain tokens, sorted and non-overlapping.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -308,6 +366,7 @@ pub fn highlight_side<S: AsRef<str>>(path: &str, lines: &[S]) -> Option<SideHigh
         text.push_str(line.as_ref());
         text.push('\n');
     }
+    register_languages();
     let mut highlighter = SyntaxHighlighter::new(language);
     highlighter.update(None, &Rope::from_str(&text), None);
     let styles = highlighter.styles(&(0..text.len()), &KindResolver);

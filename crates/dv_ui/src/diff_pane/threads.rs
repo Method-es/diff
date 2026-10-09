@@ -191,14 +191,14 @@ impl DiffPane {
             .map(|(_, failure)| failure)
     }
 
-    fn read_only(&self, cx: &gpui::App) -> bool {
+    pub(super) fn read_only(&self, cx: &gpui::App) -> bool {
         self.session
             .as_ref()
             .is_none_or(|session| session.read(cx).is_read_only())
     }
 
     /// What the stream shows: an interdiff or all changes.
-    fn comparison(&self, cx: &gpui::App) -> Comparison {
+    pub(super) fn comparison(&self, cx: &gpui::App) -> Comparison {
         self.session
             .as_ref()
             .map_or(Comparison::All, |session| session.read(cx).comparison())

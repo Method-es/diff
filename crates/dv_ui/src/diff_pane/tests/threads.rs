@@ -1,9 +1,11 @@
 //! Threads in the stream over real fixture repos: the composer (`C`, typing, `Ctrl Enter`,
 //! `Esc`), the cards' places (inline, outdated), `]`/`[`, `R` and `X`, a finished review
 //! taking no comment, the composer keeping or handing back the keyboard as its row scrolls
-//! away, collapses or goes, and the last file's header reaching the top past a collapsed card.
+//! away, collapses or goes, the last file's header reaching the top past a collapsed card, and
+//! a line's `+` starting a comment with the mouse (a click, a drag over lines).
 
 use dv_core::review::{Thread, ThreadId, ThreadState, Verdict};
+use gpui::{Modifiers, MouseButton};
 
 use pretty_assertions::assert_eq;
 
@@ -278,6 +280,11 @@ fn a_finished_review_takes_no_comment(cx: &mut TestAppContext) {
     });
     press(cx, &shell, "j c");
     assert_eq!(composer_target(&pane, cx), None);
+    assert_eq!(
+        plus("b.txt", "new", 2, cx),
+        None,
+        "no + on a finished review"
+    );
     pane.update(cx, |pane, cx| {
         pane.set_thread_state(&id, ThreadState::Resolved, cx)
     });
@@ -574,4 +581,85 @@ fn the_last_files_header_reaches_the_top_once_its_card_collapsed(cx: &mut TestAp
     pane.update(cx, |pane, cx| pane.reveal_file("c.txt", cx));
     draw(cx);
     assert_eq!(pane.read_with(cx, |pane, _| at_top(pane)), shown);
+}
+
+fn selected(pane: &Entity<DiffPane>, cx: &mut VisualTestContext) -> Option<(u32, u32)> {
+    pane.read_with(cx, |pane, _| {
+        pane.selection()
+            .map(|selection| (selection.start_line, selection.end_line))
+    })
+}
+
+fn line_target(path: &str, side: AnchorSide, lines: (u32, u32)) -> Option<ComposerTarget> {
+    Some(ComposerTarget {
+        path: path.to_string(),
+        side,
+        start_line: lines.0,
+        end_line: lines.1,
+        reply_to: None,
+    })
+}
+
+#[gpui::test]
+fn a_lines_plus_comments_on_it_and_a_drag_from_it_on_the_lines_it_passes(cx: &mut TestAppContext) {
+    let repo = stream_fixture(80);
+    let (_dir, shell, cx) = open(&repo, cx);
+    let pane = pane(&shell, cx);
+    // b.txt in split view: old `one two three`, new `one 2 three four`.
+    press(cx, &shell, "j");
+    let two = plus("b.txt", "new", 2, cx).expect("new line 2 has a +");
+
+    // A click: the composer on that line.
+    cx.simulate_click(two.center(), Modifiers::none());
+    settle_drawn(cx, &shell, "the composer", |_, _| true);
+    assert_eq!(
+        composer_target(&pane, cx),
+        line_target("b.txt", AnchorSide::New, (2, 2))
+    );
+    press(cx, &shell, "escape");
+    assert_eq!(composer_target(&pane, cx), None);
+
+    // A drag from new line 2: down to 4, up past where it started to 1, over the old half of
+    // the row holding new line 3 (the drag keeps to the new side), then down to 4 again.
+    let one = plus("b.txt", "new", 1, cx).expect("new line 1 has a +");
+    let four = plus("b.txt", "new", 4, cx).expect("new line 4 has a +");
+    let old_three = plus("b.txt", "old", 3, cx).expect("old line 3 has a +");
+    let drag_to = |cx: &mut VisualTestContext, to: Bounds<Pixels>| {
+        cx.simulate_mouse_move(to.center(), MouseButton::Left, Modifiers::none());
+        cx.run_until_parked();
+    };
+    cx.simulate_mouse_down(two.center(), MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(cursor(&pane, cx), new_line("b.txt", 2));
+    drag_to(cx, four);
+    assert_eq!(selected(&pane, cx), Some((2, 4)));
+    drag_to(cx, one);
+    assert_eq!(selected(&pane, cx), Some((1, 2)));
+    drag_to(cx, old_three);
+    assert_eq!(selected(&pane, cx), Some((2, 3)));
+    drag_to(cx, four);
+    assert_eq!(
+        composer_target(&pane, cx),
+        None,
+        "nothing opens while the button is down"
+    );
+    // Let go over the panel, outside the stream: the composer opens on the lines picked.
+    let panel = bounds(cx, "panel").expect("the panel");
+    cx.simulate_mouse_up(panel.center(), MouseButton::Left, Modifiers::none());
+    settle_drawn(cx, &shell, "the composer", |_, _| true);
+    assert_eq!(
+        composer_target(&pane, cx),
+        line_target("b.txt", AnchorSide::New, (2, 4))
+    );
+    press(cx, &shell, "escape");
+
+    // Unified: a removed line's + comments on the old side.
+    press(cx, &shell, "s");
+    let removed = plus("b.txt", "old", 2, cx).expect("removed line 2 has a +");
+    cx.simulate_click(removed.center(), Modifiers::none());
+    settle_drawn(cx, &shell, "the composer", |_, _| true);
+    assert_eq!(
+        composer_target(&pane, cx),
+        line_target("b.txt", AnchorSide::Old, (2, 2))
+    );
 }

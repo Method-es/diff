@@ -297,3 +297,73 @@ fn a_diff_highlights_each_side_under_its_own_name() {
     let old = both.side(AnchorSide::Old).expect("the old side");
     assert!(kinds(old, 2, "fn gone() {}").contains(&("gone".into(), TokenKind::Function)));
 }
+
+const TSX: [&str; 6] = [
+    "import { useState } from \"react\";",
+    "export function Card({ title }: { title: string }) {",
+    "  const [n, setN] = useState<number>(0);",
+    "  return <div className=\"card\" onClick={() => setN(n + 1)}>",
+    "    <Title text={title} />",
+    "  </div>;",
+];
+
+#[test]
+fn tsx_highlights_its_typescript_and_its_jsx() {
+    use TokenKind::*;
+    let side = highlight_side("web/Card.tsx", &TSX).expect("tsx has a grammar");
+    let has = |line: u32, text: &str, kind: TokenKind| {
+        let tokens = kinds(&side, line, TSX[line as usize - 1]);
+        assert!(
+            tokens.contains(&(text.to_string(), kind)),
+            "line {line}: {text:?} as {kind:?} in {tokens:?}"
+        );
+    };
+    has(1, "import", Keyword);
+    has(1, "\"react\"", String);
+    has(2, "function", Keyword);
+    has(2, "Card", Function);
+    has(2, "string", Type);
+    has(3, "const", Keyword);
+    has(3, "0", Number);
+    has(4, "return", Keyword);
+    has(4, "div", Keyword);
+    has(4, "className", Property);
+    has(4, "\"card\"", String);
+    has(5, "Title", Type);
+    has(5, "text", Property);
+    has(6, "div", Keyword);
+}
+
+#[test]
+fn typescript_reads_the_same_in_a_tsx_file() {
+    let lines = [
+        "/** Doubles. */",
+        "export async function twice(n: number): Promise<number> {",
+        "  const out = { value: n * 2, label: `x${n}` } satisfies Record<string, unknown>;",
+        "  return out.value as number;",
+        "}",
+    ];
+    let ts = highlight_side("a.ts", &lines).expect("typescript has a grammar");
+    let tsx = highlight_side("a.tsx", &lines).expect("tsx has a grammar");
+    assert_eq!(tsx, ts);
+}
+
+#[test]
+fn jsx_in_a_javascript_file_has_its_tags() {
+    use TokenKind::*;
+    let lines = ["const el = <Card title=\"a\"><span>x</span></Card>;"];
+    let side = highlight_side("web/el.jsx", &lines).expect("javascript has a grammar");
+    let tokens = kinds(&side, 1, lines[0]);
+    for (text, kind) in [
+        ("const", Keyword),
+        ("Card", Type),
+        ("title", Property),
+        ("\"a\"", String),
+        ("span", Keyword),
+    ] {
+        assert!(
+            tokens.contains(&(text.to_string(), kind)),
+            "{text:?} as {kind:?} in {tokens:?}"
+        );
+    }
+}

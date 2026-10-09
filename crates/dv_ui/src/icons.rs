@@ -69,6 +69,7 @@ dv_icons! {
     MessageSquarePlus => "message-square-plus",
     Package => "package",
     Play => "play",
+    Plus => "plus",
     RotateCw => "rotate-cw",
     Rows => "rows-2",
     Search => "search",

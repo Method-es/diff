@@ -115,6 +115,14 @@ struct SelectionAnchor {
     line: usize,
 }
 
+/// A comment's lines being picked with the mouse (DESIGN §4.1): pressed on a line's `+`, the
+/// button held over lines of the same file and side. Released, the composer opens on them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LineDrag {
+    path: String,
+    side: AnchorSide,
+}
+
 /// A line as automation and the composer name it: its path, side and number on that side.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LineRef {
@@ -189,6 +197,9 @@ pub struct DiffPane {
     /// file that has lines on this side puts it back (`nav`).
     chosen_side: AnchorSide,
     selection: Option<SelectionAnchor>,
+    /// The mouse picking a comment's lines, from a press on a line's `+` until the button
+    /// comes up (`nav`).
+    line_drag: Option<LineDrag>,
     /// A file shown before its diff landed: the cursor goes to its first change when it does.
     pending_first_change: Option<String>,
     current_file: Option<String>,
@@ -278,6 +289,7 @@ impl DiffPane {
             cursor: None,
             chosen_side: AnchorSide::New,
             selection: None,
+            line_drag: None,
             pending_first_change: None,
             current_file: None,
             h_offset: 0.,

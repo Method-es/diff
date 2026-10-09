@@ -12,9 +12,9 @@
 {"cmd": "query", "prefix": "file_list/comparison", "expect_result": {"pointer": "", "len": 0}}
 {"cmd": "key", "keystroke": "i", "expect": {"pointer": "/session/comparison_asked", "equals": {"kind": "all"}}}
 
-// Four threads, one per file: README line 3, cache.ts line 1, http.ts line 4, users.ts 8-10.
-{"cmd": "click", "target": "stream/line/README.md/new/3"}
-{"cmd": "key", "keystroke": "c"}
+// Four threads, one per file: README line 3 (its +), cache.ts line 1, http.ts line 4, users.ts
+// 8-10 (a drag from line 8's + to line 10).
+{"cmd": "click", "target": "stream/comment/README.md/new/3", "expect": {"pointer": "/session/composer/start_line", "equals": 3}}
 {"cmd": "type", "text": "Say what the cache holds."}
 {"cmd": "key", "keystroke": "ctrl-enter"}
 {"cmd": "settle", "expect": {"pointer": "/session/threads", "len": 1}}
@@ -34,9 +34,8 @@
 {"cmd": "settle", "expect": {"pointer": "/session/threads", "len": 3}}
 {"cmd": "key", "keystroke": "j"}
 {"cmd": "settle", "expect": {"pointer": "/session/current_file", "equals": "src/routes/users.ts"}}
-{"cmd": "click", "target": "stream/line/src/routes/users.ts/new/8"}
-{"cmd": "click", "target": "stream/line/src/routes/users.ts/new/10", "modifiers": "shift"}
-{"cmd": "key", "keystroke": "c"}
+{"cmd": "drag", "from": {"target": "stream/comment/src/routes/users.ts/new/8"}, "to": {"target": "stream/comment/src/routes/users.ts/new/10"}}
+{"cmd": "settle", "expect": [{"pointer": "/session/composer/start_line", "equals": 8}, {"pointer": "/session/composer/end_line", "equals": 10}]}
 {"cmd": "type", "text": "Normalise the id before it goes into the key."}
 {"cmd": "key", "keystroke": "ctrl-enter"}
 {"cmd": "settle", "expect": [{"pointer": "/session/threads", "len": 4}, {"pointer": "/session/threads/3/start_line", "equals": 8}, {"pointer": "/session/threads/3/end_line", "equals": 10}]}
