@@ -25,7 +25,9 @@ use crate::backend::BackendError;
 use crate::git::{GitError, GitRepo, Oid};
 use crate::target::{DiffSpec, Side};
 
-pub use collapse::{EXPAND_STEP, Expand, MIN_GAP, Segment, expand_gap, segments, segments_showing};
+pub use collapse::{
+    EXPAND_STEP, Expand, MIN_GAP, Segment, expand_gap, reveal_in_gap, segments, segments_showing,
+};
 pub use file::file_diff;
 pub(crate) use intraline::Tokens;
 pub use intraline::{diff_pair as intraline_pair, mark_intraline};

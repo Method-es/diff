@@ -151,6 +151,37 @@ pub fn expand_gap(segments: &[Segment], index: usize, expand: Expand) -> Vec<Seg
     normalize(out)
 }
 
+/// `segments` with the lines of gap number `index` that `around` covers revealed, the rest of the
+/// gap left hidden on either side: what going to a line inside a gap opens (the stream's find,
+/// DESIGN §4.1). A piece left shorter than [`MIN_GAP`] is revealed too. An `index` that names no
+/// gap, or an `around` that misses it, returns `segments` unchanged.
+pub fn reveal_in_gap(segments: &[Segment], index: usize, around: Range<usize>) -> Vec<Segment> {
+    let Some(Segment::Gap { lines: hidden, .. }) = segments.get(index) else {
+        return segments.to_vec();
+    };
+    let mut shown = around.start.max(hidden.start)..around.end.min(hidden.end);
+    if shown.is_empty() {
+        return segments.to_vec();
+    }
+    if shown.start - hidden.start < MIN_GAP {
+        shown.start = hidden.start;
+    }
+    if hidden.end - shown.end < MIN_GAP {
+        shown.end = hidden.end;
+    }
+    let mut out: Vec<Segment> = segments[..index].to_vec();
+    if shown.start > hidden.start {
+        out.push(gap(hidden.start..shown.start));
+    }
+    let end = shown.end;
+    out.push(Segment::Lines(shown));
+    if end < hidden.end {
+        out.push(gap(end..hidden.end));
+    }
+    out.extend_from_slice(&segments[index + 1..]);
+    normalize(out)
+}
+
 fn gap(lines: Range<usize>) -> Segment {
     Segment::Gap {
         lines,

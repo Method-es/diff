@@ -9,8 +9,10 @@ use gpui::{Bounds, Entity, Pixels, TestAppContext, VisualTestContext};
 use pretty_assertions::assert_eq;
 
 mod file_comment;
+mod find;
 mod rounds;
 mod section;
+mod text_select;
 mod threads;
 
 use super::*;

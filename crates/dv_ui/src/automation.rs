@@ -25,14 +25,14 @@ pub const MAIN_WINDOW: &str = "main";
 
 #[cfg(feature = "automation")]
 pub use gpui_automation::{
-    AutomationTargetExt, is_active, is_background, open_window, pointer_guard, register_window,
-    unregister_window,
+    AutomationTargetExt, is_active, is_background, is_capturing, open_window, pointer_guard,
+    record_target, register_window, unregister_window,
 };
 
 #[cfg(not(feature = "automation"))]
 pub use disabled::{
-    AutomationTargetExt, is_active, is_background, open_window, pointer_guard, register_window,
-    unregister_window,
+    AutomationTargetExt, is_active, is_background, is_capturing, open_window, pointer_guard,
+    record_target, register_window, unregister_window,
 };
 
 #[cfg(not(feature = "automation"))]
@@ -55,6 +55,20 @@ mod disabled {
     /// Without automation nothing drives the app.
     pub fn is_active() -> bool {
         false
+    }
+
+    /// Without automation nothing captures targets.
+    pub fn is_capturing() -> bool {
+        false
+    }
+
+    /// Stand-in for `gpui_automation::record_target`: no driver, no names.
+    pub fn record_target(
+        window: &Window,
+        name: impl FnOnce() -> SharedString,
+        bounds: gpui::Bounds<gpui::Pixels>,
+    ) {
+        let _ = (window, name, bounds);
     }
 
     /// Stand-in for `gpui_automation::register_window`: no driver, no names.

@@ -17,7 +17,9 @@ use gpui::{
     Action, App, DummyKeyboardMapper, KeyBinding, KeyBindingContextPredicate, SharedString,
 };
 
-use crate::actions::{composer, diff_pane, file_list, sheet, shell, source_picker, switcher};
+use crate::actions::{
+    composer, diff_pane, field, file_list, find, sheet, shell, source_picker, switcher,
+};
 
 /// Key context of the shell's root element: everything in the main window.
 pub const SHELL: &str = "Shell";
@@ -34,6 +36,8 @@ pub const FILE_LIST: &str = "FileList";
 pub const COMPOSER: &str = "Composer";
 /// Key context of the open "Finish round" sheet (inside [`SHELL`]).
 pub const SHEET: &str = "Sheet";
+/// Key context of the stream's find bar (inside [`DIFF_PANE`]).
+pub const FIND: &str = "Find";
 /// Key context gpui-component sets on its text fields; gpui-base keeps its constant private.
 pub const INPUT: &str = "Input";
 
@@ -137,8 +141,8 @@ pub const SHORTCUTS: &[Shortcut] = &[
     // The file list's filter field lets Enter and an idle Esc through.
     shortcut!("enter", FILE_LIST, file_list::RevealFirst),
     shortcut!("escape", FILE_LIST, file_list::ClearFilter),
-    // The diff stream (DESIGN §5). No text field lives in the main area, but its keys stay out
-    // of fields anyway, so a composer there never loses its letters to them.
+    // The diff stream (DESIGN §5). Its keys stay out of the text fields in the main area, so the
+    // composer and the find bar never lose their letters to them.
     shortcut!("j", DIFF_PANE, diff_pane::NextFile, OutsideInputs),
     shortcut!("k", DIFF_PANE, diff_pane::PreviousFile, OutsideInputs),
     shortcut!("n", DIFF_PANE, diff_pane::NextChange, OutsideInputs),
@@ -183,6 +187,16 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("[", DIFF_PANE, diff_pane::PreviousThread, OutsideInputs),
     shortcut!("x", DIFF_PANE, diff_pane::ResolveThread, OutsideInputs),
     shortcut!("i", DIFF_PANE, diff_pane::ToggleComparison, OutsideInputs),
+    // A text field copies its own selection.
+    shortcut!("secondary-c", DIFF_PANE, diff_pane::Copy, OutsideInputs),
+    shortcut!("secondary-f", DIFF_PANE, diff_pane::Find, OutsideInputs),
+    // The find bar: its field searches on `Ctrl F` itself, so the row sits ahead of it (again,
+    // the field's text selected); a single-line field lets `Enter`, `Shift Enter` and an idle
+    // `Esc` through to the plain rows.
+    shortcut!("secondary-f", FIND, diff_pane::Find, AheadOfInputs),
+    shortcut!("enter", FIND, find::Next),
+    shortcut!("shift-enter", FIND, find::Previous),
+    shortcut!("escape", FIND, find::Close),
     // The composer's text field inserts a newline on `Ctrl Enter` itself (it is multi-line),
     // so posting sits ahead of it; it lets an idle `Esc` through to the plain row.
     shortcut!("secondary-enter", COMPOSER, composer::Post, AheadOfInputs),
@@ -200,6 +214,10 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("tab", SHEET, sheet::SwitchFocus, AheadOfInputs),
     shortcut!("shift-tab", SHEET, sheet::SwitchFocus, OutsideInputs),
     shortcut!("shift-tab", SHEET, sheet::SwitchFocus, AheadOfInputs),
+    // Every text field: its copy and cut go through the clipboard seam, not gpui's clipboard
+    // (dv's rows win over the field's own at the same depth).
+    shortcut!("secondary-c", INPUT, field::Copy),
+    shortcut!("secondary-x", INPUT, field::Cut),
 ];
 
 /// Binds [`SHORTCUTS`]. Call after `gpui_component::init`, so dv's rows are registered last
@@ -327,5 +345,10 @@ mod tests {
         assert_eq!(down.predicate(), "Switcher > Input");
         let enter = shortcut_for(&switcher::Confirm, SWITCHER).unwrap();
         assert_eq!(enter.predicate(), "Switcher");
+        // `Ctrl F` in the find field is dv's, not the field's own search.
+        let find_again = shortcut_for(&diff_pane::Find, FIND).unwrap();
+        assert_eq!(find_again.predicate(), "Find > Input");
+        let next = shortcut_for(&find::Next, FIND).unwrap();
+        assert_eq!(next.predicate(), "Find");
     }
 }

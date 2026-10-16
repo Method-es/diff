@@ -178,6 +178,33 @@ pub(crate) fn take(window_id: u64) -> Option<Vec<TargetRecord>> {
     })
 }
 
+/// Whether a capture is armed for some window: the frame a target command asks for is being
+/// drawn. Elements that name parts of themselves with [`record_target`] (characters of a line
+/// of text, which have no element each) check this first, so they compute nothing otherwise.
+pub fn is_capturing() -> bool {
+    ARMED.load(Ordering::Relaxed) > 0
+}
+
+/// Records a target for a region no element of its own stands for, at `bounds` in window
+/// coordinates, during prepaint (the clip in effect then decides what is visible). Does nothing
+/// unless a capture is armed for `window` ([`is_capturing`]).
+pub fn record_target(window: &Window, name: impl FnOnce() -> SharedString, bounds: Bounds<Pixels>) {
+    if !is_capturing() {
+        return;
+    }
+    let window_id = window.window_handle().window_id().as_u64();
+    let visible = bounds.intersect(&window.content_mask().bounds);
+    record(
+        window_id,
+        TargetRecord {
+            name: name(),
+            bounds,
+            visible: (visible.size.width > Pixels::ZERO && visible.size.height > Pixels::ZERO)
+                .then_some(visible),
+        },
+    );
+}
+
 fn record(window_id: u64, record: TargetRecord) {
     CAPTURES.with(|captures| {
         if let Some(records) = captures.borrow_mut().get_mut(&window_id) {

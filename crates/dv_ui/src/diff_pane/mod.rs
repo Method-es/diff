@@ -39,6 +39,10 @@
 //! and previous unresolved thread, `R` replies to the focused one and `X` resolves or reopens
 //! it; every change goes through the session's `review::ops` writes.
 //!
+//! **Text** (`select`, PLAN §18.1): the mouse selects text in code, a click puts the caret, and
+//! `Ctrl C` copies. **Find** (`find`, `search`): `Ctrl F` opens the find bar over the stream,
+//! which searches every file of the review, both sides, the text inside gaps included.
+//!
 //! The keyboard goes to the main area, which the shell renders with this pane's focus handle
 //! and key context ([`crate::keymap::DIFF_PANE`], [`DiffPane::bind_actions`]).
 //!
@@ -47,15 +51,20 @@
 //! `stream/not_in_diff/header` (and its `/chevron`; pinned, `stream/pinned` and its `/chevron`),
 //! `stream/menu/<comment|copy_path|reveal>`, `stream/gap/<path>/<n>` (`/expand`, `/expand_all`),
 //! `stream/line/<path>/<old|new>/<n>` (a line number), `stream/notice/<path>` (`/load_anyway`,
-//! and a failure's banner parts), `stream/footer/<path>` (`/next`), and the cards' and the
-//! composer's own (`thread/<id>`, `composer`; [`crate::thread`]).
+//! and a failure's banner parts), `stream/footer/<path>` (`/next`),
+//! `code/<path>/<old|new>/<n>/<column>` (a character of a line's code, `render::code`), the
+//! find bar's (`find`, `find/input`, `find/prev`, `find/next`, `find/close`), and the cards'
+//! and the composer's own (`thread/<id>`, `composer`; [`crate::thread`]).
 
 mod file_comment;
+mod find;
 mod nav;
 mod reload;
 mod render;
 pub mod rows;
+pub mod search;
 mod section;
+mod select;
 pub mod text;
 mod threads;
 
@@ -77,11 +86,13 @@ use crate::failure::Failure;
 use crate::services::{ActiveServices as _, ViewMode};
 use crate::session::{Comparison, FileState, ReviewSession, SessionEvent};
 use crate::thread::Composer;
+pub use find::{FIND_DEBOUNCE, FindSummary};
 use rows::{
     Content, InsertItem, LinePos, Row, RowKey, RowsSpec, file_rows, find_row, heights,
     selected_numbers, side_number,
 };
 pub use section::{SECTION, SectionSummary};
+pub use select::{PlaceRef, TextPoint, TextSelectionRef};
 
 /// How long a file shows skeleton rows before its header also says "Loading…" (DESIGN §4.4).
 pub const SKELETON_FOR: Duration = Duration::from_millis(300);
@@ -264,6 +275,20 @@ pub struct DiffPane {
     thread_error: Option<(ThreadId, Failure)>,
     /// Posts and thread-state changes whose follow-up hasn't landed.
     writes: usize,
+    /// Text selected with the mouse, the drag still selecting it, and the caret (`select`).
+    text_selection: Option<select::TextSelection>,
+    text_drag: Option<select::TextDrag>,
+    caret: Option<select::Caret>,
+    /// Scrolls the stream while a drag is held near its edge.
+    autoscroll: Option<Task<()>>,
+    /// The find bar and its search (`find`).
+    find: find::Find,
+    /// What code rows paint over their text this frame: the selection, the caret, matches.
+    frame_marks: render::code::FrameMarks,
+    /// Where every line drawn this frame is, for the pointer (`select`).
+    geometry: select::Geometry,
+    /// Ends a drag when the window goes inactive (made with the first frame).
+    activation: Option<Subscription>,
     _session_events: Vec<Subscription>,
 }
 
@@ -328,6 +353,14 @@ impl DiffPane {
             opened_threads: HashSet::new(),
             thread_error: None,
             writes: 0,
+            text_selection: None,
+            text_drag: None,
+            caret: None,
+            autoscroll: None,
+            find: find::Find::default(),
+            frame_marks: render::code::FrameMarks::default(),
+            geometry: select::Geometry::default(),
+            activation: None,
             _session_events: Vec::new(),
         }
     }
@@ -381,6 +414,9 @@ impl DiffPane {
         self.reply_when_shown = None;
         self.opened_threads.clear();
         self.thread_error = None;
+        self.clear_text_selection();
+        self.caret = None;
+        self.reset_find();
         self.measured.clear();
         self.line_maps.clear();
         self.list.reset(1);
@@ -432,7 +468,7 @@ impl DiffPane {
     /// Nothing is waiting on the next frame, and no post or thread change is on its way:
     /// automation's `settled`.
     pub fn is_settled(&self) -> bool {
-        !self.viewport_pending && self.writes == 0
+        !self.viewport_pending && self.writes == 0 && !self.find_pending()
     }
 
     /// Brings `path` into view as the current file (a click on its row in the panel): its
@@ -512,8 +548,11 @@ impl DiffPane {
             let ui = cx.services().review_ui.clone();
             ui.update(cx, |ui, cx| ui.set_view_mode(&id, mode, cx));
         }
-        // Cards and the composer take another width, so another height.
+        // Cards and the composer take another width, so another height. A text selection is
+        // one column's or both's, so it doesn't carry over.
         self.measured.clear();
+        self.clear_text_selection();
+        self.caret = None;
         self.rebuild_all(cx);
         self.reveal_cursor(cx);
     }
@@ -694,6 +733,7 @@ impl DiffPane {
         if let Some(thread) = self.reveal_after_listing.take() {
             self.reveal_thread(&thread, cx);
         }
+        self.refresh_find(cx);
     }
 
     /// Rebuilds every block in place, splicing only those whose rows changed (the review
@@ -739,6 +779,7 @@ impl DiffPane {
         } else {
             cx.notify();
         }
+        self.refresh_find(cx);
     }
 
     /// Rebuilds block `index` and splices its rows into the list when they changed. The header

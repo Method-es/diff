@@ -35,7 +35,10 @@ Opaque value; on Acrylic and Mica it also depends on the desktop behind the wind
 `green #61ffca`, `red #ff6767`, `yellow #ffca85`, `blue #82e2ff`; soft fills at 12–18% of each
 (`accentSoft`, `greenSoft`, `redSoft`, `yellowSoft`, `blueSoft`); `line rgba(255,255,255,.08)`,
 `line2 rgba(255,255,255,.14)`, `ctrlLine rgba(255,255,255,.11)`, `overlayLine rgba(255,255,255,.13)`,
-`scrim rgba(6,5,10,.56)`, `sel rgba(162,119,255,.22)`.
+`scrim rgba(6,5,10,.56)`, `sel rgba(162,119,255,.22)` (rows: the cursor's line, a line
+selection); `textSel rgba(162,119,255,.42)` (text selected in code); `findMatch
+rgba(255,202,133,.22)` and `findCurrent rgba(255,202,133,.32)` (find matches in code, the
+current one outlined in `yellow`).
 
 Diff: `addBg rgba(97,255,202,.085)`, `addGut .15`, `addWord .30`; `delBg rgba(255,103,103,.09)`,
 `delGut .16`, `delWord .34`; `hunk rgba(130,226,255,.06)`. Added and removed rows differ in lightness
@@ -51,7 +54,8 @@ Same token names. Key values: `fg #1d1b26`, `fg2 #46434f`, `fg3 #5e5a6f`; `accen
 `accentFg #ffffff`, `accentText #5a32cc`; `green #0d7553`, `red #bf2537`, `yellow #875600`,
 `blue #0b6687`; `chrome` Acrylic `rgba(247,246,251,.58)` / Mica `rgba(239,238,244,.85)` / Opaque
 `#efeef4`; `code` `rgba(255,255,255,.93)` / `rgba(254,254,255,.975)` / `#fdfdfe`; `scrim
-rgba(36,32,58,.30)`; diff `addBg rgba(18,170,115,.10)`, `delBg rgba(225,45,70,.075)`. Syntax: `kw
+rgba(36,32,58,.30)`; `sel rgba(109,67,224,.13)`, `textSel rgba(109,67,224,.28)`, `findMatch
+rgba(196,128,0,.18)`, `findCurrent rgba(196,128,0,.30)`; diff `addBg rgba(18,170,115,.10)`, `delBg rgba(225,45,70,.075)`. Syntax: `kw
 #6236d6`, `fn #8a4f00`, `str #0d7553`, `cst #0b6687`, `prop #9a2694`, `punc #3d3a48`, `plain #1d1b26`,
 `comment` = `fg3` (`#5e5a6f`).
 Full set: the board's `tokens()`.
@@ -278,6 +282,60 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   cards go between rows, and the lines a card sits
   on stay shown (a thread relocation moved can stand on lines no change is near, which would
   otherwise fold into a gap).
+- **Text in code** (PLAN §18.1): a press in a line's code (the pointer an I-beam there) puts the
+  cursor on its line, as a click on its number does, and the **caret** at the character: before
+  the one under the pointer, after it from 60% of its width on. Characters are where their
+  glyphs are drawn: a wide one (CJK, an emoji) takes two cells, a combining mark goes with the
+  letter before it (the caret never falls between them), a tab four cells. The caret is a 2px
+  `accent` bar 16 high, painted while the stream has the keyboard; the keyboard's line moves
+  (`↑`/`↓`, `J`/`K`, `N`/`P`, pages, `E`), `S` and `I` take it away. Dragging with the button
+  down selects characters, the caret and the cursor following the pointer; a double-click
+  selects the word under it (a run of identifier characters — alphanumerics and `_` —, of
+  whitespace, or of any other character) and a drag after it extends by whole words, a
+  triple-click the whole line and a drag after it by whole lines; a shift-click extends from
+  the selection's start (else the caret). A selection is one file's: in split view one column's
+  (the one the press was in), in unified view the rows in order, removed and added lines alike;
+  dragging past the file's first or last row clamps there, onto a card or a gap row takes the
+  end of the line before it, and within 24 of the stream's top (below the header's 44px bar) or
+  bottom edge, or past it, scrolls the stream, faster the further, until it can't move. Selected
+  text paints on `textSel` behind the characters, a line the selection goes on past one column
+  further; it stays through scrolling either way and gaps opening, and goes with a press
+  anywhere else in the stream, `Esc`, switching split / unified or the comparison (`I`), and
+  its file's diff changing to other lines (the agent's edit; the caret too). A drag the window
+  stops being active during ends there. `Ctrl C` copies it as the source text (real tabs, lines
+  joined with `\n`, the lines a gap inside it hides included); with no text selected, a line
+  selection copies its lines; with neither, nothing. A drag from a line's `+` still selects
+  lines for a comment, never text.
+- **Find** (`Ctrl F`, PLAN §18.1): a bar over the stream's top right, 8 below the file header's
+  44px bar (the pinned header's controls stay in reach) and 16 in from the right edge, 400 wide:
+  the `overlay` surface with its outline and shadow (as menus), radius `card` (10), 6 padding.
+  One line holds the field (a control high, `inputBg`, `ctrlLine` outline, the search glyph, "Find
+  in review"), the count in `fg2` at 12 ("3 of 17"; "3 of 17+" while files still load;
+  "Searching…" before a first match while they do, "No results" in `fg3`, nothing for an empty
+  query), then 24-square ghost buttons ↑ (previous, `Shift Enter`), ↓ (next, `Enter`) and ×
+  (close, `Esc`) with their keys in tooltips; under it, when some file couldn't be searched,
+  "2 files not searched" in `fg3`. `Ctrl F` opens it with the field focused (the selected text
+  in it when that is one line), and again focuses the field with its text selected. Typing
+  searches once it pauses (120 ms): every listed file in stream order, both sides, the text
+  inside gaps and in viewed files included, through what the stream shows (an interdiff's
+  diffs in an interdiff); a file not loaded yet loads for it (after the viewport's), and a file
+  without text to search (binary, too large to show, a submodule, unmerged, a failed load) is
+  counted as not searched; one whose content didn't change shows a notice, not lines, and isn't
+  searched. Plain text, case-insensitive unless the query has a capital (smart case). In
+  unified view a context line matches once; in split view once per column, rows top to bottom
+  and the old column before the new. The search goes to the first match at or after the cursor's
+  row (else the current file's top) in that order; while later files are still loading it waits
+  for a match after the cursor rather than going back behind it, and wraps to the first match
+  once every file has been searched. Going to a match opens its file if it is viewed, opens the
+  gap that hides it around it (3 lines either side), scrolls it to the middle of the stream
+  unless it is in view below the pinned header and the bar, and puts the cursor on its line and
+  the caret at its start; the keyboard stays in the field. `Enter` before typing has paused
+  searches the new query and goes to its first match. A file loaded only for the search isn't
+  highlighted until the stream shows it. While the bar is open every match in view
+  paints on `findMatch` and the current one on `findCurrent` with a 1px `yellow` outline, radius
+  2. `Esc` (in the field or the stream) or × closes it: the matches go and the keyboard returns
+  to the stream, the cursor on the current match's line. A press on the bar leaves the stream's
+  selection alone.
 - **Interdiff** (round n+1 of a live target, PLAN §2.3): the stream, the file list and its
   totals are what changed since round n (its snapshot → now); `I` or the panel's toggle switches
   to all changes and back, the reading position staying where the same file and line still
@@ -492,7 +550,10 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
 | `Ctrl G` | open a PR |
 | `Ctrl B` | toggle panel |
 | `Ctrl ,` | settings |
-| `Esc` | close the top overlay, else a comments row's menu, else the file menu, else cancel the composer, else clear the selection |
+| `Esc` | close the top overlay, else a comments row's menu, else the file menu, else cancel the composer, else close the find bar, else clear the selection (the lines and the text both); in the find field it closes the bar first (the field has the keyboard, so the stream's chain doesn't run) |
+| `Ctrl C` | copy the selected text, else the selected lines (§4.1 "Text in code"); in a text field (the find field, the composer, the filters, the summary) its selection — that and `Ctrl X` going through the clipboard seam (`dv_ui::system`) like every copy |
+| `Ctrl F` | the find bar, its field focused (the selected text in it when that is one line); again, the field focused with its text selected (§4.1 "Find") |
+| `Enter` / `Shift Enter`, `Esc` | in the find bar: the next / previous match, wrapping; close it (the keyboard back to the stream) |
 | `↑` / `↓`, `Enter` | in the switcher and the source picker: move (wrapping), open |
 | `Enter` / `Esc` | in the file filter: show the first file left / clear the filter (both return to the diff) |
 | `Ctrl Enter` / `Esc` | in the composer: post / discard (both return to the diff; `Enter` is a newline) |

@@ -375,12 +375,54 @@ impl ReviewSession {
     ) {
         self.wanted = paths.into_iter().collect();
         let threaded = self.thread_files();
-        let wanted = &self.wanted;
+        let (wanted, searching) = (&self.wanted, self.searching);
         self.queue
-            .retain(|path| wanted.contains(path) || threaded.contains(path));
+            .retain(|path| searching || wanted.contains(path) || threaded.contains(path));
         self.requeue_wanted();
+        // A file the find bar loaded shows now: it is highlighted as any shown file is.
+        let unhighlighted: Vec<(String, Arc<FileDiff>)> = self
+            .wanted
+            .iter()
+            .filter(|path| !self.highlighting.contains_key(*path))
+            .filter_map(|path| match self.states.get(path) {
+                Some(FileState::Loaded {
+                    diff,
+                    highlights: None,
+                }) => Some((path.clone(), diff.clone())),
+                _ => None,
+            })
+            .collect();
+        for (path, diff) in unhighlighted {
+            self.start_highlight(&path, diff, cx);
+        }
         self.pump(cx);
         cx.notify();
+    }
+
+    /// Has every listed file load, in list order after the files the stream and the threads
+    /// asked for, while `on` (the stream's find bar searches the whole review, text inside gaps
+    /// included: DESIGN §4.1); off, only those load again. A refresh keeps it as it is, so a
+    /// file the agent edits meanwhile is searched again once it lands.
+    pub fn load_for_search(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.searching == on {
+            return;
+        }
+        self.searching = on;
+        if on {
+            self.requeue_wanted();
+            self.pump(cx);
+        } else {
+            let threaded = self.thread_files();
+            let wanted = &self.wanted;
+            self.queue
+                .retain(|path| wanted.contains(path) || threaded.contains(path));
+        }
+        cx.notify();
+    }
+
+    /// Whether every listed file is loading for the find bar ([`ReviewSession::load_for_search`]).
+    pub fn is_searching(&self) -> bool {
+        self.searching
     }
 
     /// Loads `path` again without the size caps ("Load anyway", PLAN §6 step 2); it stays
@@ -420,10 +462,18 @@ impl ReviewSession {
     /// Queues the wanted files that need loading, then the files threads show in: a thread's
     /// place is worked out against its file's diff, so the comments list, "Copy as prompt" and
     /// the sheet name where it is now (PLAN §8), and a file the agent edited since it last
-    /// loaded doesn't keep placing threads against the diff it had.
+    /// loaded doesn't keep placing threads against the diff it had. While the find bar searches,
+    /// every other listed file follows, in list order.
     pub(super) fn requeue_wanted(&mut self) {
         let threaded = self.thread_files();
-        for path in self.wanted.iter().chain(&threaded) {
+        let searching = self.searching;
+        let searched = self
+            .list
+            .files
+            .iter()
+            .map(|entry| &entry.path)
+            .filter(move |_| searching);
+        for path in self.wanted.iter().chain(&threaded).chain(searched) {
             if matches!(self.states.get(path), Some(FileState::Unloaded))
                 && !self.queue.contains(path)
             {
@@ -526,7 +576,13 @@ impl ReviewSession {
                             highlights: None,
                         },
                     );
-                    self.start_highlight(path, diff, cx);
+                    // Highlighting waits for the stream to show the file: one loaded only for
+                    // the find bar may never be, and `ensure_loaded` starts it once it is.
+                    if self.wanted.iter().any(|wanted| wanted == path)
+                        || self.thread_files().iter().any(|threaded| threaded == path)
+                    {
+                        self.start_highlight(path, diff, cx);
+                    }
                     self.ensure_review_texts(cx);
                     self.ensure_histories(cx);
                 }

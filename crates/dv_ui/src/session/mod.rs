@@ -4,7 +4,8 @@
 //! **Loading.** The file list comes first (one background job resolves the target and runs
 //! `dv_core::diff::file_list`), then file diffs on demand: the stream asks for the files around
 //! its viewport ([`ReviewSession::ensure_loaded`]), at most [`MAX_LOADS_IN_FLIGHT`] load at
-//! once, and "Load anyway" reloads one file without the size caps
+//! once; while the stream's find bar searches, every listed file loads after those
+//! ([`ReviewSession::load_for_search`], DESIGN §4.1); and "Load anyway" reloads one file without the size caps
 //! ([`ReviewSession::load_anyway`]). A loaded text diff is then highlighted in the background
 //! (`crate::syntax`, token kinds only); rows paint unhighlighted until it lands. Nothing here
 //! blocks the UI thread: git, file reads and the store all run in `background_spawn` jobs.
@@ -243,6 +244,9 @@ pub struct ReviewSession {
     unlimited: HashSet<String>,
     /// The files the stream asked for, which `settled` waits on.
     wanted: Vec<String>,
+    /// The stream's find bar is searching: every listed file loads, after the wanted ones and
+    /// those threads show in ([`ReviewSession::load_for_search`]).
+    searching: bool,
     queue: VecDeque<String>,
     loads_in_flight: usize,
     /// Highlighting jobs by path, with the diff each one highlights.
@@ -326,6 +330,7 @@ impl ReviewSession {
             loads_held: false,
             unlimited: HashSet::new(),
             wanted: Vec::new(),
+            searching: false,
             queue: VecDeque::new(),
             loads_in_flight: 0,
             highlighting: HashMap::new(),
@@ -622,7 +627,9 @@ impl ReviewSession {
         // While the connection is down nothing loads: what waits for it can't land before.
         let wanted_landed = self.spec.is_none()
             || self.link.down
-            || (self.wanted.iter().all(landed) && self.thread_files().iter().all(landed));
+            || (self.wanted.iter().all(landed)
+                && self.thread_files().iter().all(landed)
+                && (!self.searching || self.list.files.iter().all(|entry| landed(&entry.path))));
         self.refreshing.is_none()
             && self.queued.is_none()
             && self.watch.is_settled()

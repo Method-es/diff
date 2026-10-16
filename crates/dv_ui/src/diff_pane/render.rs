@@ -1,48 +1,34 @@
 //! The stream's layout (DESIGN §4.1 "Diff", the board's `GlassReview` main column): the list of
-//! rows over the `code` surface, the pinned header above it, and the file menu. Code rows are
-//! 20 high in JetBrains Mono 12 (DESIGN §1.4): a 44-wide line number and a 16-wide marker per
-//! side, the text clipped with a fade where it runs on.
+//! rows over the `code` surface, the pinned header above it, the file menu and the find bar.
+//! Code rows are `code`'s; this file draws the rest of the rows (gaps, notices, the footer).
 
+pub(super) mod code;
+mod find_bar;
 mod header;
 mod section;
 mod thread;
 
-use dv_core::diff::{DiffLine, EXPAND_STEP, Expand, FileEntry, LineKind};
+use dv_core::diff::{EXPAND_STEP, Expand, FileEntry};
 use dv_core::review::AnchorSide;
 use gpui::{
-    AnyElement, Context, FontFeatures, FontWeight, HighlightStyle, Hsla, InteractiveElement as _,
-    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
-    Render, ScrollWheelEvent, StatefulInteractiveElement as _, Styled as _, StyledText, Window,
-    div, linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px,
+    AnyElement, Context, DispatchPhase, FontWeight, InteractiveElement as _, IntoElement,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Render,
+    ScrollWheelEvent, StatefulInteractiveElement as _, Styled as _, Window, canvas, div,
+    prelude::FluentBuilder as _, px,
 };
 use std::rc::Rc;
 
-use super::rows::{Gap, InsertItem, LinePos, Notice, Row, heights, side_number};
-use super::text::visible;
-use super::{DiffPane, rows};
+use super::DiffPane;
+use super::rows::{Gap, InsertItem, Notice, Row, heights};
 use crate::automation::AutomationTargetExt as _;
 use crate::banner::{Banner, BannerAction};
 use crate::components::{icon, skeleton, small_button};
 use crate::icons::DvIcon;
 use crate::keymap;
 use crate::services::ViewMode;
-use crate::session::{FileState, Shown};
-use crate::syntax::FileHighlights;
+use crate::session::FileState;
 use crate::theme::{ActiveTheme as _, DvTheme, StyledText as _};
-
-/// A line number's column (the board's `numStyle`).
-const NUMBER_WIDTH: f32 = 44.;
-/// The `+` / `−` marker's column.
-const MARKER_WIDTH: f32 = 16.;
-/// Room before a line's text.
-const TEXT_INSET: f32 = 4.;
-/// The fade over text that runs on past the right edge.
-const FADE_WIDTH: f32 = 28.;
-/// The comment `+`'s square, over the marker column.
-const COMMENT_BUTTON: f32 = 18.;
-/// The hover groups a comment `+` shows in: a unified row, a split row's half.
-const ROW_GROUP: &str = "code-row";
-const HALF_GROUP: &str = "code-half";
+use code::{MARKER_WIDTH, NUMBER_WIDTH, TEXT_INSET};
 
 impl Render for DiffPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -56,6 +42,16 @@ impl Render for DiffPane {
                 .map(f32::from);
         }
         self.code_columns = self.columns_in_view();
+        self.frame_marks = self.frame_marks(window);
+        // The lines this frame draws put their geometry back as they are drawn.
+        self.geometry.borrow_mut().clear();
+        if self.activation.is_none() {
+            self.activation = Some(cx.observe_window_activation(window, |this, window, cx| {
+                if !window.is_window_active() {
+                    this.end_text_drag(cx);
+                }
+            }));
+        }
         self.release_orphaned_focus(window, cx);
         self.focus_waiting_composer(window, cx);
         self.open_waiting_reply(window, cx);
@@ -85,6 +81,38 @@ impl Render for DiffPane {
                 .child(self.render_header(block, true, &theme, cx))
         });
         let menu = self.render_menu(&theme, window, cx);
+        let find_bar = self.render_find_bar(&theme, cx);
+        // While text is being selected the pointer is followed wherever it goes, in the
+        // window or out of it, until the button comes up (`select`).
+        let text_drag = self.text_drag.is_some().then(|| {
+            let view = cx.entity();
+            canvas(
+                |_, _, _| {},
+                move |_, _, window, _| {
+                    let moved = view.clone();
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                        if phase != DispatchPhase::Bubble {
+                            return;
+                        }
+                        moved.update(cx, |this, cx| {
+                            if event.pressed_button == Some(MouseButton::Left) {
+                                this.drag_text_to(event.position, cx);
+                            } else {
+                                this.end_text_drag(cx);
+                            }
+                        });
+                    });
+                    let released = view.clone();
+                    window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                        if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
+                            released.update(cx, |this, cx| this.end_text_drag(cx));
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .size_full()
+        });
         div()
             .relative()
             .size_full()
@@ -96,61 +124,34 @@ impl Render for DiffPane {
                     this.scroll_sideways(-f32::from(delta.x), cx);
                 }
             }))
+            // A press anywhere in the stream clears the selected text and the caret before
+            // what is under it hears it; a press in code then starts them again (`select`).
+            .capture_any_mouse_down(cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                if event.button == MouseButton::Left {
+                    this.press_outside_text(event.modifiers.shift, cx);
+                }
+            }))
             // A line drag (a press on a comment `+`) ends wherever the button comes up: over
             // the stream, before anything in it hears the release, or outside it.
             .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, window, cx| {
                 if event.button == MouseButton::Left {
                     this.finish_line_drag(window, cx);
+                    this.end_text_drag(cx);
                 }
             }))
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|this, _, window, cx| this.finish_line_drag(window, cx)),
+                cx.listener(|this, _, window, cx| {
+                    this.finish_line_drag(window, cx);
+                    this.end_text_drag(cx);
+                }),
             )
             .child(list)
             .children(pinned)
+            .children(find_bar)
+            .children(text_drag)
             .children(menu)
             .automation_target("stream")
-    }
-}
-
-/// What every code row of one file paints with.
-struct CodeCx<'a> {
-    theme: &'a DvTheme,
-    path: &'a str,
-    lines: &'a [DiffLine],
-    highlights: Option<&'a FileHighlights>,
-    /// The first column in view, the pixels of it scrolled off, and how many columns show.
-    first: usize,
-    shift: f32,
-    count: usize,
-    cursor: Option<LinePos>,
-    /// The selected lines (indexes into `lines`) on a side.
-    selection: Option<(AnchorSide, usize, usize)>,
-    /// Whether a comment can start on the old / the new side: the review isn't finished, and
-    /// an interdiff's old column (a round's snapshot, which no anchor names) takes none.
-    commentable: [bool; 2],
-}
-
-impl CodeCx<'_> {
-    fn is_cursor(&self, line: usize, side: AnchorSide, mode: ViewMode) -> bool {
-        self.cursor
-            .is_some_and(|c| c.line == line && (mode == ViewMode::Unified || c.side == side))
-    }
-
-    fn can_comment(&self, side: AnchorSide) -> bool {
-        match side {
-            AnchorSide::Old => self.commentable[0],
-            AnchorSide::New => self.commentable[1],
-        }
-    }
-
-    fn is_selected(&self, line: usize, side: AnchorSide) -> bool {
-        self.selection.is_some_and(|(selected, from, to)| {
-            selected == side
-                && (from..=to).contains(&line)
-                && rows::on_side(&self.lines[line], side)
-        })
     }
 }
 
@@ -211,283 +212,6 @@ impl DiffPane {
         let entry = session.files().get(file)?.clone();
         let state = session.file_state(&entry.path).cloned();
         Some((entry, state))
-    }
-
-    fn render_code(
-        &self,
-        block: usize,
-        row: &Row,
-        theme: &DvTheme,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let path = self.blocks[block].path.clone();
-        // The diff the rows were built from: the loaded one, or while it loads again the last.
-        let shown = self
-            .session
-            .as_ref()
-            .and_then(|session| session.read(cx).shown(&path));
-        let (Some(Shown { diff, highlights }), Some(char_width)) = (shown, self.char_width) else {
-            return div().h(px(heights::CODE)).into_any_element();
-        };
-        let Some(text) = diff.as_text() else {
-            return div().h(px(heights::CODE)).into_any_element();
-        };
-        let first = (self.h_offset / char_width).floor() as usize;
-        let cursor = self
-            .cursor
-            .as_ref()
-            .filter(|cursor| cursor.path == path)
-            .map(|cursor| cursor.pos);
-        let selection = self.selection.as_ref().and_then(|anchor| {
-            let cursor = cursor.filter(|_| anchor.path == path)?;
-            Some((
-                anchor.side,
-                anchor.line.min(cursor.line),
-                anchor.line.max(cursor.line),
-            ))
-        });
-        let writable = !self.read_only(cx);
-        let code = CodeCx {
-            theme,
-            path: &path,
-            lines: &text.lines,
-            highlights: highlights.as_deref(),
-            first,
-            shift: self.h_offset - first as f32 * char_width,
-            count: self.code_columns,
-            cursor,
-            selection,
-            commentable: [writable && !self.comparison(cx).is_interdiff(), writable],
-        };
-        // The row's lines on each side, for a line drag passing over it.
-        let (old, new) = match *row {
-            Row::Line(line) => (Some(line), Some(line)),
-            Row::Pair { old, new } => (old, new),
-            _ => (None, None),
-        };
-        let drag_path = path.clone();
-        // Code shows the characters as typed: no ligatures (`=>` stays two characters).
-        let row_element = div()
-            .relative()
-            .group(ROW_GROUP)
-            .flex()
-            .h(px(heights::CODE))
-            .w_full()
-            .text_spec(&theme.text.code)
-            .font_features(FontFeatures::disable_ligatures())
-            .on_mouse_move(
-                cx.listener(move |this, event: &MouseMoveEvent, window, cx| {
-                    if this.line_drag.is_none() {
-                        return;
-                    }
-                    if event.pressed_button == Some(MouseButton::Left) {
-                        this.drag_over_row(&drag_path, old, new, cx);
-                    } else {
-                        // The button came up where the stream didn't hear it.
-                        this.finish_line_drag(window, cx);
-                    }
-                }),
-            );
-        match *row {
-            Row::Line(line) => row_element
-                .children(self.unified_cells(&code, line, cx))
-                .into_any_element(),
-            Row::Pair { old, new } => row_element
-                .child(self.split_cell(&code, old, AnchorSide::Old, cx))
-                .child(self.split_cell(&code, new, AnchorSide::New, cx))
-                .into_any_element(),
-            _ => row_element.into_any_element(),
-        }
-    }
-
-    /// A unified row: the old and the new line number, the marker, the text.
-    fn unified_cells(&self, code: &CodeCx, line: usize, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let c = &code.theme.colors;
-        let Some(diff_line) = code.lines.get(line) else {
-            return Vec::new();
-        };
-        let (bg, gutter) = tints(diff_line.kind, code.theme);
-        let side = rows::natural_side(diff_line);
-        let cursor = code.is_cursor(line, side, ViewMode::Unified);
-        // The cursor's mark goes on its side's number, or the line's own side when it has
-        // none there.
-        let marked = code.cursor.filter(|_| cursor).map(|c| {
-            if rows::on_side(diff_line, c.side) {
-                c.side
-            } else {
-                side
-            }
-        });
-        let selected = code.selection.is_some_and(|(selected, from, to)| {
-            (from..=to).contains(&line) && rows::on_side(diff_line, selected)
-        });
-        let mut number = |side: AnchorSide| {
-            self.number_cell(code, Some(line), side, gutter, marked == Some(side), cx)
-        };
-        let numbers = div()
-            .relative()
-            .flex()
-            .flex_none()
-            .bg(bg)
-            .child(number(AnchorSide::Old))
-            .child(number(AnchorSide::New))
-            .child(marker(diff_line.kind, code.theme));
-        vec![
-            numbers
-                .children(self.comment_button(
-                    code,
-                    line,
-                    side,
-                    2. * NUMBER_WIDTH - 1.,
-                    ROW_GROUP,
-                    cx,
-                ))
-                .into_any_element(),
-            text_cell(code, Some(line), side, bg, cursor || selected, c.code).into_any_element(),
-        ]
-    }
-
-    /// One side of a split row: its line number, marker and text, or an empty cell.
-    fn split_cell(
-        &self,
-        code: &CodeCx,
-        line: Option<usize>,
-        side: AnchorSide,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let c = &code.theme.colors;
-        let half = div()
-            .relative()
-            .group(HALF_GROUP)
-            .flex()
-            .w_1_2()
-            .min_w_0()
-            .h_full()
-            .when(side == AnchorSide::Old, |this| {
-                this.border_r_1().border_color(c.line)
-            });
-        let Some(diff_line) = line.and_then(|line| code.lines.get(line)) else {
-            return half.bg(c.recess).into_any_element();
-        };
-        let line = line.unwrap_or_default();
-        let (bg, gutter) = tints(diff_line.kind, code.theme);
-        let cursor = code.is_cursor(line, side, ViewMode::Split);
-        let selected = code.is_selected(line, side);
-        half.bg(bg)
-            .child(self.number_cell(code, Some(line), side, gutter, cursor, cx))
-            .child(marker(diff_line.kind, code.theme))
-            .child(text_cell(
-                code,
-                Some(line),
-                side,
-                bg,
-                cursor || selected,
-                c.code,
-            ))
-            .children(self.comment_button(code, line, side, NUMBER_WIDTH - 1., HALF_GROUP, cx))
-            .into_any_element()
-    }
-
-    /// The `+` that starts a comment on `line`'s `side` with the mouse (DESIGN §4.1), `left` in
-    /// from its row's (or half's) edge over the marker column, shown while the pointer is over
-    /// `group`. A press puts the cursor on the line and starts the drag that picks the
-    /// comment's lines; the release opens the composer on them. None where no comment can start.
-    fn comment_button(
-        &self,
-        code: &CodeCx,
-        line: usize,
-        side: AnchorSide,
-        left: f32,
-        group: &'static str,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        if !code.can_comment(side) {
-            return None;
-        }
-        let number = code.lines.get(line).and_then(|l| side_number(l, side))?;
-        let c = &code.theme.colors;
-        let path = code.path.to_string();
-        let side_key = side_key(side);
-        let name = format!("stream/comment/{}/{side_key}/{number}", code.path);
-        let selector = format!("comment/{}/{side_key}/{number}", code.path);
-        Some(
-            div()
-                .absolute()
-                .top(px((heights::CODE - COMMENT_BUTTON) / 2.))
-                .left(px(left))
-                .size(px(COMMENT_BUTTON))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(code.theme.radii.small)
-                .bg(c.accent)
-                .cursor_pointer()
-                .opacity(0.)
-                .group_hover(group, |style| style.opacity(1.))
-                .child(icon(DvIcon::Plus, px(12.), c.accent_fg))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                        // The line number under the button's edge doesn't hear the press.
-                        cx.stop_propagation();
-                        this.start_line_drag(&path, LinePos { line, side }, cx);
-                    }),
-                )
-                .debug_selector(move || selector)
-                .automation_target(name),
-        )
-    }
-
-    /// A line number: `fg3`, or the accent at 600 on the cursor's line. A click puts the
-    /// cursor on the line; with Shift, the selection reaches to it.
-    fn number_cell(
-        &self,
-        code: &CodeCx,
-        line: Option<usize>,
-        side: AnchorSide,
-        gutter: Hsla,
-        cursor: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let c = &code.theme.colors;
-        let number = line
-            .and_then(|line| code.lines.get(line))
-            .and_then(|l| side_number(l, side));
-        let cell = div()
-            .relative()
-            .flex_none()
-            .w(px(NUMBER_WIDTH))
-            .h_full()
-            .pr(px(8.))
-            .flex()
-            .justify_end()
-            .bg(gutter)
-            .text_color(if cursor { c.accent_text } else { c.fg3 })
-            .when(cursor, |this| {
-                this.font_weight(FontWeight::SEMIBOLD).child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .top_0()
-                        .w(px(2.))
-                        .h_full()
-                        .bg(c.accent),
-                )
-            });
-        let (Some(number), Some(line)) = (number, line) else {
-            return cell.into_any_element();
-        };
-        let path = code.path.to_string();
-        let side_key = side_key(side);
-        cell.cursor_pointer()
-            .child(number.to_string())
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                    this.click_line(&path, LinePos { line, side }, event.modifiers.shift, cx);
-                }),
-            )
-            .automation_target(format!("stream/line/{}/{side_key}/{number}", code.path))
     }
 
     /// A gap row (DESIGN §4.1): the next hunk's `@@ -a,b +c,d @@`, how many lines it hides, and
@@ -732,133 +456,6 @@ impl DiffPane {
             .children(button)
             .automation_target(name)
     }
-}
-
-/// A row's background and line-number tint for its kind (DESIGN §1.1 diff tokens).
-fn tints(kind: LineKind, theme: &DvTheme) -> (Hsla, Hsla) {
-    let c = &theme.colors;
-    match kind {
-        LineKind::Added => (c.add_bg, c.add_gut),
-        LineKind::Removed => (c.del_bg, c.del_gut),
-        LineKind::Context => (gpui::transparent_black(), gpui::transparent_black()),
-    }
-}
-
-/// The `+` / `−` marker.
-fn marker(kind: LineKind, theme: &DvTheme) -> impl IntoElement {
-    let c = &theme.colors;
-    let (text, color) = match kind {
-        LineKind::Added => ("+", c.green),
-        LineKind::Removed => ("−", c.red),
-        LineKind::Context => ("", c.fg3),
-    };
-    div()
-        .flex_none()
-        .w(px(MARKER_WIDTH))
-        .h_full()
-        .flex()
-        .justify_center()
-        .text_color(color)
-        .child(text)
-}
-
-/// A line's text: the columns in view, coloured by token kind with intraline words on their
-/// tint, shifted by the sideways scroll; a fade where it runs on, and `sel` when selected.
-fn text_cell(
-    code: &CodeCx,
-    line: Option<usize>,
-    side: AnchorSide,
-    bg: Hsla,
-    selected: bool,
-    surface: Hsla,
-) -> impl IntoElement {
-    let c = &code.theme.colors;
-    let cell = div()
-        .relative()
-        .flex_1()
-        .min_w_0()
-        .h_full()
-        .overflow_hidden()
-        .when(selected, |this| this.bg(c.sel));
-    let Some(diff_line) = line.and_then(|line| code.lines.get(line)) else {
-        return cell;
-    };
-    let number = side_number(diff_line, side);
-    let tokens = code
-        .highlights
-        .and_then(|highlights| highlights.side(side))
-        .zip(number)
-        .map(|(side, number)| side.line(number))
-        .unwrap_or_default();
-    let shown = visible(
-        &diff_line.text,
-        tokens,
-        &diff_line.words,
-        code.first,
-        code.count,
-    );
-    let word = match diff_line.kind {
-        LineKind::Added => c.add_word,
-        LineKind::Removed => c.del_word,
-        LineKind::Context => c.sel,
-    };
-    let syntax = c.syntax;
-    let runs = shown.runs.iter().map(|(range, style)| {
-        (
-            range.clone(),
-            HighlightStyle {
-                color: Some(style.kind.color(&syntax)),
-                background_color: style.word.then_some(word),
-                ..Default::default()
-            },
-        )
-    });
-    let text = StyledText::new(shown.text.clone()).with_highlights(runs);
-    let behind = {
-        let base = surface.blend(bg);
-        if selected { base.blend(c.sel) } else { base }
-    };
-    cell.child(
-        div()
-            .absolute()
-            .top_0()
-            .left(px(TEXT_INSET - code.shift))
-            .h_full()
-            .whitespace_nowrap()
-            .text_color(syntax.plain)
-            .child(text),
-    )
-    // Scrolled sideways, the text slides under a short fade at the left edge too.
-    .when(code.first > 0 || code.shift > 0., |this| {
-        this.child(
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .h_full()
-                .w(px(FADE_WIDTH / 2.))
-                .bg(linear_gradient(
-                    90.,
-                    linear_color_stop(behind, 0.),
-                    linear_color_stop(behind.opacity(0.), 1.),
-                )),
-        )
-    })
-    .when(shown.clipped, |this| {
-        this.child(
-            div()
-                .absolute()
-                .top_0()
-                .right_0()
-                .h_full()
-                .w(px(FADE_WIDTH))
-                .bg(linear_gradient(
-                    90.,
-                    linear_color_stop(behind.opacity(0.), 0.),
-                    linear_color_stop(behind, 1.),
-                )),
-        )
-    })
 }
 
 /// The board's `ghostSm` button: 22 high, no fill until hovered, 12/500 in `fg2`.

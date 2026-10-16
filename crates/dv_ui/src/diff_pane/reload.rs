@@ -37,6 +37,10 @@ impl DiffPane {
         if kept.as_ref().is_some_and(|kept| Arc::ptr_eq(kept, diff)) {
             return;
         }
+        // The selection and the caret named the text the file had (other lines now).
+        if kept.as_ref().is_some_and(|kept| !same_lines(kept, diff)) {
+            self.forget_text_in(path);
+        }
         let across = self
             .files
             .get(path)

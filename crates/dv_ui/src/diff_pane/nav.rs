@@ -1,6 +1,6 @@
 //! The stream's keys and pointer moves (DESIGN §5 and its keyboard additions): files and change
-//! blocks, the cursor and the selection, gaps, viewed, split / unified and pages, and the lines a
-//! comment's `+` picks with the mouse.
+//! blocks, the cursor and the selection, gaps, viewed, split / unified and pages, copy and the
+//! find bar's keys, and the lines a comment's `+` picks with the mouse.
 
 use dv_core::diff::Expand;
 use dv_core::review::AnchorSide;
@@ -12,11 +12,12 @@ use super::rows::{
 };
 use super::{Cursor, DiffPane, LineDrag, SelectionAnchor};
 use crate::actions::diff_pane::{
-    ClearSelection, Comment, CommentOnFile, CursorDown, CursorLeft, CursorRight, CursorUp,
-    ExpandGap, ExpandGapFully, NextChange, NextFile, NextThread, PageDown, PageUp, PreviousChange,
-    PreviousFile, PreviousThread, Reply, ResolveThread, SelectDown, SelectUp, ToggleComparison,
-    ToggleSplit, ToggleViewed,
+    ClearSelection, Comment, CommentOnFile, Copy, CursorDown, CursorLeft, CursorRight, CursorUp,
+    ExpandGap, ExpandGapFully, Find, NextChange, NextFile, NextThread, PageDown, PageUp,
+    PreviousChange, PreviousFile, PreviousThread, Reply, ResolveThread, SelectDown, SelectUp,
+    ToggleComparison, ToggleSplit, ToggleViewed,
 };
+use crate::actions::find;
 use crate::services::ViewMode;
 
 /// Binds `$action` on `$element` to the pane's `$method`.
@@ -62,12 +63,26 @@ impl DiffPane {
                 pane.update(cx, |this, cx| this.reply(window, cx));
             }
         };
+        let find = {
+            let pane = pane.clone();
+            move |_: &Find, window: &mut Window, cx: &mut App| {
+                pane.update(cx, |this, cx| this.open_find(window, cx));
+            }
+        };
+        let close_find = {
+            let pane = pane.clone();
+            move |_: &find::Close, window: &mut Window, cx: &mut App| {
+                pane.update(cx, |this, cx| this.close_find_and_refocus(window, cx));
+            }
+        };
         bind!(
             element
                 .on_action(clear)
                 .on_action(comment)
                 .on_action(comment_on_file)
-                .on_action(reply),
+                .on_action(reply)
+                .on_action(find)
+                .on_action(close_find),
             pane,
             NextThread => next_thread,
             PreviousThread => previous_thread,
@@ -89,6 +104,9 @@ impl DiffPane {
             CursorRight => cursor_right,
             PageUp => page_up,
             PageDown => page_down,
+            Copy => copy,
+            find::Next => find_next,
+            find::Previous => find_previous,
         )
     }
 
@@ -114,6 +132,7 @@ impl DiffPane {
             offset_in_item: px(0.),
         });
         self.selection = None;
+        self.caret = None;
         self.menu = None;
         self.cursor = self.first_change(index).map(|pos| Cursor {
             path: path.clone(),
@@ -184,6 +203,9 @@ impl DiffPane {
     /// `I`: the interdiff since the last round, or all changes (the panel's toggle, PLAN
     /// §2.3); the reading position stays where the same file and line still show.
     fn toggle_comparison(&mut self, cx: &mut Context<Self>) {
+        // The other comparison shows other text: what was selected in this one goes.
+        self.clear_text_selection();
+        self.caret = None;
         if let Some(session) = self.session.clone() {
             session.update(cx, |session, cx| session.toggle_comparison(cx));
         }
@@ -240,6 +262,7 @@ impl DiffPane {
                     pos,
                 });
                 self.selection = None;
+                self.caret = None;
                 self.menu = None;
                 let item = self.starts[index] + row;
                 self.reveal_item(item, 3);
@@ -416,7 +439,10 @@ impl DiffPane {
         })
     }
 
+    /// After a keyboard move of the cursor: the caret goes (it marks where a click was, PLAN
+    /// §18.1), and the cursor's row scrolls into view.
     fn after_cursor_move(&mut self, cx: &mut Context<Self>) {
+        self.caret = None;
         if let Some(item) = self.cursor_item() {
             self.reveal_item(item, 0);
         }
@@ -517,6 +543,7 @@ impl DiffPane {
             self.cursor = Some(cursor);
         }
         self.selection = None;
+        self.caret = None;
         self.viewport_changed(cx);
         cx.notify();
     }
@@ -581,16 +608,29 @@ impl DiffPane {
         }
     }
 
-    /// Closes the file menu, else drops the composer, else clears the selection (DESIGN §5's
-    /// `Esc`); `false` when there was none of them.
+    /// Closes the file menu, else drops the composer, else closes the find bar, else clears the
+    /// selection, the lines and the text both (DESIGN §5's `Esc`); `false` when there was none
+    /// of them.
     fn clear_selection(&mut self, cx: &mut Context<Self>) -> bool {
         // A reply waiting for its card (the comments list's Reply) is forgotten too.
         self.reply_when_shown = None;
-        if self.menu.take().is_some() || self.drop_composer(cx) || self.selection.take().is_some() {
+        if self.menu.take().is_some()
+            || self.drop_composer(cx)
+            || self.close_find(cx)
+            || self.selection.take().is_some() | self.clear_text_selection()
+        {
             cx.notify();
             return true;
         }
         false
+    }
+
+    fn find_next(&mut self, cx: &mut Context<Self>) {
+        self.step_find(true, cx);
+    }
+
+    fn find_previous(&mut self, cx: &mut Context<Self>) {
+        self.step_find(false, cx);
     }
 
     fn next_thread(&mut self, cx: &mut Context<Self>) {

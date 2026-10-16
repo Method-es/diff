@@ -3,6 +3,7 @@
 use dv_backend::ConnectionState;
 use dv_core::diff::{FileEntry, FileStatus};
 use dv_core::review::{AnchorSide, Author, ReviewStatus, Thread};
+use dv_ui::diff_pane::PlaceRef;
 use dv_ui::services::reviews::{OpenRequest, RepoRow, ReviewRow};
 use dv_ui::session::{Comparison, FileState, ReviewSession, diff_kind};
 use dv_ui::submit::SummaryTab;
@@ -457,6 +458,24 @@ pub fn stream(shell: &Shell, window: &Window, cx: &App) -> Value {
             "empty": section.empty,
         })
     });
+    let place = |place: &PlaceRef| json!({"side": side(place.side), "line": place.line, "column": place.column});
+    let text_selection = pane.text_selection().map(|selection| {
+        json!({
+            "path": selection.path,
+            "side": selection.side.map(side),
+            "from": place(&selection.from),
+            "to": place(&selection.to),
+            "text": selection.text,
+        })
+    });
+    let caret = pane.caret().map(|(path, caret)| {
+        json!({
+            "path": path,
+            "side": side(caret.side),
+            "line": caret.line,
+            "column": caret.column,
+        })
+    });
     json!({
         "top_file": pane.top_file(),
         "pinned_file": pane.pinned_file(),
@@ -464,6 +483,27 @@ pub fn stream(shell: &Shell, window: &Window, cx: &App) -> Value {
         "focused": shell.focus_handle(cx).is_focused(window),
         "files": files,
         "not_in_diff": section,
+        "text_selection": text_selection,
+        "caret": caret,
+    })
+}
+
+/// `state.find`: the stream's find bar (`null` with no review open): whether it is open, the
+/// query searched for, the current match's place (from 1) and how many there are, whether every
+/// file has been searched, and how many had no text to search.
+pub fn find(shell: &Shell, window: &Window, cx: &App) -> Value {
+    let pane = shell.diff_pane().read(cx);
+    let Some(find) = pane.find_summary() else {
+        return Value::Null;
+    };
+    json!({
+        "open": find.open,
+        "query": find.query,
+        "current": find.current,
+        "count": find.count,
+        "complete": find.complete,
+        "skipped": find.skipped,
+        "focused": pane.is_find_focused(window, cx),
     })
 }
 

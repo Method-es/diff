@@ -113,8 +113,13 @@ pub struct SolidTokens {
     pub seg_on: Rgba,
     /// Keycap fill (`kbd`).
     pub kbd_bg: Rgba,
-    /// Selected rows and text.
+    /// Selected rows (the cursor's line, a line selection).
     pub sel: Rgba,
+    /// Selected text in code (a mouse selection, DESIGN §4.1).
+    pub text_sel: Rgba,
+    /// A find match in code; the current one is `find_current`, outlined in `yellow` (DESIGN §4.1).
+    pub find_match: Rgba,
+    pub find_current: Rgba,
     /// Progress tracks.
     pub track: Rgba,
     /// Inline code fill.
@@ -230,6 +235,9 @@ pub const DARK: TokenSet = TokenSet {
         seg_on: rgba(255, 255, 255, 0.12),
         kbd_bg: rgba(255, 255, 255, 0.06),
         sel: rgba(162, 119, 255, 0.22),
+        text_sel: rgba(162, 119, 255, 0.42),
+        find_match: rgba(255, 202, 133, 0.22),
+        find_current: rgba(255, 202, 133, 0.32),
         track: rgba(255, 255, 255, 0.10),
         icode_bg: rgba(255, 255, 255, 0.08),
         hunk: rgba(130, 226, 255, 0.06),
@@ -332,6 +340,9 @@ pub const LIGHT: TokenSet = TokenSet {
         seg_on: hex(0xffffff),
         kbd_bg: rgba(255, 255, 255, 0.80),
         sel: rgba(109, 67, 224, 0.13),
+        text_sel: rgba(109, 67, 224, 0.28),
+        find_match: rgba(196, 128, 0, 0.18),
+        find_current: rgba(196, 128, 0, 0.30),
         track: rgba(28, 24, 56, 0.10),
         icode_bg: rgba(28, 24, 56, 0.07),
         hunk: rgba(11, 102, 135, 0.06),

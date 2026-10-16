@@ -116,6 +116,29 @@ pub mod diff_pane {
             /// Switch between the interdiff since the last round and all changes (`I`, PLAN
             /// §2.3).
             ToggleComparison,
+            /// Copy the selected text, else the selected lines (`Ctrl C`, PLAN §18.1).
+            Copy,
+            /// Open the find bar with its field focused, or focus it again with its text
+            /// selected (`Ctrl F`, PLAN §18.1).
+            Find,
+        ]
+    );
+}
+
+/// The stream's find bar (DESIGN §4.1), dispatched in the `Find` key context while its field
+/// has the keyboard.
+pub mod find {
+    use gpui::actions;
+
+    actions!(
+        find,
+        [
+            /// Go to the next match, wrapping (`Enter`).
+            Next,
+            /// Go to the previous match, wrapping (`Shift Enter`).
+            Previous,
+            /// Close the bar and give the keyboard back to the stream (`Esc`).
+            Close,
         ]
     );
 }
@@ -174,6 +197,24 @@ pub mod file_list {
             RevealFirst,
             /// Clear the filter and hand the keyboard back to the stream (`Esc` in the filter).
             ClearFilter,
+        ]
+    );
+}
+
+/// Every text field dv shows (gpui-component's `Input`: the find field, the composer, the
+/// filters, the sheet's summary), dispatched in the `Input` key context ahead of the field's own
+/// copy and cut, so the text goes through `dv_ui::system::write_clipboard` (CLAUDE.md: every
+/// clipboard write goes through the seam).
+pub mod field {
+    use gpui::actions;
+
+    actions!(
+        field,
+        [
+            /// Copy the field's selected text (`Ctrl C`).
+            Copy,
+            /// Copy the field's selected text and remove it (`Ctrl X`).
+            Cut,
         ]
     );
 }

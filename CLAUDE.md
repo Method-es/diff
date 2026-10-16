@@ -115,8 +115,9 @@ script/check                 # every gate (PLAN §13.2): fmt, clippy x3, gpui bo
 script/check --fast          # the same without the e2e scenarios
 script/check --foreground    # also tests/e2e/foreground: takes the focus for a few seconds
 script/check --linux         # also step 6: the headless crates and dv tested and linted in WSL
-                             # Ubuntu, script/build-linux, the real WSL sandboxed under /tmp
-script/build-linux [--aarch64]   # the static musl dv for WSL: target/{debug,release}/dv-linux-x86_64
+                             # Ubuntu, script/build-linux --debug-only, the real WSL sandboxed under /tmp
+script/build-linux [--aarch64] [--debug-only]   # the static musl dv for WSL:
+                             # target/{debug,release}/dv-linux-x86_64 (--debug-only: debug's alone)
 
 cargo build                  # the dv binary (default member)
 cargo build --workspace
@@ -235,7 +236,8 @@ App windows open on the owner's real desktop.
   in the CLI on Windows as the whole command run there, one `wsl.exe` for it (PLAN §10.4).
 - **The Linux build** is `script/build-linux` (`--aarch64` adds the arm build): the headless `dv`
   for `x86_64-unknown-linux-musl`, built in Ubuntu, copied beside the Windows builds as
-  `target/debug/dv-linux-x86_64` and `target/release/dv-linux-x86_64`. The app and `dv setup
+  `target/debug/dv-linux-x86_64` and `target/release/dv-linux-x86_64` (`--debug-only`, as
+  `script/check --linux` runs it, leaves the release copy, a release app's, alone). The app and `dv setup
   wsl` find it beside their executable, or in `DV_LINUX_DIR` (a Windows folder), and install it
   into a distro by its sha256 (PLAN §5.2, §13.2).
 - **The real-WSL tests** run only when `DV_TEST_WSL_DISTRO` names a distro, and then only in

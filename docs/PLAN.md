@@ -1995,12 +1995,26 @@ to check one.
   `dv_ui::system::write_clipboard`. A click in a line's code puts the cursor on that line (as a
   click on its number does) and a **caret** at the character, which `F12`, `Shift F12` and `Ctrl
   I` act on. A drag from a line's `+` still selects lines for a comment (DESIGN §4.1); a drag in
-  the code selects text.
+  the code selects text. A selection is one file's (in split view one column's) and is kept by
+  file, side, line number on that side and byte offset, never by row, so scrolling and rows being
+  rebuilt keep it, until its file's diff changes to other lines (the agent's edit), which clears
+  it and the caret. The pointer, the selection, the caret and find's marks map through the line
+  as it was shaped and painted, so wide characters, emoji and combining marks sit where their
+  glyphs are. Copying takes the source text, the lines a gap inside the selection hides
+  included; switching split / unified or the comparison clears the selection, whose ends name
+  one column or both. Every text field's own copy and cut (the find field, the composer, the
+  filters) go through `write_clipboard` too.
 - **Find.** `Ctrl F` opens a find bar over the main area. In a file view it searches that file. In
   the stream it searches what the review shows, both sides, the text inside gaps included (loaded
   on demand); a match inside a gap opens the gap around it. Case-insensitive unless the query has
   a capital; `Enter` / `Shift Enter` go to the next / previous match; the bar counts them ("3 of
-  17").
+  17", "3 of 17+" while files still load). The stream's search loads every listed file through
+  the session (`ReviewSession::load_for_search`, after the viewport's files and the threads'),
+  matches each as it lands and keeps its matches while the diff they came from is shown; files
+  without text to search are counted ("2 files not searched"). It runs on the UI thread: 200
+  files of 1,000 lines take about 130 ms in a debug build (`search` module's ignored timing
+  test), and a landing file costs only its own search. A file loaded only for the search isn't
+  highlighted until the stream shows it.
 - **The file view.** Any file of the repo, whole, at the review's new side (or its old side, for
   a file the review deletes), drawn like the stream: highlighted, numbered, the review's changed
   lines marked with the diff's colours and its threads inline. Any new-side line takes a comment
@@ -2142,10 +2156,15 @@ settings, `PATH` or bun's global folder. It is a spec like the others; its tests
 `dv_ui::intel` holds a `CodeIntel` entity per open review: its servers (through the review's
 backend), the open documents, requests and their cancellation, and the last hover. The views are
 `file_view`, the `references` panel tab, the hover card and the find bar. The stream and the file
-view map the pointer to a line and a UTF-8 column with the same shaped lines they paint. Under
-automation, `state` shows the open hover's text, the file view (path, side, top line), the
-references rows, the find bar (query, current match, count) and the selected text. A token is a
-target, `code/<path>/<old|new>/<line>/<column>`, for hovering and clicking.
+view map the pointer to a line and a byte offset through each line's painted slice as it was
+shaped (`gpui::ShapedLine`) and a map from its bytes to the source line's (tabs expand): the
+columns they paint, whatever width a glyph takes. Under automation, `state` shows the open hover's text, the file view (path, side, top
+line), the references rows, the find bar (`find`: query, current match, count, whether every
+file was searched, how many couldn't be), the selected text and the caret
+(`stream.text_selection`, `stream.caret`). Every character of a line in view is a target,
+`code/<path>/<old|new>/<line>/<column>` (the column 1-based in characters of the source line),
+for hovering, clicking and dragging; they are recorded only while a capture is armed
+(`gpui_automation::record_target`), so they cost nothing otherwise.
 
 ### 18.7 Testing
 

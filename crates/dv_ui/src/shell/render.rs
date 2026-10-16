@@ -61,6 +61,8 @@ impl Render for Shell {
             .on_action(cx.listener(Self::toggle_switcher))
             .on_action(cx.listener(Self::toggle_panel))
             .on_action(cx.listener(Self::finish_review))
+            .on_action(cx.listener(Self::copy_field))
+            .on_action(cx.listener(Self::cut_field))
             // `Esc` closes the comments list's row menu before the stream hears it (DESIGN §5:
             // the top overlay first).
             .capture_action(cx.listener(|this, _: &ClearSelection, _, cx| {

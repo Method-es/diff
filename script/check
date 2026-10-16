@@ -151,8 +151,8 @@ if [[ "$linux" -eq 1 ]]; then
                 step 6 "Linux: $command"
                 bash -c "$command"
             done
-            step 6 "script/build-linux"
-            bash script/build-linux
+            step 6 "script/build-linux --debug-only"
+            bash script/build-linux --debug-only
             echo "script/check: skipped the real-WSL step (the app's connection, dv setup wsl," \
                 "the CLI's crossing): it runs from Windows"
             ;;
@@ -170,8 +170,8 @@ if [[ "$linux" -eq 1 ]]; then
                 MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu --cd "$win_root" --exec bash -lc \
                     "CARGO_TARGET_DIR=\"\$HOME/.cache/dv-target\" $command"
             done
-            step 6 "script/build-linux  (target/debug/dv-linux-x86_64)"
-            bash script/build-linux
+            step 6 "script/build-linux --debug-only  (target/debug/dv-linux-x86_64)"
+            bash script/build-linux --debug-only
             # Every script the tests run in the distro gets this fresh folder under its /tmp
             # as $HOME (DV_WSL_HOME), never the distro user's own; each test removes its part
             # of it. MSYS_NO_PATHCONV keeps Git Bash from rewriting the POSIX path into a

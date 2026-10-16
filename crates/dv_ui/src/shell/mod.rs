@@ -23,7 +23,9 @@
 //! **Keyboard.** It rests on the main area, which always renders with the diff pane's focus
 //! handle and key context inside the shell's, so `Ctrl O` and `Ctrl B` work at once and the
 //! stream's keys whenever a review shows (DESIGN §5). The chrome around it takes no focus, so a
-//! click on the title bar leaves the keyboard where it was.
+//! click on the title bar leaves the keyboard where it was. `Ctrl C` / `Ctrl X` in any text
+//! field land here (`actions::field`, ahead of the field's own) and go through the clipboard
+//! seam ([`crate::system::write_clipboard`]), so an automation run never touches the clipboard.
 //!
 //! **Overlays.** The switcher (`Ctrl O`) and the source picker are menus that hang under their
 //! title-bar buttons over the scrim (DESIGN §3); the "Finish round" sheet (`Ctrl Enter`, DESIGN
@@ -78,6 +80,7 @@ use gpui::{
 };
 use gpui_component::Root;
 
+use crate::actions::field;
 use crate::actions::shell::{FinishReview, TogglePanel, ToggleSwitcher};
 use crate::comments_list::CommentsList;
 use crate::diff_pane::{DiffPane, DiffPaneEvent};
@@ -853,6 +856,17 @@ impl Shell {
         self.open_sheet(window, cx);
     }
 
+    /// `Ctrl C` in a text field: its selected text through the system seam
+    /// ([`crate::system::write_clipboard`]), never gpui's clipboard directly.
+    fn copy_field(&mut self, _: &field::Copy, window: &mut Window, cx: &mut Context<Self>) {
+        field_clipboard(false, window, cx);
+    }
+
+    /// `Ctrl X` in a text field: as `Ctrl C`, then the selected text removed.
+    fn cut_field(&mut self, _: &field::Cut, window: &mut Window, cx: &mut Context<Self>) {
+        field_clipboard(true, window, cx);
+    }
+
     /// Takes the open menu (the switcher or the source picker) away without moving the
     /// keyboard: `Some` with where the keyboard was before it opened, `None` when no menu was
     /// open.
@@ -1135,4 +1149,27 @@ pub fn open_main_window(window_size: Size<gpui::Pixels>, cx: &mut App) -> Result
     .context("opening the main window")?;
     let shell = shell.context("the main window built no shell")?;
     Ok(MainWindow { handle, shell })
+}
+
+/// The focused text field's selected text onto the clipboard through the system seam, and with
+/// `cut` out of the field. Nothing happens without a selection.
+fn field_clipboard(cut: bool, window: &mut Window, cx: &mut App) {
+    use gpui_component::WindowExt as _;
+    use gpui_component::input::AnyInputState;
+    macro_rules! clip {
+        ($state:expr) => {{
+            let text = $state.read(cx).selected_text().to_string();
+            if !text.is_empty() {
+                crate::system::write_clipboard(text, cx);
+                if cut {
+                    $state.update(cx, |state, cx| state.replace("", window, cx));
+                }
+            }
+        }};
+    }
+    match window.focused_input(cx) {
+        Some(AnyInputState::Input(state)) => clip!(state),
+        Some(AnyInputState::Textarea(state)) => clip!(state),
+        _ => {}
+    }
 }

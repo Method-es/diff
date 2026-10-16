@@ -171,6 +171,7 @@ impl AutomationHost for DvAutomation {
             "file_list": state::file_list(self.shell.read(cx), cx),
             "session": state::session(self.shell.read(cx), cx),
             "stream": state::stream(self.shell.read(cx), window, cx),
+            "find": state::find(self.shell.read(cx), window, cx),
             "comments_list": state::comments_list(self.shell.read(cx), cx),
             "cli": self.cli_state(),
             "backends": state::backends(cx),

@@ -62,7 +62,7 @@ use serde_json::Value;
 
 pub use background::{is_background, open_window, set_background, window_options};
 pub use guard::{is_synthetic_input, pointer_guard};
-pub use targets::AutomationTargetExt;
+pub use targets::{AutomationTargetExt, is_capturing, record_target};
 
 /// The app-specific half of automation.
 pub trait AutomationHost: Sized + 'static {

@@ -212,3 +212,26 @@ fn segments_cover_every_line_once_in_order() {
         }
     }
 }
+
+#[test]
+fn revealing_inside_a_gap_opens_just_the_lines_asked_for() {
+    // A change, 30 unchanged lines, a change.
+    let lines = lines(&format!("-{}+", ".".repeat(30)));
+    let base = segments(&lines, 3);
+    assert_eq!(show(&base), ["L0..4", "G4..28^^", "L28..32"]);
+    // Lines 14..21 out of the middle: two gaps left, each expandable towards the lines shown.
+    assert_eq!(
+        show(&reveal_in_gap(&base, 1, 14..21)),
+        ["L0..4", "G4..14^^", "L14..21", "G21..28^^", "L28..32"]
+    );
+    // Clamped to the gap; what is left of it under MIN_GAP goes too.
+    assert_eq!(
+        show(&reveal_in_gap(&base, 1, 0..9)),
+        ["L0..9", "G9..28^^", "L28..32"]
+    );
+    assert_eq!(show(&reveal_in_gap(&base, 1, 5..27)), ["L0..32"]);
+    // Not a gap, or nothing of it: unchanged.
+    assert_eq!(reveal_in_gap(&base, 0, 0..3), base);
+    assert_eq!(reveal_in_gap(&base, 1, 28..30), base);
+    assert_eq!(reveal_in_gap(&base, 9, 0..3), base);
+}

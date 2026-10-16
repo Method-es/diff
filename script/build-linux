@@ -8,6 +8,9 @@
 #   script/build-linux            x86_64-unknown-linux-musl
 #   script/build-linux --aarch64  also aarch64-unknown-linux-musl, linked with rust-lld; when
 #                                 that can't link here it says so and the x86_64 build stands
+#   script/build-linux --debug-only  copies it to target/debug only, leaving target/release's
+#                                 copy (an installed or running release app's) alone;
+#                                 script/check --linux builds this way
 #
 # On Windows it builds inside WSL Ubuntu with the target dir on the distro's ext4 disk
 # ($HOME/.cache/dv-target; building onto /mnt is many times slower); on Linux, a WSL distro
@@ -17,18 +20,21 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-usage: script/build-linux [--aarch64]
+usage: script/build-linux [--aarch64] [--debug-only]
 
   builds the static Linux dv (x86_64-unknown-linux-musl) inside WSL Ubuntu and copies it to
   target/debug/dv-linux-x86_64 and target/release/dv-linux-x86_64
-  --aarch64   also aarch64-unknown-linux-musl (dv-linux-aarch64), linked with rust-lld
+  --aarch64     also aarch64-unknown-linux-musl (dv-linux-aarch64), linked with rust-lld
+  --debug-only  only the target/debug copy: the release app's stays as it was
 EOF
 }
 
 aarch64=0
+profiles="debug release"
 for arg in "$@"; do
     case "$arg" in
         --aarch64) aarch64=1 ;;
+        --debug-only) profiles="debug" ;;
         -h | --help)
             usage
             exit 0
@@ -46,9 +52,10 @@ cd "$root"
 target_dir="${CARGO_TARGET_DIR:-$root/target}"
 
 # The build, run by Linux's bash in the checkout: $1 is where the copies go (a Windows path is
-# translated), $2 is 1 to also build aarch64.
+# translated), $2 is 1 to also build aarch64, $3 the profile folders the copies go into.
 read -r -d '' inner <<'EOF' || true
 set -euo pipefail
+profiles="$3"
 case "$1" in
     [A-Za-z]:\\* | [A-Za-z]:/*) out="$(wslpath -u "$1")" ;;
     *) out="$1" ;;
@@ -56,8 +63,8 @@ esac
 export CARGO_TARGET_DIR="$HOME/.cache/dv-target"
 export CARGO_PROFILE_RELEASE_STRIP=symbols
 
-# Builds triple $1 as dv-linux-$2 and copies it to $out/{debug,release}; returns non-zero when
-# any step fails.
+# Builds triple $1 as dv-linux-$2 and copies it to each of $profiles' folders under $out;
+# returns non-zero when any step fails.
 build() {
     local triple="$1" arch="$2" bin
     echo "==> rustup target add $triple"
@@ -74,7 +81,7 @@ build() {
         echo "build-linux: $bin is linked dynamically; the WSL build must be static" >&2
         return 1
     fi
-    for profile in debug release; do
+    for profile in $profiles; do
         mkdir -p "$out/$profile" || return 1
         cp "$bin" "$out/$profile/.dv-linux-$arch.tmp" || return 1
         mv -f "$out/$profile/.dv-linux-$arch.tmp" "$out/$profile/dv-linux-$arch" || return 1
@@ -100,7 +107,7 @@ EOF
 # the distro it runs in. The hop through wsl.exe is Windows' (Git Bash, MSYS, Cygwin).
 case "$(uname -s)" in
     Linux)
-        bash -c "$inner" bash "$target_dir" "$aarch64"
+        bash -c "$inner" bash "$target_dir" "$aarch64" "$profiles"
         ;;
     MINGW* | MSYS* | CYGWIN*)
         if ! command -v wsl.exe > /dev/null 2>&1; then
@@ -110,7 +117,7 @@ case "$(uname -s)" in
         win_root="$(cygpath -w "$root")"
         win_target="$(cygpath -w "$target_dir")"
         MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu --cd "$win_root" --exec bash -lc "$inner" \
-            bash "$win_target" "$aarch64"
+            bash "$win_target" "$aarch64" "$profiles"
         ;;
     *)
         echo "script/build-linux: needs Windows (with WSL Ubuntu) or a Linux host" >&2
