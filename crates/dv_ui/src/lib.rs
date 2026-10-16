@@ -13,8 +13,9 @@
 //!
 //! An open review is a [`session::ReviewSession`] the shell holds and hands to the views around
 //! the stream: the [`switcher`] (and its source picker) in the title bar, the [`file_list`] and
-//! the [`comments_list`] in the panel, the [`diff_pane`] with its [`thread`] cards and composer,
-//! and the [`submit`] sheet that finishes a round. [`syntax`] highlights its diffs into token
+//! the [`comments_list`] in the panel, the [`diff_pane`] with its [`thread`] cards and composer
+//! (and, in a one-file scope, the file view, with the [`file_finder`] and the [`history`] of
+//! positions), and the [`submit`] sheet that finishes a round. [`syntax`] highlights its diffs into token
 //! kinds and [`markdown`] renders its comment bodies, sanitised. [`keymap`] binds the
 //! [`actions`]; [`banner`] is how a region shows a failure.
 
@@ -27,7 +28,9 @@ pub mod comments_list;
 pub mod components;
 pub mod diff_pane;
 pub mod failure;
+pub mod file_finder;
 pub mod file_list;
+pub mod history;
 pub mod icons;
 pub mod keymap;
 pub mod markdown;

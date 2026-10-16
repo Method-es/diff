@@ -43,13 +43,17 @@
 //! `Ctrl C` copies. **Find** (`find`, `search`): `Ctrl F` opens the find bar over the stream,
 //! which searches every file of the review, both sides, the text inside gaps included.
 //!
-//! The keyboard goes to the main area, which the shell renders with this pane's focus handle
-//! and key context ([`crate::keymap::DIFF_PANE`], [`DiffPane::bind_actions`]).
+//! **The file view** (`file_view`, PLAN §18.1) is a second pane in a one-file scope: one file
+//! whole, at the review's new side, drawn as the stream's unified rows with one line number,
+//! with everything above working on it as on the stream.
+//!
+//! The keyboard goes to the main area, which the shell renders with the shown pane's focus
+//! handle and key context ([`crate::keymap::DIFF_PANE`], [`DiffPane::bind_actions`]).
 //!
 //! Automation targets: `stream`, `stream/file/<path>/header` (and its `/chevron`, `/viewed`,
 //! `/split`, `/unified`, `/prev`, `/next`, `/menu`), `stream/pinned` (the same parts),
 //! `stream/not_in_diff/header` (and its `/chevron`; pinned, `stream/pinned` and its `/chevron`),
-//! `stream/menu/<comment|copy_path|reveal>`, `stream/gap/<path>/<n>` (`/expand`, `/expand_all`),
+//! `stream/menu/<view_file|comment|copy_path|reveal>`, `stream/gap/<path>/<n>` (`/expand`, `/expand_all`),
 //! `stream/line/<path>/<old|new>/<n>` (a line number), `stream/notice/<path>` (`/load_anyway`,
 //! and a failure's banner parts), `stream/footer/<path>` (`/next`),
 //! `code/<path>/<old|new>/<n>/<column>` (a character of a line's code, `render::code`), the
@@ -57,6 +61,7 @@
 //! and the composer's own (`thread/<id>`, `composer`; [`crate::thread`]).
 
 mod file_comment;
+pub mod file_view;
 mod find;
 mod nav;
 mod reload;
@@ -112,6 +117,13 @@ const PREFETCH_BEHIND: usize = 1;
 pub enum DiffPaneEvent {
     /// [`DiffPane::current_file`] changed.
     CurrentFileChanged,
+    /// The panel asked the stream to show a file or a thread: the shell shows the stream, over
+    /// a file view.
+    Revealing,
+    /// Open the file view on `path` (the header menu's View file, `F`), at `line` of its side.
+    ViewFile { path: String, line: Option<u32> },
+    /// The file view's ×, or `Esc` once nothing else in it takes it: back to the stream.
+    CloseFileView,
     /// The composer went, its draft with it: posted, cancelled, or dropped with its file or
     /// its thread (not replaced by another, nor gone with the review). A pick that waited for
     /// the draft runs now (`crate::shell::pending`).
@@ -220,6 +232,9 @@ pub struct DiffPane {
     line_drag: Option<LineDrag>,
     /// A file shown before its diff landed: the cursor goes to its first change when it does.
     pending_first_change: Option<String>,
+    /// A line shown before its file's diff landed (the history going back): the cursor goes to
+    /// it when it does (`DiffPane::show_line`).
+    pending_line: Option<(String, AnchorSide, u32)>,
     current_file: Option<String>,
     /// The sideways scroll, in pixels, shared by every code row.
     h_offset: f32,
@@ -289,6 +304,8 @@ pub struct DiffPane {
     geometry: select::Geometry,
     /// Ends a drag when the window goes inactive (made with the first frame).
     activation: Option<Subscription>,
+    /// The file view's scope, in the file view's pane; `None` in the stream (`file_view`).
+    file_view: Option<file_view::FileView>,
     _session_events: Vec<Subscription>,
 }
 
@@ -326,6 +343,7 @@ impl DiffPane {
             selection: None,
             line_drag: None,
             pending_first_change: None,
+            pending_line: None,
             current_file: None,
             h_offset: 0.,
             view_columns: 0,
@@ -361,6 +379,7 @@ impl DiffPane {
             frame_marks: render::code::FrameMarks::default(),
             geometry: select::Geometry::default(),
             activation: None,
+            file_view: None,
             _session_events: Vec::new(),
         }
     }
@@ -387,13 +406,18 @@ impl DiffPane {
                 ]
             })
             .unwrap_or_default();
-        self.mode = session
-            .as_ref()
-            .map(|session| {
+        // The file view is one side's lines, unified; the stream as remembered for the review.
+        self.mode = match &session {
+            _ if self.is_file_view() => ViewMode::Unified,
+            Some(session) => {
                 let id = session.read(cx).review_id().clone();
                 cx.services().review_ui.read(cx).view_mode(&id)
-            })
-            .unwrap_or_default();
+            }
+            None => ViewMode::default(),
+        };
+        if let Some(view) = self.file_view.as_mut() {
+            view.file = None;
+        }
         self.session = session;
         self.blocks.clear();
         self.recompute_starts();
@@ -402,6 +426,7 @@ impl DiffPane {
         self.chosen_side = AnchorSide::New;
         self.selection = None;
         self.pending_first_change = None;
+        self.pending_line = None;
         self.menu = None;
         self.h_offset = 0.;
         self.wanted.clear();
@@ -476,7 +501,16 @@ impl DiffPane {
     /// diff changes nothing.
     pub fn reveal_file(&mut self, path: &str, cx: &mut Context<Self>) {
         if let Some(&index) = self.index.get(path) {
+            self.revealing(cx);
             self.go_to_file(index, cx);
+        }
+    }
+
+    /// Says the stream was asked to show something ([`DiffPaneEvent::Revealing`]); the file
+    /// view's pane shows its own file and says nothing.
+    fn revealing(&self, cx: &mut Context<Self>) {
+        if !self.is_file_view() {
+            cx.emit(DiffPaneEvent::Revealing);
         }
     }
 
@@ -604,6 +638,20 @@ impl DiffPane {
             .is_some_and(|session| session.read(cx).is_viewed(path))
     }
 
+    /// The diff `path`'s rows paint, with its highlights: the session's (the loaded one, or
+    /// while it loads again the last), or the file view's text cut to its side.
+    fn shown_for(&self, path: &str, cx: &App) -> Option<crate::session::Shown> {
+        if self.is_file_view() {
+            return self.file_view_shown(cx);
+        }
+        self.session.as_ref()?.read(cx).shown(path)
+    }
+
+    /// How many line numbers a unified row shows: both sides', or the file view's one.
+    fn number_columns(&self) -> f32 {
+        if self.is_file_view() { 1. } else { 2. }
+    }
+
     /// The loaded text's lines of `path`.
     fn lines(&self, path: &str) -> Option<&[DiffLine]> {
         self.files
@@ -622,6 +670,9 @@ impl DiffPane {
 
     /// Rebuilds block `index`'s rows from the session: the section's, or a file's.
     fn build_block(&mut self, index: usize, cx: &App) -> Option<Block> {
+        if self.is_file_view() {
+            return self.file_view_block(cx);
+        }
         if self.is_section(index) {
             return self.section_block(cx);
         }
@@ -670,6 +721,7 @@ impl DiffPane {
             inserts: &inserts,
             heading: &heading,
             footer: true,
+            whole: false,
         });
         Some(Block {
             path: entry.path.clone(),
@@ -682,15 +734,19 @@ impl DiffPane {
     fn rebuild_all(&mut self, cx: &mut Context<Self>) {
         let mut anchor = self.capture_anchor();
         let first_before = self.first_file_block();
-        let count = self
-            .session
-            .as_ref()
-            .map_or(0, |session| session.read(cx).files().len());
-        let section = self.section_block(cx);
-        let files: Vec<Block> = (0..count)
-            .filter_map(|index| self.build_file_block(index, cx))
-            .collect();
-        self.blocks = section.into_iter().chain(files).collect();
+        self.blocks = if self.is_file_view() {
+            self.file_view_block(cx).into_iter().collect()
+        } else {
+            let count = self
+                .session
+                .as_ref()
+                .map_or(0, |session| session.read(cx).files().len());
+            let section = self.section_block(cx);
+            let files: Vec<Block> = (0..count)
+                .filter_map(|index| self.build_file_block(index, cx))
+                .collect();
+            section.into_iter().chain(files).collect()
+        };
         // A file gone falls back to the block now in its place: the section coming or going
         // shifts every file's block by one.
         if let Some(anchor) = anchor.as_mut() {
@@ -823,6 +879,13 @@ impl DiffPane {
     fn after_rows_changed(&mut self, cx: &mut Context<Self>) {
         self.rows_version += 1;
         self.reveal_pending_thread();
+        self.go_to_pending_line(cx);
+        if let Some((path, side, line)) = self.pending_line.clone()
+            && self.lines(&path).is_some()
+        {
+            self.pending_line = None;
+            self.show_line(&path, side, line, cx);
+        }
         if let Some(path) = self.pending_first_change.clone()
             && let Some(&index) = self.index.get(&path)
             && self.lines(&path).is_some()
@@ -1079,7 +1142,8 @@ impl DiffPane {
         }
         self.view_columns = columns;
         self.clamp_h_offset();
-        if wanted != self.wanted {
+        // The file view's file loads through the session's own slot for it, not the stream's.
+        if wanted != self.wanted && !self.is_file_view() {
             self.wanted = wanted.clone();
             if let Some(session) = self.session.clone() {
                 session.update(cx, |session, cx| session.ensure_loaded(wanted, cx));

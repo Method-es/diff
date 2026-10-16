@@ -18,7 +18,7 @@ use gpui::{
 };
 
 use crate::actions::{
-    composer, diff_pane, field, file_list, find, sheet, shell, source_picker, switcher,
+    composer, diff_pane, field, file_finder, file_list, find, sheet, shell, source_picker, switcher,
 };
 
 /// Key context of the shell's root element: everything in the main window.
@@ -30,6 +30,8 @@ pub const DIFF_PANE: &str = "DiffPane";
 pub const SWITCHER: &str = "Switcher";
 /// Key context of the open source picker (inside [`SHELL`]).
 pub const SOURCE_PICKER: &str = "SourcePicker";
+/// Key context of the open file finder (inside [`SHELL`]).
+pub const FILE_FINDER: &str = "FileFinder";
 /// Key context of the panel's file list (inside [`SHELL`]).
 pub const FILE_LIST: &str = "FileList";
 /// Key context of the composer, a new thread's or a reply's (inside [`DIFF_PANE`]).
@@ -124,6 +126,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     // The shell. Text fields bind neither, so both work from a focused field too.
     shortcut!("secondary-o", SHELL, shell::ToggleSwitcher),
     shortcut!("secondary-b", SHELL, shell::TogglePanel),
+    shortcut!("secondary-p", SHELL, shell::FindFile),
     // Finishing the round stays out of text fields: in the composer `Ctrl Enter` posts, in the
     // sheet it submits (both bound in their own contexts, below).
     shortcut!("secondary-enter", SHELL, shell::FinishReview, OutsideInputs),
@@ -133,6 +136,16 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("up", SWITCHER, switcher::SelectPrevious, AheadOfInputs),
     shortcut!("enter", SWITCHER, switcher::Confirm),
     shortcut!("escape", SWITCHER, switcher::Dismiss),
+    // The file finder: as the switcher, its filter field has the keyboard.
+    shortcut!("down", FILE_FINDER, file_finder::SelectNext, AheadOfInputs),
+    shortcut!(
+        "up",
+        FILE_FINDER,
+        file_finder::SelectPrevious,
+        AheadOfInputs
+    ),
+    shortcut!("enter", FILE_FINDER, file_finder::Confirm),
+    shortcut!("escape", FILE_FINDER, file_finder::Dismiss),
     // The source picker has the keyboard itself (no text field).
     shortcut!("down", SOURCE_PICKER, source_picker::SelectNext),
     shortcut!("up", SOURCE_PICKER, source_picker::SelectPrevious),
@@ -187,6 +200,10 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("[", DIFF_PANE, diff_pane::PreviousThread, OutsideInputs),
     shortcut!("x", DIFF_PANE, diff_pane::ResolveThread, OutsideInputs),
     shortcut!("i", DIFF_PANE, diff_pane::ToggleComparison, OutsideInputs),
+    shortcut!("f", DIFF_PANE, diff_pane::ViewFile, OutsideInputs),
+    // The history (PLAN §18.1): the shell's, from wherever the main area has the keyboard.
+    shortcut!("alt-left", DIFF_PANE, diff_pane::GoBack, OutsideInputs),
+    shortcut!("alt-right", DIFF_PANE, diff_pane::GoForward, OutsideInputs),
     // A text field copies its own selection.
     shortcut!("secondary-c", DIFF_PANE, diff_pane::Copy, OutsideInputs),
     shortcut!("secondary-f", DIFF_PANE, diff_pane::Find, OutsideInputs),

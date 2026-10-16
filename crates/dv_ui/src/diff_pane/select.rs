@@ -295,7 +295,7 @@ impl DiffPane {
         let bounds = self.list.viewport_bounds();
         let width = f32::from(bounds.size.width);
         let cell = match self.mode {
-            ViewMode::Unified => 2. * NUMBER_WIDTH + MARKER_WIDTH,
+            ViewMode::Unified => self.number_columns() * NUMBER_WIDTH + MARKER_WIDTH,
             ViewMode::Split => {
                 let half = if side == AnchorSide::New {
                     width / 2.

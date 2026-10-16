@@ -102,6 +102,11 @@ a whole, under the name `<path>` it has now. In `--json` it has `file_level: tru
 `anchor.current` and no `excerpt`. Once that file is gone from the review or deleted, the header
 says `(file, outdated)` and the line says which.
 
+A thread on a file the review doesn't change (the reviewer commented on code the change didn't
+touch, or you reverted the file since) has `(not in the diff)` after its place, and its rows are
+that file as it is now, every line unchanged; in `--json` it has `in_diff: false`. Act on it as
+on any other thread: your edit brings the file into the review.
+
 A thread opened by an agent (`agent <name>, round <n>:`; `author.kind` `agent` in `--json`) is
 a question an agent asked the reviewer (`dv comment add`, below), not a request. While the
 reviewer hasn't replied to it, it waits for them: leave it open, don't address it. Once they

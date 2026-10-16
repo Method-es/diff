@@ -281,11 +281,15 @@ pub struct RowsSpec<'a> {
     pub heading: &'a [InsertItem],
     /// Whether the file ends with the next-file footer.
     pub footer: bool,
+    /// The file view's one file whole (PLAN §18.1): its lines show whether or not they changed
+    /// (an empty file says so), under a header without side labels.
+    pub whole: bool,
 }
 
 /// One file's rows (see the module docs).
 pub fn file_rows(spec: &RowsSpec) -> Vec<Row> {
     let labels = !spec.collapsed
+        && !spec.whole
         && matches!(spec.content, Content::Loaded(FileDiff::Text(text)) if text.has_changes());
     let mut rows = vec![Row::Header {
         collapsed: spec.collapsed,
@@ -309,6 +313,10 @@ pub fn file_rows(spec: &RowsSpec) -> Vec<Row> {
     let notice = match diff {
         // Renamed or its mode changed, its content as it was: the diff holds the text as
         // context (for its threads, PLAN §8), the stream says what happened.
+        FileDiff::Text(text) if spec.whole && text.lines.is_empty() => {
+            Some(Notice::NoContentChange)
+        }
+        FileDiff::Text(_) if spec.whole => None,
         FileDiff::Text(text) if !text.has_changes() => Some(Notice::NoContentChange),
         FileDiff::Text(_) => None,
         FileDiff::Binary { old_len, new_len } => Some(Notice::Binary {

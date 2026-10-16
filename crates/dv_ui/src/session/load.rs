@@ -6,8 +6,8 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use dv_core::diff::{DiffLimits, FileDiff, FileEntry, file_diff, file_list};
-use dv_core::review::{LoadedReview, Round};
+use dv_core::diff::{DiffLimits, FileDiff, FileEntry, FileStatus, file_diff, file_list};
+use dv_core::review::{AnchorSide, LoadedReview, Round};
 use dv_core::{DiffSpec, GitRepo, Side, Target, TargetError};
 use gpui::{AppContext as _, Context, Task};
 
@@ -343,6 +343,9 @@ impl ReviewSession {
                 self.ensure_review_texts(cx);
                 self.refresh_histories(&batch, cx);
                 self.ensure_histories(cx);
+                self.refresh_side_reads(&batch, cx);
+                self.ensure_side_reads(cx);
+                self.load_file_view(cx);
                 self.ensure_watch(cx);
             }
             Err(error) => match self.lost_connection(&error) {
@@ -375,14 +378,26 @@ impl ReviewSession {
     ) {
         self.wanted = paths.into_iter().collect();
         let threaded = self.thread_files();
-        let (wanted, searching) = (&self.wanted, self.searching);
-        self.queue
-            .retain(|path| searching || wanted.contains(path) || threaded.contains(path));
+        let (wanted, searching, viewed) = (&self.wanted, self.searching, &self.file_view);
+        self.queue.retain(|path| {
+            searching
+                || wanted.contains(path)
+                || threaded.contains(path)
+                || viewed.as_ref() == Some(path)
+        });
         self.requeue_wanted();
-        // A file the find bar loaded shows now: it is highlighted as any shown file is.
+        self.highlight_shown(cx);
+        self.pump(cx);
+        cx.notify();
+    }
+
+    /// Highlights the files the stream and the file view show that aren't highlighted yet: a
+    /// file the find bar loaded shows now, and is highlighted as any shown file is.
+    fn highlight_shown(&mut self, cx: &mut Context<Self>) {
         let unhighlighted: Vec<(String, Arc<FileDiff>)> = self
             .wanted
             .iter()
+            .chain(&self.file_view)
             .filter(|path| !self.highlighting.contains_key(*path))
             .filter_map(|path| match self.states.get(path) {
                 Some(FileState::Loaded {
@@ -395,8 +410,62 @@ impl ReviewSession {
         for (path, diff) in unhighlighted {
             self.start_highlight(&path, diff, cx);
         }
-        self.pump(cx);
+    }
+
+    /// Shows `path` in the file view (PLAN §18.1), or none: a listed file loads and is
+    /// highlighted whatever the stream's viewport; any other is read at the new side
+    /// (`side`), highlighted.
+    pub fn set_file_view(&mut self, path: Option<String>, cx: &mut Context<Self>) {
+        if self.file_view == path {
+            return;
+        }
+        self.file_view = path;
+        self.load_file_view(cx);
         cx.notify();
+    }
+
+    /// The file the file view shows, if any.
+    pub fn file_view(&self) -> Option<&str> {
+        self.file_view.as_deref()
+    }
+
+    /// Has the file view's file load (listed) or read (any other), and highlighted.
+    pub(super) fn load_file_view(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.file_view.clone() else {
+            return;
+        };
+        if self.view_from_stream(&path) {
+            self.requeue_wanted();
+            self.highlight_shown(cx);
+            self.pump(cx);
+        } else {
+            let side = self.view_side(&path);
+            self.ensure_side_file(side, &path, true, cx);
+        }
+    }
+
+    /// The review's own entry for `path` (all changes, whichever comparison is shown), if the
+    /// review changes the file.
+    pub fn review_file(&self, path: &str) -> Option<&FileEntry> {
+        self.target_index().get(path)
+    }
+
+    /// The side the file view shows `path` at (PLAN §18.1): the old one for a file the review
+    /// deletes (in all changes), else the new one.
+    pub fn view_side(&self, path: &str) -> AnchorSide {
+        match self.review_file(path) {
+            Some(entry) if entry.status == FileStatus::Deleted => AnchorSide::Old,
+            _ => AnchorSide::New,
+        }
+    }
+
+    /// Whether the file view shows `path` from the diff the stream shows (its lines marked as
+    /// the stream marks them): the comparison shown lists it, and on the old side only in all
+    /// changes (an interdiff's old side is a round's snapshot). Any other file is read at the
+    /// side the file view shows ([`ReviewSession::view_side`]).
+    pub fn view_from_stream(&self, path: &str) -> bool {
+        self.file(path).is_some()
+            && (self.view_side(path) == AnchorSide::New || !self.comparison.is_interdiff())
     }
 
     /// Has every listed file load, in list order after the files the stream and the threads
@@ -473,7 +542,14 @@ impl ReviewSession {
             .iter()
             .map(|entry| &entry.path)
             .filter(move |_| searching);
-        for path in self.wanted.iter().chain(&threaded).chain(searched) {
+        let viewed = self.file_view.iter();
+        for path in self
+            .wanted
+            .iter()
+            .chain(viewed)
+            .chain(&threaded)
+            .chain(searched)
+        {
             if matches!(self.states.get(path), Some(FileState::Unloaded))
                 && !self.queue.contains(path)
             {
@@ -579,6 +655,7 @@ impl ReviewSession {
                     // Highlighting waits for the stream to show the file: one loaded only for
                     // the find bar may never be, and `ensure_loaded` starts it once it is.
                     if self.wanted.iter().any(|wanted| wanted == path)
+                        || self.file_view.as_deref() == Some(path)
                         || self.thread_files().iter().any(|threaded| threaded == path)
                     {
                         self.start_highlight(path, diff, cx);
@@ -602,8 +679,14 @@ impl ReviewSession {
         let old_path = self.file(path).and_then(|entry| entry.old_path.clone());
         let has_grammar = language_for_path(path).is_some()
             || old_path.as_deref().and_then(language_for_path).is_some();
-        // A file whose content didn't change shows a notice, not its lines.
-        if diff.as_text().is_none_or(|text| !text.has_changes()) || !has_grammar {
+        // A file whose content didn't change shows a notice in the stream, not its lines; the
+        // file view shows them.
+        let shown_whole = self.file_view.as_deref() == Some(path);
+        if diff
+            .as_text()
+            .is_none_or(|text| !text.has_changes() && !shown_whole)
+            || !has_grammar
+        {
             return;
         }
         let job = cx.background_spawn({
@@ -821,6 +904,7 @@ impl ReviewSession {
                     self.pump(cx);
                     self.ensure_review_texts(cx);
                     self.ensure_histories(cx);
+                    self.ensure_side_reads(cx);
                     if self.review.rounds.len() > rounds
                         || self.review.status.is_final() != finished
                     {

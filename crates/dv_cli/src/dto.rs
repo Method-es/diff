@@ -36,7 +36,10 @@
 //! recorded it had moved to: `dv_core::review::shows_moved`; `edited` when it stands where it
 //! was written but its text changed there, `dv_core::review::shows_edited`: read
 //! `current_code`; `file` for a comment on the whole file whose file is in the diff),
-//! `outdated`, `file_level` (`true` for a comment on the whole file, not on lines: its
+//! `outdated`, `in_diff` (`false` for a thread whose file isn't among the review's changes: it
+//! never changed, or stopped changing; it is placed against that file as the review's new side
+//! holds it, `anchor.current` and `excerpt` from that text, or `outdated` once its code is gone
+//! from it or the file is), `file_level` (`true` for a comment on the whole file, not on lines: its
 //! `anchor.original` lines are 0, `anchor.current`, `code_context`, `current_code`, `excerpt`
 //! and `trail` are `null` and `code` is empty; `path` names its file now, a rename followed,
 //! and it is `outdated` once that file is gone or deleted), `path` (its file in the current
@@ -459,6 +462,10 @@ pub struct ThreadDto {
     pub state: &'static str,
     pub placement: &'static str,
     pub outdated: bool,
+    /// Its file is among the review's changes. `false` for a thread on a file the review
+    /// doesn't change (it never changed, or stopped changing): placed in that file's text at
+    /// the review's new side, or outdated when its code is gone from it (module docs).
+    pub in_diff: bool,
     /// A comment on the whole file, not on lines (module docs).
     pub file_level: bool,
     pub path: String,
@@ -509,11 +516,14 @@ impl ThreadDto {
             placement: match located.placement {
                 _ if shows_moved(thread, &located.placement) => "moved",
                 _ if shows_edited(thread, &located.placement) => "edited",
-                Placement::Unchanged { .. } | Placement::Moved { .. } => "unchanged",
+                Placement::Unchanged { .. }
+                | Placement::Moved { .. }
+                | Placement::Unlisted { .. } => "unchanged",
                 Placement::Pending { .. } | Placement::Outdated { .. } => "outdated",
-                Placement::File { .. } => "file",
+                Placement::File { .. } | Placement::UnlistedFile { .. } => "file",
             },
             outdated,
+            in_diff: located.placement.in_diff(),
             file_level,
             path: located
                 .file

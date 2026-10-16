@@ -30,7 +30,7 @@ use crate::target::{DiffSpec, Side};
 /// a temporary index ([`super::strays`]) and listed once, as modified when it changed, marked
 /// [`FileEntry::new_untracked`].
 pub fn file_list(repo: &GitRepo, spec: &DiffSpec) -> Result<Vec<FileEntry>, DiffError> {
-    let mut entries = tracked(repo, spec, None)?;
+    let mut entries = tracked(repo, spec, None, None)?;
     if spec.new == Side::Worktree {
         let mut untracked = untracked(repo)?;
         let found = {
@@ -39,7 +39,7 @@ pub fn file_list(repo: &GitRepo, spec: &DiffSpec) -> Result<Vec<FileEntry>, Diff
         };
         if !found.is_empty() {
             let index = strays::index(repo, &found)?;
-            entries = tracked(repo, spec, Some(index.rel()))?;
+            entries = tracked(repo, spec, Some(index.rel()), None)?;
             let paths: HashSet<&str> = found.iter().map(|stray| stray.path.as_str()).collect();
             for entry in &mut entries {
                 entry.new_untracked =
@@ -56,11 +56,12 @@ pub fn file_list(repo: &GitRepo, spec: &DiffSpec) -> Result<Vec<FileEntry>, Diff
 }
 
 /// What `git diff --raw --numstat` lists between `spec`'s sides, through the temp index
-/// `index` (a store path) when given.
-fn tracked(
+/// `index` (a store path) when given, of the one file at `path` when given.
+pub(super) fn tracked(
     repo: &GitRepo,
     spec: &DiffSpec,
     index: Option<&str>,
+    path: Option<&str>,
 ) -> Result<Vec<FileEntry>, DiffError> {
     let mut args: Vec<String> = ["diff", "--raw", "--numstat", "-z", "-M", "--no-abbrev"]
         .iter()
@@ -68,6 +69,10 @@ fn tracked(
         .map(|arg| arg.to_string())
         .collect();
     args.extend(side_args(repo, spec)?);
+    if let Some(path) = path {
+        // `:(literal)`: the path is a name, never a glob.
+        args.extend(["--".to_string(), format!(":(literal){path}")]);
+    }
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let mut opts = GitOpts::new();
     opts.index_file = index.map(str::to_string);
@@ -287,7 +292,21 @@ pub(crate) fn join(
 /// (`ls-files` prints it as `dir/`) is listed as a submodule-like entry with one addition, as
 /// `--numstat` counts the gitlink it becomes once staged (or snapshotted, PLAN §2.3).
 fn untracked(repo: &GitRepo) -> Result<Vec<FileEntry>, DiffError> {
-    let args = ["ls-files", "--others", "--exclude-standard", "-z"].map(String::from);
+    untracked_at(repo, None)
+}
+
+/// [`untracked`]'s entries, of the one file at `path` when given (none when it isn't an
+/// untracked, not ignored file).
+pub(super) fn untracked_at(
+    repo: &GitRepo,
+    path: Option<&str>,
+) -> Result<Vec<FileEntry>, DiffError> {
+    let mut args = ["ls-files", "--others", "--exclude-standard", "-z"]
+        .map(String::from)
+        .to_vec();
+    if let Some(path) = path {
+        args.extend(["--".to_string(), format!(":(literal){path}")]);
+    }
     let output = git(repo, &args, None)?;
     let paths: Vec<String> = output
         .stdout

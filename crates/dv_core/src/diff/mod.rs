@@ -15,6 +15,7 @@ mod list;
 mod patch;
 mod remap;
 mod rows;
+mod side_file;
 mod strays;
 
 use std::ops::Range;
@@ -34,6 +35,7 @@ pub use intraline::{diff_pair as intraline_pair, mark_intraline};
 pub use list::file_list;
 pub use remap::remap_lines;
 pub use rows::{HunkRange, SplitRow, hunk_range, split_rows};
+pub use side_file::{side_file, side_paths};
 
 /// Per side, the byte size beyond which a file isn't diffed until the reviewer asks ("Load
 /// anyway", PLAN §6 step 2).

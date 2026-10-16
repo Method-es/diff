@@ -1,8 +1,8 @@
 //! The file header (DESIGN §4.1, the board's 44px `codeHead` bar and its side labels): the
 //! chevron, the path with its directory dimmed, the status pill and totals, Split | Unified,
 //! Viewed, previous / next file and the file menu. The same header is pinned at the top while
-//! its file scrolls; the menu holds Comment on file (PLAN §8), then Copy path and Reveal in
-//! folder, through the system seam.
+//! its file scrolls; the menu holds View file (the file view, PLAN §18.1) and Comment on file
+//! (PLAN §8), then Copy path and Reveal in folder, through the system seam.
 
 use std::path::PathBuf;
 
@@ -38,6 +38,9 @@ impl DiffPane {
         theme: &DvTheme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if self.is_file_view() {
+            return self.render_file_view_header(pinned, theme, cx);
+        }
         if self.is_section(block) {
             return self.render_section_header(block, pinned, theme, cx);
         }
@@ -339,11 +342,22 @@ impl DiffPane {
             })
             .automation_target("stream/menu/comment")
         };
+        let view_file = {
+            let path = menu.path.clone();
+            item("view_file", "View file", DvIcon::File, true)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.menu = None;
+                    this.view_file(&path, cx);
+                    cx.notify();
+                }))
+                .automation_target("stream/menu/view_file")
+        };
         let panel = menu_panel("stream-menu", theme)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.menu = None;
                 cx.notify();
             }))
+            .child(view_file)
             .child(comment)
             .child(div().h(px(1.)).my(theme.spacing.xs).bg(theme.colors.line))
             .child(

@@ -18,7 +18,8 @@
 //! thread is focused, which resolved ones are open and the composer, and hands each card its
 //! handlers, as [`crate::banner::Banner`] does.
 //!
-//! Automation targets: `thread/<id>` with `/resolve`, `/reopen`, `/toggle` and `/reply`;
+//! Automation targets: `thread/<id>` with `/resolve`, `/reopen`, `/toggle`, `/reply` and
+//! `/view_file` (a card away from the unchanged file it stands in);
 //! `composer` with `/input`, `/cancel` and `/post`.
 
 mod render;

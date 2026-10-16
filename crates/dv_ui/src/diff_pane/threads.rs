@@ -202,6 +202,17 @@ impl DiffPane {
             .is_some_and(|composer| !composer.input.read(cx).value().trim().is_empty())
     }
 
+    /// Whether the keyboard is on this pane or one of its fields (the composer, the find
+    /// field).
+    pub fn owns_focus(&self, window: &Window, cx: &gpui::App) -> bool {
+        self.focus_handle.is_focused(window)
+            || self
+                .composer
+                .as_ref()
+                .is_some_and(|composer| composer.input.focus_handle(cx).is_focused(window))
+            || self.is_find_focused(window, cx)
+    }
+
     /// The keyboard's thread.
     pub fn focused_thread(&self) -> Option<&ThreadId> {
         self.focused_thread.as_ref()
@@ -302,6 +313,10 @@ impl DiffPane {
             // Its file's path where the stream draws it there; in the section, the path it
             // was written on.
             let path = match placement.file().and_then(|path| session.file(path)) {
+                _ if self.is_file_view() => match self.file_view_path() {
+                    Some(path) => path.to_string(),
+                    None => return,
+                },
                 Some(entry) => entry.path.clone(),
                 None if placement.is_not_in_diff() => found.anchor.path.clone(),
                 None => return,
@@ -669,6 +684,8 @@ impl DiffPane {
         let Some(session) = self.session.clone() else {
             return;
         };
+        // In the file view, a new thread anchors on the text it shows (PLAN §18.1).
+        let file_text = self.file_view_text();
         let Some(composer) = self.composer.as_mut() else {
             return;
         };
@@ -692,6 +709,14 @@ impl DiffPane {
             None => {
                 let anchor = if target.is_file() {
                     session.read(cx).file_anchor_for(&target.path, target.side)
+                } else if let Some(text) = file_text.as_ref().and_then(|diff| diff.as_text()) {
+                    session.read(cx).anchor_in_text(
+                        &target.path,
+                        target.side,
+                        text,
+                        target.start_line,
+                        target.end_line,
+                    )
                 } else {
                     session.read(cx).anchor_for(
                         &target.path,
@@ -857,6 +882,7 @@ impl DiffPane {
         let Some(session) = self.session.clone() else {
             return;
         };
+        self.revealing(cx);
         if let Some(item) = self.thread_item(thread) {
             self.focus_item(item, thread.clone(), cx);
             return;

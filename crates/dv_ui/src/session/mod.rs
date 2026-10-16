@@ -58,6 +58,7 @@ mod connection;
 mod history;
 mod load;
 mod placement;
+mod side;
 mod watch;
 mod writes;
 
@@ -86,6 +87,7 @@ pub use load::Batch;
 use load::ReviewText;
 pub use placement::ThreadPlacement;
 use placement::{FileIndex, FuzzyTables};
+pub use side::SideFileState;
 use watch::WatchState;
 use writes::ViewedIntent;
 
@@ -234,6 +236,14 @@ pub struct ReviewSession {
     histories: HashMap<u32, history::RoundRead>,
     /// History reads wait while this is set (tests: what shows while a history is missing).
     histories_held: bool,
+    /// Files read whole at the new side, for the file view and the threads on files the review
+    /// doesn't list (`side`).
+    side_reads: side::SideReads,
+    /// The paths the new side holds, for `Ctrl P` (`side`).
+    side_paths: Option<side::SidePaths>,
+    /// The file the file view shows: it loads (a listed file's diff, else its read at the new
+    /// side) and is highlighted whatever the stream's viewport (`side`).
+    file_view: Option<String>,
     /// How many placements were worked out (tests: what keeping them saves).
     #[cfg(test)]
     worked_out: std::cell::Cell<usize>,
@@ -324,6 +334,9 @@ impl ReviewSession {
             review_texts: HashMap::new(),
             histories: HashMap::new(),
             histories_held: false,
+            side_reads: HashMap::new(),
+            side_paths: None,
+            file_view: None,
             #[cfg(test)]
             worked_out: std::cell::Cell::new(0),
             #[cfg(test)]
@@ -409,6 +422,12 @@ impl ReviewSession {
             Comparison::SinceRound(n) => (format!("round {n}"), new),
             Comparison::All => (old, new),
         }
+    }
+
+    /// What the review's own sides are called (all changes, whichever comparison shows):
+    /// `main` / `working tree`, for the file view (PLAN §18.1).
+    pub fn target_side_labels(&self) -> (String, String) {
+        side_labels(&self.review.target, &self.labels)
     }
 
     /// The spec the files were listed with at the last refresh (an interdiff's, in one);
@@ -628,6 +647,7 @@ impl ReviewSession {
         let wanted_landed = self.spec.is_none()
             || self.link.down
             || (self.wanted.iter().all(landed)
+                && self.file_view.iter().all(landed)
                 && self.thread_files().iter().all(landed)
                 && (!self.searching || self.list.files.iter().all(|entry| landed(&entry.path))));
         self.refreshing.is_none()
@@ -641,6 +661,7 @@ impl ReviewSession {
             && self.highlighting.is_empty()
             && !self.review_texts.values().any(ReviewText::is_loading)
             && !self.histories_loading()
+            && !self.side_reads_loading()
             && wanted_landed
     }
 
@@ -683,6 +704,38 @@ impl ReviewSession {
             )));
         }
         Ok(AnchorPlace::for_entry(entry, side, self.review.current_round()).file_level())
+    }
+
+    /// The anchor for lines `from` to `to` (either order) of `side` of the file at `path` as
+    /// the file view shows it (`text`: its side's full text, PLAN §18.1), in the round in
+    /// progress: named by the review's own entry for the file when the review changes it, else
+    /// by its path alone (a file the review doesn't change, PLAN §8). An interdiff's old side
+    /// takes none, as [`ReviewSession::anchor_for`] says.
+    pub fn anchor_in_text(
+        &self,
+        path: &str,
+        side: AnchorSide,
+        text: &dv_core::diff::TextDiff,
+        from: u32,
+        to: u32,
+    ) -> Result<Anchor, Failure> {
+        if self.comparison.is_interdiff() && side == AnchorSide::Old {
+            return Err(Failure::new(
+                "the old side here is a round's snapshot: show all changes to comment on it",
+            ));
+        }
+        let round = self.review.current_round();
+        let place = match self.target_index().get(path) {
+            Some(entry) => AnchorPlace::for_entry(entry, side, round),
+            None => AnchorPlace {
+                round,
+                path: path.to_string(),
+                old_path: None,
+                side,
+            },
+        };
+        anchor_selection(place, &side_lines(text, side), from, to)
+            .map_err(|error: AnchorError| Failure::new(error.to_string()))
     }
 
     /// The anchor for lines `from` to `to` (either order) of `path`'s `side` in its loaded

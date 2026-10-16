@@ -29,7 +29,7 @@ fn the_empty_shell_shows_the_no_review_state(cx: &mut TestAppContext) {
         assert_eq!(status.location, "No repo");
         assert!(!status.finish);
         assert!(
-            view.focus_handle.is_focused(window),
+            view.main_focus(cx).is_focused(window),
             "the shell has the keyboard, so Ctrl O works at once"
         );
     });
@@ -253,7 +253,7 @@ fn closing_an_overlay_never_strands_the_keyboard_on_a_hidden_filter(cx: &mut Tes
     assert!(!shell.read_with(cx, |shell, _| shell.panel_visible()));
     press(cx, "escape");
     assert!(shell.read_with(cx, |shell, _| shell.switcher().is_none()));
-    let main = shell.read_with(cx, |shell, _| shell.focus_handle.clone());
+    let main = shell.read_with(cx, |shell, cx| shell.main_focus(cx));
     assert!(
         cx.update(|window, _| main.is_focused(window)),
         "the keyboard is back on the main area"

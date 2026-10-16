@@ -60,6 +60,7 @@
 //! **Panel.** `Ctrl B` shows or hides it; dragging its right edge resizes it within 220–420,
 //! saved in `settings.json` (DESIGN §2).
 
+mod file_view;
 pub mod pending;
 mod render;
 mod status_bar;
@@ -85,7 +86,9 @@ use crate::actions::shell::{FinishReview, TogglePanel, ToggleSwitcher};
 use crate::comments_list::CommentsList;
 use crate::diff_pane::{DiffPane, DiffPaneEvent};
 use crate::failure::Failure;
+use crate::file_finder::FileFinder;
 use crate::file_list::{FileList, FileListEvent};
+use crate::history::History;
 use crate::platform;
 use crate::services::ActiveServices as _;
 use crate::services::LocationsEvent;
@@ -232,9 +235,6 @@ struct Overlay<V> {
 
 /// The root view of the main window.
 pub struct Shell {
-    /// The main area's, which is the diff pane's: where the keyboard rests whenever no overlay
-    /// or text field has it, so the shell's keys and the stream's both work.
-    focus_handle: FocusHandle,
     /// The material last applied to the window, for `state.shell`.
     applied: Material,
     /// The open review, if any.
@@ -242,6 +242,13 @@ pub struct Shell {
     file_list: Entity<FileList>,
     comments_list: Entity<CommentsList>,
     diff_pane: Entity<DiffPane>,
+    /// The file view's pane (`file_view`), shown over the stream while `file_view_open`.
+    file_view: Entity<DiffPane>,
+    file_view_open: bool,
+    /// The positions jumps left (`file_view`, PLAN §18.1).
+    history: History,
+    /// The file finder (`Ctrl P`), a menu like the switcher.
+    file_finder: Option<Overlay<FileFinder>>,
     switcher: Option<Overlay<Switcher>>,
     source_picker: Option<Overlay<SourcePicker>>,
     /// The "Finish round" sheet (DESIGN §4.2).
@@ -276,6 +283,7 @@ pub struct Shell {
 impl Shell {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let diff_pane = cx.new(DiffPane::new);
+        let file_view = cx.new(DiffPane::new_file_view);
         let file_list = cx.new(|cx| FileList::new(diff_pane.clone(), window, cx));
         let comments_list = cx.new(|cx| CommentsList::new(diff_pane.clone(), cx));
         let settings = cx.services().settings.clone();
@@ -320,23 +328,29 @@ impl Shell {
                 &file_list,
                 window,
                 |this, _, event, window, cx| match event {
-                    FileListEvent::Done => this.focus_handle.focus(window, cx),
+                    FileListEvent::Done => this.main_focus(cx).focus(window, cx),
                 },
             ),
             // A composer gone, its draft with it, runs a pick that waited for it ([`pending`]).
             cx.subscribe_in(
                 &diff_pane,
                 window,
-                |this, _, event: &DiffPaneEvent, window, cx| match event {
-                    DiffPaneEvent::ComposerClosed => this.run_pending(window, cx),
-                    DiffPaneEvent::CurrentFileChanged => {}
+                |this, _, event: &DiffPaneEvent, window, cx| {
+                    this.on_stream_event(event, window, cx)
+                },
+            ),
+            cx.subscribe_in(
+                &file_view,
+                window,
+                |this, _, event: &DiffPaneEvent, window, cx| {
+                    this.on_file_view_event(event, window, cx)
                 },
             ),
             // The keyboard never stays on an element that is no longer drawn (module docs).
             cx.on_focus_lost(window, |this, window, cx| {
                 let target = window
                     .focus_lost_restore_target(cx)
-                    .unwrap_or_else(|| this.focus_handle.clone());
+                    .unwrap_or_else(|| this.main_focus(cx));
                 target.focus(window, cx);
             }),
         ];
@@ -348,18 +362,20 @@ impl Shell {
         if appearance != Appearance::of_window(window.appearance()) {
             platform::apply_window_appearance(window, appearance);
         }
-        let focus_handle = diff_pane.read(cx).focus_handle(cx);
         // The main area always renders, inside the shell's key context, so the shell's keys
         // (`Ctrl O`) work at once and the stream's as soon as a review shows.
-        focus_handle.focus(window, cx);
+        diff_pane.read(cx).focus_handle(cx).focus(window, cx);
         Self {
-            focus_handle,
             // The window opened with the theme's material ([`window_options`]).
             applied: material,
             session: None,
             file_list,
             comments_list,
             diff_pane,
+            file_view,
+            file_view_open: false,
+            history: History::default(),
+            file_finder: None,
             switcher: None,
             source_picker: None,
             sheet: None,
@@ -494,6 +510,12 @@ impl Shell {
             .update(cx, |list, cx| list.set_session(Some(session.clone()), cx));
         self.comments_list
             .update(cx, |list, cx| list.set_session(Some(session.clone()), cx));
+        // Another review's files: the file view and the history go.
+        self.file_view_open = false;
+        self.file_finder = None;
+        self.history.clear();
+        self.file_view
+            .update(cx, |pane, cx| pane.set_session(Some(session.clone()), cx));
         self.diff_pane
             .update(cx, |pane, cx| pane.set_session(Some(session), cx));
         cx.notify();
@@ -710,7 +732,7 @@ impl Shell {
                 // A sheet still open (the same review, resumed) keeps the keyboard, and so does
                 // a menu open while a pending pick ran again by itself.
                 if self.sheet.is_none() && self.switcher.is_none() && self.source_picker.is_none() {
-                    self.focus_handle.focus(window, cx);
+                    self.main_focus(cx).focus(window, cx);
                 }
                 Ok(result)
             }
@@ -845,7 +867,7 @@ impl Shell {
                 };
                 match menu_focus {
                     Some(return_focus) => *return_focus = None,
-                    None => self.focus_handle.focus(window, cx),
+                    None => self.main_focus(cx).focus(window, cx),
                 }
                 cx.notify();
             }
@@ -871,10 +893,15 @@ impl Shell {
     /// keyboard: `Some` with where the keyboard was before it opened, `None` when no menu was
     /// open.
     fn take_menu(&mut self) -> Option<Option<FocusHandle>> {
-        match (self.switcher.take(), self.source_picker.take()) {
-            (Some(menu), _) => Some(menu.return_focus),
-            (None, Some(menu)) => Some(menu.return_focus),
-            (None, None) => None,
+        match (
+            self.switcher.take(),
+            self.source_picker.take(),
+            self.file_finder.take(),
+        ) {
+            (Some(menu), _, _) => Some(menu.return_focus),
+            (None, Some(menu), _) => Some(menu.return_focus),
+            (None, None, Some(menu)) => Some(menu.return_focus),
+            (None, None, None) => None,
         }
     }
 
@@ -918,7 +945,7 @@ impl Shell {
         let filter = self.file_list.read(cx).filter_focus(cx);
         match handle {
             Some(handle) if self.panel_visible || handle != filter => handle.focus(window, cx),
-            _ => self.focus_handle.focus(window, cx),
+            _ => self.main_focus(cx).focus(window, cx),
         }
     }
 
@@ -1073,7 +1100,7 @@ impl Shell {
     fn toggle_panel(&mut self, _: &TogglePanel, window: &mut Window, cx: &mut Context<Self>) {
         // The keyboard leaves a filter field that is about to disappear.
         if self.panel_visible && self.file_list.read(cx).is_filter_focused(window, cx) {
-            self.focus_handle.focus(window, cx);
+            self.main_focus(cx).focus(window, cx);
         }
         self.set_panel_visible(!self.panel_visible, cx);
     }
@@ -1089,8 +1116,8 @@ impl Shell {
 }
 
 impl Focusable for Shell {
-    fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.focus_handle.clone()
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.main_focus(cx)
     }
 }
 

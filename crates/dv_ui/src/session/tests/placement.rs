@@ -142,7 +142,7 @@ fn a_comment_on_a_whole_file_too_large_to_show_reads_no_full_text(cx: &mut TestA
 }
 
 #[gpui::test]
-fn a_file_reverted_after_the_round_is_outdated_in_the_interdiff_too(cx: &mut TestAppContext) {
+fn a_file_reverted_after_the_round_leaves_the_review_in_the_interdiff_too(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
     let repo = FixtureRepo::new();
     repo.write("x.rs", "one\ntwo\nthree\nfour\nfive\nsix\n");
@@ -164,6 +164,9 @@ fn a_file_reverted_after_the_round_is_outdated_in_the_interdiff_too(cx: &mut Tes
         paths(session) == ["x.rs"]
     });
     load(cx, &session, &["x.rs"]);
+    wait(cx, &session, "x.rs read at the new side", |session| {
+        session.is_settled()
+    });
     session.read_with(cx, |session, _| {
         assert_eq!(session.comparison(), Comparison::SinceRound(1));
         assert!(!session.in_review("x.rs"));
@@ -175,12 +178,19 @@ fn a_file_reverted_after_the_round_is_outdated_in_the_interdiff_too(cx: &mut Tes
                 .collect::<Vec<_>>(),
             ["y.rs"]
         );
-        for id in [&changed, &context] {
-            let thread = thread(session, id);
-            let placement = session.placement(thread);
-            assert_eq!(placement.key(thread), "outdated", "as dv comment list says");
-            assert_eq!(placement.file(), None);
-        }
+        // Its changed line is gone; its context line stands in the file at the new side, which
+        // the review doesn't change now (PLAN §8), as `dv comment list` says.
+        let thread_changed = thread(session, &changed);
+        let placement = session.placement(thread_changed);
+        assert_eq!(placement.key(thread_changed), "outdated");
+        assert_eq!(placement.file(), None);
+        let thread_context = thread(session, &context);
+        let placement = session.placement(thread_context);
+        assert_eq!(placement.key(thread_context), "unchanged");
+        assert!(placement.is_unlisted() && placement.is_not_in_diff());
+        assert_eq!(placement.lines(&thread_context.anchor), Some((6, 6)));
+        assert_eq!(placement.file(), None);
+        assert_eq!(session.location(thread_context), "x.rs:6");
         assert_eq!(session.threads_in("x.rs").count(), 0);
         // Nothing to comment on there: it isn't among the review's changes.
         let refused = session

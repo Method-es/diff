@@ -936,6 +936,33 @@ diff" section before the first file, whichever comparison is shown, so it too ca
 and resolved there (and from its comments-list row's menu). A comment on the whole file heads
 its file, ahead of its outdated cards, and goes to that section once its file leaves the list.
 
+**Threads on files the review doesn't change.** A thread whose file left the review's list —
+the file never changed (a comment from the file view), or stopped changing (the agent reverted
+it) — is no longer simply outdated: `review::place_unlisted` relocates it, as above, against that
+file's text at the review's new side (`diff::side_file`, read whole, without the size caps, as
+the file view's text is), at the path its round's history says the file has now when it says
+(`review::unlisted_path`), else its anchor's. The review doesn't change the file, so its old and
+new sides are the same text, and an old-side anchor is relocated in it too. Found there, a thread
+is `Placement::Unlisted { path, start_line, end_line, how }`: placed (`lines()` its lines;
+`as_str()` "unchanged" or "moved", `shows_moved` and `shows_edited` as for any placement), not
+outdated, in no listed file (`file()` `None`), and not in the diff (`Placement::in_diff()` false);
+a comment on the whole file of a file that stands there is `Placement::UnlistedFile { path }`
+(`is_file()`, `as_str()` "file", not in the diff). Its anchored text gone from the file, or the
+file gone from that side (or without text: binary, a submodule), it is outdated without a file as
+before. The GUI reads such a file in the background for its threads (and the file view), kept
+until a refresh touches its path or the git state or a side moves, the read it had placing them
+meanwhile; until its first read lands the thread waits (`ThreadPlacement::Reading`: pending,
+drawn neutrally in the "Not in the diff" section, so its card, and a reply being typed in it,
+stay there), then is marked "Unchanged file" with **View file** (the file view at its line) once
+it is placed; in that file's file view it shows inline at its lines (either side's). The CLI
+reads the same file synchronously, once per path, for the threads that need it (a file it can't
+read is a warning on stderr, its threads outdated) and reports them `placement` "unchanged" /
+"moved" / "edited" / "file", `in_diff: false`, `anchor.current` and `excerpt` from that file's
+text, and the text output's `(not in the diff)` (`(file, not in the diff)`, "on the whole file,
+which the review doesn't change"). No move is recorded for such a thread (its anchor names no
+listed file); once its file joins the review again, it is placed in it as any thread.
+`dv comment add` still takes only the review's changed files.
+
 **Round history** (`review::history`). A thread's `anchor.round` is the round its line numbers
 refer to; once that round has closed, its snapshot (`refs/dv/reviews/<id>/<n>`, §2.3) holds the
 text the anchor was taken from, and a new-side thread the current text alone can't place (its
@@ -2016,14 +2043,45 @@ to check one.
   test), and a landing file costs only its own search. A file loaded only for the search isn't
   highlighted until the stream shows it.
 - **The file view.** Any file of the repo, whole, at the review's new side (or its old side, for
-  a file the review deletes), drawn like the stream: highlighted, numbered, the review's changed
-  lines marked with the diff's colours and its threads inline. Any new-side line takes a comment
-  (its `+`, `C`); an anchor on a line the review didn't change is an ordinary anchor (§8). It opens
-  from a file header's menu (**View file**), from `F` on the current file, from `Ctrl P` (every
-  tracked file, filtered as the file list filters), and from go to definition and references.
-  One file view shows at a time, over the stream; `Esc` returns to the stream. The stream and the
-  file view share one **history** of positions: `Alt ←` / `Alt →` (and the mouse's back and
-  forward buttons) step through it, so a jump and back returns to the line it left.
+  a file the review deletes), drawn like the stream's unified rows with one line number (the
+  side's): highlighted, the review's changed lines marked with the diff's colours and its threads
+  inline. Its text is the stream's diff of the file cut to that side when the stream lists the
+  file, else the file read at the new side through the diff pipeline itself
+  (`dv_core::diff::side_file`: the side diffed against the empty tree, one file, the pinned flags,
+  every line given back as a context line), so autocrlf, `eol`, filters and encodings, binary and
+  the size caps (`DiffLimits`) are what git decides for that side and a line here is byte for
+  byte the same line as in the stream (anchors compare text, §8). Any line takes a comment (its
+  `+`, `C`, `Shift ↑`/`↓`), anchored on that text; an anchor on a line the review didn't change,
+  or in a file it doesn't change at all, is an ordinary anchor (§8 "Threads on files the review
+  doesn't change"). It opens from a file header's menu (**View file**), from `F` on the current
+  file (both at the cursor's line when it is in the file), from `Ctrl P` (every file of the new
+  side, filtered as the file list filters), from a "Not in the diff" card's **View file**, and
+  (step 3) from go to definition and references. It is the stream's pane in a one-file scope
+  (`dv_ui::diff_pane::file_view`), so the cursor, selection, text, copy and find work as in the
+  stream; `S`, `V`, `I` and the gap keys do nothing there. Its side, status and whether the review
+  changes it come from the review's own list (all changes) whichever comparison shows: a file the
+  review deletes shows its old side (read at the review's base in an interdiff, every line
+  removed); its lines are marked as the stream marks them (in an interdiff, changes since the
+  round; a file the interdiff doesn't list is read at the side, unmarked, "unchanged since round
+  n"). A file read at its side that is over the size caps shows the too-large notice with "Load
+  anyway". A draft in its composer is never dropped: opening another file, closing the file
+  view, the history and a panel row that shows the stream leave it be, the draft taking the
+  keyboard instead; only `Esc` in it discards it. One file view shows at a time, over the
+  stream, which keeps its place; `Esc` (once nothing else in the file view takes it) or its close
+  button returns to the stream, and so does a panel row that shows something in the stream. The
+  stream and the file view share one **history** of positions (`dv_ui::history`, a view, a file,
+  a side and a line): opening the file view and leaving it are jumps, each pushing the position it
+  leaves and dropping the positions ahead; moves within a view (the keys, `J`/`K`, find's `Enter`,
+  scrolling) aren't. `Alt ←` / `Alt →` (and the mouse's back and forward buttons) step through it,
+  restoring the view, the file and the line (the stream opens the gap that hides it). It keeps
+  100 positions each way and is cleared when another review opens.
+- **The file finder** (`Ctrl P`): the new side's paths (`dv_core::diff::side_paths`: a tree's
+  blobs and links, the index's entries, or the working tree's tracked files still on disk plus the
+  untracked ones git doesn't ignore), read once per review open and round, joined with the
+  review's own files (a file the agent added since, a deleted one); a file passes when every word
+  is in its path, ignoring case, names matching before directories, the review's changed files
+  first among equal matches, the rest by path. Filtering runs in memory on each keystroke (20,000
+  paths take a few milliseconds). Not over the "Finish round" sheet.
 - **Hover.** The pointer resting 350 ms on an identifier, or `Ctrl I` at the caret, asks the
   file's servers. The card under the token shows the signature as highlighted code and the docs
   as Markdown (`dv_ui::markdown`, sanitised; a link to a file opens the file view, a web link goes
@@ -2158,8 +2216,10 @@ backend), the open documents, requests and their cancellation, and the last hove
 `file_view`, the `references` panel tab, the hover card and the find bar. The stream and the file
 view map the pointer to a line and a byte offset through each line's painted slice as it was
 shaped (`gpui::ShapedLine`) and a map from its bytes to the source line's (tabs expand): the
-columns they paint, whatever width a glyph takes. Under automation, `state` shows the open hover's text, the file view (path, side, top
-line), the references rows, the find bar (`find`: query, current match, count, whether every
+columns they paint, whatever width a glyph takes. Under automation, `state` shows the open hover's text, the file view (`file_view`: path, side,
+top line, line count, whether the review changes it and which lines, whether it is loading), the
+history (`history`: positions behind and ahead), the file finder (`file_finder`: query, rows,
+count, selection), the references rows, the find bar (`find`: query, current match, count, whether every
 file was searched, how many couldn't be), the selected text and the caret
 (`stream.text_selection`, `stream.caret`). Every character of a line in view is a target,
 `code/<path>/<old|new>/<line>/<column>` (the column 1-based in characters of the source line),

@@ -308,12 +308,12 @@ pub fn session(shell: &Shell, cx: &App) -> Value {
         "total": session.files().len(),
         "current_file": shell.diff_pane().read(cx).current_file(),
         "view_mode": shell.diff_pane().read(cx).view_mode().key(),
-        "cursor": shell.diff_pane().read(cx).cursor().map(|cursor| json!({
+        "cursor": shell.main_pane().read(cx).cursor().map(|cursor| json!({
             "path": cursor.path,
             "side": side(cursor.side),
             "line": cursor.line,
         })),
-        "selection": shell.diff_pane().read(cx).selection().map(|selection| json!({
+        "selection": shell.main_pane().read(cx).selection().map(|selection| json!({
             "path": selection.path,
             "side": side(selection.side),
             "start_line": selection.start_line,
@@ -321,7 +321,7 @@ pub fn session(shell: &Shell, cx: &App) -> Value {
         })),
         "threads": threads,
         "composer": composer(shell, cx),
-        "focused_thread": shell.diff_pane().read(cx).focused_thread(),
+        "focused_thread": shell.main_pane().read(cx).focused_thread(),
         "sheet": sheet(shell, cx),
         "rounds": rounds,
         "comparison": comparison(session.comparison()),
@@ -355,7 +355,7 @@ fn ready_note(shell: &Shell, cx: &App) -> Value {
 
 /// `state.session.composer`: the open composer, or `null`.
 fn composer(shell: &Shell, cx: &App) -> Value {
-    let pane = shell.diff_pane().read(cx);
+    let pane = shell.main_pane().read(cx);
     let Some(composer) = pane.composer() else {
         return Value::Null;
     };
@@ -459,7 +459,9 @@ pub fn stream(shell: &Shell, window: &Window, cx: &App) -> Value {
         })
     });
     let place = |place: &PlaceRef| json!({"side": side(place.side), "line": place.line, "column": place.column});
-    let text_selection = pane.text_selection().map(|selection| {
+    // The text and the caret are the shown pane's: the file view's while it is open.
+    let shown = shell.main_pane().read(cx);
+    let text_selection = shown.text_selection().map(|selection| {
         json!({
             "path": selection.path,
             "side": selection.side.map(side),
@@ -468,7 +470,7 @@ pub fn stream(shell: &Shell, window: &Window, cx: &App) -> Value {
             "text": selection.text,
         })
     });
-    let caret = pane.caret().map(|(path, caret)| {
+    let caret = shown.caret().map(|(path, caret)| {
         json!({
             "path": path,
             "side": side(caret.side),
@@ -488,11 +490,59 @@ pub fn stream(shell: &Shell, window: &Window, cx: &App) -> Value {
     })
 }
 
+/// `state.file_view`: the file view while it shows (else `null`): its file and side, the first
+/// line in view, how many lines it has, whether the review changes it and which of its lines
+/// (the first 200), whether its text is still loading, and the notice it shows instead of lines.
+pub fn file_view(shell: &Shell, cx: &App) -> Value {
+    if !shell.is_file_view_open() {
+        return Value::Null;
+    }
+    let Some(view) = shell.file_view().read(cx).file_view_summary(cx) else {
+        return Value::Null;
+    };
+    json!({
+        "path": view.path,
+        "side": side(view.side),
+        "top_line": view.top_line,
+        "line_count": view.line_count,
+        "changed": view.changed,
+        "changed_lines": view.changed_lines,
+        "loading": view.loading,
+        "notice": view.notice,
+    })
+}
+
+/// `state.file_finder`: the file finder (`Ctrl P`): whether it is open, the query, the first
+/// rows (paths, in order), how many files pass the filter, the selected one, whether every
+/// file of the side is listed, and whether its field has the keyboard.
+pub fn file_finder(shell: &Shell, window: &Window, cx: &App) -> Value {
+    let Some(finder) = shell.file_finder() else {
+        return json!({"open": false, "query": null, "rows": [], "count": 0, "selected": null});
+    };
+    let finder = finder.read(cx);
+    json!({
+        "open": true,
+        "query": finder.query(),
+        "rows": finder.rows(dv_ui::file_finder::STATE_ROWS),
+        "count": finder.count(),
+        "selected": finder.selected_path(),
+        "complete": finder.is_complete(),
+        "focused": finder.is_focused(window, cx),
+    })
+}
+
+/// `state.history`: how many positions are behind and ahead (`Alt ←` / `Alt →`).
+pub fn history(shell: &Shell) -> Value {
+    let (back, forward) = shell.history().counts();
+    json!({"back": back, "forward": forward})
+}
+
 /// `state.find`: the stream's find bar (`null` with no review open): whether it is open, the
 /// query searched for, the current match's place (from 1) and how many there are, whether every
 /// file has been searched, and how many had no text to search.
 pub fn find(shell: &Shell, window: &Window, cx: &App) -> Value {
-    let pane = shell.diff_pane().read(cx);
+    // The shown pane's bar: the file view's while it is open.
+    let pane = shell.main_pane().read(cx);
     let Some(find) = pane.find_summary() else {
         return Value::Null;
     };
@@ -584,6 +634,9 @@ fn thread_state(session: &ReviewSession, thread: &Thread) -> Value {
             json!(false)
         },
         "placement": placement.key(thread),
+        // Its file is among the review's changes; `false` for one on a file the review doesn't
+        // change (placed there, or outdated), which the "Not in the diff" section shows.
+        "in_diff": placement.placement().in_diff(),
         "file": placement.file(),
         "lines": lines(placement.lines(anchor)),
         // Where an outdated thread's code went since its round (PLAN §8), `null` without one.

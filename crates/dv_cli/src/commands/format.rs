@@ -93,7 +93,9 @@ pub(crate) fn thread_block(thread: &ThreadDto) -> Vec<String> {
 /// changes now`; once the file lacks its side, `on the whole file, which is deleted now` (`…
 /// as it was, which is new now` on the old side).
 fn file_level_line(thread: &ThreadDto) -> String {
-    let line = if !thread.outdated {
+    let line = if !thread.outdated && !thread.in_diff {
+        "on the whole file, which the review doesn't change"
+    } else if !thread.outdated {
         "on the whole file"
     } else if !thread.listed {
         "on the whole file, which isn't among the review's changes now"
@@ -191,13 +193,14 @@ pub(crate) fn round_line(round: &RoundDto) -> String {
 }
 
 /// A thread's place: `src/a.ts:12`, `src/a.ts:12-14`, `src/a.ts:14-16 (moved from 12-14)`, or
-/// `src/a.ts (outdated, was 12-14)`, with where its code went when its round tells
+/// `src/a.ts (outdated, was 12-14)`, `src/util.ts:12 (not in the diff)` for a thread on a file
+/// the review doesn't change, with where its code went when its round tells
 /// (`(outdated, was 12-14, replaced by 40-45)`, `(outdated, was 12-14, removed before 40)`,
 /// `(outdated, was 12-14, removed at the end)`). A thread on the old side says so first,
 /// `src/a.ts:12 (old)`, `src/a.ts:14 (old, moved from 12)`, so its lines aren't taken for the
 /// file's lines as they are now; the GUI names it the same way (DESIGN §4.1). A comment on the
-/// whole file is `src/a.ts (file)`, `(file, old)` on the old side and `(file, outdated)` once
-/// its file is gone or deleted.
+/// whole file is `src/a.ts (file)`, `(file, old)` on the old side, `(file, not in the diff)` on
+/// a file the review doesn't change and `(file, outdated)` once its file is gone or deleted.
 pub(crate) fn location(thread: &ThreadDto) -> String {
     if thread.file_level {
         let mut notes = vec!["file"];
@@ -206,6 +209,8 @@ pub(crate) fn location(thread: &ThreadDto) -> String {
         }
         if thread.outdated {
             notes.push("outdated");
+        } else if !thread.in_diff {
+            notes.push("not in the diff");
         }
         return format!("{} ({})", thread.side_path, notes.join(", "));
     }
@@ -219,6 +224,9 @@ pub(crate) fn location(thread: &ThreadDto) -> String {
         Some(current) => {
             if (current.start_line, current.end_line) != (original.start_line, original.end_line) {
                 notes.push(format!("moved from {was}"));
+            }
+            if !thread.in_diff {
+                notes.push("not in the diff".to_string());
             }
             format!(
                 "{}:{}",

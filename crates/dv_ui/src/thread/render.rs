@@ -40,6 +40,9 @@ pub struct ThreadCard {
     lines: Option<(u32, u32)>,
     /// Outdated, drawn where its code went since this round (PLAN §8): the anchor says so.
     trail: Option<u32>,
+    /// On a file the review doesn't change, found there (PLAN §8), away from it (the "Not in
+    /// the diff" section): an "Unchanged file" chip and View file, which runs this.
+    unlisted: Option<Handler>,
     moved: bool,
     focused: bool,
     collapsed: bool,
@@ -62,6 +65,7 @@ impl ThreadCard {
             path: None,
             lines: None,
             trail: None,
+            unlisted: None,
             moved: false,
             focused: false,
             collapsed: false,
@@ -85,6 +89,14 @@ impl ThreadCard {
     /// §8): the anchor reads "code changed since round 1" (DESIGN §4.1).
     pub fn trail(mut self, round: Option<u32>) -> Self {
         self.trail = round;
+        self
+    }
+
+    /// On a file the review doesn't change, shown away from it (DESIGN §4.1 "Not in the
+    /// diff"): the "Unchanged file" chip, and **View file**, which runs `view` (the file view
+    /// at its line).
+    pub fn unlisted(mut self, view: Option<impl Fn(&mut Window, &mut App) + 'static>) -> Self {
+        self.unlisted = view.map(|view| Rc::new(view) as Handler);
         self
     }
 
@@ -193,6 +205,14 @@ impl RenderOnce for ThreadCard {
                         .child("Outdated"),
                 )
             })
+            .when(self.unlisted.is_some(), |this| {
+                this.child(
+                    chip(c.fg2, c.layer, &theme)
+                        .flex_none()
+                        .child(icon(DvIcon::File, px(12.), c.fg3))
+                        .child("Unchanged file"),
+                )
+            })
             // The anchor (and a collapsed thread's first line) take only the room the chips and
             // the actions leave, so in a narrow card they give way first, then the chip's agent
             // name; the actions never do.
@@ -234,6 +254,16 @@ impl RenderOnce for ThreadCard {
                         )
                     }),
             )
+            .children(self.unlisted.clone().map(|view| {
+                small_button(
+                    ElementId::Name(format!("{name}/view_file").into()),
+                    "View file",
+                    &theme,
+                )
+                .on_click(move |_, window, cx| view(window, cx))
+                .automation_target(format!("{name}/view_file"))
+                .into_any_element()
+            }))
             .children(self.actions(&name, &theme))
             .when(resolved, |this| {
                 let toggle = self.on_toggle.clone();
@@ -318,8 +348,11 @@ impl RenderOnce for ThreadCard {
                     .child(div().pt(px(1.)).child(icon(DvIcon::Bot, px(13.), c.blue)))
                     .child(div().flex_1().min_w_0().child(note.to_string()))
             });
-        // A comment on the whole file has no lines to show as they were.
-        let snippet = (self.outdated && !self.thread.anchor.text.is_empty()).then(|| {
+        // A comment on the whole file has no lines to show as they were; a card away from its
+        // unchanged file shows the lines it is on.
+        let snippet = ((self.outdated || self.unlisted.is_some())
+            && !self.thread.anchor.text.is_empty())
+        .then(|| {
             div()
                 .mx(theme.spacing.lg)
                 .mt(px(10.))

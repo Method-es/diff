@@ -15,7 +15,7 @@ use crate::actions::diff_pane::{
     ClearSelection, Comment, CommentOnFile, Copy, CursorDown, CursorLeft, CursorRight, CursorUp,
     ExpandGap, ExpandGapFully, Find, NextChange, NextFile, NextThread, PageDown, PageUp,
     PreviousChange, PreviousFile, PreviousThread, Reply, ResolveThread, SelectDown, SelectUp,
-    ToggleComparison, ToggleSplit, ToggleViewed,
+    ToggleComparison, ToggleSplit, ToggleViewed, ViewFile,
 };
 use crate::actions::find;
 use crate::services::ViewMode;
@@ -40,7 +40,14 @@ impl DiffPane {
         let clear = {
             let pane = pane.clone();
             move |_: &ClearSelection, _: &mut Window, cx: &mut App| {
-                if !pane.update(cx, |this, cx| this.clear_selection(cx)) {
+                // The end of `Esc`'s chain: the file view closes (DESIGN §5).
+                let handled = pane.update(cx, |this, cx| {
+                    this.clear_selection(cx) || {
+                        this.ask_close(cx);
+                        this.is_file_view()
+                    }
+                });
+                if !handled {
                     cx.propagate();
                 }
             }
@@ -96,6 +103,7 @@ impl DiffPane {
             ExpandGapFully => expand_fully,
             ToggleSplit => toggle_split,
             ToggleComparison => toggle_comparison,
+            ViewFile => view_current_file,
             CursorUp => cursor_up,
             CursorDown => cursor_down,
             SelectUp => select_up,
@@ -191,18 +199,70 @@ impl DiffPane {
     }
 
     fn toggle_viewed_current(&mut self, cx: &mut Context<Self>) {
-        if let Some(path) = self.current_file.clone() {
+        // The file view's file isn't one of the stream's to mark.
+        if let Some(path) = self.current_file.clone().filter(|_| !self.is_file_view()) {
             self.toggle_viewed(&path, cx);
         }
     }
 
     fn toggle_split(&mut self, cx: &mut Context<Self>) {
-        self.set_view_mode(self.mode.toggled(), cx);
+        // The file view is one side's lines.
+        if !self.is_file_view() {
+            self.set_view_mode(self.mode.toggled(), cx);
+        }
+    }
+
+    /// `F`: the current file whole, in the file view, at the cursor's line when the cursor is
+    /// in it (PLAN §18.1); the shell opens it.
+    fn view_current_file(&mut self, cx: &mut Context<Self>) {
+        if self.is_file_view() {
+            return;
+        }
+        if let Some(path) = self.current_file.clone() {
+            self.view_file(&path, cx);
+        }
+    }
+
+    /// Asks the shell to show `path` in the file view, at the cursor's line when the cursor is
+    /// in it on the file's side (the new one, or the old one for a deleted file).
+    pub(super) fn view_file(&mut self, path: &str, cx: &mut Context<Self>) {
+        let deleted = self.session.as_ref().is_some_and(|session| {
+            session
+                .read(cx)
+                .file(path)
+                .is_some_and(|entry| entry.status == dv_core::diff::FileStatus::Deleted)
+        });
+        let side = if deleted {
+            AnchorSide::Old
+        } else {
+            AnchorSide::New
+        };
+        // The cursor's line on the side shown; a line only on the other side (a removed line,
+        // the cursor on the old column) maps to the nearest line of the side shown, the next
+        // one when there is one.
+        let line = self
+            .cursor
+            .as_ref()
+            .filter(|cursor| cursor.path == path)
+            .and_then(|cursor| {
+                let lines = self.lines(path)?;
+                let number = |index: usize| super::rows::side_number(lines.get(index)?, side);
+                number(cursor.pos.line)
+                    .or_else(|| (cursor.pos.line..lines.len()).find_map(number))
+                    .or_else(|| (0..cursor.pos.line).rev().find_map(number))
+            });
+        cx.emit(super::DiffPaneEvent::ViewFile {
+            path: path.to_string(),
+            line,
+        });
     }
 
     /// `I`: the interdiff since the last round, or all changes (the panel's toggle, PLAN
     /// §2.3); the reading position stays where the same file and line still show.
     fn toggle_comparison(&mut self, cx: &mut Context<Self>) {
+        if self.is_file_view() {
+            return;
+        }
         // The other comparison shows other text: what was selected in this one goes.
         self.clear_text_selection();
         self.caret = None;
@@ -726,5 +786,90 @@ impl DiffPane {
         if self.line_drag.take().is_some() {
             self.comment(window, cx);
         }
+    }
+
+    /// Where the stream is, for the history (PLAN §18.1): the cursor's file, side and line
+    /// while the cursor is on screen, else the first line in view.
+    pub fn position(&self) -> Option<(String, AnchorSide, u32)> {
+        let height = self.viewport_height();
+        let on_screen = self
+            .cursor_item()
+            .and_then(|item| self.offset_of(item, height))
+            .is_some_and(|y| y + heights::CODE > 0. && y < height);
+        let cursor = match self.cursor.clone() {
+            Some(cursor) if on_screen => cursor,
+            _ => self.first_visible_cell()?,
+        };
+        let line = self.line(&cursor.path, cursor.pos.line)?;
+        let number = super::rows::side_number(line, cursor.pos.side)?;
+        Some((cursor.path, cursor.pos.side, number))
+    }
+
+    /// Shows line `number` of `side` of `path` (the history going back to the stream): its
+    /// file opened, the gap that hides it opened around it, the cursor on it, scrolled to the
+    /// middle unless it is in view; once its diff lands when it hasn't. The nearest line before
+    /// it stands in for one the file no longer has.
+    pub fn show_line(&mut self, path: &str, side: AnchorSide, number: u32, cx: &mut Context<Self>) {
+        let Some(&block) = self.index.get(path) else {
+            return;
+        };
+        if self.is_collapsed(path) {
+            self.set_open(path, true, cx);
+        }
+        let Some(lines) = self.lines(path) else {
+            self.pending_line = Some((path.to_string(), side, number));
+            self.go_to_file(block, cx);
+            return;
+        };
+        let line = lines
+            .iter()
+            .position(|line| super::rows::side_number(line, side) == Some(number))
+            .or_else(|| {
+                lines.iter().rposition(|line| {
+                    super::rows::side_number(line, side).is_some_and(|n| n < number)
+                })
+            });
+        let Some(line) = line else {
+            self.go_to_file(block, cx);
+            return;
+        };
+        let pos = LinePos { line, side };
+        if find_row(&self.blocks[block].rows, lines, self.mode, pos).is_none() {
+            let segment = self.blocks[block].rows.iter().find_map(|row| match row {
+                Row::Gap(gap) if gap.lines.contains(&line) => Some(gap.segment),
+                _ => None,
+            });
+            if let (Some(segment), Some(ui)) = (segment, self.files.get_mut(path)) {
+                let around = line.saturating_sub(super::rows::CONTEXT_LINES)
+                    ..line + super::rows::CONTEXT_LINES + 1;
+                ui.segments = dv_core::diff::reveal_in_gap(&ui.segments, segment, around);
+                self.refresh_block(block, cx);
+                self.after_rows_changed(cx);
+            }
+        }
+        self.cursor = Some(Cursor {
+            path: path.to_string(),
+            pos,
+        });
+        if self.mode == ViewMode::Split {
+            self.chosen_side = side;
+        }
+        self.selection = None;
+        self.caret = None;
+        self.menu = None;
+        if let Some(item) = self.cursor_item() {
+            self.centre_item(item);
+        }
+        self.viewport_changed(cx);
+        cx.notify();
+    }
+
+    /// The stream shows again after the file view (it kept its place meanwhile): the files
+    /// around its viewport are asked for again, since the session loaded the file view's
+    /// meanwhile.
+    pub fn shown_again(&mut self, cx: &mut Context<Self>) {
+        self.wanted.clear();
+        self.viewport_changed(cx);
+        cx.notify();
     }
 }

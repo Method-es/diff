@@ -120,7 +120,11 @@ fn a_branch_review_means_the_same_from_every_worktree() {
         .run(&["comment", "list", "--review", id, "--json"])
         .ok_json();
     assert_eq!(placements(&from_main), placements(&from_linked));
-    assert_eq!(placements(&from_main)[0].0, "outdated");
+    // The branch's tip doesn't change the file: the thread is found in it as the tip holds it,
+    // its line edited there, not in the diff (PLAN §8).
+    assert_eq!(placements(&from_main)[0].0, "edited");
+    assert_eq!(from_main["threads"][0]["in_diff"], false);
+    assert_eq!(placements(&from_main)[0].2, json!("  id: string;"));
 }
 
 #[test]

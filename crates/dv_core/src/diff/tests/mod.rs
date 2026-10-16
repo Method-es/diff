@@ -7,6 +7,7 @@ mod interdiff;
 mod list;
 mod parse_records;
 mod rows;
+mod side_file;
 
 use dv_test_support::FixtureRepo;
 

@@ -55,8 +55,8 @@ pub use model::{
 pub use ops::{FinishedRound, OpError, Opened};
 pub use relocate::{
     FuzzyLines, MoveKind, Placement, Relocation, SideLines, SideText, ThreadFile, anchored_entry,
-    entry_for, has_side, place_thread, relocate, relocate_with, relocated_anchor, shows_edited,
-    shows_moved, thread_file,
+    entry_for, has_side, is_gone, place_thread, place_unlisted, relocate, relocate_with,
+    relocated_anchor, shows_edited, shows_moved, thread_file, unlisted_path,
 };
 pub use snapshot::SnapshotError;
 pub use store::{ListEntry, LoadedReview, ReviewStore, StoreError};

@@ -151,7 +151,11 @@ impl Render for DiffPane {
             .children(find_bar)
             .children(text_drag)
             .children(menu)
-            .automation_target("stream")
+            .automation_target(if self.is_file_view() {
+                "file_view"
+            } else {
+                "stream"
+            })
     }
 }
 
@@ -161,7 +165,9 @@ impl DiffPane {
         let width = f32::from(self.list.viewport_bounds().size.width);
         let width = if width > 0. { width } else { 1160. };
         let cell = match self.mode {
-            ViewMode::Unified => width - 2. * NUMBER_WIDTH - MARKER_WIDTH - TEXT_INSET,
+            ViewMode::Unified => {
+                width - self.number_columns() * NUMBER_WIDTH - MARKER_WIDTH - TEXT_INSET
+            }
             ViewMode::Split => width / 2. - NUMBER_WIDTH - MARKER_WIDTH - TEXT_INSET - 1.,
         };
         let char_width = self.char_width.unwrap_or(7.2).max(1.);
@@ -289,6 +295,9 @@ impl DiffPane {
         let c = &theme.colors;
         let path = self.blocks[block].path.clone();
         let name = format!("stream/notice/{path}");
+        if self.is_file_view() {
+            return self.render_file_view_notice(notice, theme, cx);
+        }
         let Some((entry, state)) = self.entry_and_state(block, cx) else {
             return div().into_any_element();
         };
@@ -338,7 +347,7 @@ impl DiffPane {
                     .into_any_element()
             }
             notice => {
-                let (glyph, title, detail) = notice_text(notice, &entry);
+                let (glyph, title, detail) = notice_text(notice, Some(&entry));
                 let load_anyway = matches!(notice, Notice::TooLarge { .. }).then(|| {
                     let path = path.clone();
                     let session = self.session.clone();
@@ -477,8 +486,12 @@ fn ghost_small(id: gpui::ElementId, theme: &DvTheme) -> gpui::Stateful<gpui::Div
         .hover(move |style| style.bg(hover))
 }
 
-/// A notice's glyph, title and detail.
-fn notice_text(notice: &Notice, entry: &FileEntry) -> (DvIcon, &'static str, String) {
+/// A notice's glyph, title and detail; without `entry` (the file view), a text that didn't
+/// change is an empty file.
+pub(super) fn notice_text(
+    notice: &Notice,
+    entry: Option<&FileEntry>,
+) -> (DvIcon, &'static str, String) {
     match notice {
         Notice::Binary { old_len, new_len } => {
             (DvIcon::Binary, "Binary file", sizes(*old_len, *new_len))
@@ -506,17 +519,20 @@ fn notice_text(notice: &Notice, entry: &FileEntry) -> (DvIcon, &'static str, Str
             "Unresolved conflict",
             "the index holds no single version of this file".to_string(),
         ),
-        Notice::NoContentChange => (
-            DvIcon::FileDiff,
-            "No content change",
-            match (entry.old_mode, entry.new_mode, &entry.old_path) {
-                (_, _, Some(old)) => format!("renamed from {old}"),
-                (Some(old), Some(new), _) if old != new => {
-                    format!("mode {} → {}", mode_text(old), mode_text(new))
-                }
-                _ => "an empty file".to_string(),
-            },
-        ),
+        Notice::NoContentChange => match entry {
+            None => (DvIcon::File, "Empty file", "nothing to show".to_string()),
+            Some(entry) => (
+                DvIcon::FileDiff,
+                "No content change",
+                match (entry.old_mode, entry.new_mode, &entry.old_path) {
+                    (_, _, Some(old)) => format!("renamed from {old}"),
+                    (Some(old), Some(new), _) if old != new => {
+                        format!("mode {} → {}", mode_text(old), mode_text(new))
+                    }
+                    _ => "an empty file".to_string(),
+                },
+            ),
+        },
         Notice::Loading | Notice::Failed => (DvIcon::FileDiff, "", String::new()),
     }
 }

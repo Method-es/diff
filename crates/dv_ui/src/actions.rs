@@ -17,6 +17,8 @@ pub mod shell {
             /// Open the "Finish round" sheet (`Ctrl Enter` while no text field has the keyboard,
             /// DESIGN §4.2).
             FinishReview,
+            /// Open the file finder, or close it (`Ctrl P`, PLAN §18.1).
+            FindFile,
         ]
     );
 }
@@ -121,6 +123,13 @@ pub mod diff_pane {
             /// Open the find bar with its field focused, or focus it again with its text
             /// selected (`Ctrl F`, PLAN §18.1).
             Find,
+            /// Open the current file whole in the file view, at the cursor's line (`F`, PLAN
+            /// §18.1).
+            ViewFile,
+            /// Go back to the position before the last jump (`Alt ←`, PLAN §18.1).
+            GoBack,
+            /// Go forward again (`Alt →`).
+            GoForward,
         ]
     );
 }
@@ -139,6 +148,26 @@ pub mod find {
             Previous,
             /// Close the bar and give the keyboard back to the stream (`Esc`).
             Close,
+        ]
+    );
+}
+
+/// The file finder (`Ctrl P`, DESIGN §4.1), dispatched in the `FileFinder` key context while
+/// it is open.
+pub mod file_finder {
+    use gpui::actions;
+
+    actions!(
+        file_finder,
+        [
+            /// Select the next file (`↓`), wrapping to the first.
+            SelectNext,
+            /// Select the previous file (`↑`), wrapping to the last.
+            SelectPrevious,
+            /// Open the selected file in the file view (`Enter`).
+            Confirm,
+            /// Close without opening anything (`Esc`).
+            Dismiss,
         ]
     );
 }

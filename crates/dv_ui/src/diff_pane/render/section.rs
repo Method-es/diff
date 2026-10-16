@@ -98,9 +98,7 @@ impl DiffPane {
                     .truncate()
                     .text_spec(&theme.text.secondary)
                     .text_color(c.fg3)
-                    .child(format!(
-                        "{noun} on files no longer among the review's changes"
-                    )),
+                    .child(format!("{noun} on files the review doesn't change now")),
             )
             .automation_target(if pinned {
                 base

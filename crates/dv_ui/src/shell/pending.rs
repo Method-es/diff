@@ -164,7 +164,9 @@ impl Shell {
     /// again by itself waits for (module docs): the "Finish round" sheet open over it (a round
     /// being finished included), or a composer with a draft.
     fn holds_unsaved_text(&self, cx: &App) -> bool {
-        self.sheet.is_some() || self.diff_pane.read(cx).has_draft(cx)
+        self.sheet.is_some()
+            || self.diff_pane.read(cx).has_draft(cx)
+            || self.file_view.read(cx).has_draft(cx)
     }
 
     /// The main area's banner's Dismiss: it goes, and so does the pick it reports, when it is

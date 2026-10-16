@@ -14,6 +14,13 @@
 //! was placed before: then it keeps that placement until the history lands, so its card, and a
 //! reply being typed in it, don't go.
 //!
+//! **Files the review doesn't change.** A thread whose file left the review's list (it never
+//! changed, or stopped changing) is placed against that file's text at the review's new side
+//! (`dv_core::review::place_unlisted`, read in the background, `side`): found there, it is
+//! `Placement::Unlisted`, shown in the "Not in the diff" section as on a file the review doesn't
+//! change and in that file's file view at its lines; else outdated without a file. Until the
+//! read lands it is outdated in the section, as before it.
+//!
 //! **Interdiff.** Its new side is the same text as in all changes, so a new-side thread whose
 //! file is also in the interdiff places exactly as there. The old column is round n's
 //! snapshot, which no anchor names: old-side threads, and threads whose file isn't in the
@@ -51,8 +58,8 @@ use std::sync::Arc;
 use dv_core::diff::{FileDiff, FileEntry, FileStatus};
 use dv_core::review::{
     Anchor, AnchorPlace, AnchorSide, FuzzyLines, History, Placement, SideLines, SideText, Thread,
-    ThreadFile, ThreadId, ThreadState, Trail, place_thread, relocated_anchor, shows_edited,
-    shows_moved, side_lines, thread_file,
+    ThreadFile, ThreadId, ThreadState, Trail, place_thread, place_unlisted, relocated_anchor,
+    shows_edited, shows_moved, side_lines, thread_file, unlisted_path,
 };
 
 use super::history::HistoryKey;
@@ -70,13 +77,19 @@ pub enum ThreadPlacement {
     /// file isn't in the interdiff (module docs). It isn't drawn; the placement is where it
     /// stands in all changes, which the panel names.
     NotInComparison(Placement),
+    /// Its file left the review's list and the file at the new side isn't read yet (`side`):
+    /// `Pending` inside, drawn in the "Not in the diff" section meanwhile, neutrally (neither
+    /// outdated nor placed), so its card, and a reply being typed in it, stay there.
+    Reading(Placement),
 }
 
 impl ThreadPlacement {
     /// The placement itself, drawn or not.
     pub fn placement(&self) -> &Placement {
         match self {
-            Self::Placed(placement) | Self::NotInComparison(placement) => placement,
+            Self::Placed(placement)
+            | Self::NotInComparison(placement)
+            | Self::Reading(placement) => placement,
         }
     }
 
@@ -85,7 +98,7 @@ impl ThreadPlacement {
     pub fn file(&self) -> Option<&str> {
         match self {
             Self::Placed(placement) => placement.file(),
-            Self::NotInComparison(_) => None,
+            Self::NotInComparison(_) | Self::Reading(_) => None,
         }
     }
 
@@ -101,10 +114,29 @@ impl ThreadPlacement {
         self.placement().is_outdated()
     }
 
-    /// Its file left the review's list (`Placement::Outdated` without a file), whichever
-    /// comparison is shown: the stream draws it in its "Not in the diff" section (DESIGN §4.1).
+    /// Its file left the review's list, whichever comparison is shown: outdated without a
+    /// file, placed in that file at the review's new side (`Placement::Unlisted`, a comment on
+    /// the whole file `Placement::UnlistedFile`), or waiting for that file's read. The stream
+    /// draws it in its "Not in the diff" section (DESIGN §4.1).
     pub fn is_not_in_diff(&self) -> bool {
-        matches!(self, Self::Placed(Placement::Outdated { file: None, .. }))
+        matches!(
+            self,
+            Self::Placed(
+                Placement::Outdated { file: None, .. }
+                    | Placement::Unlisted { .. }
+                    | Placement::UnlistedFile { .. }
+            ) | Self::Reading(_)
+        )
+    }
+
+    /// It stands in a file the review doesn't change (`Placement::Unlisted`, or a comment on
+    /// its whole: `Placement::UnlistedFile`): placed, not outdated, in no listed file; the file
+    /// view of that file draws it.
+    pub fn is_unlisted(&self) -> bool {
+        matches!(
+            self,
+            Self::Placed(Placement::Unlisted { .. } | Placement::UnlistedFile { .. })
+        )
     }
 
     /// Where an outdated thread's code went since its round, when its snapshot tells (PLAN
@@ -140,7 +172,7 @@ impl ThreadPlacement {
     pub fn shows_moved(&self, thread: &Thread) -> bool {
         match self {
             Self::Placed(placement) => shows_moved(thread, placement),
-            Self::NotInComparison(_) => false,
+            Self::NotInComparison(_) | Self::Reading(_) => false,
         }
     }
 
@@ -153,7 +185,7 @@ impl ThreadPlacement {
             _ if self.shows_moved(thread) => "moved",
             Self::Placed(placement) if shows_edited(thread, placement) => "edited",
             Self::Placed(Placement::Moved { .. }) => "unchanged",
-            Self::Placed(placement) => placement.as_str(),
+            Self::Placed(placement) | Self::Reading(placement) => placement.as_str(),
             Self::NotInComparison(_) => "not_in_comparison",
         }
     }
@@ -231,6 +263,8 @@ struct Key {
     listed: bool,
     /// Its round's history, as read (`history`).
     history: HistoryKey,
+    /// The read of its file at the new side (`side`), for a thread whose file left the list.
+    side: Option<u64>,
 }
 
 impl Key {
@@ -246,6 +280,7 @@ impl Key {
             && self.drawn == other.drawn
             && self.listed == other.listed
             && self.history == other.history
+            && self.side == other.side
     }
 }
 
@@ -345,6 +380,7 @@ impl ReviewSession {
             diff,
             listed: self.listed,
             history: self.history_key(thread),
+            side: self.side_version(&unlisted_path(&thread.anchor, self.history_for(thread))),
         }
     }
 
@@ -370,13 +406,16 @@ impl ReviewSession {
             ThreadFile::Gone if !self.listed => {
                 return ThreadPlacement::Placed(Placement::Pending { file: None });
             }
-            // Its file left the review: outdated whichever comparison is shown, drawn in the
-            // stream's "Not in the diff" section.
+            // Its file left the review: placed in that file at the new side, or outdated,
+            // whichever comparison is shown; drawn in the stream's "Not in the diff" section,
+            // where it waits (neutral, `Reading`) until that file's read lands.
             ThreadFile::Gone => {
-                return ThreadPlacement::Placed(Placement::Outdated {
-                    file: None,
-                    trail: None,
-                });
+                let path = unlisted_path(&thread.anchor, history);
+                let present = self.side_present(&path);
+                return match place_unlisted(thread, &path, present, self.side_text(&path)) {
+                    pending @ Placement::Pending { .. } => ThreadPlacement::Reading(pending),
+                    placement => ThreadPlacement::Placed(placement),
+                };
             }
         };
         let drawn = self.draws(thread, entry);
@@ -587,6 +626,11 @@ impl ReviewSession {
                 let place = AnchorPlace::for_entry(entry, thread.anchor.side, 0);
                 path_lines(&place.path, start, end)
             }
+            // In a file the review doesn't change.
+            (None, Some((start, end))) => match placement.placement().unlisted_path() {
+                Some(path) => path_lines(path, start, end),
+                None => location_label(thread),
+            },
             _ => location_label(thread),
         };
         match thread.anchor.side {

@@ -172,6 +172,9 @@ impl AutomationHost for DvAutomation {
             "session": state::session(self.shell.read(cx), cx),
             "stream": state::stream(self.shell.read(cx), window, cx),
             "find": state::find(self.shell.read(cx), window, cx),
+            "file_view": state::file_view(self.shell.read(cx), cx),
+            "file_finder": state::file_finder(self.shell.read(cx), window, cx),
+            "history": state::history(self.shell.read(cx)),
             "comments_list": state::comments_list(self.shell.read(cx), cx),
             "cli": self.cli_state(),
             "backends": state::backends(cx),
@@ -183,6 +186,7 @@ impl AutomationHost for DvAutomation {
         cx.services().is_settled(cx)
             && shell.is_settled(cx)
             && shell.diff_pane().read(cx).is_settled()
+            && shell.file_view().read(cx).is_settled()
             && shell
                 .session()
                 .is_none_or(|session| session.read(cx).is_settled())

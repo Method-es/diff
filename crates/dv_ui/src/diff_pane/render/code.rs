@@ -89,6 +89,22 @@ struct CodeCx<'a> {
     /// Whether a comment can start on the old / the new side: the review isn't finished, and
     /// an interdiff's old column (a round's snapshot, which no anchor names) takes none.
     commentable: [bool; 2],
+    /// The file view: one line number, its side's, and its own automation names
+    /// (`file_view/line/<n>`, `file_view/comment/<n>`, `file_view/code/<n>/<column>`).
+    file_view: bool,
+}
+
+impl CodeCx<'_> {
+    /// Line `number` on `side`'s automation name for `kind` (`line`, `comment`, `code`): the
+    /// stream's `stream/line/<path>/<side>/<n>`, `stream/comment/…` and `code/<path>/<side>/<n>`,
+    /// or the file view's `file_view/<kind>/<n>`.
+    fn target(&self, kind: &str, side: AnchorSide, number: u32) -> String {
+        match (self.file_view, kind) {
+            (true, kind) => format!("file_view/{kind}/{number}"),
+            (false, "code") => format!("code/{}/{}/{number}", self.path, side_key(side)),
+            (false, kind) => format!("stream/{kind}/{}/{}/{number}", self.path, side_key(side)),
+        }
+    }
 }
 
 impl CodeCx<'_> {
@@ -157,11 +173,9 @@ impl DiffPane {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let path = self.blocks[block].path.clone();
-        // The diff the rows were built from: the loaded one, or while it loads again the last.
-        let shown = self
-            .session
-            .as_ref()
-            .and_then(|session| session.read(cx).shown(&path));
+        // The diff the rows were built from: the loaded one, or while it loads again the last
+        // (the file view's text, cut to its side).
+        let shown = self.shown_for(&path, cx);
         let (Some(Shown { diff, highlights }), Some(char_width)) = (shown, self.char_width) else {
             return div().h(px(heights::CODE)).into_any_element();
         };
@@ -208,6 +222,7 @@ impl DiffPane {
                 .map(|&(_, side, line, offset)| (side, line, offset)),
             matches: marks.matches,
             commentable: [writable && !self.comparison(cx).is_interdiff(), writable],
+            file_view: self.is_file_view(),
         };
         // The row's lines on each side, for a line drag passing over it.
         let (old, new) = match *row {
@@ -274,13 +289,18 @@ impl DiffPane {
         let mut number = |side: AnchorSide| {
             self.number_cell(code, Some(line), side, gutter, marked == Some(side), cx)
         };
+        // The file view numbers its one side only.
+        let numbered: &[AnchorSide] = if code.file_view {
+            std::slice::from_ref(&side)
+        } else {
+            &[AnchorSide::Old, AnchorSide::New]
+        };
         let numbers = div()
             .relative()
             .flex()
             .flex_none()
             .bg(bg)
-            .child(number(AnchorSide::Old))
-            .child(number(AnchorSide::New))
+            .children(numbered.iter().map(|&side| number(side)))
             .child(marker(diff_line.kind, code.theme));
         let marks = self.line_marks(code, line, side);
         vec![
@@ -289,7 +309,7 @@ impl DiffPane {
                     code,
                     line,
                     side,
-                    2. * NUMBER_WIDTH - 1.,
+                    numbered.len() as f32 * NUMBER_WIDTH - 1.,
                     ROW_GROUP,
                     cx,
                 ))
@@ -444,9 +464,8 @@ impl DiffPane {
         let number = code.lines.get(line).and_then(|l| side_number(l, side))?;
         let c = &code.theme.colors;
         let path = code.path.to_string();
-        let side_key = side_key(side);
-        let name = format!("stream/comment/{}/{side_key}/{number}", code.path);
-        let selector = format!("comment/{}/{side_key}/{number}", code.path);
+        let name = code.target("comment", side, number);
+        let selector = format!("comment/{}/{}/{number}", code.path, side_key(side));
         Some(
             div()
                 .absolute()
@@ -515,7 +534,7 @@ impl DiffPane {
             return cell.into_any_element();
         };
         let path = code.path.to_string();
-        let side_key = side_key(side);
+        let name = code.target("line", side, number);
         cell.cursor_pointer()
             .child(number.to_string())
             .on_mouse_down(
@@ -524,7 +543,7 @@ impl DiffPane {
                     this.click_line(&path, LinePos { line, side }, event.modifiers.shift, cx);
                 }),
             )
-            .automation_target(format!("stream/line/{}/{side_key}/{number}", code.path))
+            .automation_target(name)
     }
 }
 
@@ -623,7 +642,7 @@ fn text_cell(
     let named = crate::automation::is_active() || cfg!(test);
     let name = number
         .filter(|_| named)
-        .map(|number| format!("{}/{}/{number}", code.path, side_key(side)));
+        .map(|number| code.target("code", side, number));
     let caret_x = Rc::new(Cell::new(None));
     let back = marks_canvas(MarksCx {
         key: (code.path.to_string(), side, line),
@@ -704,9 +723,7 @@ fn text_cell(
                     )),
             )
         })
-        .when_some(name, |this, name| {
-            this.debug_selector(move || format!("code/{name}"))
-        })
+        .when_some(name, |this, name| this.debug_selector(move || name))
 }
 
 /// What [`marks_canvas`] paints with.
@@ -805,7 +822,7 @@ fn marks_canvas(cx: MarksCx) -> impl IntoElement {
                     };
                     crate::automation::record_target(
                         window,
-                        || format!("code/{name}/{}", index + 1).into(),
+                        || format!("{name}/{}", index + 1).into(),
                         target,
                     );
                 }

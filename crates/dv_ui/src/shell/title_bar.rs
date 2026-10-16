@@ -3,7 +3,8 @@
 //! source picker, the centred command field (`Ctrl K`) and, on Windows, the caption buttons.
 //! The whole bar is a window drag region; its controls occlude it so they stay clickable.
 //!
-//! The switcher and the source picker hang under their buttons while open
+//! The switcher and the source picker hang under their buttons while open, and the file
+//! finder (`Ctrl P`) under the command field
 //! (`deferred(anchored())` in a zero-size box at the button's bottom-left corner, so they follow
 //! the layout), above everything else, an open sheet included. The left group never runs under the centred command field: at narrow widths the
 //! switcher's label truncates.
@@ -129,7 +130,15 @@ impl Shell {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(command_field(theme)),
+                    .child(div().relative().child(command_field(theme)).children(
+                        self.file_finder.as_ref().map(|overlay| {
+                            hang_centred(
+                                overlay.view.clone().into_any_element(),
+                                theme.sizes.command_field_width,
+                                crate::file_finder::FINDER_WIDTH,
+                            )
+                        }),
+                    )),
             )
             .automation_target("titlebar")
     }
@@ -266,6 +275,26 @@ impl Shell {
             .children(open.map(|view| hang(view.into_any_element())))
             .into_any_element()
     }
+}
+
+/// Hangs an overlay `width` wide centred under a control `under` wide (the file finder under the
+/// command field), 8px down, kept inside the window.
+fn hang_centred(overlay: AnyElement, under: Pixels, width: Pixels) -> AnyElement {
+    div()
+        .absolute()
+        .left_0()
+        .bottom_0()
+        .child(
+            deferred(
+                anchored()
+                    .anchor(Anchor::TopLeft)
+                    .offset(point((under - width) / 2., px(8.)))
+                    .snap_to_window_with_margin(px(8.))
+                    .child(overlay),
+            )
+            .with_priority(MENU_PRIORITY),
+        )
+        .into_any_element()
 }
 
 /// Hangs an overlay under its button: from a zero-size box at the button's bottom-left corner,

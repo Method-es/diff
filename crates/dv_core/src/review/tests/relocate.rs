@@ -8,8 +8,8 @@ use crate::review::anchor::{AnchorPlace, anchor_selection};
 use crate::review::history::History;
 use crate::review::relocate::{
     FUZZY_MAX_ANCHORED, FUZZY_MAX_LINES, FuzzyLines, MoveKind, NEARBY_LINES, Placement, Relocation,
-    SideLines, SideText, is_slight, line_similarity, place_thread, relocate, relocate_with,
-    relocated_anchor, shows_edited, shows_moved,
+    SideLines, SideText, is_gone, is_slight, line_similarity, place_thread, place_unlisted,
+    relocate, relocate_with, relocated_anchor, shows_edited, shows_moved, unlisted_path,
 };
 
 use super::*;
@@ -1363,4 +1363,129 @@ fn relocating_in_a_20000_line_file_is_quick() {
     let mut longer = now.clone();
     longer.push("// one more".to_string());
     assert_eq!(relocate(&anchor, &longer), Relocation::Outdated);
+}
+
+#[test]
+fn a_thread_whose_file_left_the_list_is_placed_in_the_file_at_the_new_side() {
+    let lines = code(30);
+    let anchor = anchor_at(&lines, 10, 11);
+    let thread = thread_on(anchor.clone());
+    let gone = place_thread(
+        &thread,
+        &[entry("other.rs", None, FileStatus::Modified)],
+        History::None,
+        |_: &FileEntry, _| -> SideText<Vec<&str>> { panic!("no listed file holds it") },
+    );
+    assert!(is_gone(&gone));
+
+    // Its text where it was: placed, in no listed file, not in the diff.
+    let placed = place_unlisted(&thread, "a.rs", true, SideText::Lines(lines.clone()));
+    assert_eq!(
+        placed,
+        Placement::Unlisted {
+            path: "a.rs".to_string(),
+            start_line: 10,
+            end_line: 11,
+            how: None,
+        }
+    );
+    assert_eq!(placed.lines(&anchor), Some((10, 11)));
+    assert_eq!(placed.file(), None);
+    assert_eq!(placed.unlisted_path(), Some("a.rs"));
+    assert!(!placed.is_outdated() && !placed.in_diff());
+    assert_eq!(placed.as_str(), "unchanged");
+    assert!(!shows_moved(&thread, &placed) && !shows_edited(&thread, &placed));
+
+    // Lines added above it since: moved, as in a listed file.
+    let moved = place_unlisted(&thread, "a.rs", true, SideText::Lines(insert(&lines, 1, 3)));
+    assert_eq!(moved.lines(&anchor), Some((13, 14)));
+    assert_eq!(moved.as_str(), "moved");
+    assert!(shows_moved(&thread, &moved));
+
+    // Its text gone, or no file there: outdated without a file, as before.
+    let outdated = Placement::Outdated {
+        file: None,
+        trail: None,
+    };
+    assert_eq!(
+        place_unlisted(&thread, "a.rs", true, SideText::Lines(vec!["nothing"; 30])),
+        outdated
+    );
+    assert_eq!(
+        place_unlisted(&thread, "a.rs", false, SideText::<Vec<&str>>::Unavailable),
+        outdated
+    );
+    assert_eq!(
+        place_unlisted(&thread, "a.rs", false, SideText::<Vec<&str>>::Pending),
+        Placement::Pending { file: None }
+    );
+    // A file there without text (binary) holds no lines to find it at.
+    assert_eq!(
+        place_unlisted(&thread, "a.rs", true, SideText::<Vec<&str>>::Unavailable),
+        outdated
+    );
+    // An old-side thread: the review doesn't change the file, so its old side is the same text.
+    let old_side = thread_on(Anchor {
+        side: AnchorSide::Old,
+        ..anchor.clone()
+    });
+    assert_eq!(
+        place_unlisted(&old_side, "a.rs", true, SideText::Lines(lines.clone()))
+            .lines(&old_side.anchor),
+        Some((10, 11))
+    );
+    // A comment on the whole file stands in it while the file is there; renamed since its
+    // round, the file is read at its path now.
+    let file_level = thread_on(Anchor {
+        start_line: 0,
+        end_line: 0,
+        text: Vec::new(),
+        context_before: Vec::new(),
+        context_after: Vec::new(),
+        ..anchor
+    });
+    assert!(file_level.anchor.is_file_level());
+    let placed = place_unlisted(
+        &file_level,
+        "b.rs",
+        true,
+        SideText::<Vec<&str>>::Unavailable,
+    );
+    assert_eq!(
+        placed,
+        Placement::UnlistedFile {
+            path: "b.rs".to_string()
+        }
+    );
+    assert!(placed.is_file() && !placed.in_diff() && !placed.is_outdated());
+    assert_eq!(placed.as_str(), "file");
+    assert_eq!(
+        place_unlisted(&file_level, "b.rs", false, SideText::Lines(lines)),
+        outdated
+    );
+}
+
+#[test]
+fn a_file_renamed_since_its_round_is_read_at_its_path_now() {
+    use crate::review::history::{FileHistory, RoundHistory};
+    let lines = code(30);
+    let anchor = anchor_at(&lines, 10, 10);
+    let mut history = RoundHistory::new(1);
+    history.insert(
+        "a.rs",
+        FileHistory {
+            now: Some("moved/a.rs".to_string()),
+            snapshot: None,
+        },
+    );
+    assert_eq!(
+        unlisted_path(&anchor, History::Read(&history)),
+        "moved/a.rs"
+    );
+    assert_eq!(unlisted_path(&anchor, History::None), "a.rs");
+    let old_side = Anchor {
+        side: AnchorSide::Old,
+        ..anchor
+    };
+    assert_eq!(unlisted_path(&old_side, History::Read(&history)), "a.rs");
 }

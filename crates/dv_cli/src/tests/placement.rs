@@ -340,3 +340,139 @@ fn an_excerpt_stands_exactly_where_the_code_does() {
         serde_json::json!({"before": [], "after": []})
     );
 }
+
+#[test]
+fn a_thread_on_a_file_the_review_doesnt_change_is_placed_and_not_in_the_diff() {
+    let fixture = Fixture::new();
+    let review = fixture.review(Target::Working);
+    // The file view comments on any line: README.md never changed.
+    fixture.repo.write("README.md", "# api\n\nSome words.\n");
+    fixture.repo.git(&["add", "README.md"]);
+    fixture.repo.commit_staged("readme");
+    let thread = fixture.thread(&review, "README.md", 3, 3, "Say more?");
+    // One the agent's edit was on, which it reverted since.
+    let reverted = fixture.thread(&review, "src/app.ts", 5, 5, "Is the id a string?");
+    fixture.edit_app(&app_lines());
+
+    let json = fixture.run(&["comment", "list", "--json"]).ok_json();
+    let listed = |id: &ThreadId| {
+        json["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|thread| thread["id"] == id.as_str())
+            .unwrap()
+            .clone()
+    };
+    let readme = listed(&thread);
+    assert_eq!(readme["placement"], "unchanged", "{readme}");
+    assert_eq!(readme["outdated"], false);
+    assert_eq!(readme["in_diff"], false);
+    assert_eq!(readme["path"], "README.md");
+    assert_eq!(
+        readme["anchor"]["current"],
+        serde_json::json!({"path": "README.md", "side": "new", "start_line": 3, "end_line": 3})
+    );
+    assert_eq!(readme["current_code"], "Some words.");
+    assert!(readme["excerpt"].as_str().unwrap().contains("Some words."));
+    let app = listed(&reverted);
+    assert_eq!(app["placement"], "unchanged", "{app}");
+    assert_eq!(app["in_diff"], false);
+    assert_eq!(app["current_code"], "  id: string;");
+
+    let ran = fixture.run(&["comment", "list", "--oneline"]);
+    assert!(
+        ran.stdout.contains(&format!(
+            "{thread}  open  README.md:3 (not in the diff)  Say more?"
+        )),
+        "{}",
+        ran.stdout
+    );
+
+    // Lines added above it, committed (still not in the diff): moved.
+    fixture
+        .repo
+        .write("README.md", "# api\n\nIntro.\n\nSome words.\n");
+    fixture.repo.git(&["add", "README.md"]);
+    fixture.repo.commit_staged("intro");
+    let shown = fixture
+        .run(&["comment", "show", thread.as_str(), "--json"])
+        .ok_json();
+    assert_eq!(shown["thread"]["placement"], "moved");
+    assert_eq!(shown["thread"]["in_diff"], false);
+    assert_eq!(shown["thread"]["anchor"]["current"]["start_line"], 5);
+
+    // The file gone: outdated, still not in the diff.
+    fixture.repo.remove("README.md");
+    fixture.repo.git(&["add", "-A"]);
+    fixture.repo.commit_staged("no readme");
+    let shown = fixture
+        .run(&["comment", "show", thread.as_str(), "--json"])
+        .ok_json();
+    assert_eq!(shown["thread"]["placement"], "outdated");
+    assert_eq!(shown["thread"]["outdated"], true);
+    assert_eq!(shown["thread"]["in_diff"], false);
+    assert_eq!(
+        shown["thread"]["anchor"]["current"],
+        serde_json::Value::Null
+    );
+}
+
+#[test]
+fn a_comment_on_a_whole_unchanged_file_and_an_old_side_thread_there_are_placed() {
+    let fixture = Fixture::new();
+    let review = fixture.review(Target::Working);
+    let place = dv_core::review::AnchorPlace {
+        round: 1,
+        path: "README.md".to_string(),
+        old_path: None,
+        side: AnchorSide::New,
+    };
+    let file_level = ops::add_thread(
+        &fixture.store(),
+        &review.id,
+        place.file_level(),
+        "Docs?",
+        reviewer(),
+    )
+    .unwrap();
+    // Anchored on the old side while the file was the same text on both.
+    let old = fixture.anchor("README.md", AnchorSide::Old, 1, 1);
+    let old = ops::add_thread(&fixture.store(), &review.id, old, "Title?", reviewer()).unwrap();
+
+    let json = fixture.run(&["comment", "list", "--json"]).ok_json();
+    let listed = |id: &ThreadId| {
+        json["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|thread| thread["id"] == id.as_str())
+            .unwrap()
+            .clone()
+    };
+    let whole = listed(&file_level);
+    assert_eq!(whole["placement"], "file", "{whole}");
+    assert_eq!(
+        (whole["outdated"].clone(), whole["in_diff"].clone()),
+        (false.into(), false.into())
+    );
+    let old_side = listed(&old);
+    assert_eq!(old_side["placement"], "unchanged", "{old_side}");
+    assert_eq!(old_side["in_diff"], false);
+    assert_eq!(old_side["current_code"], "# api");
+
+    let ran = fixture.run(&["comment", "show", file_level.as_str()]);
+    assert!(
+        ran.stdout.contains(&format!(
+            "{file_level}  open  README.md (file, not in the diff)\non the whole file, which the review doesn't change\n"
+        )),
+        "{}",
+        ran.stdout
+    );
+    // The file gone: outdated.
+    fixture.repo.remove("README.md");
+    let json = fixture
+        .run(&["comment", "show", file_level.as_str(), "--json"])
+        .ok_json();
+    assert_eq!(json["thread"]["outdated"], true);
+}

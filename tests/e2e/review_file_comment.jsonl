@@ -10,10 +10,10 @@
 {"cmd": "wait_for", "pointer": "/session/total", "equals": 2}
 {"cmd": "settle", "expect": [{"pointer": "/session/files/0/path", "equals": "src/hooks/use-can.ts"}, {"pointer": "/stream/files/0/heading", "equals": []}]}
 
-// The header's `⋯`: Comment on file first, then Copy path and Reveal in folder.
+// The header's `⋯`: View file and Comment on file, then Copy path and Reveal in folder.
 {"cmd": "click", "target": "stream/file/src/hooks/use-can.ts/menu"}
 {"cmd": "settle"}
-{"cmd": "query", "prefix": "stream/menu/", "expect_result": {"pointer": "", "len": 3}}
+{"cmd": "query", "prefix": "stream/menu/", "expect_result": {"pointer": "", "len": 4}}
 {"cmd": "query", "prefix": "stream/menu/comment", "expect_result": {"pointer": "", "len": 1}}
 {"cmd": "screenshot", "name": "menu-dark-mica"}
 {"cmd": "click", "target": "stream/menu/comment"}

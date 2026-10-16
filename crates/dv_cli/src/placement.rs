@@ -18,15 +18,20 @@
 //!
 //! A comment on a whole file (a file-level anchor) is placed by its file alone: no diff is read
 //! for it, and its round's history only to follow its file.
+//!
+//! A thread whose file isn't among the review's changes (it never changed, or stopped changing)
+//! is placed against that file's text at the review's new side (`dv_core::diff::side_file`,
+//! `dv_core::review::place_unlisted`), as the GUI places it: found there, it is placed, with
+//! the excerpt of that text around it, and not in the diff (`in_diff: false`).
 
 use std::collections::{BTreeMap, HashMap};
 
-use dv_core::diff::{DiffLimits, FileDiff, FileEntry, file_diff, file_list};
+use dv_core::diff::{DiffLimits, FileDiff, FileEntry, file_diff, file_list, side_file};
 use dv_core::git::GitRepo;
 use dv_core::review::{
     Anchor, AnchorPlace, AnchorSide, History, Placement, Review, RoundHistory, SideText, Thread,
-    ThreadFile, Went, anchored_entry, entry_for, excerpt, excerpt_lines, place_thread,
-    read_round_history, relocated_anchor, side_lines, thread_file,
+    ThreadFile, Went, anchored_entry, entry_for, excerpt, excerpt_lines, is_gone, place_thread,
+    place_unlisted, read_round_history, relocated_anchor, side_lines, thread_file, unlisted_path,
 };
 use dv_core::target::DiffSpec;
 
@@ -48,6 +53,9 @@ pub(crate) struct Sides {
     /// The rounds closed, which a thread's history is read from.
     closed: u32,
     histories: HashMap<u32, RoundHistory>,
+    /// The files the review doesn't list that threads are anchored in, as the review's new side
+    /// holds them (`Some(None)`: no file there; `None`: the read failed), by path.
+    unlisted: HashMap<String, Option<Option<FileDiff>>>,
 }
 
 impl Sides {
@@ -65,6 +73,7 @@ impl Sides {
             round: review.current_round(),
             closed: review.closed_rounds(),
             histories: HashMap::new(),
+            unlisted: HashMap::new(),
         })
     }
 
@@ -159,6 +168,63 @@ impl Sides {
         Ok(())
     }
 
+    /// Reads, at the review's new side, the file each of `threads` whose file left the list is
+    /// anchored in (module docs; blocking: a few git calls per file, each file once), after its
+    /// round's history had its say ([`Sides::read_history_for`]): at the path that history says
+    /// the file has now. A file that can't be read is warned about on stderr and its threads
+    /// stay outdated.
+    pub fn read_unlisted_for(
+        &mut self,
+        threads: &[&Thread],
+        ctx: &mut Context,
+    ) -> Result<(), CliError> {
+        let mut paths: Vec<String> = threads
+            .iter()
+            .filter(|thread| is_gone(&self.place_listed(thread, self.history(thread))))
+            .map(|thread| unlisted_path(&thread.anchor, self.history(thread)))
+            .collect();
+        paths.sort();
+        paths.dedup();
+        for path in paths {
+            if self.unlisted.contains_key(&path) {
+                continue;
+            }
+            let read = match side_file(&self.git, &self.spec.new, &path, &DiffLimits::UNLIMITED) {
+                Ok(read) => Some(read),
+                Err(error) => {
+                    output::warning(
+                        ctx,
+                        &format!(
+                            "couldn't read {path}, which the review doesn't change, so its \
+                             threads show as outdated: {error}"
+                        ),
+                    )?;
+                    None
+                }
+            };
+            self.unlisted.insert(path, read);
+        }
+        Ok(())
+    }
+
+    /// The text of the file at `path` the review doesn't list, when it was read and is text.
+    fn unlisted_text(&self, path: &str) -> Option<&dv_core::diff::TextDiff> {
+        self.unlisted
+            .get(path)
+            .and_then(Option::as_ref)
+            .and_then(Option::as_ref)
+            .and_then(FileDiff::as_text)
+    }
+
+    /// Whether the review's new side holds a file at `path` (read; `false` when the read
+    /// failed).
+    fn unlisted_present(&self, path: &str) -> bool {
+        self.unlisted
+            .get(path)
+            .and_then(Option::as_ref)
+            .is_some_and(Option::is_some)
+    }
+
     /// The closed round whose history `anchor` may be read against: its own, on the new side.
     fn history_round(&self, anchor: &Anchor) -> Option<u32> {
         (anchor.side == AnchorSide::New && anchor.round >= 1 && anchor.round <= self.closed)
@@ -187,8 +253,23 @@ impl Sides {
     }
 
     /// `thread` placed against the diffs read so far (a file not read counts as one without
-    /// text) with `history`.
+    /// text) with `history`, and when its file left the list, against that file's text at the
+    /// new side once it is read ([`Sides::read_unlisted_for`]).
     fn place(&self, thread: &Thread, history: History<'_>) -> Placement {
+        let placement = self.place_listed(thread, history);
+        if !is_gone(&placement) {
+            return placement;
+        }
+        let path = unlisted_path(&thread.anchor, history);
+        let text = match self.unlisted_text(&path) {
+            Some(text) => SideText::Lines(side_lines(text, AnchorSide::New)),
+            None => SideText::Unavailable,
+        };
+        place_unlisted(thread, &path, self.unlisted_present(&path), text)
+    }
+
+    /// `thread` placed among the listed files alone ([`Sides::place`]).
+    fn place_listed(&self, thread: &Thread, history: History<'_>) -> Placement {
         let side = thread.anchor.side;
         let text = |entry: &FileEntry| match self.side_text(&entry.path, side) {
             Some(lines) => SideText::Lines(lines),
@@ -212,6 +293,10 @@ impl Sides {
         let entry = file.as_deref().and_then(|path| self.entry(path));
         let current = match (placement.lines(&thread.anchor), entry) {
             (Some((start, end)), Some(entry)) => self.current_code(entry, side, start, end),
+            (Some((start, end)), None) => placement.unlisted_path().and_then(|path| {
+                let text = self.unlisted_text(path)?;
+                code_in(text, path, side, start, end)
+            }),
             _ => None,
         };
         let trail = match (placement.trail(), entry) {
@@ -234,13 +319,16 @@ impl Sides {
             }),
             _ => None,
         };
+        let side_path = entry
+            .map(|entry| AnchorPlace::for_entry(entry, side, self.round).path)
+            .or_else(|| placement.unlisted_path().map(str::to_string));
         Located {
             placement: match placement {
                 // Every side is read in full here, so nothing is left pending.
                 Placement::Pending { file } => Placement::Outdated { file, trail: None },
                 other => other,
             },
-            side_path: entry.map(|entry| AnchorPlace::for_entry(entry, side, self.round).path),
+            side_path,
             file,
             current,
             trail,
@@ -259,22 +347,8 @@ impl Sides {
         end: u32,
     ) -> Option<CurrentCode> {
         let text = self.diffs.get(&entry.path).and_then(FileDiff::as_text)?;
-        let rows = excerpt(text, side, start, end)?;
-        let code = side_lines(text, side)
-            .get((start as usize).saturating_sub(1)..end as usize)
-            .map(|lines| lines.join("\n"))
-            .unwrap_or_default();
         let place = AnchorPlace::for_entry(entry, side, self.round);
-        Some(CurrentCode {
-            anchor: CurrentAnchorDto {
-                path: place.path,
-                side: side_str(side),
-                start_line: start,
-                end_line: end,
-            },
-            code,
-            excerpt: excerpt_lines(text, &rows).join("\n"),
-        })
+        code_in(text, &place.path, side, start, end)
     }
 
     /// The anchor a write on `thread` records (PLAN §8): its anchor re-taken where relocation
@@ -299,8 +373,35 @@ impl Sides {
     }
 }
 
-/// The current diff of `review` with what `threads` need read: their files, and the round
-/// histories those that the current text leaves outdated need.
+/// Lines `start..=end` of `side` of `text` (a file at `path` on that side): where they are,
+/// their text and the excerpt of `text` around them ([`Sides::current_code`]).
+fn code_in(
+    text: &dv_core::diff::TextDiff,
+    path: &str,
+    side: AnchorSide,
+    start: u32,
+    end: u32,
+) -> Option<CurrentCode> {
+    let rows = excerpt(text, side, start, end)?;
+    let code = side_lines(text, side)
+        .get((start as usize).saturating_sub(1)..end as usize)
+        .map(|lines| lines.join("\n"))
+        .unwrap_or_default();
+    Some(CurrentCode {
+        anchor: CurrentAnchorDto {
+            path: path.to_string(),
+            side: side_str(side),
+            start_line: start,
+            end_line: end,
+        },
+        code,
+        excerpt: excerpt_lines(text, &rows).join("\n"),
+    })
+}
+
+/// The current diff of `review` with what `threads` need read: their files, the round
+/// histories those that the current text leaves outdated need, and the files the review
+/// doesn't list that the rest are anchored in.
 fn read(
     repo: &Repo,
     review: &Review,
@@ -310,6 +411,7 @@ fn read(
     let mut sides = Sides::list(repo, review, ctx)?;
     sides.read_for(threads)?;
     sides.read_history_for(review, threads, ctx)?;
+    sides.read_unlisted_for(threads, ctx)?;
     Ok(sides)
 }
 

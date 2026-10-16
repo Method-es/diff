@@ -50,6 +50,8 @@ pub const FIND_DEBOUNCE: Duration = Duration::from_millis(120);
 
 /// The find field's placeholder.
 pub const FIND_PLACEHOLDER: &str = "Find in review";
+/// The find field's placeholder in the file view, which searches its file only.
+pub const FIND_IN_FILE_PLACEHOLDER: &str = "Find in file";
 
 /// The find bar's state (module docs).
 #[derive(Default)]
@@ -177,6 +179,18 @@ impl DiffPane {
             .is_some_and(|input| input.read(cx).focus_handle(cx).is_focused(window))
     }
 
+    /// The paths searched, in order: the files the stream lists (the session's list, whose
+    /// order the stream's is), or the file view's one file.
+    fn searched_paths(&self) -> Vec<String> {
+        self.listed_paths().map(str::to_string).collect()
+    }
+
+    /// The file view's text and path, when this is the file view and its text is there.
+    fn file_view_find_text(&self) -> Option<(String, Arc<FileDiff>)> {
+        let path = self.file_view_path()?.to_string();
+        Some((path, self.file_view_text()?))
+    }
+
     /// The paths the stream lists, in order (not the "Not in the diff" section's).
     fn listed_paths(&self) -> impl Iterator<Item = &str> {
         self.blocks
@@ -227,7 +241,12 @@ impl DiffPane {
         let input = match self.find.input.clone() {
             Some(input) => input,
             None => {
-                let input = cx.new(|cx| InputState::new(window, cx).placeholder(FIND_PLACEHOLDER));
+                let placeholder = if self.is_file_view() {
+                    FIND_IN_FILE_PLACEHOLDER
+                } else {
+                    FIND_PLACEHOLDER
+                };
+                let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
                 self.find._subscription =
                     Some(cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
                         if matches!(event, InputEvent::Change) {
@@ -253,7 +272,7 @@ impl DiffPane {
             self.apply_find_query(text, cx);
         } else if self.find.current.is_none() {
             // Opened again on the same query: from the cursor, as a new search.
-            self.find.origin = self.find_origin(cx);
+            self.find.origin = self.find_origin();
             self.find.go_when_found = true;
             self.search_whole_review(cx);
             self.refresh_find(cx);
@@ -296,7 +315,7 @@ impl DiffPane {
         self.find.query = text;
         self.find.files.clear();
         self.find.current = None;
-        self.find.origin = self.find_origin(cx);
+        self.find.origin = self.find_origin();
         self.find.go_when_found = true;
         self.search_whole_review(cx);
         self.refresh_find(cx);
@@ -305,6 +324,10 @@ impl DiffPane {
 
     /// Has every file load while the bar is open with a query.
     fn search_whole_review(&mut self, cx: &mut Context<Self>) {
+        // The file view searches its own file, which is loaded already.
+        if self.is_file_view() {
+            return;
+        }
         let on = self.find.open && self.find.parsed.is_some();
         if let Some(session) = self.session.clone() {
             session.update(cx, |session, cx| session.load_for_search(on, cx));
@@ -313,12 +336,9 @@ impl DiffPane {
 
     /// Where a new search looks for its first match from: the cursor's row, else the top of
     /// the current file.
-    fn find_origin(&self, cx: &gpui::App) -> (usize, usize) {
-        let Some(session) = self.session.as_ref() else {
-            return (0, 0);
-        };
-        let files = session.read(cx).files();
-        let place = |path: &str| files.iter().position(|entry| entry.path == path);
+    fn find_origin(&self) -> (usize, usize) {
+        let files = self.searched_paths();
+        let place = |path: &str| files.iter().position(|listed| listed == path);
         if let Some(cursor) = &self.cursor
             && let Some(file) = place(&cursor.path)
         {
@@ -348,13 +368,20 @@ impl DiffPane {
             self.find.skipped = 0;
             return;
         };
-        let (complete, skipped) =
-            search_files(&mut self.find.files, session.read(cx), &query, self.mode);
+        let (complete, skipped) = match self.file_view_find_text() {
+            Some(found) => search_file(&mut self.find.files, found, &query, self.mode),
+            None if self.is_file_view() => {
+                self.find.files.clear();
+                (true, 0)
+            }
+            None => search_files(&mut self.find.files, session.read(cx), &query, self.mode),
+        };
         self.find.complete = complete;
         self.find.skipped = skipped;
         let (current, go) = {
-            let files = session.read(cx).files();
-            let place = |path: &str| files.iter().position(|entry| entry.path == path);
+            let files = self.searched_paths();
+            let files = files.as_slice();
+            let place = |path: &str| files.iter().position(|listed| listed == path);
             let mut current = self.find.current.clone();
             let stale = current.as_ref().and_then(|(path, hit)| {
                 let kept = self
@@ -395,17 +422,17 @@ impl DiffPane {
     fn first_hit_from(
         &self,
         (file, row): (usize, usize),
-        files: &[dv_core::diff::FileEntry],
+        files: &[String],
         wrap: bool,
     ) -> Option<(String, Hit)> {
         let count = files.len();
         let hits = |index: usize| {
             self.find
                 .files
-                .get(&files[index].path)
+                .get(&files[index])
                 .map_or(&[][..], |file| &file.hits[..])
         };
-        let found = |index: usize, hit: &Hit| (files[index].path.clone(), hit.clone());
+        let found = |index: usize, hit: &Hit| (files[index].clone(), hit.clone());
         if file < count
             && let Some(hit) = hits(file).iter().find(|hit| hit.row >= row)
         {
@@ -439,9 +466,8 @@ impl DiffPane {
             return;
         };
         if summary.current.is_none() {
-            let first = self.session.clone().and_then(|session| {
-                self.first_hit_from(self.find.origin, session.read(cx).files(), true)
-            });
+            let files = self.searched_paths();
+            let first = self.first_hit_from(self.find.origin, &files, true);
             if let Some((path, hit)) = first {
                 self.find.current = Some((path.clone(), hit.clone()));
                 self.find.go_when_found = false;
@@ -536,7 +562,7 @@ impl DiffPane {
 
     /// Scrolls item `item` to the middle of the stream, unless it is in view below the pinned
     /// header and the find bar already.
-    fn centre_item(&mut self, item: usize) {
+    pub(super) fn centre_item(&mut self, item: usize) {
         let height = self.viewport_height();
         let size = self.item_height(item);
         // The find bar hangs over the stream's top while it is open.
@@ -596,6 +622,21 @@ impl DiffPane {
             ..Find::default()
         };
     }
+}
+
+/// Searches the file view's one file (its path and the text it shows) for `query` into
+/// `files`, keeping its matches while the text is the same: always complete, nothing skipped.
+fn search_file(
+    files: &mut HashMap<String, FileHits>,
+    (path, diff): (String, Arc<FileDiff>),
+    query: &Query,
+    mode: ViewMode,
+) -> (bool, usize) {
+    files.retain(|kept, file| *kept == path && Arc::ptr_eq(&file.diff, &diff));
+    files
+        .entry(path)
+        .or_insert_with(|| FileHits::new(diff, mode, query));
+    (true, 0)
 }
 
 /// Searches every listed file of `session` for `query` in `mode` into `files`, keeping the

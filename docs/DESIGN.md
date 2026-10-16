@@ -226,14 +226,20 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   panel narrower than 270 it is its copy glyph alone, with the words in a tooltip, so the header
   never runs past the panel. The list grows to 240 high, then scrolls. The panel's right edge is a resize handle (a 2px accent line while hovered; a double click restores 280).
 - **Not in the diff:** threads whose file left the review's list (PLAN §8: the agent deleted
-  the file, reverted it, or renamed one git can't pair with its first name) head the stream, in
+  the file, reverted it, or renamed one git can't pair with its first name; or the reviewer
+  commented on a file the review never changed, from the file view) head the stream, in
   a section before the first file: a 44-high `codeHead` bar like a file header's — chevron, a
   file-diff glyph in `fg3`, "Not in the diff" at 600, the count badge, and "comments on files
-  no longer among the review's changes" in `fg3` (truncating) — then one full thread card per
+  the review doesn't change now" in `fg3` (truncating) — then one full thread card per
   thread, in the order they were added, each as an outdated card heading a file looks (the
   "Outdated" chip, its original lines in the `recess` block, Resolve / Reopen, the reply field)
   with its anchor naming the path it was written on (`src/hooks/use-can.ts · new · line 12`,
-  truncating at its start). Resolved ones collapse as anywhere. The section shows whichever
+  truncating at its start). A thread waiting for its file's read (briefly, as the review opens)
+  shows neutrally: no chip, the lines it was written on. A thread found in its file as the
+  review's new side holds it (`Placement::Unlisted`, or a comment on its whole) wears an
+  "Unchanged file" chip (a file glyph, `fg2` on `layer`) in
+  place of "Outdated", its anchor the lines it stands at now, and **View file** (a small button
+  before Resolve) opens the file view at those lines. Resolved ones collapse as anywhere. The section shows whichever
   comparison is shown (in an interdiff too, its threads never having a file there), collapses
   to its bar with its chevron, its bar pins at the top while its cards scroll as a file's
   header does, and is absent while no thread needs it. It isn't a file: while it is at the top
@@ -249,7 +255,8 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   `codeHead` bar — chevron, path (directory in `fg3`, name at 600; a renamed file shows
   `old → new`), status pill, totals, a quiet "Loading…" once its diff takes longer than 300 ms,
   Split|Unified segmented control with its `S` keycap, "Viewed" checkbox with `V`, previous / next
-  file, and `⋯` (a menu in the comments row menu's style: **Comment on file** with the
+  file, and `⋯` (a menu in the comments row menu's style: **View file** with the file glyph (the
+  file view, at the cursor's line when the cursor is in the file), **Comment on file** with the
   comment-plus glyph, dimmed and inert where the file takes none — a finished review, an
   interdiff's deleted file —, then under a hairline Copy path and Reveal in folder) — over
   24-high side labels (`main` /
@@ -336,6 +343,41 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   2. `Esc` (in the field or the stream) or × closes it: the matches go and the keyboard returns
   to the stream, the cursor on the current match's line. A press on the bar leaves the stream's
   selection alone.
+- **File view** (PLAN §18.1): one file whole over the main area in place of the stream, which
+  keeps its place under it. Its header is a 44-high `codeHead` bar, pinned at the top while the
+  lines scroll: a file glyph in `fg3`, the path (mono 13, directory in `fg3` at 500, name at
+  600, truncating at its start), a chip with the side's label ("working tree", "main"; a file
+  glyph, `fg2` on `layer`), the review's status pill (as a file header's: "Modified", "Added",
+  "Deleted" — a deleted file shows its old side) or, for a file the review doesn't change,
+  "Unchanged in this review" in `fg3`, then at the right a ghost **Close** with an × glyph and its
+  `Esc` keycap (tooltip "Back to the review (Esc)"). No side labels, no gaps, no footer. Its rows
+  are the stream's unified rows with one 44-wide line number (the side's) and the marker: every
+  line of the side, highlighted, the review's added lines on `addBg` with their `+` and
+  intraline words as in the stream; the cursor, a line selection, the comment `+`, text
+  selection, the caret and find matches look as in the stream. Thread cards sit under their last
+  line, past the line number; comments on the whole file and outdated cards head the lines.
+  While the text loads, skeleton rows; a file the side doesn't hold or a read that failed shows
+  the one-line banner (§4.4), binary and too-large files their notices, an empty file
+  "Empty file · nothing to show". `Ctrl F` opens the find bar over it ("Find in file"), searching
+  that file only. A file read at its side over the size caps shows "Too large to show" with
+  **Load anyway** (a small button), as the stream's notice does. Its side, status pill and side
+  label are the review's own (all changes, `main` / `working tree`) whichever comparison shows;
+  in an interdiff, after the pill, "changes since round n" in `fg3` (its marked lines those the
+  stream marks) or "unchanged since round n" (read at the side, unmarked), and a file deleted in
+  all changes shows its old side, every line on `delBg`. A composer holding a draft keeps it:
+  another file opened (`Ctrl P`, View file, `F`), the close button, `Alt ←` / `Alt →` and a panel
+  row that shows the stream do nothing but give the draft the keyboard; `Esc` in the composer
+  discards it.
+- **File finder** (`Ctrl P`, PLAN §18.1): the switcher's look — an `overlay` panel 560 wide,
+  radius 12, over the scrim, hung 8 under the title bar's command field and centred on it. A
+  46-high filter field with the search glyph ("Go to file") has the keyboard; the list (up to 14
+  rows, then it scrolls) holds 30-high rows radius 6: a file glyph (`fg` when selected, else
+  `fg3`), the review's status letter in its colour for a file it changes (a blank column
+  otherwise), and the path, directory in `fg3`, name at 500, truncating at its start; the selected
+  row on `sel`. A 40-high footer: the count in `fg3` ("2 files") and the keys (`↑` `↓` move, `Enter`
+  open, `Esc` close). No match: "No files match “x”" with "Every word must be in the file's path."
+  in `fg3`. A click on a row or `Enter` opens it in the file view; `Esc`, a click on the scrim or
+  `Ctrl P` again closes it.
 - **Interdiff** (round n+1 of a live target, PLAN §2.3): the stream, the file list and its
   totals are what changed since round n (its snapshot → now); `I` or the panel's toggle switches
   to all changes and back, the reading position staying where the same file and line still
@@ -534,7 +576,7 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
 | `]` / `[` | focus the next / previous thread that isn't resolved (open or addressed), scrolling to it, on into the next files (in an interdiff, the threads it shows) |
 | `I` | switch between the interdiff since the last round and all changes (the panel's toggle; while the review offers it, PLAN §2.3) |
 | `V` | toggle viewed on the current file (`V` then `J`: mark viewed and go next); each press flips the state the last one asked for, however fast they come |
-| `C` | comment on the selected lines, else the cursor's line, else (no cursor yet) the first line in view, where the cursor goes too (click a line number to put the cursor there, shift-click to select to it; a line's `+` does it all with the mouse, §4.1); a composer holding a draft takes the keyboard instead, wherever the cursor is. In an interdiff it comments on the new side only: on the old column (the round's snapshot, which no anchor names) it does nothing |
+| `C` | comment on the selected lines, else the cursor's line (in the file view, any line of the file, changed or not), else (no cursor yet) the first line in view, where the cursor goes too (click a line number to put the cursor there, shift-click to select to it; a line's `+` does it all with the mouse, §4.1); a composer holding a draft takes the keyboard instead, wherever the cursor is. In an interdiff it comments on the new side only: on the old column (the round's snapshot, which no anchor names) it does nothing |
 | `Shift C` | comment on the whole of the current file: the composer heads the file (the header menu's Comment on file); a composer holding a draft takes the keyboard instead, as for `C`. Nothing on a finished review, or in an interdiff on a deleted file (its old column is the round's snapshot) |
 | `R` | reply to the focused thread (the reply composer opens in its card) |
 | `X` | resolve the focused thread, or reopen it when it is resolved |
@@ -550,17 +592,23 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
 | `Ctrl G` | open a PR |
 | `Ctrl B` | toggle panel |
 | `Ctrl ,` | settings |
-| `Esc` | close the top overlay, else a comments row's menu, else the file menu, else cancel the composer, else close the find bar, else clear the selection (the lines and the text both); in the find field it closes the bar first (the field has the keyboard, so the stream's chain doesn't run) |
+| `Esc` | close the top overlay, else a comments row's menu, else the file menu, else cancel the composer, else close the find bar, else clear the selection (the lines and the text both), else, in the file view, close it (back to the stream where it was); in the find field it closes the bar first (the field has the keyboard, so the stream's chain doesn't run) |
+| `F` | the current file whole in the file view, at the cursor's line when the cursor is in it (a line on the other side only, a removed one, maps to the next line of the side shown) (the header menu's View file); nothing in the file view itself; with a draft in the file view's composer, the draft takes the keyboard instead |
+| `Ctrl P` | the file finder: every file of the review's new side (again, or `Esc`, closes it) |
+| `Alt ←` / `Alt →` | back / forward through the history of jumps between the stream and the file view, restoring the view, the file and the line; the mouse's back and forward buttons too. A step that would replace or close a file view holding a draft gives the draft the keyboard instead, the history left as it was |
 | `Ctrl C` | copy the selected text, else the selected lines (§4.1 "Text in code"); in a text field (the find field, the composer, the filters, the summary) its selection — that and `Ctrl X` going through the clipboard seam (`dv_ui::system`) like every copy |
 | `Ctrl F` | the find bar, its field focused (the selected text in it when that is one line); again, the field focused with its text selected (§4.1 "Find") |
 | `Enter` / `Shift Enter`, `Esc` | in the find bar: the next / previous match, wrapping; close it (the keyboard back to the stream) |
-| `↑` / `↓`, `Enter` | in the switcher and the source picker: move (wrapping), open |
+| `↑` / `↓`, `Enter` | in the switcher, the source picker and the file finder: move (wrapping), open |
 | `Enter` / `Esc` | in the file filter: show the first file left / clear the filter (both return to the diff) |
 | `Ctrl Enter` / `Esc` | in the composer: post / discard (both return to the diff; `Enter` is a newline) |
 | `↑` / `↓`, `1` / `2`, `Tab` | in the "Finish round" sheet: choose the verdict (Approve, Request changes) / move between the verdicts and the summary; `Ctrl Enter` finishes the round, `Esc` closes |
 
 macOS uses `Cmd` for every `Ctrl` above. Single-letter keys are inactive while a text field has focus.
 Keycaps render with `kbd` style (11px mono, `line2` border).
+
+In the file view the stream's keys act on its one file; `S`, `V`, `I` and the gap keys do
+nothing there.
 
 The stream's keys work wherever the main area has the keyboard, which it does whenever no overlay
 or text field does (a click in the stream gives it back). The **current file** — the one the panel

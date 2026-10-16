@@ -1,0 +1,64 @@
+{"scenario": {"window_size": "1440x900", "description": "The file view (PLAN §18.1, DESIGN §4.1 \"File view\"): the header menu's View file opens the stream's file whole at the cursor's line (its new side's every line, the review's changed lines marked: `file_view.changed_lines`), `Esc` returns to the stream at the line it left, `F` opens it again, `Alt ←` / `Alt →` step through the history between the two views (`history`), a draft in its composer is never dropped by `Ctrl P`, `Alt ←` or the close button (it takes the keyboard instead; `Esc` discards it), and `Ctrl F` in it searches that file only; screenshots of the file view and its find bar in dark Mica, and the file view in light."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "settle"}
+// src/app.ts changes lines 5 and 40; src/util.ts and README.md don't change.
+{"cmd": "seed_repo", "name": "web", "steps": [{"write": "src/app.ts", "text": "export const value_1 = 1;\nexport const value_2 = 2;\nexport const value_3 = 3;\nexport const value_4 = 4;\nexport const value_5 = 5;\nexport const value_6 = 6;\nexport const value_7 = 7;\nexport const value_8 = 8;\nexport const value_9 = 9;\nexport const value_10 = 10;\nexport const value_11 = 11;\nexport const value_12 = 12;\nexport const value_13 = 13;\nexport const value_14 = 14;\nexport const value_15 = 15;\nexport const value_16 = 16;\nexport const value_17 = 17;\nexport const value_18 = 18;\nexport const value_19 = 19;\nexport const value_20 = 20;\nexport const value_21 = 21;\nexport const value_22 = 22;\nexport const value_23 = 23;\nexport const value_24 = 24;\nexport const value_25 = 25;\nexport const value_26 = 26;\nexport const value_27 = 27;\nexport const value_28 = 28;\nexport const value_29 = 29;\nexport const value_30 = 30;\nexport const value_31 = 31;\nexport const value_32 = 32;\nexport const value_33 = 33;\nexport const value_34 = 34;\nexport const value_35 = 35;\nexport const value_36 = 36;\nexport const value_37 = 37;\nexport const value_38 = 38;\nexport const value_39 = 39;\nexport const value_40 = 40;\nexport const value_41 = 41;\nexport const value_42 = 42;\nexport const value_43 = 43;\nexport const value_44 = 44;\nexport const value_45 = 45;\nexport const value_46 = 46;\nexport const value_47 = 47;\nexport const value_48 = 48;\nexport const value_49 = 49;\nexport const value_50 = 50;\nexport const value_51 = 51;\nexport const value_52 = 52;\nexport const value_53 = 53;\nexport const value_54 = 54;\nexport const value_55 = 55;\nexport const value_56 = 56;\nexport const value_57 = 57;\nexport const value_58 = 58;\nexport const value_59 = 59;\nexport const value_60 = 60;\n"}, {"write": "src/util.ts", "text": "export function helper1(x: number): number { return x + 1; }\nexport function helper2(x: number): number { return x + 2; }\nexport function helper3(x: number): number { return x + 3; }\nexport function helper4(x: number): number { return x + 4; }\nexport function helper5(x: number): number { return x + 5; }\nexport function helper6(x: number): number { return x + 6; }\nexport function helper7(x: number): number { return x + 7; }\nexport function helper8(x: number): number { return x + 8; }\nexport function helper9(x: number): number { return x + 9; }\nexport function helper10(x: number): number { return x + 10; }\nexport function helper11(x: number): number { return x + 11; }\nexport function helper12(x: number): number { return x + 12; }\nexport function helper13(x: number): number { return x + 13; }\nexport function helper14(x: number): number { return x + 14; }\nexport function helper15(x: number): number { return x + 15; }\nexport function helper16(x: number): number { return x + 16; }\nexport function helper17(x: number): number { return x + 17; }\nexport function helper18(x: number): number { return x + 18; }\nexport function helper19(x: number): number { return x + 19; }\nexport function helper20(x: number): number { return x + 20; }\n"}, {"write": "README.md", "text": "# web\n\nA small app.\n"}, {"commit": "base"}, {"write": "src/app.ts", "text": "export const value_1 = 1;\nexport const value_2 = 2;\nexport const value_3 = 3;\nexport const value_4 = 4;\nexport const value_5 = 5 + 1; // changed\nexport const value_6 = 6;\nexport const value_7 = 7;\nexport const value_8 = 8;\nexport const value_9 = 9;\nexport const value_10 = 10;\nexport const value_11 = 11;\nexport const value_12 = 12;\nexport const value_13 = 13;\nexport const value_14 = 14;\nexport const value_15 = 15;\nexport const value_16 = 16;\nexport const value_17 = 17;\nexport const value_18 = 18;\nexport const value_19 = 19;\nexport const value_20 = 20;\nexport const value_21 = 21;\nexport const value_22 = 22;\nexport const value_23 = 23;\nexport const value_24 = 24;\nexport const value_25 = 25;\nexport const value_26 = 26;\nexport const value_27 = 27;\nexport const value_28 = 28;\nexport const value_29 = 29;\nexport const value_30 = 30;\nexport const value_31 = 31;\nexport const value_32 = 32;\nexport const value_33 = 33;\nexport const value_34 = 34;\nexport const value_35 = 35;\nexport const value_36 = 36;\nexport const value_37 = 37;\nexport const value_38 = 38;\nexport const value_39 = 39;\nexport const value_40 = 40 * 2; // changed\nexport const value_41 = 41;\nexport const value_42 = 42;\nexport const value_43 = 43;\nexport const value_44 = 44;\nexport const value_45 = 45;\nexport const value_46 = 46;\nexport const value_47 = 47;\nexport const value_48 = 48;\nexport const value_49 = 49;\nexport const value_50 = 50;\nexport const value_51 = 51;\nexport const value_52 = 52;\nexport const value_53 = 53;\nexport const value_54 = 54;\nexport const value_55 = 55;\nexport const value_56 = 56;\nexport const value_57 = 57;\nexport const value_58 = 58;\nexport const value_59 = 59;\nexport const value_60 = 60;\n"}]}
+{"cmd": "open_review", "path": "${data_dir}/repos/web"}
+{"cmd": "settle", "expect": [{"pointer": "/session/total", "equals": 1}, {"pointer": "/file_view", "equals": null}, {"pointer": "/history", "equals": {"back": 0, "forward": 0}}]}
+{"cmd": "click", "target": "stream/line/src/app.ts/new/5"}
+{"cmd": "settle", "expect": {"pointer": "/session/cursor", "equals": {"path": "src/app.ts", "side": "new", "line": 5}}}
+
+// The header menu's View file: the file whole, at the cursor's line; a jump the history keeps.
+{"cmd": "click", "target": "stream/file/src/app.ts/menu"}
+{"cmd": "settle"}
+{"cmd": "click", "target": "stream/menu/view_file"}
+{"cmd": "settle", "expect": [{"pointer": "/file_view/path", "equals": "src/app.ts"}, {"pointer": "/file_view/side", "equals": "new"}, {"pointer": "/file_view/line_count", "equals": 60}, {"pointer": "/file_view/changed", "equals": true}, {"pointer": "/file_view/changed_lines", "equals": [5, 40]}, {"pointer": "/file_view/loading", "equals": false}, {"pointer": "/file_view/notice", "equals": null}, {"pointer": "/session/cursor", "equals": {"path": "src/app.ts", "side": "new", "line": 5}}, {"pointer": "/history", "equals": {"back": 1, "forward": 0}}, {"pointer": "/stream/focused", "equals": true}]}
+{"cmd": "query", "prefix": "file_view/close", "expect_result": {"pointer": "", "len": 1}}
+{"cmd": "bounds", "target": "file_view/header", "expect_result": [{"pointer": "/h", "equals": 44}]}
+{"cmd": "screenshot", "name": "file-view"}
+// The stream's keys move the cursor in it.
+{"cmd": "key", "keystroke": "down", "expect": {"pointer": "/session/cursor/line", "equals": 6}}
+
+// Esc: back to the stream, at the line it left.
+{"cmd": "key", "keystroke": "escape"}
+{"cmd": "settle", "expect": [{"pointer": "/file_view", "equals": null}, {"pointer": "/session/cursor", "equals": {"path": "src/app.ts", "side": "new", "line": 5}}, {"pointer": "/stream/focused", "equals": true}, {"pointer": "/history", "equals": {"back": 2, "forward": 0}}]}
+// F opens it again; Alt ← and Alt → step between the two views.
+{"cmd": "key", "keystroke": "f"}
+{"cmd": "settle", "expect": [{"pointer": "/file_view/path", "equals": "src/app.ts"}, {"pointer": "/session/cursor/line", "equals": 5}, {"pointer": "/history/back", "equals": 3}]}
+{"cmd": "key", "keystroke": "down"}
+{"cmd": "key", "keystroke": "down"}
+{"cmd": "key", "keystroke": "alt-left"}
+{"cmd": "settle", "expect": [{"pointer": "/file_view", "equals": null}, {"pointer": "/session/cursor/line", "equals": 5}, {"pointer": "/history", "equals": {"back": 2, "forward": 1}}]}
+{"cmd": "key", "keystroke": "alt-right"}
+{"cmd": "settle", "expect": [{"pointer": "/file_view/path", "equals": "src/app.ts"}, {"pointer": "/session/cursor/line", "equals": 7}, {"pointer": "/history", "equals": {"back": 3, "forward": 0}}]}
+
+// A draft in the file view is never dropped: Ctrl P to another file, Alt ← and the close
+// button give the draft the keyboard instead; Esc in it discards it.
+{"cmd": "key", "keystroke": "c"}
+{"cmd": "type", "text": "half a thought"}
+{"cmd": "key", "keystroke": "ctrl-p"}
+{"cmd": "type", "text": "util"}
+{"cmd": "settle"}
+{"cmd": "key", "keystroke": "enter"}
+{"cmd": "settle", "expect": [{"pointer": "/file_view/path", "equals": "src/app.ts"}, {"pointer": "/session/composer/text", "equals": "half a thought"}, {"pointer": "/history", "equals": {"back": 3, "forward": 0}}]}
+{"cmd": "key", "keystroke": "alt-left"}
+{"cmd": "click", "target": "file_view/close"}
+{"cmd": "settle", "expect": [{"pointer": "/file_view/path", "equals": "src/app.ts"}, {"pointer": "/session/composer/text", "equals": "half a thought"}, {"pointer": "/history", "equals": {"back": 3, "forward": 0}}]}
+{"cmd": "screenshot", "name": "file-view-draft"}
+{"cmd": "key", "keystroke": "escape"}
+{"cmd": "settle", "expect": [{"pointer": "/session/composer", "equals": null}, {"pointer": "/file_view/path", "equals": "src/app.ts"}]}
+// Ctrl F searches the file shown: value_4 and value_40 to value_49, from the cursor on.
+{"cmd": "key", "keystroke": "ctrl-f", "expect": [{"pointer": "/find/open", "equals": true}, {"pointer": "/find/focused", "equals": true}]}
+{"cmd": "type", "text": "value_4"}
+{"cmd": "settle", "expect": [{"pointer": "/find/count", "equals": 11}, {"pointer": "/find/complete", "equals": true}, {"pointer": "/find/skipped", "equals": 0}, {"pointer": "/find/current", "equals": 2}, {"pointer": "/session/cursor/line", "equals": 40}]}
+{"cmd": "key", "keystroke": "enter", "expect": [{"pointer": "/find/current", "equals": 3}, {"pointer": "/session/cursor/line", "equals": 41}]}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "file-view-find"}
+// Esc closes the bar first, then the file view.
+{"cmd": "key", "keystroke": "escape", "expect": [{"pointer": "/find/open", "equals": false}, {"pointer": "/file_view/path", "equals": "src/app.ts"}]}
+{"cmd": "set_setting", "key": "mode", "value": "light"}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "file-view-light"}
+{"cmd": "click", "target": "file_view/close"}
+{"cmd": "settle", "expect": [{"pointer": "/file_view", "equals": null}, {"pointer": "/history", "equals": {"back": 4, "forward": 0}}]}

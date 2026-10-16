@@ -298,6 +298,7 @@ impl ReviewSession {
         self.requeue_wanted();
         self.pump(cx);
         self.ensure_review_texts(cx);
+        self.ensure_side_reads(cx);
         cx.emit(SessionEvent::HistoryLoaded);
         cx.notify();
     }

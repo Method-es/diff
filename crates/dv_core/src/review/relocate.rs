@@ -8,6 +8,8 @@
 //!   the file renamed from it, or what its round's history says the file is called now) and
 //!   runs [`relocate`] on that file's side; a new-side thread relocation can't find is traced
 //!   through its round's snapshot to where its code went (`super::history`).
+//! - [`place_unlisted`] places a thread whose file left the list against that file's text at
+//!   the review's new side: found there, it stands in a file the review doesn't change.
 //! - [`relocated_anchor`] is the anchor the next event on a moved thread records (PLAN §8:
 //!   relocation is display-only until then).
 //!
@@ -619,6 +621,19 @@ pub enum Placement {
     /// A comment on the whole of `file` (a file-level anchor, [`Anchor::is_file_level`]),
     /// which has its side: at no line, and not outdated.
     File { file: String },
+    /// Not among the review's changes: its file left the list (it never changed, or stopped
+    /// changing) but stands at the review's new side, and the anchored text was found there
+    /// ([`place_unlisted`]), at its recorded lines (`how` `None`) or moved to
+    /// `start_line..=end_line`. `path` is that file's. Not outdated, and in no listed file.
+    Unlisted {
+        path: String,
+        start_line: u32,
+        end_line: u32,
+        how: Option<MoveKind>,
+    },
+    /// A comment on the whole of a file the review doesn't change, which stands at its new
+    /// side at `path` ([`place_unlisted`]): not outdated, in no listed file.
+    UnlistedFile { path: String },
 }
 
 impl Placement {
@@ -628,7 +643,23 @@ impl Placement {
         match self {
             Self::Unchanged { file } | Self::Moved { file, .. } | Self::File { file } => Some(file),
             Self::Pending { file } | Self::Outdated { file, .. } => file.as_deref(),
+            Self::Unlisted { .. } | Self::UnlistedFile { .. } => None,
         }
+    }
+
+    /// The path of the file the review doesn't list that the thread stands in
+    /// ([`Placement::Unlisted`]).
+    pub fn unlisted_path(&self) -> Option<&str> {
+        match self {
+            Self::Unlisted { path, .. } | Self::UnlistedFile { path } => Some(path),
+            _ => None,
+        }
+    }
+
+    /// Whether the thread's file is among the review's changes: placed, pending or outdated in
+    /// a listed file. A thread whose file left the list, found in it or not, isn't.
+    pub fn in_diff(&self) -> bool {
+        self.file().is_some()
     }
 
     /// Where an outdated thread's code went since its round, when its snapshot tells.
@@ -649,8 +680,16 @@ impl Placement {
                 start_line,
                 end_line,
                 ..
+            }
+            | Self::Unlisted {
+                start_line,
+                end_line,
+                ..
             } => Some((*start_line, *end_line)),
-            Self::Pending { .. } | Self::Outdated { .. } | Self::File { .. } => None,
+            Self::Pending { .. }
+            | Self::Outdated { .. }
+            | Self::File { .. }
+            | Self::UnlistedFile { .. } => None,
         }
     }
 
@@ -660,17 +699,18 @@ impl Placement {
 
     /// A comment on the whole of its file, standing in it.
     pub fn is_file(&self) -> bool {
-        matches!(self, Self::File { .. })
+        matches!(self, Self::File { .. } | Self::UnlistedFile { .. })
     }
 
-    /// `"unchanged"`, `"moved"`, `"pending"`, `"outdated"` or `"file"`.
+    /// `"unchanged"`, `"moved"`, `"pending"`, `"outdated"` or `"file"` (a thread on a file the
+    /// review doesn't list: `"unchanged"` or `"moved"`, [`Placement::in_diff`] false).
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Unchanged { .. } => "unchanged",
-            Self::Moved { .. } => "moved",
+            Self::Unchanged { .. } | Self::Unlisted { how: None, .. } => "unchanged",
+            Self::Moved { .. } | Self::Unlisted { how: Some(_), .. } => "moved",
             Self::Pending { .. } => "pending",
             Self::Outdated { .. } => "outdated",
-            Self::File { .. } => "file",
+            Self::File { .. } | Self::UnlistedFile { .. } => "file",
         }
     }
 }
@@ -701,11 +741,18 @@ pub fn shows_edited(thread: &Thread, placement: &Placement) -> bool {
         Placement::Moved {
             how: MoveKind::Fuzzy { .. },
             ..
+        }
+        | Placement::Unlisted {
+            how: Some(MoveKind::Fuzzy { .. }),
+            ..
         } => true,
-        Placement::Unchanged { .. } | Placement::Moved { .. } => {
+        Placement::Unchanged { .. } | Placement::Moved { .. } | Placement::Unlisted { .. } => {
             thread.anchor.text != thread.first_anchor().text
         }
-        Placement::Pending { .. } | Placement::Outdated { .. } | Placement::File { .. } => false,
+        Placement::Pending { .. }
+        | Placement::Outdated { .. }
+        | Placement::File { .. }
+        | Placement::UnlistedFile { .. } => false,
     }
 }
 
@@ -877,6 +924,81 @@ pub fn place_thread<L: SideLines>(
             },
         },
     }
+}
+
+/// The path a thread whose file left the list is read at (PLAN §8 "Threads on files the
+/// review doesn't change"): the one its round's history says its file has now, when it says,
+/// else the anchor's own.
+pub fn unlisted_path(anchor: &Anchor, history: History<'_>) -> String {
+    if anchor.side == AnchorSide::New
+        && let PathHistory::Read(file) = history.of(&anchor.path)
+        && let Some(now) = &file.now
+    {
+        return now.clone();
+    }
+    anchor.path.clone()
+}
+
+/// Where `thread` stands when [`place_thread`] found its file gone from the list
+/// (`Placement::Outdated` without a file; PLAN §8 "Threads on files the review doesn't
+/// change"), against the file at `path` ([`unlisted_path`]) as the review's new side holds it
+/// (`crate::diff::side_file`): `present` whether that side holds a file there, `text` its lines
+/// (unavailable for a file without text: binary, a submodule). The review doesn't change the
+/// file, so its two sides are the same text, which anchors on either side are relocated in:
+/// found there, the thread is [`Placement::Unlisted`]; a comment on the whole file of a file
+/// that is there is [`Placement::UnlistedFile`]; else, the file or its text gone, outdated
+/// without a file as before.
+pub fn place_unlisted<L: SideLines>(
+    thread: &Thread,
+    path: &str,
+    present: bool,
+    text: SideText<L>,
+) -> Placement {
+    let anchor = &thread.anchor;
+    let gone = Placement::Outdated {
+        file: None,
+        trail: None,
+    };
+    if matches!(text, SideText::Pending) {
+        return Placement::Pending { file: None };
+    }
+    if !present {
+        return gone;
+    }
+    if anchor.is_file_level() {
+        return Placement::UnlistedFile {
+            path: path.to_string(),
+        };
+    }
+    let side = match text {
+        SideText::Pending | SideText::Unavailable => return gone,
+        SideText::Lines(side) => side,
+    };
+    let relocation = match side.fuzzy() {
+        Some(fuzzy) => relocate_with(anchor, side.lines(), fuzzy),
+        None => relocate(anchor, side.lines()),
+    };
+    let unlisted = |start_line, end_line, how| Placement::Unlisted {
+        path: path.to_string(),
+        start_line,
+        end_line,
+        how,
+    };
+    match relocation {
+        Relocation::Unchanged => unlisted(anchor.start_line, anchor.end_line, None),
+        Relocation::Moved {
+            start_line,
+            end_line,
+            how,
+        } => unlisted(start_line, end_line, Some(how)),
+        Relocation::Outdated => gone,
+    }
+}
+
+/// Whether `placement` is [`place_thread`]'s for a thread whose file left the list: the case
+/// [`place_unlisted`] reads further.
+pub fn is_gone(placement: &Placement) -> bool {
+    matches!(placement, Placement::Outdated { file: None, .. })
 }
 
 /// The anchor the next event on a thread records (PLAN §8): `anchor` re-taken where

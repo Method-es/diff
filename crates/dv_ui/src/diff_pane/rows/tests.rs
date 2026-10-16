@@ -58,6 +58,7 @@ fn rows_of(diff: &FileDiff, mode: ViewMode, inserts: &[Insert]) -> Vec<Row> {
         inserts,
         heading: &[],
         footer: true,
+        whole: false,
     })
 }
 
@@ -163,6 +164,7 @@ fn expanding_a_gap_reveals_its_lines_from_the_loaded_text() {
             inserts: &[],
             heading: &[],
             footer: false,
+            whole: false,
         })
     };
     let gaps = |rows: &[Row]| -> Vec<Range<usize>> {
@@ -196,6 +198,7 @@ fn a_collapsed_file_is_its_header_alone() {
         inserts: &[],
         heading: &[],
         footer: true,
+        whole: false,
     });
     assert_eq!(
         rows,
@@ -266,6 +269,7 @@ fn files_without_lines_show_a_notice() {
             inserts: &[],
             heading: &[],
             footer: true,
+            whole: false,
         });
         assert_eq!(rows, [bare_header(), Row::Notice(notice)]);
     }
@@ -336,6 +340,7 @@ fn outdated_threads_head_the_file_under_its_header_unless_it_is_collapsed() {
         inserts: &[],
         heading: &outdated,
         footer: true,
+        whole: false,
     };
     let rows = file_rows(&spec(false));
     assert_eq!(rows[0], header());

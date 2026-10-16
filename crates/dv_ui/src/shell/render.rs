@@ -3,7 +3,7 @@
 
 use gpui::{
     AnyElement, AppContext as _, Context, DragMoveEvent, InteractiveElement as _, IntoElement,
-    MouseButton, MouseUpEvent, ParentElement as _, Render, ScrollHandle,
+    MouseButton, MouseUpEvent, NavigationDirection, ParentElement as _, Render, ScrollHandle,
     StatefulInteractiveElement as _, Styled as _, Window, deferred, div, linear_color_stop,
     linear_gradient, prelude::FluentBuilder as _, px,
 };
@@ -53,14 +53,19 @@ impl Render for Shell {
         }
         let theme = cx.dv_theme().clone();
         let c = &theme.colors;
-        let overlay_open =
-            self.switcher.is_some() || self.source_picker.is_some() || self.sheet.is_some();
+        let overlay_open = self.switcher.is_some()
+            || self.source_picker.is_some()
+            || self.file_finder.is_some()
+            || self.sheet.is_some();
         div()
             .id("shell")
             .key_context(keymap::SHELL)
             .on_action(cx.listener(Self::toggle_switcher))
             .on_action(cx.listener(Self::toggle_panel))
             .on_action(cx.listener(Self::finish_review))
+            .on_action(cx.listener(Self::toggle_file_finder))
+            .on_action(cx.listener(Self::on_go_back))
+            .on_action(cx.listener(Self::on_go_forward))
             .on_action(cx.listener(Self::copy_field))
             .on_action(cx.listener(Self::cut_field))
             // `Esc` closes the comments list's row menu before the stream hears it (DESIGN §5:
@@ -313,16 +318,25 @@ impl Shell {
             None if self.session.is_some() => div()
                 .flex_1()
                 .min_h_0()
-                .child(self.diff_pane.clone())
+                .child(self.main_pane().clone())
                 .into_any_element(),
             None => div().flex_1().into_any_element(),
         };
         let main = div()
             .id("main")
             .key_context(keymap::DIFF_PANE)
-            .track_focus(&self.focus_handle);
+            .track_focus(&self.main_focus(cx))
+            // The mouse's back and forward buttons step through the history (PLAN §18.1).
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Back),
+                cx.listener(|this, _, window, cx| this.go_back(window, cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Navigate(NavigationDirection::Forward),
+                cx.listener(|this, _, window, cx| this.go_forward(window, cx)),
+            );
         // Clipped: a banner never draws over the status bar (DESIGN §4.4).
-        DiffPane::bind_actions(main, &self.diff_pane)
+        DiffPane::bind_actions(main, self.main_pane())
             .flex_1()
             .min_w_0()
             .h_full()
@@ -369,7 +383,8 @@ impl Shell {
     /// everything under it (a sheet with a menu open over it too); a click on it closes that
     /// overlay.
     fn render_scrim(&self, theme: &DvTheme, cx: &mut Context<Self>) -> AnyElement {
-        let menu_open = self.switcher.is_some() || self.source_picker.is_some();
+        let menu_open =
+            self.switcher.is_some() || self.source_picker.is_some() || self.file_finder.is_some();
         let priority = if menu_open && self.sheet.is_some() {
             SCRIM_OVER_SHEET_PRIORITY
         } else {

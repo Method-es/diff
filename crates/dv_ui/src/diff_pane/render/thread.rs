@@ -54,15 +54,33 @@ impl DiffPane {
             .map(|composer| self.composer_box(composer, true, cx));
         let error = self.thread_error(thread).cloned();
         let pane = cx.weak_entity();
-        // In the section, away from its file's rows, the card names the path it was written on.
-        let path = placement
-            .is_not_in_diff()
-            .then(|| found.anchor.path.clone());
+        // In the section, away from its file's rows, the card names the path it was written on;
+        // one found in a file the review doesn't change offers that file's view at its lines.
+        let in_section = placement.is_not_in_diff() && !self.is_file_view();
+        let path = in_section.then(|| found.anchor.path.clone());
+        let view = placement
+            .placement()
+            .unlisted_path()
+            .filter(|_| in_section)
+            .map(|path| {
+                let (pane, path) = (pane.clone(), path.to_string());
+                let line = lines.map(|(start, _)| start);
+                move |_: &mut gpui::Window, cx: &mut gpui::App| {
+                    pane.update(cx, |_, cx| {
+                        cx.emit(crate::diff_pane::DiffPaneEvent::ViewFile {
+                            path: path.clone(),
+                            line,
+                        })
+                    })
+                    .ok();
+                }
+            });
         let trail = placement.trail().map(|trail| trail.round);
         let card = ThreadCard::new(found, dv_core::review::event::now_ms())
             .outdated(placement.is_outdated())
             .trail(trail)
             .path(path)
+            .unlisted(view)
             .shown_at(lines, moved)
             .focused(self.focused_thread.as_ref() == Some(thread))
             .collapsed(collapsed)
@@ -184,7 +202,10 @@ impl DiffPane {
             ViewMode::Unified => div()
                 .w_full()
                 .bg(tint)
-                .child(padded(2. * NUMBER_WIDTH + MARKER_WIDTH + 2., element))
+                .child(padded(
+                    self.number_columns() * NUMBER_WIDTH + MARKER_WIDTH + 2.,
+                    element,
+                ))
                 .into_any_element(),
             ViewMode::Split => {
                 let half = |content: Option<AnyElement>| {

@@ -74,6 +74,7 @@ fn is_settled(shell: &Entity<Shell>, cx: &gpui::App) -> bool {
     cx.services().is_settled(cx)
         && shell.is_settled(cx)
         && shell.diff_pane().read(cx).is_settled()
+        && shell.file_view().read(cx).is_settled()
         && shell
             .session()
             .is_none_or(|session| session.read(cx).is_settled())

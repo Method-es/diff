@@ -49,6 +49,9 @@ impl DiffPane {
 
     /// The section's block, `None` while no thread needs it.
     pub(super) fn section_block(&self, cx: &App) -> Option<Block> {
+        if self.is_file_view() {
+            return None;
+        }
         let session = self.session.as_ref()?.read(cx);
         let threads: Vec<ThreadId> = session
             .threads_not_in_diff()
@@ -89,10 +92,11 @@ impl DiffPane {
     /// Whether the section should come or go: the threads that need it changed, and every
     /// block moves.
     pub(super) fn section_comes_or_goes(&self, cx: &App) -> bool {
-        let wanted = self
-            .session
-            .as_ref()
-            .is_some_and(|session| session.read(cx).threads_not_in_diff().next().is_some());
+        let wanted = !self.is_file_view()
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.read(cx).threads_not_in_diff().next().is_some());
         wanted != self.is_section(0)
     }
 
@@ -114,6 +118,7 @@ impl DiffPane {
         session: &'a ReviewSession,
     ) -> Vec<&'a Thread> {
         match self.blocks.get(index) {
+            Some(_) if self.is_file_view() => self.file_view_threads(session),
             Some(block) if block.path == SECTION => session.threads_not_in_diff().collect(),
             Some(block) => session
                 .review()
@@ -130,6 +135,15 @@ impl DiffPane {
     pub(super) fn thread_block_path(&self, thread: &ThreadId, cx: &App) -> Option<String> {
         let session = self.session.as_ref()?.read(cx);
         let found = session.review().thread(thread)?;
+        if self.is_file_view() {
+            return self
+                .file_view_threads(session)
+                .iter()
+                .any(|shown| shown.id == found.id)
+                .then(|| self.file_view_path())
+                .flatten()
+                .map(str::to_string);
+        }
         let placement = session.placement(found);
         if placement.is_not_in_diff() {
             return Some(SECTION.to_string());
