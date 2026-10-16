@@ -706,6 +706,125 @@ fn anchors_are_checked() {
     assert_eq!(thread.anchor.line_count(), 3);
 }
 
+/// A file-level anchor on `path` (a comment on the whole file) in round 1.
+fn file_anchor(path: &str, side: AnchorSide) -> Anchor {
+    Anchor::file_level(1, path.to_string(), None, side)
+}
+
+#[test]
+fn file_level_anchors_fold_and_malformed_ones_are_refused() {
+    let added = |anchor: Anchor| EventBody::ThreadAdded {
+        id: ThreadId::generate(),
+        anchor,
+        body: "About the whole file".to_string(),
+        author: reviewer(),
+    };
+    let bad = |edit: fn(&mut Anchor)| {
+        let mut anchor = file_anchor("src/lib.rs", AnchorSide::New);
+        edit(&mut anchor);
+        added(anchor)
+    };
+    let folded = fold_bodies(vec![
+        created(Target::Working),
+        added(file_anchor("src/lib.rs", AnchorSide::New)),
+        // The old side, for a deleted file.
+        added(file_anchor("src/gone.rs", AnchorSide::Old)),
+        // Lines 0 with text or context, or one end 0 only, are no file-level anchor.
+        bad(|a| a.text = vec!["fn main() {}".into()]),
+        bad(|a| a.context_before = vec!["use std::io;".into()]),
+        bad(|a| a.context_after = vec!["}".into()]),
+        bad(|a| a.end_line = 3),
+        bad(|a| {
+            a.start_line = 3;
+            a.text = vec!["3".into()];
+        }),
+        bad(|a| a.path = "../x".to_string()),
+        bad(|a| a.round = 2),
+    ]);
+    let reasons = rejections(&folded);
+    assert_eq!(reasons.len(), 7, "{reasons:?}");
+    assert!(
+        reasons[..3].iter().all(|r| matches!(
+            r,
+            Rejection::InvalidAnchor { reason } if reason.contains("file-level")
+        )),
+        "{reasons:?}"
+    );
+    assert!(
+        reasons[3..6]
+            .iter()
+            .all(|r| matches!(r, Rejection::InvalidAnchor { .. })),
+        "{reasons:?}"
+    );
+    assert_eq!(
+        reasons[6],
+        Rejection::UnknownRound {
+            round: 2,
+            current: 1
+        }
+    );
+    let [new, old] = &folded.review.threads[..] else {
+        panic!("{:?}", folded.review.threads)
+    };
+    assert!(new.anchor.is_file_level() && old.anchor.is_file_level());
+    assert_eq!(new.anchor.line_count(), 0);
+    assert_eq!(old.anchor.side, AnchorSide::Old);
+
+    // A file-level anchor recorded on a reply (its file renamed since) moves the thread there,
+    // keeping the first; a malformed one skips the reply.
+    let thread = ThreadId::generate();
+    let reply_with = |anchor: Anchor| EventBody::ReplyAdded {
+        thread: thread.clone(),
+        id: CommentId::generate(),
+        body: "Renamed it.".to_string(),
+        author: agent(),
+        anchor: Some(anchor),
+    };
+    let mut with_text = file_anchor("src/renamed.rs", AnchorSide::New);
+    with_text.text = vec!["x".into()];
+    let folded = fold_bodies(vec![
+        created(Target::Working),
+        EventBody::ThreadAdded {
+            id: thread.clone(),
+            anchor: file_anchor("src/lib.rs", AnchorSide::New),
+            body: "About the whole file".to_string(),
+            author: reviewer(),
+        },
+        reply_with(with_text),
+        reply_with(file_anchor("src/renamed.rs", AnchorSide::New)),
+    ]);
+    assert_eq!(rejections(&folded).len(), 1, "{:?}", folded.warnings);
+    let t = &folded.review.threads[0];
+    assert_eq!(t.anchor, file_anchor("src/renamed.rs", AnchorSide::New));
+    assert_eq!(
+        t.original_anchor,
+        Some(file_anchor("src/lib.rs", AnchorSide::New))
+    );
+    assert_eq!(t.replies.len(), 1);
+}
+
+#[test]
+fn a_file_level_anchor_survives_the_log() {
+    let anchor = file_anchor("src/lib.rs", AnchorSide::New);
+    let event = event_at(
+        1,
+        EventBody::ThreadAdded {
+            id: ThreadId::generate(),
+            anchor: anchor.clone(),
+            body: "x".to_string(),
+            author: reviewer(),
+        },
+    );
+    let parsed = parse_log(&log_of(&[event]));
+    let [read] = &parsed.events[..] else {
+        panic!("{parsed:?}")
+    };
+    match &read.body {
+        EventBody::ThreadAdded { anchor: read, .. } => assert_eq!(read, &anchor),
+        other => panic!("{other:?}"),
+    }
+}
+
 #[test]
 fn the_review_starts_at_its_created_event() {
     let id = review_id();

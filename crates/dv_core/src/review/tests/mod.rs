@@ -5,6 +5,7 @@ mod anchor;
 mod concurrency;
 mod event;
 mod excerpt;
+mod file_level;
 mod fold;
 mod hand_back;
 mod history;

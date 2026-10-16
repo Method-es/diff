@@ -78,7 +78,7 @@ fn a_thread_whose_file_left_heads_the_stream_in_its_section(cx: &mut TestAppCont
                     collapsed: false,
                     labels: false
                 },
-                Row::Outdated(id.clone())
+                Row::Heading(InsertItem::Thread(id.clone()))
             ]
         );
         let files: Vec<String> = pane

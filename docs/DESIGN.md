@@ -196,7 +196,8 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   ring dot for `open`, a blue dot and "addressed" for `addressed`, `path:line` in mono where the
   thread stands now (an old-side thread's ends in "(old)", as the CLI prints it, so its lines
   aren't taken for the file's lines now; an outdated thread with a trail, PLAN §8, where its
-  code went, `path:40–45`, still flagged "outdated"; while its file's text hasn't landed — briefly, since
+  code went, `path:40–45`, still flagged "outdated"; a comment on the whole file `path (file)`,
+  "(file)" in `fg3` where `:line` would be, under its file's name now; while its file's text hasn't landed — briefly, since
   every file a thread shows in loads at once — the line it was written on, in `fg3`), the first
   line of the
   comment as plain text — its Markdown dropped, a fenced block's first line of code, as in every
@@ -244,7 +245,10 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   `codeHead` bar — chevron, path (directory in `fg3`, name at 600; a renamed file shows
   `old → new`), status pill, totals, a quiet "Loading…" once its diff takes longer than 300 ms,
   Split|Unified segmented control with its `S` keycap, "Viewed" checkbox with `V`, previous / next
-  file, and `⋯` (a menu with Copy path and Reveal in folder) — over 24-high side labels (`main` /
+  file, and `⋯` (a menu in the comments row menu's style: **Comment on file** with the
+  comment-plus glyph, dimmed and inert where the file takes none — a finished review, an
+  interdiff's deleted file —, then under a hairline Copy path and Reveal in folder) — over
+  24-high side labels (`main` /
   `working tree`, one per column in split view, `main → working tree` in unified; in an
   interdiff `round 1` / `working tree` and `round 1 → working tree`, the round by a commit glyph
   since its column is the round's snapshot) when the file shows lines. The header of the file being read stays pinned at the top while its rows scroll
@@ -293,7 +297,7 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   thread's outline `accentRing`) sits under the last line of its range on its side: in split
   view in that side's half over the line's tint, 62 in from the half's edge, the other half
   `recess`; in unified view past both line numbers. Its 32-high header holds the state chip
-  ("Open", "Addressed by claude-code", "Resolved"), "Outdated" when it is, the anchor in `fg3`
+  ("Open", "Addressed by claude-code", "Resolved"), "Outdated" when it is, the anchor in `fg3` ("file" for a comment on the whole file)
   and the reviewer's actions as small buttons (Resolve on an open thread, Resolve and Reopen on
   an addressed one, Reopen and a chevron on a resolved one; in a narrow card the anchor, then the
   chip's agent name, truncate, never the actions); an addressed thread's note follows
@@ -309,7 +313,13 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   chip, the anchor "code changed since round 1" and its original lines in the `recess` block;
   those lines stay shown as any card's. A thread whose file was renamed since its round, one
   git can't pair (an untracked file renamed), follows it by content into the new file; one whose file left the review heads the stream instead, in the "Not in the
-  diff" section above. In a file shown without lines (too large to show, or "No content change": a
+  diff" section above. A **comment on the whole file** (PLAN §8) has no line either: its card
+  heads its file, under the header (and its side labels) and above its first row or its notice
+  (also while the file loads, since it needs none of its text), with the anchor "file" and no
+  `recess` block; a file's comments on the whole file come first, in the order they were
+  added, then the composer of a new one, then its outdated cards. One on a file deleted since
+  keeps heading it with "Outdated" (its new side is gone); one whose file left the review is
+  in the "Not in the diff" section, reading `path · file`. In a file shown without lines (too large to show, or "No content change": a
   file only renamed, or only its mode changed), a thread still found in it (PLAN §8: placed
   against the file read in full, or against the unchanged text the diff carries) heads the file
   too, above its notice, with the anchor where it stands and no "Outdated". The
@@ -322,7 +332,9 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   footer — "Markdown", Cancel with `Esc`, the primary "Comment" with `Ctrl Enter`. As a reply it
   is the field and the footer alone, inside the card ("Reply"). It takes the keyboard while
   open, also scrolled out of view (typing brings it back); posting or cancelling gives it back to
-  the diff, posting focuses the thread. Hidden by its file collapsing, it keeps its text and
+  the diff, posting focuses the thread. **Comment on file** (the header's `⋯`, or `Shift C` on the
+  current file) opens it heading the file instead, across its width, "Comment on file", on the
+  file's new side (a deleted file's old side). Hidden by its file collapsing, it keeps its text and
   gives the keyboard back to the diff (`C` opens the file and takes it up again). A
   comparison that can't hold it — an interdiff that doesn't list its file, or (it being on the
   old side) whose old column is the round's snapshot — leaves it undrawn with its text and
@@ -465,6 +477,7 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
 | `I` | switch between the interdiff since the last round and all changes (the panel's toggle; while the review offers it, PLAN §2.3) |
 | `V` | toggle viewed on the current file (`V` then `J`: mark viewed and go next); each press flips the state the last one asked for, however fast they come |
 | `C` | comment on the selected lines, else the cursor's line, else (no cursor yet) the first line in view, where the cursor goes too (click a line number to put the cursor there, shift-click to select to it; a line's `+` does it all with the mouse, §4.1); a composer holding a draft takes the keyboard instead, wherever the cursor is. In an interdiff it comments on the new side only: on the old column (the round's snapshot, which no anchor names) it does nothing |
+| `Shift C` | comment on the whole of the current file: the composer heads the file (the header menu's Comment on file); a composer holding a draft takes the keyboard instead, as for `C`. Nothing on a finished review, or in an interdiff on a deleted file (its old column is the round's snapshot) |
 | `R` | reply to the focused thread (the reply composer opens in its card) |
 | `X` | resolve the focused thread, or reopen it when it is resolved |
 | `↑` / `↓` | move the cursor a line (the stream scrolls to keep it in view; it crosses into the next file) |

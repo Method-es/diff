@@ -10,9 +10,10 @@
 //! already loaded, so expanding a gap or switching modes never goes back to git.
 //!
 //! Thread cards and the composer go between rows ([`Insert`]): after the row that shows their
-//! line on their side, or after the gap that hides it. A thread whose anchored text no longer
-//! stands at its lines (outdated, PLAN §8) has no line to follow: its card heads the file's rows,
-//! right under the header ([`Row::Outdated`]).
+//! line on their side, or after the gap that hides it. A comment on the whole file, the composer
+//! writing one, and a thread whose anchored text no longer stands at its lines (outdated, PLAN
+//! §8) have no line to follow: their cards head the file's rows, right under the header
+//! ([`Row::Heading`]), in that order.
 
 use std::ops::Range;
 
@@ -151,8 +152,9 @@ pub enum Row {
     Gap(Gap),
     Notice(Notice),
     Insert(Insert),
-    /// An outdated thread's card, under the header (see the module docs).
-    Outdated(ThreadId),
+    /// A card heading the file, under the header (see the module docs), or the "Not in the
+    /// diff" section: a thread's, or the composer of a comment on the whole file.
+    Heading(InsertItem),
     /// Under the "Not in the diff" section while no file is listed: the main area's empty
     /// state as a row (its words, and an empty interdiff's Show all changes, DESIGN §4.1).
     Empty,
@@ -203,7 +205,7 @@ impl Row {
             Self::Notice(Notice::Loading) => heights::LOADING,
             Self::Notice(Notice::Failed) => heights::FAILED,
             Self::Notice(_) | Self::Empty => heights::NOTICE,
-            Self::Insert(_) | Self::Outdated(_) => heights::INSERT,
+            Self::Insert(_) | Self::Heading(_) => heights::INSERT,
             Self::Footer => heights::FOOTER,
         }
     }
@@ -212,7 +214,7 @@ impl Row {
     pub fn has_fixed_height(&self) -> bool {
         !matches!(
             self,
-            Self::Notice(Notice::Failed) | Self::Insert(_) | Self::Outdated(_)
+            Self::Notice(Notice::Failed) | Self::Insert(_) | Self::Heading(_)
         )
     }
 
@@ -223,7 +225,7 @@ impl Row {
                 item: InsertItem::Thread(id),
                 ..
             })
-            | Self::Outdated(id) => Some(id),
+            | Self::Heading(InsertItem::Thread(id)) => Some(id),
             _ => None,
         }
     }
@@ -238,7 +240,7 @@ impl Row {
             Self::Gap(gap) => RowKey::Gap(gap.lines.start),
             Self::Notice(_) | Self::Empty => RowKey::Notice,
             Self::Insert(insert) => RowKey::Insert(insert.item.clone()),
-            Self::Outdated(id) => RowKey::Insert(InsertItem::Thread(id.clone())),
+            Self::Heading(item) => RowKey::Insert(item.clone()),
             Self::Footer => RowKey::Footer,
         }
     }
@@ -275,8 +277,8 @@ pub struct RowsSpec<'a> {
     /// The text's shown runs and gaps (`dv_core::diff::segments`, then any expansions).
     pub segments: &'a [Segment],
     pub inserts: &'a [Insert],
-    /// Outdated threads, whose cards head the file's rows.
-    pub outdated: &'a [ThreadId],
+    /// The cards heading the file's rows, in order (module docs).
+    pub heading: &'a [InsertItem],
     /// Whether the file ends with the next-file footer.
     pub footer: bool,
 }
@@ -292,7 +294,7 @@ pub fn file_rows(spec: &RowsSpec) -> Vec<Row> {
     if spec.collapsed {
         return rows;
     }
-    rows.extend(spec.outdated.iter().cloned().map(Row::Outdated));
+    rows.extend(spec.heading.iter().cloned().map(Row::Heading));
     let diff = match spec.content {
         Content::Loading => {
             rows.push(Row::Notice(Notice::Loading));

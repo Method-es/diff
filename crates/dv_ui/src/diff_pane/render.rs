@@ -189,9 +189,12 @@ impl DiffPane {
                 InsertItem::Thread(thread) => {
                     self.render_thread(block, thread, Some(insert), theme, cx)
                 }
-                InsertItem::Composer => self.render_composer(block, insert, theme, cx),
+                InsertItem::Composer => self.render_composer(block, Some(insert), theme, cx),
             },
-            Row::Outdated(thread) => self.render_thread(block, thread, None, theme, cx),
+            Row::Heading(InsertItem::Thread(thread)) => {
+                self.render_thread(block, thread, None, theme, cx)
+            }
+            Row::Heading(InsertItem::Composer) => self.render_composer(block, None, theme, cx),
             Row::Empty => self.render_section_empty(theme, cx),
         };
         div().w_full().child(element).into_any_element()

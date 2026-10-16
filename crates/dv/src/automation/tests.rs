@@ -423,7 +423,8 @@ fn a_seeded_repo_opens_as_a_review_and_the_agent_answers(cx: &mut TestAppContext
         state["comments_list"],
         json!({"show_resolved": false, "rows": [{
             "id": thread, "state": "open", "outdated": false, "not_in_comparison": false,
-            "pending": false, "location": "src/app.ts:2", "summary": "Why 3?", "snippet": null,
+            "pending": false, "location": "src/app.ts:2", "file_level": false, "summary": "Why 3?",
+            "snippet": null,
         }], "menu": null})
     );
     let thread_state = &state["session"]["threads"][0];

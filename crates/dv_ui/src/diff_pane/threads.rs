@@ -8,7 +8,8 @@
 //! round's snapshot tells where its code went (a trail, PLAN §8), its card shows there, under
 //! the last line that replaced it (or the line before where it was removed), with its lines as
 //! they were; else it heads its file. One whose file left the review heads the stream, in the
-//! "Not in the diff" section (`section`). In an interdiff, old-side threads and
+//! "Not in the diff" section (`section`). A comment on the whole file heads its file too, ahead
+//! of the outdated cards, with its composer (`file_comment`). In an interdiff, old-side threads and
 //! those whose file isn't in it (but is in the review) aren't drawn, and `C` comments on the
 //! new side only. Resolved threads collapse to one line until opened. The composer sits under
 //! the selection's last line (a new thread) or inside the card it answers (a reply, which goes
@@ -46,14 +47,15 @@ fn holds_composer(composer: &Composer, path: &str, row: &Row) -> bool {
                     Row::Insert(Insert {
                         item: InsertItem::Composer,
                         ..
-                    })
+                    }) | Row::Heading(InsertItem::Composer)
                 )
         }
     }
 }
 
 /// The thread cards and the composer of one file's rows: the inline inserts, and the outdated
-/// threads whose cards head the file.
+/// threads whose cards head the file. Comments on the whole file, and the composer writing one,
+/// head it too, ahead of those (`file_comment::heading_items`).
 pub(super) fn thread_rows(
     path: &str,
     diff: &FileDiff,
@@ -68,7 +70,10 @@ pub(super) fn thread_rows(
         .as_text()
         .filter(|text| text.has_changes())
         .map(|text| text.lines.as_slice());
-    for thread in session.threads_in(path) {
+    for thread in session
+        .threads_in(path)
+        .filter(|thread| !thread.anchor.is_file_level())
+    {
         let side = thread.anchor.side;
         // Placed against the diff these rows show, which may be the one a reload replaces.
         let placement = session.placement(thread);
@@ -107,6 +112,7 @@ pub(super) fn thread_rows(
                 .is_some_and(Comparison::is_interdiff));
     if let (Some(target), Some(lines)) = (composer, lines)
         && target.reply_to.is_none()
+        && !target.is_file()
         && target.path == path
         && !other_text
         && let Some(line) = nearest_line(lines, target.side, target.end_line)
@@ -415,7 +421,7 @@ impl DiffPane {
     /// is kept for when it can, never replaced by a new composer. One the interdiff shown
     /// can't hold (its file isn't in it, or it is on the old side) switches the stream to all
     /// changes, and takes the keyboard once its row is there.
-    fn keep_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub(super) fn keep_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if !self.has_draft(cx) {
             return false;
         }
@@ -596,7 +602,7 @@ impl DiffPane {
         });
     }
 
-    fn open_composer(
+    pub(super) fn open_composer(
         &mut self,
         target: ComposerTarget,
         window: &mut Window,
@@ -657,7 +663,7 @@ impl DiffPane {
     }
 
     /// Posts the composer's text: a new thread at its lines (`ops::add_thread`, the anchor from
-    /// the loaded lines) or a reply (`ops::reply`). On success the composer closes, the thread
+    /// the loaded lines) or on the whole file (a file-level anchor), or a reply (`ops::reply`). On success the composer closes, the thread
     /// is focused and the keyboard goes back to the stream; a failure stays in the composer.
     pub fn post_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.session.clone() else {
@@ -684,12 +690,16 @@ impl DiffPane {
                 cx.background_spawn(async move { reply.await.map(|_| thread) })
             }
             None => {
-                let anchor = session.read(cx).anchor_for(
-                    &target.path,
-                    target.side,
-                    target.start_line,
-                    target.end_line,
-                );
+                let anchor = if target.is_file() {
+                    session.read(cx).file_anchor_for(&target.path, target.side)
+                } else {
+                    session.read(cx).anchor_for(
+                        &target.path,
+                        target.side,
+                        target.start_line,
+                        target.end_line,
+                    )
+                };
                 match anchor {
                     Ok(anchor) => {
                         session.update(cx, |session, cx| session.add_thread(anchor, body, cx))
@@ -1020,7 +1030,7 @@ impl DiffPane {
     }
 
     /// Whether `path`'s rows are its header alone.
-    fn is_collapsed(&self, path: &str) -> bool {
+    pub(super) fn is_collapsed(&self, path: &str) -> bool {
         self.index.get(path).is_some_and(|&block| {
             matches!(
                 self.blocks[block].rows.first(),

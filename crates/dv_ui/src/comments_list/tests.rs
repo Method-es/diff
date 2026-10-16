@@ -149,6 +149,7 @@ fn rows_list_waiting_threads_in_stream_order_and_copy_the_open_ones(cx: &mut Tes
                 not_in_comparison: false,
                 pending: false,
                 location: "b.txt:2".to_string(),
+                file_level: false,
                 summary: "Why upper case?".to_string(),
                 snippet: None,
             },
@@ -159,6 +160,7 @@ fn rows_list_waiting_threads_in_stream_order_and_copy_the_open_ones(cx: &mut Tes
                 not_in_comparison: false,
                 pending: false,
                 location: "a.txt:2".to_string(),
+                file_level: false,
                 summary: "Spell out two.".to_string(),
                 snippet: None,
             },
@@ -253,6 +255,7 @@ fn copy_as_prompt_says_when_a_thread_isnt_placed_yet() {
         not_in_comparison: false,
         pending: false,
         location: "src/a.rs:12".to_string(),
+        file_level: false,
         summary: "Why?".to_string(),
         snippet: None,
     };

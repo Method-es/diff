@@ -140,6 +140,10 @@ impl ReviewSession {
         if !has_side(entry, thread.anchor.side) {
             return true;
         }
+        // A comment on the whole file stands in its file once found: no text to trace.
+        if thread.anchor.is_file_level() {
+            return false;
+        }
         let drawn = self.draws(thread, entry);
         let Some(basis) = self.basis(&entry.path, thread.anchor.side, drawn) else {
             return false;

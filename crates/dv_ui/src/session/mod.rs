@@ -68,10 +68,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
-use dv_core::diff::{FileDiff, FileEntry};
+use dv_core::diff::{FileDiff, FileEntry, FileStatus};
 use dv_core::review::{
     Anchor, AnchorError, AnchorPlace, AnchorSide, Author, LogWarning, Review, ReviewId,
-    ReviewStore, ThreadId, anchor_selection, side_lines,
+    ReviewStore, ThreadId, anchor_selection, has_side, side_lines,
 };
 use dv_core::{Backend, DiffSpec, GitRepo, Location};
 use gpui::{Context, EventEmitter, Task};
@@ -635,6 +635,47 @@ impl ReviewSession {
             && !self.review_texts.values().any(ReviewText::is_loading)
             && !self.histories_loading()
             && wanted_landed
+    }
+
+    /// The side a comment on the whole of `path` goes on (PLAN §8): its new side, or for a
+    /// deleted file its old one; `None` where none can: a file not among the review's changes
+    /// (an interdiff's alone), or in an interdiff a deleted file, whose old column there is a
+    /// round's snapshot, which no anchor names (DESIGN §5).
+    pub fn file_comment_side(&self, path: &str) -> Option<AnchorSide> {
+        self.file(path)?;
+        let entry = self.target_index().get(path)?;
+        let side = match entry.status {
+            FileStatus::Deleted => AnchorSide::Old,
+            _ => AnchorSide::New,
+        };
+        let snapshot = self.comparison.is_interdiff() && side == AnchorSide::Old;
+        (!snapshot).then_some(side)
+    }
+
+    /// The anchor of a comment on the whole of `path`, on `side` of it, in the round in
+    /// progress (a file-level anchor, PLAN §8), named by the review's own entry for the file
+    /// as [`ReviewSession::anchor_for`] names one; it reads none of the file's text, so a file
+    /// shown without lines (binary, too large) takes one too.
+    pub fn file_anchor_for(&self, path: &str, side: AnchorSide) -> Result<Anchor, Failure> {
+        if self.comparison.is_interdiff() && side == AnchorSide::Old {
+            return Err(Failure::new(
+                "the old side here is a round's snapshot: show all changes to comment on it",
+            ));
+        }
+        self.file(path)
+            .ok_or_else(|| Failure::new(format!("{path} isn't in this review's diff")))?;
+        let entry = self.target_index().get(path).ok_or_else(|| {
+            Failure::new(format!(
+                "{path} isn't among this review's changes any more: nothing to comment on"
+            ))
+        })?;
+        if !has_side(entry, side) {
+            return Err(Failure::new(format!(
+                "{path} has no {} side to comment on",
+                crate::thread::side_word(side)
+            )));
+        }
+        Ok(AnchorPlace::for_entry(entry, side, self.review.current_round()).file_level())
     }
 
     /// The anchor for lines `from` to `to` (either order) of `path`'s `side` in its loaded

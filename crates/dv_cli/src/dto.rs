@@ -31,11 +31,16 @@
 //! change carried, e.g. `dv review done --note`, or `null`).
 //!
 //! A thread ([`ThreadDto`]): `id`, `review_id`, `state` (`open`, `addressed`, `resolved`),
-//! `placement` (`unchanged`, `moved`, `edited` or `outdated`: where its code stands in the
-//! review's current diff, PLAN §8; `moved` also when it stands where an earlier write recorded
-//! it had moved to: `dv_core::review::shows_moved`; `edited` when it stands where it was
-//! written but its text changed there, `dv_core::review::shows_edited`: read `current_code`),
-//! `outdated`, `path` (its file in the current diff, else where it was
+//! `placement` (`unchanged`, `moved`, `edited`, `outdated` or `file`: where its code stands in
+//! the review's current diff, PLAN §8; `moved` also when it stands where an earlier write
+//! recorded it had moved to: `dv_core::review::shows_moved`; `edited` when it stands where it
+//! was written but its text changed there, `dv_core::review::shows_edited`: read
+//! `current_code`; `file` for a comment on the whole file whose file is in the diff),
+//! `outdated`, `file_level` (`true` for a comment on the whole file, not on lines: its
+//! `anchor.original` lines are 0, `anchor.current`, `code_context`, `current_code`, `excerpt`
+//! and `trail` are `null` and `code` is empty; `path` names its file now, a rename followed,
+//! and it is `outdated` once that file is gone or deleted), `path` (its file in the current
+//! diff, else where it was
 //! written), `side` (`old` or `new`), `anchor: {original: {round, path, side, start_line,
 //! end_line}, current: {path, side, start_line, end_line} | null}`, `code` (the lines it was
 //! written on, as they were), `code_context` (`{before, after}`: up to three lines that stood
@@ -360,6 +365,9 @@ pub struct Located {
     pub placement: Placement,
     /// The listed file's path, when the thread's file is in the current diff.
     pub file: Option<String>,
+    /// The path the listed file has on the thread's side (`AnchorPlace::for_entry`: a renamed
+    /// file's old one on the old side), as the GUI names a comment on the whole file.
+    pub side_path: Option<String>,
     /// Its code now, when it was found.
     pub current: Option<CurrentCode>,
     /// Where its code went since its round, when it is outdated and its round's snapshot
@@ -451,6 +459,8 @@ pub struct ThreadDto {
     pub state: &'static str,
     pub placement: &'static str,
     pub outdated: bool,
+    /// A comment on the whole file, not on lines (module docs).
+    pub file_level: bool,
     pub path: String,
     pub side: &'static str,
     pub anchor: AnchorDto,
@@ -472,13 +482,22 @@ pub struct ThreadDto {
     /// The last state change's note (an agent's "what I did").
     pub note: Option<String>,
     pub replies: Vec<ReplyDto>,
+    /// Its file is among the review's changes now (`path` is that file): the text output
+    /// tells a comment on a whole file that left them from one whose file lacks its side.
+    #[serde(skip)]
+    pub listed: bool,
+    /// The path its file has on its side now, else where it was written: the text names a
+    /// comment on the whole file by it, as the GUI does (`format::location`).
+    #[serde(skip)]
+    pub side_path: String,
 }
 
 impl ThreadDto {
     pub fn new(review: &Review, thread: &Thread, located: &Located) -> Self {
         let original = thread.first_anchor();
         let current = located.current.as_ref();
-        let code_context = current.is_none().then(|| CodeContextDto {
+        let file_level = thread.anchor.is_file_level();
+        let code_context = (current.is_none() && !file_level).then(|| CodeContextDto {
             before: original.context_before.clone(),
             after: original.context_after.clone(),
         });
@@ -492,8 +511,10 @@ impl ThreadDto {
                 _ if shows_edited(thread, &located.placement) => "edited",
                 Placement::Unchanged { .. } | Placement::Moved { .. } => "unchanged",
                 Placement::Pending { .. } | Placement::Outdated { .. } => "outdated",
+                Placement::File { .. } => "file",
             },
             outdated,
+            file_level,
             path: located
                 .file
                 .clone()
@@ -521,6 +542,11 @@ impl ThreadDto {
                 .filter(|reply| !reply.is_deleted())
                 .map(ReplyDto::from)
                 .collect(),
+            listed: located.file.is_some(),
+            side_path: located
+                .side_path
+                .clone()
+                .unwrap_or_else(|| thread.anchor.path.clone()),
         }
     }
 }

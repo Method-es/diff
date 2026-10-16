@@ -1,7 +1,8 @@
 //! Thread cards and the composer in the stream (DESIGN §4.1): placed under the line they follow
 //! on its side — in split view in that side's half, over the line's tint, the other half
-//! `recess` (the board's inline card) — or across the file for an outdated thread, and across
-//! the stream in the "Not in the diff" section, naming the path it was written on.
+//! `recess` (the board's inline card) — or across the file for an outdated thread, a comment on
+//! the whole file and its composer, and across the stream in the "Not in the diff" section,
+//! naming the path it was written on.
 
 use dv_core::diff::LineKind;
 use dv_core::review::{AnchorSide, ThreadId};
@@ -21,7 +22,8 @@ const CARD_BOTTOM: f32 = 10.;
 
 impl DiffPane {
     /// `thread`'s card; `at` is where it sits, `None` for a card heading its file: an outdated
-    /// thread, or one placed at lines of a file whose rows aren't shown (too large to show).
+    /// thread, a comment on the whole file, or one placed at lines of a file whose rows aren't
+    /// shown (too large to show).
     pub(in super::super) fn render_thread(
         &self,
         block: usize,
@@ -98,11 +100,12 @@ impl DiffPane {
         self.place(block, at, card.into_any_element(), theme)
     }
 
-    /// The new thread's composer, under the line it follows.
+    /// The new thread's composer, under the line it follows (`at`), or heading its file for a
+    /// comment on the whole file.
     pub(in super::super) fn render_composer(
         &self,
         block: usize,
-        at: &Insert,
+        at: Option<&Insert>,
         theme: &DvTheme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -114,7 +117,7 @@ impl DiffPane {
             return div().into_any_element();
         };
         let element = self.composer_box(composer, false, cx).into_any_element();
-        self.place(block, Some(at), element, theme)
+        self.place(block, at, element, theme)
     }
 
     fn composer_box(

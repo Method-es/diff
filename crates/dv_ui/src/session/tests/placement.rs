@@ -99,6 +99,49 @@ fn a_thread_in_a_file_too_large_to_show_is_placed_as_the_cli_places_it(cx: &mut 
 }
 
 #[gpui::test]
+fn a_comment_on_a_whole_file_too_large_to_show_reads_no_full_text(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let repo = FixtureRepo::new();
+    repo.write("big.txt", "first\n");
+    repo.commit("base");
+    let big: String = (1..=24_000).map(|n| format!("row {n}\n")).collect();
+    repo.write("big.txt", &big);
+    let session = session(&repo, Target::Working, cx);
+    wait(cx, &session, "the list", |session| !session.is_loading());
+    load(cx, &session, &["big.txt"]);
+    session.read_with(cx, |session, _| {
+        assert_eq!(
+            diff_kind(session.file_state("big.txt").unwrap().diff().unwrap()),
+            "too_large"
+        );
+    });
+    let anchor = session
+        .read_with(cx, |session, _| {
+            session.file_anchor_for("big.txt", AnchorSide::New)
+        })
+        .expect("a file-level anchor");
+    let posted = session.update(cx, |session, cx| {
+        session.add_thread(
+            anchor,
+            "Generated? Keep it out of the repo.".to_string(),
+            cx,
+        )
+    });
+    wait(cx, &session, "the thread", |_| true);
+    let id = cx.foreground_executor().block_test(posted).unwrap();
+    session.update(cx, |session, cx| {
+        session.ensure_loaded(["big.txt".to_string()], cx)
+    });
+    wait(cx, &session, "settled", |session| session.is_settled());
+    session.read_with(cx, |session, _| {
+        let thread = thread(session, &id);
+        assert!(session.placement(thread).is_file());
+        // Placed without its text: the review's own diff of the file is never read for it.
+        assert!(session.review_text("big.txt").is_none());
+    });
+}
+
+#[gpui::test]
 fn a_file_reverted_after_the_round_is_outdated_in_the_interdiff_too(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
     let repo = FixtureRepo::new();
@@ -586,6 +629,75 @@ fn a_thread_follows_its_untracked_file_renamed_after_the_round(cx: &mut TestAppC
             .relocated_anchor(&id)
             .expect("an anchor under the new name");
         assert_eq!(recorded.path, "src/use-has-permission.ts");
+    });
+}
+
+#[gpui::test]
+fn a_comment_on_a_whole_file_follows_its_file_and_leaves_the_diff_with_it(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let repo = FixtureRepo::new();
+    repo.write("README.md", "# web\n");
+    repo.commit("base");
+    repo.write("src/use-can.ts", USE_CAN);
+    let session = session(&repo, Target::Working, cx);
+    wait(cx, &session, "the list", |session| {
+        session.files().len() == 1
+    });
+    // No text is read for it: its file needn't load.
+    let anchor = session
+        .read_with(cx, |session, _| {
+            assert_eq!(
+                session.file_comment_side("src/use-can.ts"),
+                Some(AnchorSide::New)
+            );
+            session.file_anchor_for("src/use-can.ts", AnchorSide::New)
+        })
+        .expect("a file-level anchor");
+    assert!(anchor.is_file_level());
+    let posted = session.update(cx, |session, cx| {
+        session.add_thread(anchor, "Rename this hook".to_string(), cx)
+    });
+    wait(cx, &session, "the thread", |_| true);
+    let id = cx.foreground_executor().block_test(posted).unwrap();
+    session.read_with(cx, |session, _| {
+        let thread = thread(session, &id);
+        let placement = session.placement(thread);
+        assert!(placement.is_file(), "{placement:?}");
+        assert_eq!(placement.key(thread), "file");
+        assert_eq!(session.location(thread), "src/use-can.ts (file)");
+        assert!(session.thread_files().is_empty());
+        assert_eq!(session.relocated_anchor(&id), None);
+    });
+    finish(cx, &session, Verdict::RequestChanges);
+    // The agent renames it, untracked: its round's history follows it by content.
+    repo.remove("src/use-can.ts");
+    repo.write(
+        "src/use-has-permission.ts",
+        USE_CAN.replace("useCan", "useHasPermission"),
+    );
+    wait(cx, &session, "the rename to be followed", |session| {
+        let thread = thread(session, &id);
+        session.placement(thread).file() == Some("src/use-has-permission.ts")
+    });
+    session.read_with(cx, |session, _| {
+        let thread = thread(session, &id);
+        assert!(session.placement(thread).is_file());
+        assert_eq!(session.location(thread), "src/use-has-permission.ts (file)");
+        let recorded = session
+            .relocated_anchor(&id)
+            .expect("an anchor under the new name");
+        assert!(recorded.is_file_level());
+        assert_eq!(recorded.path, "src/use-has-permission.ts");
+    });
+    // Deleted too, it leaves the diff: the "Not in the diff" section.
+    repo.remove("src/use-has-permission.ts");
+    wait(cx, &session, "the file to leave", |session| {
+        session.threads_not_in_diff().count() == 1
+    });
+    session.read_with(cx, |session, _| {
+        let thread = thread(session, &id);
+        assert!(session.placement(thread).is_not_in_diff());
+        assert_eq!(session.location(thread), "src/use-can.ts (file)");
     });
 }
 

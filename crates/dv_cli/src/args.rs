@@ -369,7 +369,7 @@ pub enum CommentCommand {
     /// One thread, with the diff around its code now, the comment and the replies
     Show(ThreadIdArg),
 
-    /// Comment on lines of a file in the review
+    /// Comment on lines of a file in the review, or on the whole file
     Add(CommentAddArgs),
 
     /// Reply to a thread
@@ -426,11 +426,13 @@ pub struct CommentAddArgs {
     #[arg(long, value_name = "PATH")]
     pub file: String,
 
-    /// The line, or the first and last lines, on that side: N or N:M
+    /// The line, or the first and last lines, on that side: N or N:M; without it, the comment
+    /// is on the whole file
     #[arg(long, value_name = "N[:M]", value_parser = parse_lines)]
-    pub lines: LineRange,
+    pub lines: Option<LineRange>,
 
-    /// Which side's lines
+    /// Which side's lines (for a comment on the whole file, which side of it: `old` for a
+    /// deleted file)
     #[arg(long, value_enum, default_value_t = SideArg::New)]
     pub side: SideArg,
 

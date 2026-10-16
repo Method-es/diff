@@ -172,6 +172,12 @@ pub const SHORTCUTS: &[Shortcut] = &[
         OutsideInputs
     ),
     shortcut!("c", DIFF_PANE, diff_pane::Comment, OutsideInputs),
+    shortcut!(
+        "shift-c",
+        DIFF_PANE,
+        diff_pane::CommentOnFile,
+        OutsideInputs
+    ),
     shortcut!("r", DIFF_PANE, diff_pane::Reply, OutsideInputs),
     shortcut!("]", DIFF_PANE, diff_pane::NextThread, OutsideInputs),
     shortcut!("[", DIFF_PANE, diff_pane::PreviousThread, OutsideInputs),

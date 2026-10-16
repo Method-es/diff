@@ -167,3 +167,33 @@ fn copy_as_prompt_carries_where_the_code_the_comment_and_the_replies() {
          Keep this line.\n"
     );
 }
+
+#[test]
+fn a_comment_on_a_whole_file_reads_as_the_file() {
+    assert_eq!(anchor_label(AnchorSide::New, 0, 0), "file");
+    assert_eq!(anchor_label(AnchorSide::Old, 0, 0), "old · file");
+    let target = ComposerTarget::file("src/a.ts".to_string(), AnchorSide::New);
+    assert!(target.is_file());
+    assert_eq!(target.title(), "Comment on file");
+    let deleted = ComposerTarget::file("src/gone.ts".to_string(), AnchorSide::Old);
+    assert_eq!(deleted.title(), "Comment on file");
+    let file = thread("src/a.ts", AnchorSide::New, (0, 0), &[], "Split this file");
+    assert!(file.anchor.is_file_level());
+    assert_eq!(location_label(&file), "src/a.ts (file)");
+    assert_eq!(shown_anchor_label(&file.anchor, None, false), "file");
+    let old = thread("src/gone.ts", AnchorSide::Old, (0, 0), &[], "Why?");
+    assert_eq!(location_label(&old), "src/gone.ts (file, old)");
+    // Copy as prompt says so, with no code.
+    let text = prompt_markdown(
+        OPEN_PROMPT_HEADING,
+        "working tree vs main",
+        &[(&file, location_label(&file))],
+    );
+    assert_eq!(
+        text,
+        "Open review comments on working tree vs main (1 comment):\n\
+         \n## src/a.ts (file)\n\nThread `t-01jbzv8m2e3q9w5x7y0z1a2b3c`.\n\n\
+         On the whole file.\n\n\
+         Split this file\n"
+    );
+}

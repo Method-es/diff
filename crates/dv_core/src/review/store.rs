@@ -22,9 +22,10 @@ const REVIEWS_DIR: &str = "reviews";
 
 /// The snapshot cache's format; a snapshot of any other version is ignored and rebuilt. It
 /// changes whenever the folded state does, so a cache folded by a build that ignored some
-/// event field (a `status` note or condition, a relocated anchor) or didn't derive some state
-/// (the status a round closed from) is never taken for this build's fold.
-const SNAPSHOT_VERSION: u32 = 5;
+/// event field (a `status` note or condition, a relocated anchor), skipped an event this build
+/// applies (a thread on a whole file, whose file-level anchor an older build refuses) or didn't
+/// derive some state (the status a round closed from) is never taken for this build's fold.
+const SNAPSHOT_VERSION: u32 = 6;
 
 /// A review's log, relative to the store root.
 fn log_path(id: &ReviewId) -> String {

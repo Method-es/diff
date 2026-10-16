@@ -56,7 +56,7 @@ fn rows_of(diff: &FileDiff, mode: ViewMode, inserts: &[Insert]) -> Vec<Row> {
         content: Content::Loaded(diff),
         segments: &segments,
         inserts,
-        outdated: &[],
+        heading: &[],
         footer: true,
     })
 }
@@ -161,7 +161,7 @@ fn expanding_a_gap_reveals_its_lines_from_the_loaded_text() {
             content: Content::Loaded(&diff),
             segments,
             inserts: &[],
-            outdated: &[],
+            heading: &[],
             footer: false,
         })
     };
@@ -194,7 +194,7 @@ fn a_collapsed_file_is_its_header_alone() {
         content: Content::Loaded(&diff),
         segments: &segments,
         inserts: &[],
-        outdated: &[],
+        heading: &[],
         footer: true,
     });
     assert_eq!(
@@ -264,7 +264,7 @@ fn files_without_lines_show_a_notice() {
             content,
             segments: &[],
             inserts: &[],
-            outdated: &[],
+            heading: &[],
             footer: true,
         });
         assert_eq!(rows, [bare_header(), Row::Notice(notice)]);
@@ -327,20 +327,20 @@ fn outdated_threads_head_the_file_under_its_header_unless_it_is_collapsed() {
     let diff = edited();
     let segments = diff.segments(CONTEXT_LINES);
     let thread = |n: u8| ThreadId::parse(&format!("t-01j9{n:0>22}")).unwrap();
-    let outdated = [thread(1), thread(2)];
+    let outdated = [InsertItem::Thread(thread(1)), InsertItem::Thread(thread(2))];
     let spec = |collapsed| RowsSpec {
         mode: ViewMode::Unified,
         collapsed,
         content: Content::Loaded(&diff),
         segments: &segments,
         inserts: &[],
-        outdated: &outdated,
+        heading: &outdated,
         footer: true,
     };
     let rows = file_rows(&spec(false));
     assert_eq!(rows[0], header());
-    assert_eq!(rows[1], Row::Outdated(thread(1)));
-    assert_eq!(rows[2], Row::Outdated(thread(2)));
+    assert_eq!(rows[1], Row::Heading(InsertItem::Thread(thread(1))));
+    assert_eq!(rows[2], Row::Heading(InsertItem::Thread(thread(2))));
     assert!(matches!(rows[3], Row::Gap(_)));
     // A card is measured, keyed like an inline card of the same thread, and names its thread.
     assert!(!rows[1].has_fixed_height());

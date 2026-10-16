@@ -48,6 +48,11 @@ impl AnchorPlace {
             side,
         }
     }
+
+    /// The file-level anchor here: a comment on the whole file ([`Anchor::file_level`]).
+    pub fn file_level(self) -> Anchor {
+        Anchor::file_level(self.round, self.path, self.old_path, self.side)
+    }
 }
 
 /// The anchor for lines `from` to `to` (1-based, inclusive, in either order: a selection

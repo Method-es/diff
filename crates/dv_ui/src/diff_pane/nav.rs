@@ -12,8 +12,8 @@ use super::rows::{
 };
 use super::{Cursor, DiffPane, LineDrag, SelectionAnchor};
 use crate::actions::diff_pane::{
-    ClearSelection, Comment, CursorDown, CursorLeft, CursorRight, CursorUp, ExpandGap,
-    ExpandGapFully, NextChange, NextFile, NextThread, PageDown, PageUp, PreviousChange,
+    ClearSelection, Comment, CommentOnFile, CursorDown, CursorLeft, CursorRight, CursorUp,
+    ExpandGap, ExpandGapFully, NextChange, NextFile, NextThread, PageDown, PageUp, PreviousChange,
     PreviousFile, PreviousThread, Reply, ResolveThread, SelectDown, SelectUp, ToggleComparison,
     ToggleSplit, ToggleViewed,
 };
@@ -50,6 +50,12 @@ impl DiffPane {
                 pane.update(cx, |this, cx| this.comment(window, cx));
             }
         };
+        let comment_on_file = {
+            let pane = pane.clone();
+            move |_: &CommentOnFile, window: &mut Window, cx: &mut App| {
+                pane.update(cx, |this, cx| this.comment_on_current_file(window, cx));
+            }
+        };
         let reply = {
             let pane = pane.clone();
             move |_: &Reply, window: &mut Window, cx: &mut App| {
@@ -60,6 +66,7 @@ impl DiffPane {
             element
                 .on_action(clear)
                 .on_action(comment)
+                .on_action(comment_on_file)
                 .on_action(reply),
             pane,
             NextThread => next_thread,

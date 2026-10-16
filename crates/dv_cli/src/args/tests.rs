@@ -131,10 +131,23 @@ fn the_tree_parses_every_documented_command() {
         ]),
         Command::Comment(CommentCommand::Add(CommentAddArgs {
             file: "a.ts".into(),
-            lines: LineRange { start: 3, end: 5 },
+            lines: Some(LineRange { start: 3, end: 5 }),
             side: SideArg::Old,
             body: Body {
                 body: Some("Why?".into()),
+                body_file: None,
+            },
+        }))
+    );
+    // Without `--lines`, a comment on the whole file.
+    assert_eq!(
+        command(&["comment", "add", "--file", "a.ts", "--body", "Split it"]),
+        Command::Comment(CommentCommand::Add(CommentAddArgs {
+            file: "a.ts".into(),
+            lines: None,
+            side: SideArg::New,
+            body: Body {
+                body: Some("Split it".into()),
                 body_file: None,
             },
         }))

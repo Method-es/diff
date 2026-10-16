@@ -24,7 +24,7 @@
 {"cmd": "keys", "keys": "shift-down shift-down"}
 {"cmd": "settle", "expect": {"pointer": "/session/selection", "equals": {"path": "src/lib/cache.ts", "side": "new", "start_line": 1, "end_line": 3}}}
 {"cmd": "key", "keystroke": "c"}
-{"cmd": "settle", "expect": {"pointer": "/session/composer", "equals": {"path": "src/lib/cache.ts", "side": "new", "start_line": 1, "end_line": 3, "reply_to": null, "text": "", "posting": false, "error": null}}}
+{"cmd": "settle", "expect": {"pointer": "/session/composer", "equals": {"path": "src/lib/cache.ts", "side": "new", "start_line": 1, "end_line": 3, "file_level": false, "reply_to": null, "text": "", "posting": false, "error": null}}}
 // The composer has the keyboard: J and V type, they don't move or mark anything.
 {"cmd": "type", "text": "Entries never expire from the map itself; add a sweep or **cap** the size. Just a JV note."}
 {"cmd": "settle", "expect": [{"pointer": "/session/composer/text", "equals": "Entries never expire from the map itself; add a sweep or **cap** the size. Just a JV note."}, {"pointer": "/session/current_file", "equals": "src/lib/cache.ts"}, {"pointer": "/session/viewed", "equals": 1}]}

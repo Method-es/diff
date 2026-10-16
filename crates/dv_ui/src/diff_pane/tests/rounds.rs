@@ -619,7 +619,7 @@ fn an_outdated_card_shows_where_its_code_went_since_its_round(cx: &mut TestAppCo
     let at = new_index(&pane, "a/long.txt", 11, cx);
     pane.read_with(cx, |pane, _| {
         let rows = &pane.blocks[0].rows;
-        assert!(!rows.contains(&Row::Outdated(id.clone())));
+        assert!(!rows.contains(&Row::Heading(InsertItem::Thread(id.clone()))));
         assert!(rows.contains(&Row::Insert(rows::Insert {
             line: at,
             side: AnchorSide::New,

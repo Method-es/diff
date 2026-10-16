@@ -16,7 +16,7 @@
 use dv_core::review::{Thread, ThreadId};
 use gpui::{App, Context, ListOffset, px};
 
-use super::rows::Row;
+use super::rows::{InsertItem, Row};
 use super::{Block, DiffPane};
 use crate::session::ReviewSession;
 use crate::shell::EmptyState;
@@ -63,7 +63,11 @@ impl DiffPane {
             labels: false,
         }];
         if !collapsed {
-            rows.extend(threads.into_iter().map(Row::Outdated));
+            rows.extend(
+                threads
+                    .into_iter()
+                    .map(|thread| Row::Heading(InsertItem::Thread(thread))),
+            );
         }
         if EmptyState::of_session(session).is_some() {
             rows.push(Row::Empty);

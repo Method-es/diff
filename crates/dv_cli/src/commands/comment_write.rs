@@ -23,9 +23,13 @@ use crate::placement::{self, Sides};
 use crate::repo::Repo;
 use crate::select;
 
-/// `dv comment add --file <p> --lines N[:M] [--side old|new] (--body | --body-file)`: a new
+/// `dv comment add --file <p> [--lines N[:M]] [--side old|new] (--body | --body-file)`: a new
 /// thread on lines of a file in the review's current diff (its full target, never an
-/// interdiff), anchored on that side's text as it is now, in the round in progress.
+/// interdiff), anchored on that side's text as it is now, in the round in progress. Without
+/// `--lines` it is a comment on the whole file (a file-level anchor, PLAN §8), on its new side,
+/// or with `--side old` on a deleted file's old side (refused on any other file, as the GUI
+/// makes none), which reads none of the file's text, so any changed file takes one, a binary
+/// one included.
 pub(crate) fn add(
     global: &GlobalArgs,
     args: &CommentAddArgs,
@@ -62,21 +66,31 @@ pub(crate) fn add(
     if !has_side(&entry, side) {
         return Err(rejected(missing_side(&entry, side)));
     }
-    if let Some(why) = no_text(sides.read(&entry.path)?) {
-        return Err(rejected(format!(
-            "{} has no lines to comment on: {why}",
-            entry.path
-        )));
-    }
-    let anchor = {
-        let lines = sides.side_text(&entry.path, side).unwrap_or_default();
-        let place = AnchorPlace::for_entry(&entry, side, review.current_round());
-        anchor_selection(place, &lines, args.lines.start, args.lines.end).map_err(|error| {
-            rejected(format!(
-                "--lines {}: {error}",
-                format::lines(args.lines.start, args.lines.end)
-            ))
-        })?
+    let place = AnchorPlace::for_entry(&entry, side, review.current_round());
+    let anchor = match args.lines {
+        // A comment on the whole file goes on its new side; only a deleted file's is its old.
+        None if side == AnchorSide::Old && entry.status != FileStatus::Deleted => {
+            return Err(rejected(format!(
+                "{} isn't deleted: a comment on the whole file goes on its new side (leave                  `--side old` out, or name lines with `--lines`)",
+                entry.path
+            )));
+        }
+        None => place.file_level(),
+        Some(range) => {
+            if let Some(why) = no_text(sides.read(&entry.path)?) {
+                return Err(rejected(format!(
+                    "{} has no lines to comment on: {why}",
+                    entry.path
+                )));
+            }
+            let lines = sides.side_text(&entry.path, side).unwrap_or_default();
+            anchor_selection(place, &lines, range.start, range.end).map_err(|error| {
+                rejected(format!(
+                    "--lines {}: {error}",
+                    format::lines(range.start, range.end)
+                ))
+            })?
+        }
     };
 
     let id = ops::add_thread(&repo.store, &review.id, anchor, &body, author.clone())?;
@@ -225,7 +239,11 @@ fn missing_side(entry: &FileEntry, side: AnchorSide) -> String {
         AnchorSide::Old => "old",
         AnchorSide::New => "new",
     };
-    format!("{} {what}: it has no {side} side", entry.path)
+    let hint = match entry.status {
+        FileStatus::Deleted => " (`--side old` comments on it as it was)",
+        _ => "",
+    };
+    format!("{} {what}: it has no {side} side{hint}", entry.path)
 }
 
 /// Why a file's diff has no lines, or `None` when it is text.

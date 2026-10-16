@@ -15,6 +15,9 @@
 //! A write on a thread (`reply`, `address`, `resolve`, `reopen`) records where relocation found
 //! it ([`Sides::relocated`], PLAN §8), and `comment add` anchors on a side's text read the same
 //! way ([`Sides::side_text`]).
+//!
+//! A comment on a whole file (a file-level anchor) is placed by its file alone: no diff is read
+//! for it, and its round's history only to follow its file.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -82,10 +85,12 @@ impl Sides {
         Ok(&self.diffs[path])
     }
 
-    /// Reads the diff of the file each of `threads` is anchored in.
+    /// Reads the diff of the file each of `threads` is anchored in (none for a comment on a
+    /// whole file, which places without its text).
     pub fn read_for(&mut self, threads: &[&Thread]) -> Result<(), CliError> {
         let paths: Vec<String> = threads
             .iter()
+            .filter(|thread| !thread.anchor.is_file_level())
             .filter_map(|thread| anchored_entry(&thread.anchor, &self.entries))
             .map(|entry| entry.path.clone())
             .collect();
@@ -138,6 +143,7 @@ impl Sides {
         }
         let followed: Vec<String> = threads
             .iter()
+            .filter(|thread| !thread.anchor.is_file_level())
             .filter_map(|thread| {
                 match thread_file(&thread.anchor, self.history(thread), |path, old| {
                     entry_for(path, old, &self.entries)
@@ -234,6 +240,7 @@ impl Sides {
                 Placement::Pending { file } => Placement::Outdated { file, trail: None },
                 other => other,
             },
+            side_path: entry.map(|entry| AnchorPlace::for_entry(entry, side, self.round).path),
             file,
             current,
             trail,
@@ -272,11 +279,16 @@ impl Sides {
 
     /// The anchor a write on `thread` records (PLAN §8): its anchor re-taken where relocation
     /// found it, in the round in progress with fresh context, when `located` says it moved (or
-    /// stands in a file renamed since, its round's history included); `None` otherwise, an
-    /// outdated thread with a trail included.
+    /// stands in a file renamed since, its round's history included; a comment on a whole file
+    /// only for that, its text unread); `None` otherwise, an outdated thread with a trail
+    /// included.
     pub fn relocated(&self, thread: &Thread, located: &Located) -> Option<Anchor> {
         let entry = self.entry(located.file.as_deref()?)?;
-        let lines = self.side_text(&entry.path, thread.anchor.side)?;
+        let lines = if thread.anchor.is_file_level() {
+            Vec::new()
+        } else {
+            self.side_text(&entry.path, thread.anchor.side)?
+        };
         relocated_anchor(
             &thread.anchor,
             &located.placement,

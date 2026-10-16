@@ -32,10 +32,12 @@
 //!
 //! **Threads** (`threads`, cards from [`crate::thread`]): a thread's card follows the last line
 //! of its range on its side, an outdated one heads its file, one whose file left the diff heads
-//! the stream in its "Not in the diff" section (`section`, before the first file), and the
-//! composer sits under the selected lines (or in the card it answers). `C` comments, `]`/`[` focus the next and previous
-//! unresolved thread, `R` replies to the focused one and `X` resolves or reopens it; every
-//! change goes through the session's `review::ops` writes.
+//! the stream in its "Not in the diff" section (`section`, before the first file), a comment on
+//! the whole file heads its file ahead of the outdated ones (`file_comment`), and the
+//! composer sits under the selected lines (or in the card it answers, or heading the file for a
+//! comment on it). `C` comments, `Shift C` comments on the current file, `]`/`[` focus the next
+//! and previous unresolved thread, `R` replies to the focused one and `X` resolves or reopens
+//! it; every change goes through the session's `review::ops` writes.
 //!
 //! The keyboard goes to the main area, which the shell renders with this pane's focus handle
 //! and key context ([`crate::keymap::DIFF_PANE`], [`DiffPane::bind_actions`]).
@@ -43,11 +45,12 @@
 //! Automation targets: `stream`, `stream/file/<path>/header` (and its `/chevron`, `/viewed`,
 //! `/split`, `/unified`, `/prev`, `/next`, `/menu`), `stream/pinned` (the same parts),
 //! `stream/not_in_diff/header` (and its `/chevron`; pinned, `stream/pinned` and its `/chevron`),
-//! `stream/menu/<copy_path|reveal>`, `stream/gap/<path>/<n>` (`/expand`, `/expand_all`),
+//! `stream/menu/<comment|copy_path|reveal>`, `stream/gap/<path>/<n>` (`/expand`, `/expand_all`),
 //! `stream/line/<path>/<old|new>/<n>` (a line number), `stream/notice/<path>` (`/load_anyway`,
 //! and a failure's banner parts), `stream/footer/<path>` (`/next`), and the cards' and the
 //! composer's own (`thread/<id>`, `composer`; [`crate::thread`]).
 
+mod file_comment;
 mod nav;
 mod reload;
 mod render;
@@ -75,8 +78,8 @@ use crate::services::{ActiveServices as _, ViewMode};
 use crate::session::{Comparison, FileState, ReviewSession, SessionEvent};
 use crate::thread::Composer;
 use rows::{
-    Content, LinePos, Row, RowKey, RowsSpec, file_rows, find_row, heights, selected_numbers,
-    side_number,
+    Content, InsertItem, LinePos, Row, RowKey, RowsSpec, file_rows, find_row, heights,
+    selected_numbers, side_number,
 };
 pub use section::{SECTION, SectionSummary};
 
@@ -469,6 +472,15 @@ impl DiffPane {
                     Row::Notice(notice) => Some(notice.key()),
                     _ => None,
                 }),
+                heading: block
+                    .rows
+                    .iter()
+                    .filter_map(|row| match row {
+                        Row::Heading(InsertItem::Thread(id)) => Some(id.to_string()),
+                        Row::Heading(InsertItem::Composer) => Some("composer".to_string()),
+                        _ => None,
+                    })
+                    .collect(),
             })
             .collect()
     }
@@ -610,13 +622,14 @@ impl DiffPane {
             Content::Loaded(diff) => threads::thread_rows(&entry.path, diff, session, composer),
             _ => (Vec::new(), Vec::new()),
         };
+        let heading = file_comment::heading_items(&entry.path, session, composer, outdated);
         let rows = file_rows(&RowsSpec {
             mode: self.mode,
             collapsed: ui.open.map_or(viewed, |open| !open),
             content,
             segments: &ui.segments,
             inserts: &inserts,
-            outdated: &outdated,
+            heading: &heading,
             footer: true,
         });
         Some(Block {
@@ -1321,4 +1334,7 @@ pub struct FileSummary {
     pub gaps: Vec<usize>,
     /// The notice it shows instead of lines ([`rows::Notice::key`]), if any.
     pub notice: Option<&'static str>,
+    /// The cards heading its rows, in order: thread ids, and `composer` for the composer of a
+    /// comment on the whole file (`file_comment`).
+    pub heading: Vec<String>,
 }

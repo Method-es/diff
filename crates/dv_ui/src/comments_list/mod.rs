@@ -5,7 +5,8 @@
 //! clipboard as Markdown (through the clipboard seam, `crate::system`). Addressed threads come
 //! first, then open ones, each in stream order (PLAN §3 workflow A step 5: the stream's "Not in
 //! the diff" section first, in the order its threads were added, then by file). An outdated thread
-//! (PLAN §8) is flagged and shows its first anchored line as it was; one the interdiff doesn't
+//! (PLAN §8) is flagged and shows its first anchored line as it was; a comment on the whole file
+//! names its file, `path (file)`, instead of `path:line`; one the interdiff doesn't
 //! show carries a quiet "all changes" tag and names where it stands in all changes. A thread
 //! whose file's text hasn't landed yet shows the line it was written on, quietly, until it is
 //! placed (every file a thread shows in loads at once, so that is brief), and "Copy as prompt"
@@ -48,8 +49,10 @@ pub struct CommentRow {
     /// Its file's text hasn't landed yet: `location` is where it was written, not where it is.
     pub pending: bool,
     /// `path:31`, `path:12–14` (`path:31 (old)` on the old side): where it stands now, else
-    /// where it was anchored.
+    /// where it was anchored; `path (file)` for a comment on the whole file.
     pub location: String,
+    /// A comment on the whole file (PLAN §8): `location` names the file, not lines.
+    pub file_level: bool,
     /// The comment's first line.
     pub summary: String,
     /// The first anchored line as it was, for an outdated thread.
@@ -103,6 +106,7 @@ pub fn rows(session: &ReviewSession, resolved: bool) -> Vec<CommentRow> {
                 not_in_comparison: placement.is_not_in_comparison(),
                 pending: placement.is_pending(),
                 location: session.location(thread),
+                file_level: thread.anchor.is_file_level(),
                 summary: first_line(&thread.body),
                 snippet: outdated
                     .then(|| thread.anchor.text.first().cloned())

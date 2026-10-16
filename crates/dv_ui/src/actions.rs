@@ -103,6 +103,8 @@ pub mod diff_pane {
             ClearSelection,
             /// Comment on the selected lines, else the cursor's line (`C`).
             Comment,
+            /// Comment on the whole of the current file (`Shift C`, PLAN §8).
+            CommentOnFile,
             /// Reply to the focused thread (`R`).
             Reply,
             /// Focus the next unresolved thread (`]`).

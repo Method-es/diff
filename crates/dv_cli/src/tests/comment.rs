@@ -322,6 +322,7 @@ fn a_thread_shows_in_full() {
             "state": "addressed",
             "placement": "moved",
             "outdated": false,
+            "file_level": false,
             "path": "src/app.ts",
             "side": "new",
             "anchor": {

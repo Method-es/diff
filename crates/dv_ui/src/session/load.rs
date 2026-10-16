@@ -618,13 +618,17 @@ impl ReviewSession {
     /// it) of every file a live thread is anchored in that the stream can't place it against
     /// (a file shown too large; in an interdiff, one not listed, or an old-side thread) and that
     /// has none read. Blocking work, so in the background; a read whose file changed meanwhile
-    /// is dropped with it (`apply_listed`).
+    /// is dropped with it (`apply_listed`). A comment on the whole file reads no text, so it
+    /// asks for none.
     pub(super) fn ensure_review_texts(&mut self, cx: &mut Context<Self>) {
         let Some(resolved) = self.resolved.clone() else {
             return;
         };
         let mut wanted: Vec<FileEntry> = Vec::new();
         for thread in self.review.live_threads() {
+            if thread.anchor.is_file_level() {
+                continue;
+            }
             let Some(entry) = self.thread_entry(thread) else {
                 continue;
             };

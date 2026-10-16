@@ -194,7 +194,9 @@ pub enum AnchorSide {
 
 /// Where a thread is attached (PLAN §2.5, §8): a line range on one side of one file in one
 /// round, plus the anchored lines' text and up to 3 lines of context either side, so the thread
-/// can be relocated when the file moves on and shown with its original code when it can't.
+/// can be relocated when the file moves on and shown with its original code when it can't. A
+/// file-level anchor (a comment on the whole file, [`Anchor::is_file_level`]) has lines `0..=0`
+/// and no text or context.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Anchor {
     /// The round the line numbers refer to (1-based).
@@ -205,9 +207,10 @@ pub struct Anchor {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub old_path: Option<String>,
     pub side: AnchorSide,
-    /// The first anchored line, 1-based.
+    /// The first anchored line, 1-based; 0 for a file-level anchor.
     pub start_line: u32,
-    /// The last anchored line, inclusive (`start_line` for one line).
+    /// The last anchored line, inclusive (`start_line` for one line); 0 for a file-level
+    /// anchor.
     pub end_line: u32,
     /// The anchored lines' text without line endings, one entry per line.
     pub text: Vec<String>,
@@ -220,8 +223,43 @@ pub struct Anchor {
 }
 
 impl Anchor {
-    /// How many lines the anchor spans.
+    /// The anchor of a comment on the whole file at `path` on `side` in `round` (PLAN §2.5,
+    /// §8): lines `0..=0`, no text, no context. It is never relocated; placement finds its file
+    /// only.
+    pub fn file_level(
+        round: u32,
+        path: String,
+        old_path: Option<String>,
+        side: AnchorSide,
+    ) -> Self {
+        Self {
+            round,
+            path,
+            old_path,
+            side,
+            start_line: 0,
+            end_line: 0,
+            text: Vec::new(),
+            context_before: Vec::new(),
+            context_after: Vec::new(),
+        }
+    }
+
+    /// Whether it is a comment on the whole file: lines `0..=0` with no text or context
+    /// ([`Anchor::file_level`]). The fold refuses any other anchor with a line 0.
+    pub fn is_file_level(&self) -> bool {
+        self.start_line == 0
+            && self.end_line == 0
+            && self.text.is_empty()
+            && self.context_before.is_empty()
+            && self.context_after.is_empty()
+    }
+
+    /// How many lines the anchor spans: none for a file-level anchor.
     pub fn line_count(&self) -> u32 {
+        if self.is_file_level() {
+            return 0;
+        }
         self.end_line
             .saturating_sub(self.start_line)
             .saturating_add(1)

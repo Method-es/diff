@@ -178,6 +178,7 @@ fn every_command_the_skill_shows_parses() {
             "dv review wait <review-id> --timeout 600 --json",
             "dv review show <review-id> --json",
             "dv comment add --file src/app.ts --lines 10:12 --author <agent> --body-file -",
+            "dv comment add --file src/app.ts --author <agent> --body-file -",
         ],
         "the test below runs each of these in turn; update it with the skill"
     );
@@ -366,6 +367,22 @@ fn the_loop_the_skill_teaches_runs() {
             asked.anchor.round
         ),
         (10, 12, 4)
+    );
+    // The same without `--lines`: a question on the whole file, which reads as one.
+    let asked_file = run(11, &thread);
+    let added = asked_file.lines()[0].to_string();
+    assert!(added.ends_with("  src/app.ts (file)"), "{added}");
+    let loaded = fixture.load(&review.id);
+    let on_file = loaded.live_threads().last().unwrap();
+    assert_eq!(on_file.body, "Should this module be split in two?");
+    assert!(on_file.anchor.is_file_level(), "{:?}", on_file.anchor);
+    let shown = fixture.run(&["comment", "show", on_file.id.as_str()]);
+    assert_eq!(
+        shown.lines()[2..4],
+        [
+            format!("{}  open  src/app.ts (file)", on_file.id).as_str(),
+            "on the whole file"
+        ]
     );
     let replies = &loaded.thread(&id).unwrap().replies;
     assert_eq!(replies.last().unwrap().body, "Renamed the helper as asked.");

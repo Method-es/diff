@@ -1,0 +1,65 @@
+{"scenario": {"window_size": "1440x900", "description": "comments on a whole file (PLAN §8, DESIGN §4.1, §5): the file header's menu offers Comment on file, whose composer heads the file; the posted card heads it (anchor `file`), the comments list names it `path (file)`, the agent reads it through the CLI as a file comment and replies, the card shows the reply and Resolve resolves it; `Shift C` comments on the current file the same way, and once the agent deletes that file its card stays heading it, outdated. Screenshots in dark Mica and one light."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "settle"}
+
+// The agent's work: a new hook (untracked) and an edit to a file in the base.
+{"cmd": "seed_repo", "name": "web", "steps": [{"write": "src/hooks/use-auth.ts", "text": "export function useAuth() {\n  return { user: null };\n}\n"}, {"write": "src/lib/format.ts", "text": "export function format(value: number) {\n  return value.toFixed(2);\n}\n"}, {"commit": "base"}, {"write": "src/hooks/use-can.ts", "text": "import { useAuth } from \"./use-auth\";\n\nexport function useCan(permission: string) {\n  const { user } = useAuth();\n  return user?.permissions.includes(permission) ?? false;\n}\n"}, {"write": "src/lib/format.ts", "text": "export function format(value: number) {\n  return value.toFixed(3);\n}\n"}]}
+{"cmd": "cli", "cwd": "repos/web", "args": ["review", "new", "--json"], "expect_result": {"pointer": "/exit", "equals": 0}}
+{"cmd": "open_review", "path": "${data_dir}/repos/web"}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 2}
+{"cmd": "settle", "expect": [{"pointer": "/session/files/0/path", "equals": "src/hooks/use-can.ts"}, {"pointer": "/stream/files/0/heading", "equals": []}]}
+
+// The header's `⋯`: Comment on file first, then Copy path and Reveal in folder.
+{"cmd": "click", "target": "stream/file/src/hooks/use-can.ts/menu"}
+{"cmd": "settle"}
+{"cmd": "query", "prefix": "stream/menu/", "expect_result": {"pointer": "", "len": 3}}
+{"cmd": "query", "prefix": "stream/menu/comment", "expect_result": {"pointer": "", "len": 1}}
+{"cmd": "screenshot", "name": "menu-dark-mica"}
+{"cmd": "click", "target": "stream/menu/comment"}
+// The composer heads the file, under its header, and has the keyboard.
+{"cmd": "settle", "expect": [{"pointer": "/session/composer/path", "equals": "src/hooks/use-can.ts"}, {"pointer": "/session/composer/file_level", "equals": true}, {"pointer": "/session/composer/side", "equals": "new"}, {"pointer": "/session/composer/start_line", "equals": 0}, {"pointer": "/stream/files/0/heading", "equals": ["composer"]}]}
+{"cmd": "type", "text": "Fold this hook into useAuth: two hooks for one user is one too many.", "expect": {"pointer": "/session/composer/text", "equals": "Fold this hook into useAuth: two hooks for one user is one too many."}}
+{"cmd": "screenshot", "name": "composer-dark-mica"}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle", "expect": [{"pointer": "/session/composer", "equals": null}, {"pointer": "/session/threads", "len": 1}]}
+{"cmd": "state", "save": {"t1": "/session/threads/0/id"}}
+// Its card heads the file; the comments list names it as the file.
+{"cmd": "settle", "expect": [{"pointer": "/session/threads/0/file_level", "equals": true}, {"pointer": "/session/threads/0/placement", "equals": "file"}, {"pointer": "/session/threads/0/file", "equals": "src/hooks/use-can.ts"}, {"pointer": "/session/threads/0/lines", "equals": null}, {"pointer": "/session/threads/0/outdated", "equals": false}, {"pointer": "/session/focused_thread", "equals": "${t1}"}, {"pointer": "/stream/files/0/heading", "equals": ["${t1}"]}, {"pointer": "/comments_list/rows/0/location", "equals": "src/hooks/use-can.ts (file)"}, {"pointer": "/comments_list/rows/0/file_level", "equals": true}, {"pointer": "/session/files/0/open_threads", "equals": 1}]}
+{"cmd": "query", "prefix": "thread/${t1}/resolve", "expect_result": {"pointer": "", "len": 1}}
+{"cmd": "screenshot", "name": "card-dark-mica"}
+
+// The agent reads it as a comment on the whole file and replies.
+{"cmd": "cli", "cwd": "repos/web", "args": ["comment", "show", "${t1}", "--json"], "env": {"CLAUDECODE": "1"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/thread/file_level", "equals": true}, {"pointer": "/json/thread/placement", "equals": "file"}, {"pointer": "/json/thread/path", "equals": "src/hooks/use-can.ts"}, {"pointer": "/json/thread/anchor/current", "equals": null}, {"pointer": "/json/thread/excerpt", "equals": null}]}
+{"cmd": "cli", "cwd": "repos/web", "args": ["comment", "show", "${t1}"], "env": {"CLAUDECODE": "1"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/stdout", "contains": "${t1}  open  src/hooks/use-can.ts (file)\non the whole file\n"}]}
+{"cmd": "cli", "cwd": "repos/web", "args": ["comment", "reply", "${t1}", "--body", "Agreed: useAuth will return `can` next round.", "--json"], "env": {"CLAUDECODE": "1"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/thread/placement", "equals": "file"}]}
+{"cmd": "wait_for", "pointer": "/session/threads/0/replies/0/body", "equals": "Agreed: useAuth will return `can` next round.", "timeout_ms": 15000}
+{"cmd": "settle", "expect": {"pointer": "/stream/files/0/heading", "equals": ["${t1}"]}}
+{"cmd": "screenshot", "name": "replied-dark-mica"}
+// Resolve from its card.
+{"cmd": "click", "target": "thread/${t1}/resolve"}
+{"cmd": "settle"}
+{"cmd": "wait_for", "pointer": "/session/threads/0/state", "equals": "resolved"}
+
+// `Shift C` on the current file: the cursor in format.ts, a comment on all of it.
+{"cmd": "click", "target": "stream/line/src/lib/format.ts/new/2"}
+{"cmd": "settle", "expect": [{"pointer": "/stream/focused", "equals": true}, {"pointer": "/session/current_file", "equals": "src/lib/format.ts"}]}
+{"cmd": "key", "keystroke": "shift-c"}
+{"cmd": "settle", "expect": [{"pointer": "/session/composer/path", "equals": "src/lib/format.ts"}, {"pointer": "/session/composer/file_level", "equals": true}, {"pointer": "/stream/files/1/heading", "equals": ["composer"]}]}
+{"cmd": "type", "text": "Does anything still call this?"}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle", "expect": [{"pointer": "/session/composer", "equals": null}, {"pointer": "/session/threads", "len": 2}]}
+{"cmd": "state", "save": {"t2": "/session/threads/1/id"}}
+{"cmd": "settle", "expect": [{"pointer": "/session/threads/1/file_level", "equals": true}, {"pointer": "/session/threads/1/placement", "equals": "file"}, {"pointer": "/stream/files/1/heading", "equals": ["${t2}"]}]}
+
+// The agent deletes format.ts: the comment stays heading it, outdated (its new side is gone).
+{"cmd": "repo_edit", "name": "web", "steps": [{"remove": "src/lib/format.ts"}]}
+{"cmd": "wait_for", "pointer": "/session/threads/1/placement", "equals": "outdated", "timeout_ms": 15000}
+{"cmd": "settle", "expect": [{"pointer": "/session/files/1/status", "equals": "deleted"}, {"pointer": "/session/threads/1/file", "equals": "src/lib/format.ts"}, {"pointer": "/stream/files/1/heading", "equals": ["${t2}"]}, {"pointer": "/stream/not_in_diff", "equals": null}, {"pointer": "/comments_list/rows/0/location", "equals": "src/lib/format.ts (file)"}, {"pointer": "/comments_list/rows/0/outdated", "equals": true}]}
+{"cmd": "cli", "cwd": "repos/web", "args": ["comment", "show", "${t2}"], "env": {"CLAUDECODE": "1"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/stdout", "contains": "${t2}  open  src/lib/format.ts (file, outdated)\non the whole file, which is deleted now\n"}]}
+{"cmd": "click", "target": "comments_list/${t2}"}
+{"cmd": "settle", "expect": {"pointer": "/session/focused_thread", "equals": "${t2}"}}
+{"cmd": "screenshot", "name": "deleted-dark-mica"}
+{"cmd": "set_setting", "key": "mode", "value": "light"}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "deleted-light"}

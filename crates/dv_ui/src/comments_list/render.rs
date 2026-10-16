@@ -182,8 +182,16 @@ impl CommentsList {
                 .into_any_element(),
             ThreadState::Resolved => icon(DvIcon::CircleCheck, px(11.), c.green).into_any_element(),
         };
-        let (path, line) = match row.location.rsplit_once(':') {
-            Some((path, line)) => (path.to_string(), format!(":{line}")),
+        // `path` and, quieter after it, `:line` or a comment on the whole file's ` (file)`.
+        let split = if row.file_level {
+            row.location
+                .rfind(" (file")
+                .map(|at| row.location.split_at(at))
+        } else {
+            row.location.rfind(':').map(|at| row.location.split_at(at))
+        };
+        let (path, line) = match split {
+            Some((path, line)) => (path.to_string(), line.to_string()),
             None => (row.location.clone(), String::new()),
         };
         let flag = |text: &'static str, color, weight| {

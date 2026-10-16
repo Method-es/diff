@@ -152,7 +152,9 @@ impl FuzzyLines {
 /// made rather than at a bare copy of the old text.
 ///
 /// An anchor of blank lines only would match any blank run by text alone, so in steps 2 and 3
-/// its matches count only where at least one context line matches too.
+/// its matches count only where at least one context line matches too. A file-level anchor
+/// ([`Anchor::is_file_level`]) has no lines to find: it is `Outdated` here, and
+/// [`place_thread`] never asks.
 pub fn relocate<S: AsRef<str>>(anchor: &Anchor, lines: &[S]) -> Relocation {
     relocate_with(anchor, lines, &FuzzyLines::default())
 }
@@ -164,6 +166,10 @@ pub fn relocate_with<S: AsRef<str>>(
     lines: &[S],
     fuzzy: &FuzzyLines,
 ) -> Relocation {
+    // A file-level anchor has no lines to look for: placement never relocates one (PLAN §8).
+    if anchor.is_file_level() {
+        return Relocation::Outdated;
+    }
     if anchor.matches(lines) {
         return Relocation::Unchanged;
     }
@@ -610,6 +616,9 @@ pub enum Placement {
         file: Option<String>,
         trail: Option<Trail>,
     },
+    /// A comment on the whole of `file` (a file-level anchor, [`Anchor::is_file_level`]),
+    /// which has its side: at no line, and not outdated.
+    File { file: String },
 }
 
 impl Placement {
@@ -617,7 +626,7 @@ impl Placement {
     /// known yet).
     pub fn file(&self) -> Option<&str> {
         match self {
-            Self::Unchanged { file } | Self::Moved { file, .. } => Some(file),
+            Self::Unchanged { file } | Self::Moved { file, .. } | Self::File { file } => Some(file),
             Self::Pending { file } | Self::Outdated { file, .. } => file.as_deref(),
         }
     }
@@ -631,7 +640,8 @@ impl Placement {
     }
 
     /// The lines on its side the thread shows at, `(start, end)`, 1-based and inclusive:
-    /// `anchor`'s own while unchanged, where it moved to, else `None`.
+    /// `anchor`'s own while unchanged, where it moved to, else `None` (a comment on the whole
+    /// file included).
     pub fn lines(&self, anchor: &Anchor) -> Option<(u32, u32)> {
         match self {
             Self::Unchanged { .. } => Some((anchor.start_line, anchor.end_line)),
@@ -640,7 +650,7 @@ impl Placement {
                 end_line,
                 ..
             } => Some((*start_line, *end_line)),
-            Self::Pending { .. } | Self::Outdated { .. } => None,
+            Self::Pending { .. } | Self::Outdated { .. } | Self::File { .. } => None,
         }
     }
 
@@ -648,13 +658,19 @@ impl Placement {
         matches!(self, Self::Outdated { .. })
     }
 
-    /// `"unchanged"`, `"moved"`, `"pending"` or `"outdated"`.
+    /// A comment on the whole of its file, standing in it.
+    pub fn is_file(&self) -> bool {
+        matches!(self, Self::File { .. })
+    }
+
+    /// `"unchanged"`, `"moved"`, `"pending"`, `"outdated"` or `"file"`.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Unchanged { .. } => "unchanged",
             Self::Moved { .. } => "moved",
             Self::Pending { .. } => "pending",
             Self::Outdated { .. } => "outdated",
+            Self::File { .. } => "file",
         }
     }
 }
@@ -689,7 +705,7 @@ pub fn shows_edited(thread: &Thread, placement: &Placement) -> bool {
         Placement::Unchanged { .. } | Placement::Moved { .. } => {
             thread.anchor.text != thread.first_anchor().text
         }
-        Placement::Pending { .. } | Placement::Outdated { .. } => false,
+        Placement::Pending { .. } | Placement::Outdated { .. } | Placement::File { .. } => false,
     }
 }
 
@@ -786,7 +802,11 @@ pub fn has_side(entry: &FileEntry, side: AnchorSide) -> bool {
 /// its round's snapshot (`super::history::trace`): outdated still, with the [`Trail`] to where
 /// its code went when the snapshot tells. `history` is the anchor's round's history as the
 /// caller has it ([`History::None`] for a round in progress); a thread that needs it before
-/// it is read is `Pending`, so it never shows outdated first and then jumps.
+/// it is read is `Pending`, so it never shows outdated first and then jumps. A comment on the
+/// whole file (a file-level anchor) is never relocated and `text` is never asked for it: it is
+/// [`Placement::File`] in its file by the same file rule, renames and round history included,
+/// or outdated there when the file no longer has its side (a new-side comment on a file
+/// deleted since), or outdated without a file when its file left the list.
 pub fn place_thread<L: SideLines>(
     thread: &Thread,
     entries: &[FileEntry],
@@ -815,6 +835,9 @@ pub fn place_thread<L: SideLines>(
     };
     if !has_side(entry, anchor.side) {
         return outdated(file);
+    }
+    if anchor.is_file_level() {
+        return Placement::File { file };
     }
     let side = match text(entry, anchor.side) {
         SideText::Pending => return Placement::Pending { file: Some(file) },
@@ -861,8 +884,9 @@ pub fn place_thread<L: SideLines>(
 /// is `lines`, in `round` (the round in progress), with fresh context. A thread that moved is
 /// re-taken at the lines it moved to; one standing at its lines in a file renamed since it was
 /// written is re-taken at the same lines under the file's name now, so it keeps its file once
-/// the rename becomes part of the old side (a commit, a rebase). `None` otherwise; callers pass
-/// it to `ops::reply` and `ops::set_thread_state`.
+/// the rename becomes part of the old side (a commit, a rebase). A comment on the whole file
+/// placed in a file renamed since is re-taken as a file-level anchor under the name now (`lines`
+/// unread). `None` otherwise; callers pass it to `ops::reply` and `ops::set_thread_state`.
 pub fn relocated_anchor<S: AsRef<str>>(
     anchor: &Anchor,
     placement: &Placement,
@@ -871,6 +895,9 @@ pub fn relocated_anchor<S: AsRef<str>>(
     round: u32,
 ) -> Option<Anchor> {
     let place = AnchorPlace::for_entry(entry, anchor.side, round);
+    if anchor.is_file_level() {
+        return (placement.is_file() && place.path != anchor.path).then(|| place.file_level());
+    }
     let (start, end) = match placement {
         Placement::Moved {
             start_line,

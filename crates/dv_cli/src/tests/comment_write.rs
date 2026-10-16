@@ -357,7 +357,7 @@ fn comment_add_anchors_on_the_side_as_it_is_now() {
             Exit::Failure,
             "rejected"
         ),
-        "src/gone.ts is deleted: it has no new side"
+        "src/gone.ts is deleted: it has no new side (`--side old` comments on it as it was)"
     );
     assert_eq!(
         refused(

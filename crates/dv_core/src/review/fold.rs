@@ -228,7 +228,9 @@ pub fn check_status(from: ReviewStatus, to: ReviewStatus) -> Result<Outcome, Rej
 }
 
 /// Checks an anchor's shape: valid paths, a 1-based line range in order, one `text` entry per
-/// anchored line, and a round that exists (`1..=current`).
+/// anchored line, and a round that exists (`1..=current`). A file-level anchor (lines `0..=0`,
+/// no text or context: [`Anchor::is_file_level`]) is the one shape with a line 0; any other
+/// with a line 0 is refused.
 pub fn check_anchor(anchor: &Anchor, current_round: u32) -> Result<(), Rejection> {
     let invalid = |reason: String| Err(Rejection::InvalidAnchor { reason });
     if check_relative(&anchor.path).is_err() {
@@ -241,6 +243,12 @@ pub fn check_anchor(anchor: &Anchor, current_round: u32) -> Result<(), Rejection
         && check_relative(old_path).is_err()
     {
         return invalid(format!("old path {old_path:?} is not a repo-relative path"));
+    }
+    if anchor.is_file_level() {
+        return check_round(anchor.round, current_round);
+    }
+    if anchor.start_line == 0 && anchor.end_line == 0 {
+        return invalid("a file-level anchor (lines 0) has no text or context".to_string());
     }
     if anchor.start_line == 0 {
         return invalid("lines are 1-based".to_string());

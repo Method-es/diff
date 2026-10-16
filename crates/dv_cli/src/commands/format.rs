@@ -42,11 +42,13 @@ pub(crate) fn thread_line(thread: &ThreadDto) -> String {
 /// can't be found, only those lines between the ones that stood around them, then where that
 /// code went when its round's snapshot tells ([`trail_lines`]). Then the comment
 /// under `<kind> <name>, round <n>:`, each reply under `<kind> <name>:` and the last state
-/// change's note under `<state> note:`, each body indented.
+/// change's note under `<state> note:`, each body indented. A comment on the whole file has
+/// no code: one line says so ([`file_level_line`]).
 pub(crate) fn thread_block(thread: &ThreadDto) -> Vec<String> {
     let round = thread.anchor.original.round;
     let mut lines = vec![thread_line(thread)];
     match &thread.excerpt {
+        _ if thread.file_level => lines.push(file_level_line(thread)),
         Some(excerpt) => {
             lines.extend(excerpt.split('\n').map(str::to_string));
             if thread.current_code.as_deref() != Some(thread.code.as_str()) {
@@ -84,6 +86,23 @@ pub(crate) fn thread_block(thread: &ThreadDto) -> Vec<String> {
         lines.extend(indented(note));
     }
     lines
+}
+
+/// What a comment on the whole file is about (PLAN §10.3): `on the whole file`; once its file
+/// is gone from the review's changes, `on the whole file, which isn't among the review's
+/// changes now`; once the file lacks its side, `on the whole file, which is deleted now` (`…
+/// as it was, which is new now` on the old side).
+fn file_level_line(thread: &ThreadDto) -> String {
+    let line = if !thread.outdated {
+        "on the whole file"
+    } else if !thread.listed {
+        "on the whole file, which isn't among the review's changes now"
+    } else if thread.side == "old" {
+        "on the whole file as it was, which is new now"
+    } else {
+        "on the whole file, which is deleted now"
+    };
+    line.to_string()
 }
 
 /// Where an outdated thread's code went (PLAN §10.3): `code changed since round N; these lines
@@ -176,8 +195,20 @@ pub(crate) fn round_line(round: &RoundDto) -> String {
 /// (`(outdated, was 12-14, replaced by 40-45)`, `(outdated, was 12-14, removed before 40)`,
 /// `(outdated, was 12-14, removed at the end)`). A thread on the old side says so first,
 /// `src/a.ts:12 (old)`, `src/a.ts:14 (old, moved from 12)`, so its lines aren't taken for the
-/// file's lines as they are now; the GUI names it the same way (DESIGN §4.1).
+/// file's lines as they are now; the GUI names it the same way (DESIGN §4.1). A comment on the
+/// whole file is `src/a.ts (file)`, `(file, old)` on the old side and `(file, outdated)` once
+/// its file is gone or deleted.
 pub(crate) fn location(thread: &ThreadDto) -> String {
+    if thread.file_level {
+        let mut notes = vec!["file"];
+        if thread.side == "old" {
+            notes.push("old");
+        }
+        if thread.outdated {
+            notes.push("outdated");
+        }
+        return format!("{} ({})", thread.side_path, notes.join(", "));
+    }
     let original = &thread.anchor.original;
     let was = lines(original.start_line, original.end_line);
     let mut notes: Vec<String> = Vec::new();

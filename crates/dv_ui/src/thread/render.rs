@@ -318,7 +318,8 @@ impl RenderOnce for ThreadCard {
                     .child(div().pt(px(1.)).child(icon(DvIcon::Bot, px(13.), c.blue)))
                     .child(div().flex_1().min_w_0().child(note.to_string()))
             });
-        let snippet = self.outdated.then(|| {
+        // A comment on the whole file has no lines to show as they were.
+        let snippet = (self.outdated && !self.thread.anchor.text.is_empty()).then(|| {
             div()
                 .mx(theme.spacing.lg)
                 .mt(px(10.))

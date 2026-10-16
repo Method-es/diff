@@ -241,7 +241,8 @@ fn a_thread_whose_lines_changed_heads_its_file_as_outdated(cx: &mut TestAppConte
     let watched = pane.clone();
     let wanted = id.clone();
     settle_drawn(cx, &shell, "the thread to be outdated", move |_, cx| {
-        watched.read(cx).blocks[0].rows.get(1) == Some(&Row::Outdated(wanted.clone()))
+        watched.read(cx).blocks[0].rows.get(1)
+            == Some(&Row::Heading(InsertItem::Thread(wanted.clone())))
     });
     let session = session(&shell, cx);
     let outdated = session.read_with(cx, |session, _| {

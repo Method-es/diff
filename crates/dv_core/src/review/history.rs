@@ -484,14 +484,14 @@ pub fn content_match<S: AsRef<str>, T: AsRef<str>>(a: &[S], b: &[T]) -> Option<f
 /// [`REWRITE_SLACK`] lines from its start, so a file rewritten whole doesn't point far down it.
 /// When every such block replaces its lines with nothing, they were removed:
 /// [`Went::Removed`], where the first of them stood (never their own lines left standing).
-/// `None` for an old-side anchor, one not found in `snapshot` either, or lines no change block
-/// overlaps.
+/// `None` for an old-side anchor, a file-level one (no lines), one not found in `snapshot`
+/// either, or lines no change block overlaps.
 pub fn trace<S: AsRef<str>, T: AsRef<str>>(
     anchor: &Anchor,
     snapshot: &[S],
     now: &[T],
 ) -> Option<Went> {
-    if anchor.side != AnchorSide::New {
+    if anchor.side != AnchorSide::New || anchor.is_file_level() {
         return None;
     }
     let (start, end) = match relocate(anchor, snapshot) {

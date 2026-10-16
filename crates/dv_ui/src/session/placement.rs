@@ -59,7 +59,7 @@ use super::history::HistoryKey;
 use super::load::FullRead;
 use super::{FileState, ReviewSession};
 use crate::session::Comparison;
-use crate::thread::{location_label, path_lines};
+use crate::thread::{file_location, location_label, path_lines};
 
 /// Where a thread shows in the session's stream.
 #[derive(Clone, Debug, PartialEq)]
@@ -118,6 +118,11 @@ impl ThreadPlacement {
     pub fn named_lines(&self, anchor: &Anchor) -> Option<(u32, u32)> {
         self.lines(anchor)
             .or_else(|| self.trail().map(Trail::lines))
+    }
+
+    /// A comment on the whole file, standing in its file (`Placement::File`).
+    pub fn is_file(&self) -> bool {
+        self.placement().is_file()
     }
 
     /// Its file's text, or its round's history, isn't there to place it against yet.
@@ -327,7 +332,9 @@ impl ReviewSession {
     fn placement_key(&self, thread: &Thread) -> Key {
         let entry = self.thread_entry(thread);
         let drawn = entry.is_some_and(|entry| self.draws(thread, entry));
+        // A comment on the whole file is placed without its file's text.
         let diff = entry
+            .filter(|_| !thread.anchor.is_file_level())
             .and_then(|entry| self.basis(&entry.path, thread.anchor.side, drawn))
             .cloned();
         Key {
@@ -398,11 +405,13 @@ impl ReviewSession {
     }
 
     /// The paths of the listed files the stream draws threads in: they load whatever the
-    /// stream's viewport (`load`).
+    /// stream's viewport (`load`). A comment on the whole file needs no text, so its file
+    /// loads as any other.
     pub(super) fn thread_files(&self) -> Vec<String> {
         let mut paths: Vec<String> = Vec::new();
         for thread in self.review.live_threads() {
-            if let Some(entry) = self.thread_entry(thread)
+            if !thread.anchor.is_file_level()
+                && let Some(entry) = self.thread_entry(thread)
                 && self.draws(thread, entry)
                 && !paths.contains(&entry.path)
             {
@@ -561,10 +570,18 @@ impl ReviewSession {
     /// else where it was anchored. An old-side thread's ends in "(old)",
     /// as the CLI prints it, so its lines aren't taken for the file's lines now. The comments
     /// list, the "Finish round" sheet and "Copy as prompt" all name a thread so (DESIGN §4.1);
-    /// [`ThreadPlacement::is_pending`] says when it hasn't been placed yet.
+    /// [`ThreadPlacement::is_pending`] says when it hasn't been placed yet. A comment on the
+    /// whole file is `path (file)` under its file's name now (`(file, old)` on the old side).
     pub fn location(&self, thread: &Thread) -> String {
         let placement = self.placement(thread);
         let entry = self.thread_entry(thread);
+        if thread.anchor.is_file_level() {
+            let path = entry.map_or_else(
+                || thread.anchor.path.clone(),
+                |entry| AnchorPlace::for_entry(entry, thread.anchor.side, 0).path,
+            );
+            return file_location(&path, thread.anchor.side);
+        }
         let label = match (entry, placement.named_lines(&thread.anchor)) {
             (Some(entry), Some((start, end))) => {
                 let place = AnchorPlace::for_entry(entry, thread.anchor.side, 0);
@@ -583,10 +600,20 @@ impl ReviewSession {
     /// now, or under its file's name now when that file was renamed since
     /// (`dv_core::review::relocated_anchor`); `None` otherwise. Only from text that is current:
     /// not the diff a file had while it loads again. The review's own entry for the file names
-    /// its paths, as the CLI's writes do, whichever comparison is shown.
+    /// its paths, as the CLI's writes do, whichever comparison is shown. A comment on the whole
+    /// file reads no text: it is re-taken under its file's name now when that was renamed.
     pub fn relocated_anchor(&self, thread: &ThreadId) -> Option<Anchor> {
         let thread = self.review.thread(thread)?;
         let entry = self.thread_entry(thread)?;
+        if thread.anchor.is_file_level() {
+            return relocated_anchor(
+                &thread.anchor,
+                self.placement(thread).placement(),
+                entry,
+                &[] as &[&str],
+                self.review.current_round(),
+            );
+        }
         let drawn = self.draws(thread, entry);
         if drawn && !matches!(self.states.get(&entry.path), Some(FileState::Loaded { .. })) {
             return None;

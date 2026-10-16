@@ -364,6 +364,8 @@ fn composer(shell: &Shell, cx: &App) -> Value {
         "side": side(target.side),
         "start_line": target.start_line,
         "end_line": target.end_line,
+        // A new comment on the whole file (lines 0).
+        "file_level": target.is_file(),
         "reply_to": target.reply_to,
         "text": pane.composer_text(cx),
         "posting": composer.posting,
@@ -409,6 +411,7 @@ pub fn comments_list(shell: &Shell, cx: &App) -> Value {
                 "not_in_comparison": row.not_in_comparison,
                 "pending": row.pending,
                 "location": row.location,
+                "file_level": row.file_level,
                 "summary": row.summary,
                 "snippet": row.snippet,
             })
@@ -443,6 +446,7 @@ pub fn stream(shell: &Shell, window: &Window, cx: &App) -> Value {
                 "rows": file.rows,
                 "gaps": file.gaps,
                 "notice": file.notice,
+                "heading": file.heading,
             })
         })
         .collect();
@@ -523,6 +527,8 @@ fn thread_state(session: &ReviewSession, thread: &Thread) -> Value {
         "side": side(anchor.side),
         "start_line": anchor.start_line,
         "end_line": anchor.end_line,
+        // A comment on the whole file (lines 0, PLAN §8).
+        "file_level": anchor.is_file_level(),
         "state": thread.state.as_str(),
         "note": thread.last_change.as_ref().and_then(|change| change.note.clone()),
         "author": author(&thread.author),

@@ -10,7 +10,8 @@
 //! review the actions and the reply field stay, disabled.
 //!
 //! The composer is one multi-line field: on a new thread it sits under the selected lines with
-//! "Comment on new · lines 12–14"; as a reply it takes the place of the card's reply field.
+//! "Comment on new · lines 12–14" (under its file's header with "Comment on file" for a comment
+//! on the whole file, PLAN §8); as a reply it takes the place of the card's reply field.
 //! `Ctrl Enter` posts, `Esc` cancels (`crate::actions::composer`).
 //!
 //! The views here hold no state of their own: the stream ([`crate::diff_pane`]) keeps which
@@ -39,8 +40,9 @@ pub const COMPOSER_ROWS: (usize, usize) = (3, 12);
 /// Rows a reply's field starts with and grows to.
 pub const REPLY_ROWS: (usize, usize) = (2, 10);
 
-/// What the composer writes: a new thread on lines of one side of one file, or a reply to
-/// `reply_to` (whose anchor the other fields repeat).
+/// What the composer writes: a new thread on lines of one side of one file, or on the whole
+/// file (lines `0..=0`, [`ComposerTarget::file`]), or a reply to `reply_to` (whose anchor the
+/// other fields repeat).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ComposerTarget {
     pub path: String,
@@ -51,10 +53,29 @@ pub struct ComposerTarget {
 }
 
 impl ComposerTarget {
-    /// The composer's heading: "Comment on new · lines 12–14", or "Reply".
+    /// A new comment on the whole file at `path`, on `side` of it (the old side for a deleted
+    /// file).
+    pub fn file(path: String, side: AnchorSide) -> Self {
+        Self {
+            path,
+            side,
+            start_line: 0,
+            end_line: 0,
+            reply_to: None,
+        }
+    }
+
+    /// Whether it writes a new comment on the whole file.
+    pub fn is_file(&self) -> bool {
+        self.reply_to.is_none() && self.start_line == 0 && self.end_line == 0
+    }
+
+    /// The composer's heading: "Comment on new · lines 12–14", "Comment on file" (whichever
+    /// side: a deleted file's old one too, DESIGN §4.1), or "Reply".
     pub fn title(&self) -> String {
         match self.reply_to {
             Some(_) => "Reply".to_string(),
+            None if self.is_file() => "Comment on file".to_string(),
             None => format!(
                 "Comment on {}",
                 anchor_label(self.side, self.start_line, self.end_line)
@@ -82,8 +103,15 @@ pub fn side_word(side: AnchorSide) -> &'static str {
     }
 }
 
-/// "new · line 31", "old · lines 12–14" (DESIGN §4.1).
+/// "new · line 31", "old · lines 12–14" (DESIGN §4.1); "file" for a comment on the whole file
+/// (lines 0), "old · file" on its old side.
 pub fn anchor_label(side: AnchorSide, start: u32, end: u32) -> String {
+    if (start, end) == (0, 0) {
+        return match side {
+            AnchorSide::New => "file".to_string(),
+            AnchorSide::Old => "old · file".to_string(),
+        };
+    }
     let side = side_word(side);
     if start == end {
         format!("{side} · line {start}")
@@ -110,10 +138,23 @@ pub fn trail_label(round: u32) -> String {
     format!("code changed since round {round}")
 }
 
-/// `path:31` or `path:12–14`: where a thread sits, as the comments list and prompts name it.
+/// `path:31` or `path:12–14`: where a thread sits, as the comments list and prompts name it;
+/// `path (file)` for a comment on the whole file ([`file_location`]).
 pub fn location_label(thread: &Thread) -> String {
     let anchor = &thread.anchor;
+    if anchor.is_file_level() {
+        return file_location(&anchor.path, anchor.side);
+    }
     path_lines(&anchor.path, anchor.start_line, anchor.end_line)
+}
+
+/// `path (file)`, `path (file, old)` on the old side: a comment on the whole file, as the
+/// comments list, prompts and the sheet name it, and as the CLI prints it (PLAN §10.3).
+pub fn file_location(path: &str, side: AnchorSide) -> String {
+    match side {
+        AnchorSide::New => format!("{path} (file)"),
+        AnchorSide::Old => format!("{path} (file, old)"),
+    }
 }
 
 /// `path:31` or `path:12–14`.
@@ -200,6 +241,9 @@ pub fn prompt_markdown(heading: &str, label: &str, threads: &[(&Thread, String)]
         let anchor = &thread.anchor;
         // `location` says "(old)" for an old-side thread (`ReviewSession::location`).
         let _ = write!(out, "\n## {location}\n\nThread `{}`.\n\n", thread.id);
+        if anchor.is_file_level() {
+            let _ = writeln!(out, "On the whole file.\n");
+        }
         if !anchor.text.is_empty() {
             let code = anchor.text.join("\n");
             let fence = fence_for(&code);

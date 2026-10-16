@@ -301,7 +301,9 @@ A round is the target as it stood when the reviewer last handed the review over.
 
 ### 2.5 Threads
 - **Anchor:** round, path (and old path for renames), side (old/new), line range, **plus the anchored
-  lines' text and 3 lines of context either side** (§8).
+  lines' text and 3 lines of context either side** (§8). A comment on the whole file (GitHub's
+  file comment) has a **file-level anchor**: lines `0..=0`, no text, no context
+  (`Anchor::is_file_level`), on the new side, or the old side for a deleted file.
 - **States:** `open` (waiting on the agent/author) → `addressed` (agent says done, with an optional note)
   → `resolved` (reviewer confirmed) or back to `open` ("Reopen"). Only the reviewer resolves and
   reopens (`ops::set_thread_state` refuses an agent's resolve or reopen as `NotAllowed`, whatever
@@ -789,7 +791,12 @@ so the UI falls back to refreshing those itself instead of also losing review up
   `submitted`, an event id seen once — and skips one that doesn't apply with a warning. Writers don't
   lock, so two may race on stale state (an agent addresses a thread the reviewer just resolved); the
   fold is the final word. An event that changes nothing applies as a no-op. A log without a valid
-  `created` event is unreadable. A relocated `anchor` on a reply or state change moves the thread
+  `created` event is unreadable. An anchor's lines are 1-based, save the file-level anchor's
+  `0..=0` with no text or context (§2.5); any other anchor with a line 0 is refused. A dv older
+  than file-level anchors refuses that one too, so it skips such a thread (and the events on
+  it) with its usual warning: an addition no version bump covers, which is acceptable for a
+  comment an older build can't show anyway (the snapshot cache's version changed with it, so
+  a cache an older build folded is rebuilt). A relocated `anchor` on a reply or state change moves the thread
   there and keeps its first anchor (§8). The last `status` event that changed the review is
   `Review::status_change {status, note, author, at}`; repeating the status with another note while
   the review is open replaces the note (as addressing a thread again does), with the same note or
@@ -910,7 +917,11 @@ or with its mode changed and nothing else carries its text as context lines, §6
 can say it isn't loaded yet (`Pending`) or that the side has no lines (binary, a submodule,
 unmerged: outdated). A thread
 whose file left the list, or whose side the file no longer has (a new-side thread on a deleted
-file, an old-side one on an added file), is `Outdated`; otherwise `relocate` decides `Unchanged`,
+file, an old-side one on an added file), is `Outdated`; a **comment on the whole file** (a
+file-level anchor, §2.5) whose file has its side is `Placement::File { file }` (`as_str()`
+"file", no `lines()`, not outdated), its text never asked for and nothing relocated or traced
+(its file found by the same rule, renames and round history included: a deleted file paired
+with an untracked one, git's rename since the round); otherwise `relocate` decides `Unchanged`,
 `Moved` or `Outdated`, and an `Outdated` new-side thread of a closed round carries its trail
 when its round's snapshot tells (below). The GUI and the CLI place threads only through it, against the review's
 own file list (all changes), so they never disagree (the GUI's interdiff adds one rule after it:
@@ -922,7 +933,8 @@ it was written on (DESIGN §4.1), or with a trail stands where its code went, so
 answered and resolved; one whose file left
 the list (`Outdated` without a file) heads the stream itself, as a full card in its "Not in the
 diff" section before the first file, whichever comparison is shown, so it too can be answered
-and resolved there (and from its comments-list row's menu).
+and resolved there (and from its comments-list row's menu). A comment on the whole file heads
+its file, ahead of its outdated cards, and goes to that section once its file leaves the list.
 
 **Round history** (`review::history`). A thread's `anchor.round` is the round its line numbers
 refer to; once that round has closed, its snapshot (`refs/dv/reviews/<id>/<n>`, §2.3) holds the
@@ -976,7 +988,9 @@ anchor re-taken at its relocated lines in the round in progress with fresh conte
 (`review::relocated_anchor`, through `anchor_selection`); callers pass one for `Moved`, and for a
 thread standing at its lines in a file renamed since it was written (re-taken at the same lines
 under the file's name now, so the thread keeps its file once the rename becomes part of the old
-side — a commit, a rebase — rather than going outdated) (`ops::reply` / `ops::set_thread_state`
+side — a commit, a rebase — rather than going outdated; a comment on the whole file in a
+renamed file likewise, re-taken as a file-level anchor under the name now, no text read)
+(`ops::reply` / `ops::set_thread_state`
 take `relocated: Option<Anchor>`). The fold checks it like a
 `thread_added` anchor (an invalid one skips the event with a warning), replaces `Thread::anchor`
 with it and keeps the anchor the thread was opened with as `Thread::original_anchor` (set on the
@@ -1020,6 +1034,8 @@ scope for v1.
   `line`, `start_side`/`start_line` for ranges). Duplicate-submit guard: the review's `submitted` event
   is written before the POST returns its id to the UI; a retry after a crash checks
   `GET …/reviews` for a review with our marker before posting again.
+- A comment on the whole file (a file-level anchor, §2.5) submits as a file comment
+  (`subject_type: "file"`, `path`, no `line`), on any file the PR touches (phase 8).
 - A 422 from GitHub is shown per comment where it can be attributed, never as "maybe force-pushed".
 
 ### 9.4 Viewed state
@@ -1050,7 +1066,7 @@ dv review close | delete <id>              reviewer
 
 dv comment list [--status open|addressed|resolved|outdated]… [--file <p>] [--oneline]
 dv comment show <id>                       the thread with the diff around its code now
-dv comment add --file <p> --lines N[:M] [--side old|new] (--body <t> | --body-file <f|->)
+dv comment add --file <p> [--lines N[:M]] [--side old|new] (--body <t> | --body-file <f|->)
 dv comment reply <id> (--body <t> | --body-file <f|->)
 dv comment address <id> [--note <t> | --note-file <f|->]
                                            agent
@@ -1143,7 +1159,10 @@ Global flags: `--repo <path>` (also `\\wsl.localhost\<distro>\<path>`), `--wsl <
     `not_found`; a side the file lacks (`old` of an added file, `new` of a deleted one), lines
     past the side's end, or a file without lines (binary, a submodule, conflicted) exit 1
     `rejected`. The anchor is `anchor_selection` over that side's full text in the round in
-    progress.
+    progress. Without `--lines` it is a comment on the whole file, a file-level anchor (§2.5)
+    on its new side, or with `--side old` on a deleted file's old side (`rejected` on a deleted
+    file's new side and on any other file's old side, saying which to use), which reads
+    none of the file's text, so a binary or too large file takes one too.
   - `comment reply | address | resolve | reopen` place the thread first and record its
     relocated anchor when it moved (§8); a target that no longer resolves is exit 1 before
     anything is written, as for `comment list`.
@@ -1258,11 +1277,15 @@ doesn't. A deleted thread is not found.
   status change carried, `{status, note, author, at}`, or `null`). A thread: `id`, `review_id`,
   `state`, `placement` (`unchanged`; `moved` — relocated now, or standing where an earlier
   write recorded its move, `review::shows_moved`; `edited` — standing where it was written, its
-  text changed there, `review::shows_edited`; or `outdated`), `outdated`, `path` (its file
-  in the current diff), `side`, `anchor: {original: {round, path, side, start_line, end_line},
+  text changed there, `review::shows_edited`; `outdated`; or `file`, a comment on the whole
+  file standing in it), `outdated`, `file_level` (`true` for a comment on the whole file: its
+  `anchor.original` lines are 0, `code` is empty and `anchor.current`, `code_context`,
+  `current_code`, `excerpt` and `trail` are `null`; `outdated` once its file is gone or
+  deleted), `path` (its file in the current diff, a rename followed), `side`, `anchor: {original: {round, path, side, start_line, end_line},
   current: {path, side, start_line, end_line} | null}`, `code` (the lines it was written on, as
   they were), `code_context` (`{before, after}`: up to `ANCHOR_CONTEXT` lines that stood around
-  `code` then, from its first anchor; non-null exactly when `anchor.current` is `null`),
+  `code` then, from its first anchor; non-null exactly when `anchor.current` is `null`, a
+  comment on the whole file aside),
   `current_code` (the lines at `anchor.current` now), `excerpt` (the review's diff around
   `anchor.current` now, the rows the text prints, below, joined by `\n`; non-null exactly when
   `anchor.current` is), `trail` (an outdated thread's code since its round, §8 "Round history":
@@ -1301,12 +1324,17 @@ doesn't. A deleted thread is not found.
   `path (outdated, was 12, replaced by 40-45)` or `(outdated, was 12, removed before 40)`), and a
   thread on the old
   side says so first (`path:12 (old)`, `path:14 (old, moved from 12)`), as the GUI names it
-  (DESIGN §4.1). The candidates of an `ambiguous_review` / `no_review` error follow the message,
+  (DESIGN §4.1). A comment on the whole file reads `path (file)`, `path (file, old)`,
+  `path (file, outdated)`. The candidates of an `ambiguous_review` / `no_review` error follow the message,
   one per line: `id  label  status  round n  worktree`. No line ends in whitespace.
 - **A thread's block** (`comment list`, one per thread after the review's line, each after a
   blank line; `comment show`: the review's line, a blank line, the block; `comment list
   --oneline`: one `id  state  place  <the comment's first line>` per thread instead):
   - The header `id  state  place`, the place as above.
+  - A comment on the whole file has no code: one line, `on the whole file` (once its file
+    left the review's changes, `on the whole file, which isn't among the review's changes now`;
+    its file deleted, `on the whole file, which is deleted now`; on the old side of a file new
+    now, `on the whole file as it was, which is new now`), in place of what follows.
   - The excerpt (`dv_core::review::excerpt`), one row per line: `>` on a commented line or a
     space, the line's number on the review's new side now (right-aligned to the widest; blank
     on a removed line), a space, `+` / `-` / a space, ` |`, then a space and the line, its

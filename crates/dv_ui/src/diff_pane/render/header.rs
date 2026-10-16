@@ -1,7 +1,8 @@
 //! The file header (DESIGN §4.1, the board's 44px `codeHead` bar and its side labels): the
 //! chevron, the path with its directory dimmed, the status pill and totals, Split | Unified,
 //! Viewed, previous / next file and the file menu. The same header is pinned at the top while
-//! its file scrolls; the menu holds Copy path and Reveal in folder, through the system seam.
+//! its file scrolls; the menu holds Comment on file (PLAN §8), then Copy path and Reveal in
+//! folder, through the system seam.
 
 use std::path::PathBuf;
 
@@ -308,23 +309,45 @@ impl DiffPane {
             .and_then(|&block| self.entry_and_state(block, cx))
             .is_some_and(|(entry, _)| entry.status == FileStatus::Deleted);
         let target = reveal_target(&root, &menu.path, deleted);
-        let item = |key: &'static str, label: &'static str, glyph: DvIcon| {
+        let item = |key: &'static str, label: &'static str, glyph: DvIcon, enabled: bool| {
             menu_item(
                 SharedString::from(format!("stream-menu-{key}")),
                 label,
                 glyph,
-                true,
+                enabled,
                 theme,
             )
         };
         let path = menu.path.clone();
+        // Dimmed and inert where the file takes no comment (a finished review; an interdiff's
+        // deleted file, whose old column is the round's snapshot).
+        let can_comment = self.can_comment_on_file(&menu.path, cx);
+        let comment = {
+            let path = menu.path.clone();
+            item(
+                "comment",
+                "Comment on file",
+                DvIcon::MessageSquarePlus,
+                can_comment,
+            )
+            .when(can_comment, |this| {
+                this.on_click(cx.listener(move |this, _, window, cx| {
+                    this.menu = None;
+                    this.comment_on_file(&path, window, cx);
+                    cx.notify();
+                }))
+            })
+            .automation_target("stream/menu/comment")
+        };
         let panel = menu_panel("stream-menu", theme)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.menu = None;
                 cx.notify();
             }))
+            .child(comment)
+            .child(div().h(px(1.)).my(theme.spacing.xs).bg(theme.colors.line))
             .child(
-                item("copy_path", "Copy path", DvIcon::Copy)
+                item("copy_path", "Copy path", DvIcon::Copy, true)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.menu = None;
                         crate::system::write_clipboard(path.clone(), cx);
@@ -333,7 +356,7 @@ impl DiffPane {
                     .automation_target("stream/menu/copy_path"),
             )
             .child(
-                item("reveal", "Reveal in folder", DvIcon::FolderOpen)
+                item("reveal", "Reveal in folder", DvIcon::FolderOpen, true)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.menu = None;
                         crate::system::reveal(&target, cx);

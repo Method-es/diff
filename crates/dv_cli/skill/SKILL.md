@@ -96,6 +96,12 @@ end of <path>`), the header then saying `removed before <k>` (`removed at the en
 `--json` that is the thread's `trail` (`went`: `replaced` with `start_line`, `end_line`,
 `code` and `excerpt`, or `removed` with `before_line`).
 
+A thread on a whole file rather than on lines has the header `<thread-id>  <state>  <path>
+(file)` and the line `on the whole file` where code would be: the comment is about the file as
+a whole, under the name `<path>` it has now. In `--json` it has `file_level: true`, no
+`anchor.current` and no `excerpt`. Once that file is gone from the review or deleted, the header
+says `(file, outdated)` and the line says which.
+
 A thread opened by an agent (`agent <name>, round <n>:`; `author.kind` `agent` in `--json`) is
 a question an agent asked the reviewer (`dv comment add`, below), not a request. While the
 reviewer hasn't replied to it, it waits for them: leave it open, don't address it. Once they
@@ -180,10 +186,14 @@ dv review show <review-id> --json
 dv comment add --file src/app.ts --lines 10:12 --author <agent> --body-file - <<'EOF'
 Is this branch still reachable?
 EOF
+dv comment add --file src/app.ts --author <agent> --body-file - <<'EOF'
+Should this module be split in two?
+EOF
 ```
 
 `dv comment add` asks the reviewer something on lines of a changed file (`--side old` for the
-lines as they were).
+lines as they were), or without `--lines` on the whole file (`--side old` for a deleted
+file).
 
 ## Exit codes
 
