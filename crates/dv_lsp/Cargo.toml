@@ -1,0 +1,39 @@
+[package]
+name = "dv_lsp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Language servers where the repo lives: the LSP client, the language specs and their resolvers (docs/PLAN.md §18.4)"
+
+# gpui: never, not even transitively (`script/check` step 3).
+[lib]
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+dv_core.workspace = true
+globset.workspace = true
+log.workspace = true
+lsp-types.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+# This machine's own CPU, when dv runs emulated (`resolve::platform`).
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+# The resolvers read a repository through `RemoteBackend` too, over an in-process server.
+dv_backend.workspace = true
+dv_test_support.workspace = true
+pretty_assertions.workspace = true

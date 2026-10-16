@@ -43,6 +43,7 @@ use serde::Serialize;
 use self::process::{Credit, Procs};
 use crate::proto::{
     self, Bytes, HelloReply, Op, OpenReply, PROTO, Request, WatchReply, WireError, WireGitOutput,
+    WirePathProbe,
 };
 
 /// Serves the protocol: requests from `input`, answers and watch batches to `output`, until
@@ -259,6 +260,10 @@ impl State {
                 id,
                 &self.repo(repo)?.worktree_text_stats(&rel).map_err(wire)?,
             ),
+            Op::ProbePath { repo, path } => {
+                let probe = self.repo(repo)?.probe_path(&path).map_err(wire)?;
+                ok(id, &WirePathProbe::from(probe))
+            }
             Op::StoreAppend { repo, rel, line } => {
                 self.repo(repo)?.store_append(&rel, &line).map_err(wire)?;
                 ok(id, &())

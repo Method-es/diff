@@ -62,6 +62,21 @@ pub trait Backend: Send + Sync {
         Ok(self.worktree_read(rel)?.map(|bytes| TextStats::of(&bytes)))
     }
 
+    /// What is at `path`, an absolute, normalised path on the backend's machine, which may be
+    /// outside the worktree: a file (its bytes too when it is at most [`PROBE_READ_MAX`]), a
+    /// directory, a symbolic link (never followed: its target as written), or nothing. Read-only.
+    /// The language servers' resolvers read with it (PLAN §18.4): Node resolves packages above
+    /// the worktree root (a linked worktree inside the main checkout uses the checkout's
+    /// `node_modules`) and through links that leave it (pnpm's global store, `npm link`). A
+    /// relative or unnormalised path is [`BackendError::InvalidPath`]. The default refuses every
+    /// path; [`LocalBackend`] and the remote backend implement it.
+    fn probe_path(&self, path: &str) -> Result<PathProbe, BackendError> {
+        Err(BackendError::InvalidPath {
+            path: path.to_string(),
+            reason: "this backend reads only inside its worktree".into(),
+        })
+    }
+
     /// Appends `line` and a `\n` to a store file in one write, creating the file and its parent
     /// directories as needed. Concurrent appends from any number of threads and processes never
     /// interleave (PLAN D5). `line` may not contain `\n`.
@@ -167,6 +182,27 @@ impl GitVersion {
     pub fn at_least(&self, major: u32, minor: u32) -> bool {
         (self.major, self.minor) >= (major, minor)
     }
+}
+
+/// The largest file whose bytes [`Backend::probe_path`] returns: a `package.json`, never an
+/// executable.
+pub const PROBE_READ_MAX: u64 = 1024 * 1024;
+
+/// What [`Backend::probe_path`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathProbe {
+    Missing,
+    /// A file of `len` bytes; `contents` when it is at most [`PROBE_READ_MAX`].
+    File {
+        len: u64,
+        contents: Option<Vec<u8>>,
+    },
+    Dir,
+    /// A symbolic link (or a Windows junction): its target as the OS reads it, in the
+    /// machine's spelling, relative or absolute.
+    Link {
+        target: String,
+    },
 }
 
 /// What [`Backend::worktree_text_stats`] reports about a file, counted the way git counts for

@@ -60,7 +60,7 @@ step() {
 }
 
 # The crates that must never depend on gpui, even transitively (PLAN §4).
-headless_crates=(dv_core dv_backend dv_cli mock_gh dv_test_support)
+headless_crates=(dv_core dv_backend dv_cli dv_lsp mock_gh mock_lsp dv_test_support)
 
 step 1 "cargo fmt --all --check"
 cargo fmt --all --check
@@ -139,9 +139,9 @@ if [[ "$linux" -eq 1 ]]; then
     # real WSL through it (crates/dv_backend/tests/wsl.rs, `dv setup wsl`'s own check, and the
     # CLI run inside the distro: dv_cli's in-process crossing and crates/dv/tests/wsl_cli.rs).
     linux_tests=(
-        "cargo test -p dv_core -p dv_backend -p dv_cli -p dv_test_support -p mock_gh"
+        "cargo test -p dv_core -p dv_backend -p dv_cli -p dv_lsp -p dv_test_support -p mock_gh -p mock_lsp"
         "cargo test -p dv --no-default-features"
-        "cargo clippy -p dv_backend -p dv_cli -p dv --no-default-features --all-targets -- -D warnings"
+        "cargo clippy -p dv_backend -p dv_cli -p dv_lsp -p mock_lsp -p dv --no-default-features --all-targets -- -D warnings"
     )
     # Linux first: inside a WSL distro, interop puts wsl.exe on PATH too, and the tests belong
     # to the distro they run in. The hop through wsl.exe, and the real-WSL step, are Windows'.

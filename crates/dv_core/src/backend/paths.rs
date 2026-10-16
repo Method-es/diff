@@ -84,6 +84,58 @@ fn check_common(rel: &str) -> Result<(), BackendError> {
     Ok(())
 }
 
+/// An absolute path on this machine, after validation: [`super::Backend::probe_path`]'s
+/// argument. It must be normalised: no `.`, `..` or empty components, no NUL; on Windows a
+/// drive path (`C:\x`, `C:/x`) or a UNC one (`\\server\share\x`), with no `:` past the drive
+/// (an alternate data stream) and no `?` or `*` (a verbatim or device path).
+pub(crate) fn absolute_path(path: &str) -> Result<PathBuf, BackendError> {
+    if path.contains('\0') {
+        return Err(invalid(path, "contains NUL"));
+    }
+    let rest = if cfg!(windows) {
+        let bytes = path.as_bytes();
+        let drive = bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && matches!(bytes[2], b'\\' | b'/');
+        if drive {
+            &path[3..]
+        } else if let Some(unc) = path.strip_prefix(r"\\").or_else(|| path.strip_prefix("//")) {
+            let mut parts = unc.splitn(3, ['\\', '/']);
+            match (parts.next(), parts.next()) {
+                // `\\?\…` (verbatim) and `\\.\…` (a device) aren't shares.
+                (Some(server), Some(share))
+                    if [server, share].iter().all(|part| {
+                        !part.is_empty() && *part != "." && !part.contains([':', '?', '*'])
+                    }) => {}
+                _ => return Err(invalid(path, "a UNC path without a share")),
+            }
+            parts.next().unwrap_or("")
+        } else {
+            return Err(invalid(path, "not an absolute path"));
+        }
+    } else {
+        match path.strip_prefix('/') {
+            Some(rest) => rest,
+            None => return Err(invalid(path, "not an absolute path")),
+        }
+    };
+    if !rest.is_empty() {
+        let separators: &[char] = if cfg!(windows) { &['\\', '/'] } else { &['/'] };
+        for component in rest.split(separators) {
+            match component {
+                "" => return Err(invalid(path, "has an empty component")),
+                "." | ".." => return Err(invalid(path, "has a '.' or '..' component")),
+                _ if cfg!(windows) && component.contains([':', '?', '*']) => {
+                    return Err(invalid(path, "has ':', '?' or '*' in a component"));
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(PathBuf::from(path))
+}
+
 fn join(root: &Path, rel: &str) -> PathBuf {
     let mut path = root.to_path_buf();
     path.extend(rel.split('/'));
@@ -137,6 +189,51 @@ mod tests {
                     Err(BackendError::InvalidPath { .. })
                 ),
                 "{rel:?} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn absolute_paths_are_normalised() {
+        let (ok, bad): (Vec<&str>, Vec<&str>) = if cfg!(windows) {
+            (
+                vec![
+                    r"C:\",
+                    r"C:\x\y z",
+                    "D:/a/b",
+                    r"\\server\share",
+                    r"\\server\share\x",
+                ],
+                vec![
+                    "",
+                    "x",
+                    r"C:x",
+                    r"C:\a\..\b",
+                    r"C:\a\.\b",
+                    r"C:\a\\b",
+                    r"C:\a\",
+                    r"C:\a:s",
+                    r"\\?\C:\x",
+                    r"\\.\pipe\x",
+                    r"\\server",
+                    r"\\server\",
+                    "/x",
+                    "C:\\a\0b",
+                ],
+            )
+        } else {
+            (
+                vec!["/", "/home/kyle/x y", "/a/.hidden"],
+                vec!["", "x", "a/b", "/a/../b", "/a/./b", "/a//b", "/a/", "/a\0b"],
+            )
+        };
+        for path in ok {
+            assert!(absolute_path(path).is_ok(), "{path:?} should be taken");
+        }
+        for path in bad {
+            assert!(
+                matches!(absolute_path(path), Err(BackendError::InvalidPath { .. })),
+                "{path:?} should be refused"
             );
         }
     }

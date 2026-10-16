@@ -11,15 +11,15 @@
 use std::sync::{Arc, Weak};
 
 use dv_core::backend::{
-    Backend, BackendError, GitOpts, GitOutput, ProcessHandle, ProcessSink, ProcessSpec, RepoInfo,
-    TextStats, WatchHandle, WatchSink, WatchSpec,
+    Backend, BackendError, GitOpts, GitOutput, PathProbe, ProcessHandle, ProcessSink, ProcessSpec,
+    RepoInfo, TextStats, WatchHandle, WatchSink, WatchSpec,
 };
 use parking_lot::Mutex;
 use serde::de::DeserializeOwned;
 
 use super::Connection;
 use super::link::{CallError, Link};
-use crate::proto::{Bytes, Op, OpenReply, WireGitOutput};
+use crate::proto::{Bytes, Op, OpenReply, WireGitOutput, WirePathProbe};
 
 /// One worktree's `Backend` through a connection's servers. Its watches run on until their
 /// handles drop; the server forgets the worktree (`close`) once the backend and its watches
@@ -165,6 +165,14 @@ impl Backend for RemoteBackend {
             repo,
             rel: rel.to_string(),
         })
+    }
+
+    fn probe_path(&self, path: &str) -> Result<PathProbe, BackendError> {
+        let probe: WirePathProbe = self.call(|repo| Op::ProbePath {
+            repo,
+            path: path.to_string(),
+        })?;
+        Ok(probe.into())
     }
 
     fn store_append(&self, rel: &str, line: &[u8]) -> Result<(), BackendError> {

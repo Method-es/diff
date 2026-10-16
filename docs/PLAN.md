@@ -358,14 +358,16 @@ bringing dv to the front on the agent's working-tree review when the agent finis
 | `dv_core` | lib | Location, the `Backend` trait and `LocalBackend` (§5.1), Target and its labels, git runner, diff pipeline (§6), review events + fold (§7), anchors, relocation and placement (§8), GitHub via `gh` (§9) | **never** |
 | `dv_backend` | lib | The stdio protocol (§5), server loop, `Connection`s (launch, reconnect) and the `Connections` registry, `RemoteBackend` client, distro install | never |
 | `dv_cli` | lib | clap command tree, JSON output DTOs, setup/doctor checks, a WSL repository's commands run inside its distro (§10, §12) | never |
+| `dv_lsp` | lib | language servers where the repo lives: the LSP client, the language specs and their resolvers (§18.4) | never |
 | `dv_ui` | lib | views + services (§11) | yes |
 | `dv` | bin | entry: GUI (the `gui` feature), CLI and `dv backend --stdio`; on Windows also the console/GUI split; three shapes, one of them headless (§13.1) | with `gui` |
 | `gpui_automation` | lib + bin `e2e` | ported from the sibling app (§14) | yes |
 | `mock_gh` | bin | fake `gh` for tests (§14.2) | no |
+| `mock_lsp` | bin | a scripted language server for tests (§18.7) | no |
 | `dv_test_support` | lib (dev) | fixture repo builder, shared by every crate's tests | no |
 
-Direction: `dv` → `dv_ui` → {`dv_cli`, `dv_backend`, `dv_core`, `gpui-component`};
-`dv_cli` → {`dv_backend`, `dv_core`}; `dv_backend` → `dv_core`. A gpui import outside `dv_ui`, `dv`
+Direction: `dv` → `dv_ui` → {`dv_cli`, `dv_backend`, `dv_lsp`, `dv_core`, `gpui-component`};
+`dv_cli` → {`dv_backend`, `dv_core`}; `dv_lsp` → `dv_core`; `dv_backend` → `dv_core`. A gpui import outside `dv_ui`, `dv`
 and `gpui_automation`, or in `dv` built without `gui`, is a build failure (`script/check` verifies
 it with `cargo tree`, §13.2).
 
@@ -394,6 +396,7 @@ pub trait Backend: Send + Sync {
     fn worktree_read(&self, rel: &str) -> Result<Option<Vec<u8>>, BackendError>;
     fn worktree_len(&self, rel: &str) -> Result<Option<u64>, BackendError>;
     fn worktree_text_stats(&self, rel: &str) -> Result<Option<TextStats>, BackendError>; // size, lines, binary sniff (§6)
+    fn probe_path(&self, path: &str) -> Result<PathProbe, BackendError>; // an absolute path, read-only (§18.4)
     fn store_append(&self, rel: &str, line: &[u8]) -> Result<(), BackendError>;   // one write, O_APPEND (D5)
     fn store_read(&self, rel: &str) -> Result<Option<Vec<u8>>, BackendError>;
     fn store_list(&self, dir: &str) -> Result<Vec<String>, BackendError>;
@@ -414,6 +417,14 @@ of the index this way (§2.3), so the user's index is never written.
   backslashes (separators on Windows); store paths use only `[A-Za-z0-9._-]` components that don't
   start with `.`. Worktree reads see a file as git does: a symbolic link is never followed and
   reads as its target path, which is what git stores and diffs for a link.
+- **Outside the worktree**, one read-only op: `probe_path` takes an absolute, normalised path on
+  the backend's machine (no `.`, `..` or empty components; on Windows a drive or UNC path, no
+  verbatim or device prefix, no `:` past the drive) and says what is there: `Missing`, `Dir`,
+  `Link {target}` (never followed, the target as the OS reads it) or `File {len, contents}`, the
+  bytes only for a file of at most 1 MiB (`PROBE_READ_MAX`: a `package.json`, never an
+  executable). Only the language servers' resolvers use it (§18.4): Node resolves packages above
+  the worktree and through links that leave it. Nothing in dv writes outside the worktree's own
+  paths and `.git/dv` (§2.4).
 - **Git invocation policy** (`dv_core::git::command`, the only place a git process is built):
   `LC_ALL=C`, `--no-pager` and `GIT_PAGER=cat`, `GIT_TERMINAL_PROMPT=0`, `GIT_OPTIONAL_LOCKS=0`,
   `-c core.quotepath=off -c color.ui=never -c color.diff=never -c diff.algorithm=myers
@@ -455,7 +466,8 @@ serialise as JSON number arrays, never cross as they are; `RepoInfo`, `WatchSpec
   handle `repo` (`env` is the overlay: the loopback tests send the fixture's, the app none);
   `close {repo}` forgets it.
 - One op per `Backend` method, naming its `repo`: `git {args, opts}`, `worktree_read`,
-  `worktree_len`, `worktree_text_stats`, `store_append`, `store_read`, `store_list`,
+  `worktree_len`, `worktree_text_stats`, `probe_path {repo, path}` (→ `{kind: missing | dir |
+  link {target} | file {len, contents}}`, the contents base64), `store_append`, `store_read`, `store_list`,
   `store_write_atomic`, `store_remove`, `copy_index_to_store`; `watch {repo, spec}` →
   `{watch, worktree_error}`, whose batches the server holds back until that answer is out;
   `unwatch {watch}`.
@@ -1770,9 +1782,9 @@ Every gate runs locally through one script, `script/check` (bash; also used by a
    background mode; `--fast` skips this step. `--foreground` also runs `tests/e2e/foreground/`,
    the scenarios that must take the focus (screen captures of the window materials, §14.2)
 6. `--linux`: inside WSL Ubuntu with `CARGO_TARGET_DIR` on ext4, `cargo test -p dv_core -p
-   dv_backend -p dv_cli -p dv_test_support -p mock_gh`, `cargo test -p dv --no-default-features`
-   (the backend loopback tests among them) and `cargo clippy -p dv_backend -p dv_cli -p dv
-   --no-default-features --all-targets -- -D warnings`; then `script/build-linux`; then, on
+   dv_backend -p dv_cli -p dv_lsp -p dv_test_support -p mock_gh -p mock_lsp`, `cargo test -p dv
+   --no-default-features` (the backend loopback tests among them) and `cargo clippy -p dv_backend
+   -p dv_cli -p dv_lsp -p mock_lsp -p dv --no-default-features --all-targets -- -D warnings`; then `script/build-linux`; then, on
    Windows, the real WSL (`crates/dv_backend/tests/wsl.rs`, `dv setup wsl`'s check and the CLI
    run inside the distro, in-process and as the built `dv`, §14.2) with `DV_TEST_WSL_DISTRO=Ubuntu`
    and `DV_WSL_HOME` a fresh folder under the distro's `/tmp`, `--test-threads=1`. Run inside a
@@ -1830,7 +1842,8 @@ owner's live check (§14.3).
 - **Backend conformance** — one suite (`crates/dv_backend/tests/conformance/`) runs the same cases
   against `LocalBackend` and against `RemoteBackend` over a server on in-memory pipes
   (`Launcher::InProcess`): repo info, git (failures, timeouts, ok codes, stdin, an index file),
-  worktree reads (missing, links, binary, a 5 MB file), the store (concurrent appends, atomic
+  worktree reads (missing, links, binary, a 5 MB file), `probe_path` outside the worktree (a file
+with and without its bytes, a directory, a link, nothing, and the paths it refuses), the store (concurrent appends, atomic
   writes, the index copy), invalid paths, every error's `Display` and `detail()`, watches
   (worktree, store, git state; dropping the handle, the sink gone when `drop` returns and a sink
   in progress finishing first; from inside the sink too), and processes (§18.3), also against a
@@ -2217,10 +2230,56 @@ A new crate, **`dv_lsp`** (never gpui), holds:
   turned into the status bar's progress). It uses `lsp-types` 0.97, already in the tree through
   gpui-component. Positions are UTF-8 (`general.positionEncodings`); the client converts from
   UTF-16 for a server that offers only that.
+
+  `dv_lsp::LspClient::start` spawns the server through the review's backend, says `initialize`
+  and `initialized` (and `workspace/didChangeConfiguration` with the spec's settings), and
+  returns once the server is ready, within 30 s; it blocks, so the app calls it off the UI
+  thread. `processId` is `null`: the server may run in a distro, where dv's process id means
+  nothing and a server that watches its parent would end at once. The server's stdout is read on
+  its process's own thread (§18.3), where its own requests are answered at once:
+  `workspace/configuration` from the spec's settings by dotted section, `client/registerCapability`
+  recorded (its `workspace/didChangeWatchedFiles` globs kept, with `**`, `{a,b}` and relative
+  patterns, case-insensitive on Windows), `client/unregisterCapability`,
+  `window/workDoneProgress/create` and `workspace/workspaceFolders` (the root), anything else
+  `MethodNotFound`; `$/progress` keeps each token's title, message and percentage until its
+  `end`. Everything it sends goes through one writer thread, so no caller and not the process's
+  own thread ever waits on the server's stdin. A request (`hover`, `definition`, `references`,
+  each about an open document) returns a `Pending` whose `wait` blocks for the answer until its
+  timeout (§18.5), cancelling it then; dropping it unanswered sends `$/cancelRequest`, and an
+  answer that arrives after is dropped. Answers come back as worktree paths (a `file:` URI
+  inside the worktree; anything else, a library outside it or a server's bundled file, as the URI
+  and its path if it has one), UTF-8 ranges (a definition's link as its target's selection, the
+  symbol's name) and hover parts (Markdown, code in a language, plain text). Converting a UTF-16
+  server's columns reads each file's lines once: the open document's text, else the file through
+  the backend; a file outside the worktree keeps the server's columns. `open_document` keeps one
+  version of a path open (§18.2): the same text again does nothing, other text closes the old
+  version first. The client keeps the server's last 50 stderr lines and reports its status, its
+  progress and each stderr line as events. `stop` says `shutdown` and `exit` and kills the server
+  if it hasn't ended within 2 s of each, and returns how it ended; dropping the client kills it at
+  once, and ends it there and then (every request still waited on, on any thread, fails
+  `Exited` at once, the status event sent), since the process's own exit may never reach the
+  sink after the drop. The writer thread is detached, never joined: a write blocked on a backend
+  that stopped answering never holds up whoever drops the client. A server that ends by itself
+  is `Exited(code)`, a crash its owner restarts (§18.5); one that ends after `stop` asked, or
+  whose client was dropped, is `Stopped(code)`, with nothing to restart (TypeScript's `tsc`
+  exits 1 even after a proper `shutdown` and `exit`, so the code can't tell them apart).
+  A message whose params are `null` leaves `params` out: `tsc` refuses `shutdown` with `"params":
+  null` (`InvalidParams`) and ignores an `exit` that has any, so with them a stop never ends it
+  cleanly (checked 2026-10-17 against `tsc` 7.0.2). The framing reads a header part line by
+  line (a `\r` before each `\n` dropped) and finds `Content-Length` in any case wherever it is in
+  the part, so a stray print just before a header loses nothing; a part without a length is
+  dropped up to the next `Content-Length`, a body over 64 MiB is skipped, exactly its length,
+  with one error. A definition's or references' entry whose URI doesn't parse (an unencoded
+  space or backslash) is dropped and logged, never the whole answer; the URI is read as text
+  and decoded leniently, so an unencoded space still names its file. Lines are counted as LSP
+  counts them (`\r\n`, `\n` or a lone `\r`), each file's line index built once per answer.
 - **The languages.** A language server is data, `LanguageServerSpec`: its id and name, the
   documents it serves (language ids and extensions), when it applies to a project (root markers,
   a dependency), how its executable is found (resolvers, in order), its arguments, initialization
-  options and settings. Each spec is one module in `dv_lsp::languages`, registered in one list.
+  options and settings. Each spec is one module in `dv_lsp::languages`, registered in one list
+  (`languages::ALL`); a spec applies to a file it serves when one of its root markers is in the
+  file's directory or above it, up to the worktree root (`typescript`'s: `tsconfig.json`,
+  `jsconfig.json`, `package.json`).
   Adding a language is one module and its tests. Several servers can serve one file (a `.tsx`:
   TypeScript and Tailwind CSS). Hover cards stack their answers in the list's order; definition
   and references take the first server that answers with anything.
@@ -2235,13 +2294,44 @@ answer is the same wherever the repo lives:
    needed. Checked 2026-10-13 on the owner's bun monorepo, with TypeScript 7.0.2 in WSL:
    initialize took 0.09 s, the first hover 0.9 s (the project loading), definition was immediate,
    references took 0.05 s across the workspace, and the server offers UTF-8 positions.
+   `dv_lsp::resolve::node` resolves like Node through `Backend::probe_path` (§5.1), so it reads
+   the backend's machine read-only, outside the worktree too: from the file's directory up to
+   the filesystem's root (a linked worktree inside the main checkout, an agent's usual one, has
+   no `node_modules` of its own and uses the checkout's), and through links wherever they lead
+   (pnpm's global store, `npm link`). A path's real location is found a component at a time,
+   `..` included, at most 40 links deep, each path probed once per resolution. When nothing is
+   found the reason says where it looked ("no node_modules/typescript in /a/src, /a or /"); a
+   link dv can't read says so ("… leads to /x, which dv can't read: …"), never "isn't
+   installed". The native package is resolved from `typescript`'s real
+   directory, which in the pnpm and bun layouts finds the platform package's link beside it
+   (`node_modules/.bun/typescript@7.0.2/node_modules/@typescript/typescript-linux-x64`, checked
+   2026-10-17 on the same monorepo, where every workspace package's `node_modules/typescript`
+   links to the one copy). Its platform and CPU are the backend's (Node's names: `win32`,
+   `linux`, `darwin`; `x64`, `arm64`), the server's `hello` for a distro and this machine's for a
+   local repo: its native CPU, asked of the OS (`IsWow64Process2`, Rosetta's
+   `sysctl.proc_translated`, `uname`), then dv's own build's when dv runs emulated (an x64 dv on
+   ARM64 Windows tries `-arm64`, then `-x64`); its executable is `lib/tsc`, `lib/tsc.exe` on
+   Windows. A file whose package
+   resolves TypeScript 6 or older is missing ("needs typescript-language-server"); one whose
+   TypeScript lacks its platform package is missing with that said. The server serves the
+   worktree root, so files that resolve the same executable share one server.
 2. **Settings.** A command configured for that server (`settings.json`, `lsp.<id>.command`): an
-   argument list, never a shell string.
+   argument list, never a shell string. Its program is an absolute path where the repo lives (a
+   bare name waits for `PATH`, step 4, and is reported as missing until then);
+   `dv_lsp::LspSettings` reads the `lsp` object leniently, and the app passes it in.
 3. **PATH.** The executable on `PATH`. In a distro this is the login shell's `PATH`, read once
    per connection (`$SHELL -lc 'printf %s "$PATH"'`): the backend runs under `wsl.exe --exec`
    without the user's profile, and that profile is where bun, nvm and the like add their tools.
 4. **None.** The status bar names the missing server and how to get it (§18.5); so does the
    doctor (§12).
+
+**The override.** `DV_LSP_<ID>` (the spec's id upper case, `-` as `_`: `DV_LSP_TYPESCRIPT`)
+names an executable, an absolute path where the repo lives, that replaces every resolver, as
+`DV_GH` replaces `gh` (§14.2); `DV_LSP_<ID>_ARGS`, a JSON array of strings, replaces the spec's
+arguments. A relative program, or arguments that aren't such an array, make the server missing,
+saying which (`settings::OverrideError`). It still applies only where the
+spec does (its root markers). Tests and scenarios point it at `mock_lsp` (§18.7). `PATH` comes
+with the JavaScript servers in step 4.
 
 **JavaScript servers.** A server written in JavaScript (a spec marks it `runtime: js`) resolves
 to its package's entry script, the file its `bin` names, not to the `bin` shim, whose `#!/usr/bin/env
@@ -2267,13 +2357,22 @@ settings, `PATH` or bun's global folder. It is a spec like the others; its tests
 
 ### 18.5 Lifecycle
 
-- One server per worktree and spec. When a review opens, after its file list shows, dv starts in
+- One server per worktree, spec and executable (§18.4: two TypeScript 7 versions in one
+  monorepo run two). When a review opens, after its file list shows, dv starts in
   the background the servers whose specs apply to the review's files, so the first hover doesn't
   wait for a project load. A worktree's servers stop 5 minutes after its last review closes.
 - A file changed on disk is announced to servers that registered for it
   (`workspace/didChangeWatchedFiles`), from the backend's watch (§5.3).
 - A server that exits restarts after 1, 2 and 5 s, then shows as failed until **Retry**, like a
-  connection (§5.2). Requests in flight fail quietly: a hover just doesn't show.
+  connection (§5.2); one that ran a minute or more before it ended counts afresh
+  (`dv_lsp::Restarts`). Only `Exited` restarts; `Stopped` is a stop dv asked for (§18.4).
+  Requests in flight fail quietly: a hover just doesn't show.
+- What resolves is remembered per directory (`dv_lsp::Resolver`). The review's watch never
+  reports `node_modules` (git ignores it), so the app passes each batch's paths to
+  `Resolver::files_changed`, which forgets everything when one is a `package.json`, a lockfile
+  (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock`, …), `.npmrc`, a
+  `tsconfig.json` / `jsconfig.json` or anything under a `node_modules`, and resolves afresh
+  before each restart (`Resolver::resolve_fresh`), so an install between starts is seen.
 - A hover times out after 5 s, a definition after 10 s, references after 30 s.
 - The status bar names each server and its state: loading (with its progress), ready, failed (a
   click shows the command line, the last stderr lines and **Retry**), or missing (how to get it).
@@ -2297,24 +2396,46 @@ for hovering, clicking and dragging; they are recorded only while a capture is a
 
 ### 18.7 Testing
 
-- `dv_lsp`'s own tests use an in-process fake server: framing, cancellation, the encoding
-  conversion, server requests, restart.
+- `dv_lsp`'s own tests use an in-process fake server (a `ProcessHandle` over a thread): framing
+  (a message split at every byte, several in one chunk, a stray line), cancellation on drop and
+  on a timeout, a late answer dropped, an error answer, the encoding conversion (an open document
+  and a file read through the backend), one version of a path open, the server's requests, file
+  watchers, progress, a server that ends (while starting too), the stop, a server that ignores
+  `shutdown`; the restart schedule on its own.
 - **`mock_lsp`** (a bin, like `mock_gh`): a scripted server, a JSON scenario of the requests it
   expects and its answers. An override (`DV_LSP_<ID>`, like `DV_GH`) points a spec at it, so e2e
   scenarios cover hover, definition into the stream and into a file view, back, references, a
   server that crashes and restarts, and one that is missing, with no bun, Node or TypeScript on the
-  machine.
+  machine. The scenario is `--scenario <path>` or the file `DV_MOCK_LSP` names (other arguments,
+  `--lsp --stdio`, are ignored): `capabilities` for `initialize` (UTF-8 and hover, definition and
+  references by default), `stderr` lines printed at start, `on_initialized` actions (a
+  notification, a request of its own, a delay), and `requests`, each a method, `params` matched
+  as a subset (strings with `*`), a `result` or an `error`, a `delay_ms`, `times` and `send`
+  actions; an unmatched request answers `null`, and a request cancelled during its delay answers
+  `RequestCancelled`. `crash` exits on the n-th request without answering it, at most `times`
+  times over the log, so a restarted server works. Every message it reads, each start and each
+  crash are appended to the log (`--log` or `DV_MOCK_LSP_LOG`) as JSON lines. `${root}` in an
+  answer stands for `initialize`'s `rootUri`, so a scenario names the fixture's files;
+  `initialize_delay_ms` slows `initialize`; `crash.after_requests: 0` dies at start. Like `tsc`
+  it refuses `shutdown` with params (even `null`) and ignores an `exit` that has any, so a client
+  that sends them fails its tests. Its own tests drive it with `dv_lsp`'s client through
+  `LocalBackend::spawn_stdio`.
 - Resolver tests run on fixture trees with the npm, pnpm and bun layouts (symlinks, `.bun/`), on
-  Windows and in WSL.
+  Windows and in WSL, through `LocalBackend` and through `RemoteBackend` over an in-process
+  server, with packages above the worktree root, a link into a store outside it, a link dv can't
+  read, an emulated CPU's fallback and an install seen after `files_changed`; where the OS won't
+  make a symbolic link (Windows without developer mode) a test says so and passes.
 - `spawn_stdio` is tested by the conformance suite (§14.2) against `LocalBackend` and over the
   loopback, in-process and as a child process: output, stdin, kill, exit, what a process started
   dying with it, the server's stdin ending, and the idle-close accounting; `backend_loopback`
   runs one through the built `dv backend --stdio`. The real-WSL tests spawn processes in the
   sandboxed home (`/usr/bin/cat`, `ls`, `env`, `sleep`: the distro's own programs).
 - **A real TypeScript check**, opt-in: with `DV_TEST_TSC` naming a TypeScript 7 native `tsc`, a
-  fixture project gets hover, definition and references from the real server. It is read-only
-  and local, so `script/check` runs it whenever the variable is set; it is not an owner-only live
-  check.
+  fixture project gets hover, definition and references from the real server
+  (`crates/dv_lsp/tests/real_tsc.rs`). It is read-only and local, so `script/check` runs it
+  whenever the variable is set; it is not an owner-only live check. Checked 2026-10-17 in WSL
+  Ubuntu against the owner's TypeScript 7.0.2: the whole test took about 0.1 s, ending with a clean
+  `stop` (`Stopped`, within the grace period, nothing killed).
 
 ### 18.8 Order within phase 5
 

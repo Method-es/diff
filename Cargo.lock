@@ -1686,6 +1686,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "dv_lsp"
+version = "0.1.0"
+dependencies = [
+ "dv_backend",
+ "dv_core",
+ "dv_test_support",
+ "globset",
+ "libc",
+ "log",
+ "lsp-types",
+ "parking_lot",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "dv_test_support"
 version = "0.1.0"
 dependencies = [
@@ -4338,6 +4357,20 @@ name = "mock_gh"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "mock_lsp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dv_core",
+ "dv_lsp",
+ "dv_test_support",
  "pretty_assertions",
  "serde",
  "serde_json",

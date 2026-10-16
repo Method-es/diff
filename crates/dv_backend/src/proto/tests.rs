@@ -96,6 +96,10 @@ fn every_op_round_trips_and_names_itself() {
             repo: 1,
             rel: "a.txt".into(),
         },
+        Op::ProbePath {
+            repo: 1,
+            path: "/home/kyle/node_modules/typescript".into(),
+        },
         Op::StoreAppend {
             repo: 1,
             rel: "reviews/r.jsonl".into(),

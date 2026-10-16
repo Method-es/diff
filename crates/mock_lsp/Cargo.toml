@@ -1,0 +1,25 @@
+[package]
+name = "mock_lsp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "A scripted language server for dv's tests (docs/PLAN.md §18.7)"
+
+# gpui: never, not even transitively (`script/check` step 3).
+[[bin]]
+name = "mock_lsp"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# Its own tests drive it with dv's LSP client, through `LocalBackend::spawn_stdio`.
+dv_core.workspace = true
+dv_lsp.workspace = true
+dv_test_support.workspace = true
+pretty_assertions.workspace = true
+tempfile.workspace = true

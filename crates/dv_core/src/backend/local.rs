@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 
 use super::paths::{self, STORE_TEMP_PREFIX};
 use super::{
-    Backend, BackendError, GitOpts, GitOutput, GitVersion, ProcessHandle, ProcessSink, ProcessSpec,
-    RepoInfo, TextStats, TextStatsCounter, WatchHandle, WatchSink, WatchSpec,
+    Backend, BackendError, GitOpts, GitOutput, GitVersion, PROBE_READ_MAX, PathProbe,
+    ProcessHandle, ProcessSink, ProcessSpec, RepoInfo, TextStats, TextStatsCounter, WatchHandle,
+    WatchSink, WatchSpec,
 };
 use crate::git::{ObjectFormat, command};
 use crate::location::Location;
@@ -230,6 +231,36 @@ impl Backend for LocalBackend {
             }
         }
         Ok(Some(counter.finish()))
+    }
+
+    fn probe_path(&self, path: &str) -> Result<PathProbe, BackendError> {
+        let path = paths::absolute_path(path)?;
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(err) if is_missing(&err) => return Ok(PathProbe::Missing),
+            Err(err) => return Err(BackendError::io("probing", &path, err)),
+        };
+        if metadata.file_type().is_symlink() {
+            let target =
+                fs::read_link(&path).map_err(|err| BackendError::io("reading", &path, err))?;
+            return Ok(PathProbe::Link {
+                target: target.to_string_lossy().into_owned(),
+            });
+        }
+        if metadata.is_dir() {
+            return Ok(PathProbe::Dir);
+        }
+        let len = metadata.len();
+        let contents = if len <= PROBE_READ_MAX {
+            match fs::read(&path) {
+                Ok(bytes) => Some(bytes),
+                Err(err) if is_missing(&err) => return Ok(PathProbe::Missing),
+                Err(err) => return Err(BackendError::io("reading", &path, err)),
+            }
+        } else {
+            None
+        };
+        Ok(PathProbe::File { len, contents })
     }
 
     fn store_append(&self, rel: &str, line: &[u8]) -> Result<(), BackendError> {

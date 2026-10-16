@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Barrier};
 
-use dv_core::backend::{BackendError, TextStats};
+use dv_core::backend::{BackendError, PROBE_READ_MAX, PathProbe, TextStats};
 use dv_test_support::FixtureRepo;
 use pretty_assertions::assert_eq;
 
@@ -15,6 +15,7 @@ crate::conformance!(
     binary_files_keep_every_byte,
     text_stats_count_like_git,
     symbolic_links_read_as_their_targets,
+    absolute_paths_probe_outside_the_worktree,
     store_files_read_list_replace_and_remove,
     appends_from_two_threads_never_interleave,
     the_index_copies_into_the_store,
@@ -188,6 +189,77 @@ fn symbolic_links_read_as_their_targets(subject: &Subject) {
             }),
             "{path}"
         );
+    }
+}
+
+fn absolute_paths_probe_outside_the_worktree(subject: &Subject) {
+    let repo = committed();
+    let outside = repo.outside_dir("store");
+    std::fs::create_dir_all(outside.join("sub")).unwrap();
+    std::fs::write(outside.join("package.json"), br#"{"version": "7.0.2"}"#).unwrap();
+    let big = vec![b'x'; PROBE_READ_MAX as usize + 1];
+    std::fs::write(outside.join("big.bin"), &big).unwrap();
+    let backend = subject.open(&repo);
+    let at = |name: &str| outside.join(name).to_str().unwrap().to_string();
+    assert_eq!(
+        backend.probe_path(outside.to_str().unwrap()).unwrap(),
+        PathProbe::Dir
+    );
+    assert_eq!(
+        backend.probe_path(&at("package.json")).unwrap(),
+        PathProbe::File {
+            len: 20,
+            contents: Some(br#"{"version": "7.0.2"}"#.to_vec())
+        }
+    );
+    assert_eq!(
+        backend.probe_path(&at("big.bin")).unwrap(),
+        PathProbe::File {
+            len: big.len() as u64,
+            contents: None
+        }
+    );
+    assert_eq!(
+        backend.probe_path(&at("missing")).unwrap(),
+        PathProbe::Missing
+    );
+    assert_eq!(
+        backend.probe_path(&at("package.json/below")).unwrap(),
+        PathProbe::Missing
+    );
+    // The worktree itself is a path like any other.
+    assert_eq!(
+        backend.probe_path(&backend.repo().toplevel).unwrap(),
+        PathProbe::Dir
+    );
+    let separator = std::path::MAIN_SEPARATOR;
+    for bad in [
+        "relative/x".to_string(),
+        format!("{}{separator}..{separator}x", outside.to_str().unwrap()),
+        format!("{}{separator}", outside.to_str().unwrap()),
+        String::new(),
+    ] {
+        assert!(
+            matches!(
+                backend.probe_path(&bad),
+                Err(BackendError::InvalidPath { .. })
+            ),
+            "{bad:?} should be refused"
+        );
+    }
+    let link = outside.join("link");
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink("sub", &link);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_dir("sub", &link);
+    match made {
+        Ok(()) => assert_eq!(
+            backend.probe_path(link.to_str().unwrap()).unwrap(),
+            PathProbe::Link {
+                target: "sub".into()
+            }
+        ),
+        Err(error) => eprintln!("skipped the link: this machine can't make one ({error})"),
     }
 }
 

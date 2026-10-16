@@ -29,7 +29,7 @@ use std::borrow::Cow;
 use std::io;
 
 use dv_core::backend::{
-    BackendError, GitOpts, GitOutput, ProcessSpec, RepoInfo, WatchEvent, WatchSpec,
+    BackendError, GitOpts, GitOutput, PathProbe, ProcessSpec, RepoInfo, WatchEvent, WatchSpec,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -83,6 +83,8 @@ pub enum Op {
     WorktreeLen { repo: u32, rel: String },
     /// `Backend::worktree_text_stats`: `Option<TextStats>`.
     WorktreeTextStats { repo: u32, rel: String },
+    /// `Backend::probe_path`: a [`WirePathProbe`].
+    ProbePath { repo: u32, path: String },
     /// `Backend::store_append`: `null`.
     StoreAppend {
         repo: u32,
@@ -138,6 +140,7 @@ impl Op {
             Op::WorktreeRead { .. } => "worktree_read",
             Op::WorktreeLen { .. } => "worktree_len",
             Op::WorktreeTextStats { .. } => "worktree_text_stats",
+            Op::ProbePath { .. } => "probe_path",
             Op::StoreAppend { .. } => "store_append",
             Op::StoreRead { .. } => "store_read",
             Op::StoreList { .. } => "store_list",
@@ -184,6 +187,50 @@ pub struct OpenReply {
 pub struct WatchReply {
     pub watch: u32,
     pub worktree_error: Option<String>,
+}
+
+/// `probe_path`'s answer: a `PathProbe`, a file's bytes base64.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WirePathProbe {
+    Missing,
+    File {
+        len: u64,
+        #[serde(default)]
+        contents: Option<Bytes>,
+    },
+    Dir,
+    Link {
+        target: String,
+    },
+}
+
+impl From<PathProbe> for WirePathProbe {
+    fn from(probe: PathProbe) -> Self {
+        match probe {
+            PathProbe::Missing => Self::Missing,
+            PathProbe::File { len, contents } => Self::File {
+                len,
+                contents: contents.map(Bytes),
+            },
+            PathProbe::Dir => Self::Dir,
+            PathProbe::Link { target } => Self::Link { target },
+        }
+    }
+}
+
+impl From<WirePathProbe> for PathProbe {
+    fn from(probe: WirePathProbe) -> Self {
+        match probe {
+            WirePathProbe::Missing => Self::Missing,
+            WirePathProbe::File { len, contents } => Self::File {
+                len,
+                contents: contents.map(|bytes| bytes.0),
+            },
+            WirePathProbe::Dir => Self::Dir,
+            WirePathProbe::Link { target } => Self::Link { target },
+        }
+    }
 }
 
 /// `spawn`'s answer: the id its output lines carry, and the process's id where it runs.
