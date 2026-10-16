@@ -1,0 +1,40 @@
+{"scenario": {"window_size": "1440x900", "lsp": {"typescript": "fixtures/lsp/review_intel_stacked_ts.json", "tailwindcss": "fixtures/lsp/review_intel_stacked_tw.json"}, "description": "Several servers on one file and hovers in class strings (PLAN §18.1, §18.4, DESIGN §4.1): a .tsx in a Tailwind v4 project gets TypeScript and Tailwind CSS, both started with the review; the pointer on the 500 of bg-red-500 asks both at that character, TypeScript says nothing inside a string (as tsc does) and Tailwind's card spans the class (its range), so moving onto `red` keeps it without asking again; on `className` both answer (Tailwind's answer there is the mock's, to stack two) and the card stacks them in the registry's order, labelled; `title` only TypeScript answers; on rounded-lg Tailwind answers at once and TypeScript is slow, and leaving the class cancels TypeScript's request ($/cancelRequest in the log); screenshots of the class card, the stacked card (dark, light) and the single one."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "settle"}
+{"cmd": "seed_repo", "name": "web", "steps": [{"write": "package.json", "text": "{\"name\": \"web\", \"devDependencies\": {\"typescript\": \"^7\", \"tailwindcss\": \"^4\"}}\n"}, {"write": "tsconfig.json", "text": "{}\n"}, {"write": "src/app.css", "text": "@import \"tailwindcss\";\n"}, {"write": "src/Card.tsx", "text": "export function Card({ title }: { title: string }) {\n  return <div className=\"rounded-lg p-2\">{title}</div>;\n}\n"}, {"commit": "base"}, {"write": "src/Card.tsx", "text": "export function Card({ title }: { title: string }) {\n  return <div className=\"rounded-lg bg-red-500 p-4\">{title}</div>;\n}\n"}]}
+{"cmd": "open_review", "path": "${data_dir}/repos/web"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/servers", "len": 2}, {"pointer": "/intel/servers/0/id", "equals": "typescript"}, {"pointer": "/intel/servers/0/state", "equals": "ready"}, {"pointer": "/intel/servers/1/id", "equals": "tailwindcss"}, {"pointer": "/intel/servers/1/state", "equals": "ready"}, {"pointer": "/intel/missing", "len": 0}]}
+// The 5 of bg-red-500: asked at that character; Tailwind's range is the whole class.
+{"cmd": "mouse_move", "target": "code/src/Card.tsx/new/2/44"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/hover/open", "equals": true}, {"pointer": "/intel/hover/offset", "equals": 43}, {"pointer": "/intel/hover/span", "equals": [36, 46]}, {"pointer": "/intel/hover/sections", "len": 1}, {"pointer": "/intel/hover/sections/0/server", "equals": "tailwindcss"}, {"pointer": "/intel/hover/text", "contains": "background-color: var(--color-red-500)"}]}
+{"cmd": "screenshot", "name": "class"}
+// Onto `red` of the same class: the same card, nothing asked again.
+{"cmd": "mouse_move", "target": "code/src/Card.tsx/new/2/40"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/hover/open", "equals": true}, {"pointer": "/intel/hover/offset", "equals": 43}]}
+{"cmd": "mouse_move", "target": "stream/line/src/Card.tsx/old/3"}
+{"cmd": "settle", "expect": {"pointer": "/intel/hover", "equals": null}}
+// className: both answer, Tailwind 300 ms later; the card stacks them in order.
+{"cmd": "mouse_move", "target": "code/src/Card.tsx/new/2/15"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/hover/open", "equals": true}, {"pointer": "/intel/hover/symbol", "equals": "className"}, {"pointer": "/intel/hover/sections", "len": 2}, {"pointer": "/intel/hover/sections/0/server", "equals": "typescript"}, {"pointer": "/intel/hover/sections/0/text", "contains": "className?: string"}, {"pointer": "/intel/hover/sections/1/server", "equals": "tailwindcss"}]}
+{"cmd": "query", "prefix": "hover/section/", "expect_result": {"pointer": "", "len": 2}}
+{"cmd": "screenshot", "name": "stacked-dark"}
+{"cmd": "set_setting", "key": "mode", "value": "light"}
+{"cmd": "settle", "expect": {"pointer": "/intel/hover/sections", "len": 2}}
+{"cmd": "screenshot", "name": "stacked-light"}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "mouse_move", "target": "stream/line/src/Card.tsx/old/3"}
+{"cmd": "settle", "expect": {"pointer": "/intel/hover", "equals": null}}
+// {title}: only TypeScript answers, alone and unlabelled.
+{"cmd": "mouse_move", "target": "code/src/Card.tsx/new/2/54"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/hover/open", "equals": true}, {"pointer": "/intel/hover/symbol", "equals": "title"}, {"pointer": "/intel/hover/sections", "len": 1}, {"pointer": "/intel/hover/sections/0/server", "equals": "typescript"}, {"pointer": "/intel/hover/text", "equals": "```typescript\n(parameter) title: string\n```"}]}
+{"cmd": "screenshot", "name": "single"}
+{"cmd": "mouse_move", "target": "stream/line/src/Card.tsx/old/3"}
+{"cmd": "settle", "expect": {"pointer": "/intel/hover", "equals": null}}
+// rounded-lg: Tailwind at once, TypeScript slow; leaving it cancels TypeScript's request.
+{"cmd": "mouse_move", "target": "code/src/Card.tsx/new/2/28"}
+{"cmd": "wait_for", "pointer": "/intel/hover/sections/0/server", "equals": "tailwindcss", "timeout_ms": 3000}
+{"cmd": "mouse_move", "target": "stream/line/src/Card.tsx/old/3"}
+{"cmd": "wait_for", "pointer": "/intel/hover", "equals": null, "timeout_ms": 3000}
+{"cmd": "settle"}
+{"lsp_log": {}, "expect_result": [{"pointer": "", "contains": {"received": {"method": "textDocument/hover", "params": {"position": {"line": 1, "character": 43}}}}}, {"pointer": "", "contains": {"received": {"method": "$/cancelRequest"}}}, {"pointer": "", "contains": {"received": {"method": "textDocument/didOpen", "params": {"textDocument": {"languageId": "typescriptreact"}}}}}]}

@@ -62,6 +62,7 @@ fn hover_definition_and_references_from_tsc() {
         args: spec.args.iter().map(|arg| arg.to_string()).collect(),
         root: String::new(),
         source: CommandSource::Override("DV_TEST_TSC".into()),
+        env: Vec::new(),
     };
     let generous = Duration::from_secs(60);
     let client = LspClient::start(

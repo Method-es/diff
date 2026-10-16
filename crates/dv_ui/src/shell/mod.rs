@@ -334,6 +334,9 @@ impl Shell {
                     if let Some(session) = &this.session {
                         session.update(cx, |session, cx| session.window_activated(cx));
                     }
+                    if let Some(intel) = this.intel().cloned() {
+                        intel.update(cx, |intel, cx| intel.window_activated(cx));
+                    }
                 }
             }),
             // The panel's width lives in the settings.

@@ -587,7 +587,13 @@ pub fn intel(shell: &Shell, cx: &App) -> Value {
             "side": side(card.at.side),
             "line": card.at.line,
             "symbol": card.at.name,
+            "offset": card.at.offset,
+            "span": [card.span.start, card.span.end],
             "text": card.text(),
+            "sections": card.sections.iter().map(|section| json!({
+                "server": section.spec_id,
+                "text": section.text(),
+            })).collect::<Vec<_>>(),
             "against_worktree": card.against_worktree,
         }),
         None => match intel.hovering() {
@@ -642,6 +648,7 @@ pub fn intel(shell: &Shell, cx: &App) -> Value {
             dv_ui::shell::intel::PanelTab::References => "references",
         },
         "notice": intel.notice().map(|notice| notice.message.clone()),
+        "rechecks": intel.rechecks(cx),
     })
 }
 

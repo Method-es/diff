@@ -17,6 +17,13 @@ use crate::languages::typescript;
 const LINUX: (&str, &str) = ("linux", "x86_64");
 const NATIVE: &str = "@typescript/typescript-linux-x64";
 
+/// An absolute path as this machine spells it (settings' programs are this machine's).
+const OPT_TSC: &str = if cfg!(windows) {
+    r"C:\opt\ts\tsc.exe"
+} else {
+    "/opt/ts/tsc"
+};
+
 fn local(repo: &FixtureRepo) -> Arc<dyn Backend> {
     Arc::new(
         LocalBackend::open_with(
@@ -38,8 +45,12 @@ fn remote(repo: &FixtureRepo) -> Arc<dyn Backend> {
     )
 }
 
+/// A resolver on Linux that knows no `PATH` (the JavaScript cases give theirs).
 fn resolver(backend: Arc<dyn Backend>, settings: LspSettings) -> Resolver {
-    Resolver::new(backend, Platform::new(LINUX.0, LINUX.1), settings).with_env(|_| None)
+    let style = WorkspacePaths::new(&backend.repo().toplevel).style();
+    Resolver::new(backend, Platform::new(LINUX.0, LINUX.1), settings)
+        .with_env(|_| None)
+        .with_host(HostEnv::unknown(style))
 }
 
 /// A symbolic link to a directory at `at` (worktree-relative) pointing at `target` as written;
@@ -111,6 +122,7 @@ fn expect_project(resolver: &Resolver, rel: &str, executable: &str) {
             args: vec!["--lsp".into(), "--stdio".into()],
             root: String::new(),
             source: CommandSource::Project("7.0.2".into()),
+            env: Vec::new(),
         }
     );
 }
@@ -144,7 +156,8 @@ fn windows_runs_tsc_exe_from_the_win32_package() {
         Platform::new("windows", "aarch64"),
         LspSettings::default(),
     )
-    .with_env(|_| None);
+    .with_env(|_| None)
+    .with_host(HostEnv::unknown(crate::paths::PathStyle::Posix));
     let command = found(&resolver, "src/a.ts");
     assert_eq!(
         command.program,
@@ -444,28 +457,40 @@ fn a_project_without_typescript_falls_back_to_settings() {
         backend.clone(),
         LspSettings::default().with_command(
             "typescript",
-            vec!["/opt/ts/tsc".into(), "--lsp".into(), "--stdio".into()],
+            vec![OPT_TSC.into(), "--lsp".into(), "--stdio".into()],
         ),
     );
     assert_eq!(
         found(&configured, "src/a.ts"),
         ServerCommand {
             spec_id: "typescript",
-            program: "/opt/ts/tsc".into(),
+            program: OPT_TSC.into(),
             args: vec!["--lsp".into(), "--stdio".into()],
             root: String::new(),
             source: CommandSource::Settings,
+            env: Vec::new(),
         }
     );
 
-    let bare = resolver(
-        backend,
-        LspSettings::default().with_command("typescript", vec!["tsc".into()]),
-    );
+    // A bare name is looked up on PATH.
+    let settings = LspSettings::default().with_command("typescript", vec!["tsc".into()]);
+    let style = none.paths().style();
+    let bare = resolver(backend.clone(), settings.clone()).with_host(HostEnv::unknown(style));
     assert_eq!(
         missing(&bare, "src/a.ts").reason,
-        "lsp.typescript.command names tsc, which isn't an absolute path"
+        "lsp.typescript.command names tsc, which isn't on PATH (unknown)"
     );
+    let bin = repo.outside_dir("bin");
+    let tsc = bin.join(if cfg!(windows) { "tsc.exe" } else { "tsc" });
+    std::fs::write(&tsc, b"MZ").unwrap();
+    let on_path = resolver(backend, settings).with_host(HostEnv::new(
+        style,
+        Some(&spelled(&bin)),
+        None,
+        None,
+        PathFrom::Process,
+    ));
+    assert_eq!(found(&on_path, "src/a.ts").program, spelled(&tsc));
 }
 
 #[test]
@@ -480,7 +505,8 @@ fn an_emulated_dv_tries_the_native_cpu_first_then_its_own() {
         Platform::new("linux", "aarch64").with_fallback_arch("x86_64"),
         LspSettings::default(),
     )
-    .with_env(|_| None);
+    .with_env(|_| None)
+    .with_host(HostEnv::unknown(crate::paths::PathStyle::Posix));
     expect_project(
         &resolver,
         "src/a.ts",
@@ -492,7 +518,8 @@ fn an_emulated_dv_tries_the_native_cpu_first_then_its_own() {
         Platform::new("linux", "aarch64"),
         LspSettings::default(),
     )
-    .with_env(|_| None);
+    .with_env(|_| None)
+    .with_host(HostEnv::unknown(crate::paths::PathStyle::Posix));
     assert_eq!(
         missing(&arm_only, "src/a.ts").reason,
         "TypeScript 7.0.2 is installed without @typescript/typescript-linux-arm64, its server for \
@@ -630,6 +657,7 @@ fn the_override_replaces_the_resolvers() {
             args: vec!["--scenario".into(), "/tmp/s.json".into()],
             root: String::new(),
             source: CommandSource::Override("DV_LSP_TYPESCRIPT".into()),
+            env: Vec::new(),
         }
     );
 }
@@ -671,3 +699,4 @@ fn ancestors_end_at_the_root() {
     assert_eq!(node::major_version("v6"), Some(6));
     assert_eq!(node::major_version("next"), None);
 }
+mod js;

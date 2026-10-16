@@ -13,7 +13,8 @@ use parking_lot::Mutex;
 #[derive(Default)]
 struct Shared {
     abandoned: AtomicBool,
-    canceller: Mutex<Option<Canceller>>,
+    /// Every request sent for it: a definition asks several servers at once.
+    cancellers: Mutex<Vec<Canceller>>,
 }
 
 /// The background thread's side: it hands over each request it sends ([`Arming::arm`]).
@@ -24,11 +25,11 @@ impl Arming {
     /// Makes `pending` cancellable from the UI; `false` when the UI has abandoned the request
     /// already (the caller then drops `pending`, which cancels it).
     pub fn arm<T>(&self, pending: &Pending<T>) -> bool {
-        let mut slot = self.0.canceller.lock();
+        let mut slot = self.0.cancellers.lock();
         if self.0.abandoned.load(Ordering::SeqCst) {
             return false;
         }
-        *slot = pending.canceller();
+        slot.extend(pending.canceller());
         true
     }
 
@@ -73,12 +74,12 @@ impl InFlight {
 impl Drop for InFlight {
     fn drop(&mut self) {
         // Under the lock, so a request being armed now sees the flag or is cancelled here.
-        let canceller = {
-            let mut slot = self.shared.canceller.lock();
+        let cancellers = {
+            let mut slot = self.shared.cancellers.lock();
             self.shared.abandoned.store(true, Ordering::SeqCst);
-            slot.take()
+            std::mem::take(&mut *slot)
         };
-        if let Some(canceller) = canceller {
+        for canceller in cancellers {
             canceller.cancel();
         }
     }

@@ -5,10 +5,13 @@
 //!   repository lives (inside the distro for a WSL repository, PLAN §18.3), with hover, go to
 //!   definition and find references in UTF-8 columns and worktree paths.
 //! - [`spec`] and [`languages`]: [`LanguageServerSpec`], a server as data, and the registry of
-//!   them ([`languages::ALL`]); [`languages::typescript`] is TypeScript 7's native `tsc`.
+//!   them ([`languages::ALL`]): [`languages::typescript`] is TypeScript 7's native `tsc`,
+//!   [`languages::tailwindcss`] and [`languages::css`] JavaScript servers.
 //! - [`resolve`]: the [`Resolver`] that finds a spec's server for a file, through the
 //!   `DV_LSP_<ID>` override ([`settings::Override`]), the project's own copy (Node's resolution,
-//!   [`resolve::node`]) and `settings.json`'s `lsp.<id>.command` ([`LspSettings`]).
+//!   [`resolve::node`]), `settings.json`'s `lsp.<id>.command` ([`LspSettings`]), `PATH`
+//!   ([`resolve::host`]; a distro's from its user's shell, [`resolve::shell`]) and bun's global
+//!   folder; a JavaScript server's entry script runs with bun or node ([`resolve::js`]).
 //! - [`restarts`]: when a server that ended starts again (PLAN §18.5).
 //! - [`framing`], [`paths`], [`text`]: the base protocol's framing, a worktree's paths and
 //!   URIs, positions and their encodings.
@@ -31,7 +34,9 @@ pub use client::{
     RequestError, ServerConfig, ServerStatus, StartError, SymbolLocation, Timeouts,
 };
 pub use paths::{UriTarget, WorkspacePaths};
-pub use resolve::{CommandSource, Missing, Platform, Resolution, Resolver, ServerCommand};
+pub use resolve::{
+    CommandSource, HostEnv, Missing, PathFrom, Platform, Resolution, Resolver, ServerCommand,
+};
 pub use restarts::Restarts;
 pub use settings::{LspSettings, Override};
 pub use spec::LanguageServerSpec;

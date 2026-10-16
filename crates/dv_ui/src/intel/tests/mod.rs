@@ -25,6 +25,8 @@ use crate::services::reviews::OpenRequest;
 use crate::shell::Shell;
 use crate::test_support::{add_repo, open_shell, settle};
 
+mod stacked;
+
 /// What the fake server answers: a message in, `Some(result)` to answer a request with.
 type Answer = Arc<dyn Fn(&Value) -> Option<Value> + Send + Sync>;
 
@@ -35,6 +37,9 @@ struct Fakes {
     /// Ends the running server as a crash would.
     crash: Arc<Mutex<Option<Sender<Input>>>>,
     starts: Arc<Mutex<usize>>,
+    /// What `initialize` answers as its capabilities, when not hover, definition and
+    /// references.
+    capabilities: Arc<Mutex<Option<Value>>>,
 }
 
 impl Fakes {
@@ -87,6 +92,10 @@ fn spawn_fake(sink: ProcessSink, answer: Answer, fakes: &Fakes) -> ProcessHandle
     *fakes.crash.lock() = Some(input.clone());
     *fakes.starts.lock() += 1;
     let received = fakes.received.clone();
+    let capabilities = fakes.capabilities.lock().clone().unwrap_or_else(|| {
+        json!({"positionEncoding": "utf-8", "hoverProvider": true,
+            "definitionProvider": true, "referencesProvider": true})
+    });
     std::thread::spawn(move || {
         let mut sink = sink;
         let mut decoder = Decoder::new();
@@ -105,9 +114,8 @@ fn spawn_fake(sink: ProcessSink, answer: Answer, fakes: &Fakes) -> ProcessHandle
                         match message["method"].as_str() {
                             Some("initialize") => send(
                                 &mut sink,
-                                json!({"jsonrpc": "2.0", "id": id, "result": {"capabilities": {
-                                    "positionEncoding": "utf-8", "hoverProvider": true,
-                                    "definitionProvider": true, "referencesProvider": true}}}),
+                                json!({"jsonrpc": "2.0", "id": id, "result": {
+                                    "capabilities": capabilities.clone()}}),
                             ),
                             Some("shutdown") => send(
                                 &mut sink,
@@ -216,8 +224,24 @@ fn open_target<'a>(
     &'a mut VisualTestContext,
     Fakes,
 ) {
+    open_with(repo, target, cx, move |cx| use_fake(answer, cx))
+}
+
+/// Opens `target` of `repo` in a shell whose language servers `make` sets up first; what it
+/// made.
+fn open_with<'a, F>(
+    repo: &FixtureRepo,
+    target: Target,
+    cx: &'a mut TestAppContext,
+    make: impl FnOnce(&mut VisualTestContext) -> F,
+) -> (
+    tempfile::TempDir,
+    Entity<Shell>,
+    &'a mut VisualTestContext,
+    F,
+) {
     let (dir, shell, cx) = open_shell(cx);
-    let fakes = use_fake(answer, cx);
+    let fakes = make(cx);
     add_repo(repo, &shell, cx);
     let task = cx.update(|window, cx| {
         shell.update(cx, |shell, cx| {
@@ -282,6 +306,7 @@ fn symbol(
                 line,
                 range: start..start + name.len(),
                 name: name.to_string(),
+                offset: start,
             },
             diff,
         )

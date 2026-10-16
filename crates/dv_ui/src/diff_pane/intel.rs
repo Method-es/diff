@@ -1,10 +1,12 @@
 //! The stream's and the file view's side of code intelligence (PLAN §18.1, `crate::intel`):
 //! which symbol the pointer rests on or the caret is at, and the hover card under it.
 //!
-//! **Hover.** The pointer resting [`HOVER_DELAY`] on an identifier in a line's code (found
-//! through the lines' painted geometry, `select`) asks the review's [`CodeIntel`] for its hover;
-//! `Ctrl I` asks for the symbol at the caret at once. The card stays while the pointer is over
-//! its token or over the card itself, and closes [`CLOSE_GRACE`] after it left both (time to
+//! **Hover.** The pointer resting [`HOVER_DELAY`] on a character of a line's code that isn't
+//! whitespace or a quote (found through the lines' painted geometry, `select`) asks the
+//! review's [`CodeIntel`] for its hover at that character (`crate::intel::hover_token_at`);
+//! `Ctrl I` asks for the identifier at the caret at once. The card hangs under what it is about
+//! (the servers' range, a whole class name, else the token) and stays while the pointer is
+//! anywhere in that or over the card itself, and closes [`CLOSE_GRACE`] after it left both (time to
 //! cross from one to the other), at once on a press elsewhere in the code, on a scroll, a
 //! drag, on `Esc` (first in the pane's chain) and when its file's diff is replaced. A hover
 //! asked for and not answered yet is cancelled as soon as the pointer leaves its token. The
@@ -31,7 +33,9 @@ use super::rows::side_number;
 use super::select::line_index;
 use super::text::unit_at;
 use crate::intel::hover::{CardActions, render_card};
-use crate::intel::{CodeIntel, HOVER_DELAY, Pane, SymbolAt, identifier_at};
+use crate::intel::{
+    CodeIntel, HOVER_DELAY, HoverCard, Pane, SymbolAt, hover_token_at, identifier_at,
+};
 use crate::theme::DvTheme;
 
 /// The card paints over the rows and the pinned header, as the file menu does.
@@ -150,8 +154,19 @@ impl DiffPane {
         }
     }
 
-    /// The symbol drawn at `position` (window coordinates), through the lines this frame drew.
+    /// The identifier drawn at `position` (window coordinates), through the lines this frame
+    /// drew: what a `Ctrl`+click goes to the definition of.
     fn symbol_under(&self, position: Point<Pixels>) -> Option<Pointed> {
+        self.token_under(position, false)
+    }
+
+    /// What a hover at `position` asks about: the token under the pointer
+    /// ([`hover_token_at`]), asked at the pointer's own character.
+    fn hover_under(&self, position: Point<Pixels>) -> Option<Pointed> {
+        self.token_under(position, true)
+    }
+
+    fn token_under(&self, position: Point<Pixels>, hover: bool) -> Option<Pointed> {
         let (path, side, line, text) = {
             let geometry = self.geometry.borrow();
             let ((path, side, line), _) = geometry
@@ -169,22 +184,57 @@ impl DiffPane {
         if x < x_of(unit.start) || x >= x_of(unit.end) {
             return None;
         }
-        let range = identifier_at(&text, unit.start)?;
+        let (range, offset) = if hover {
+            (hover_token_at(&text, unit.start)?, unit.start)
+        } else {
+            let range = identifier_at(&text, unit.start)?;
+            let start = range.start;
+            (range, start)
+        };
         let token = Bounds::from_corners(
             point(drawn.x_of(range.start), drawn.bounds.top()),
             point(drawn.x_of(range.end), drawn.bounds.bottom()),
         );
         drop(geometry);
-        self.pointed(&path, side, line, range, token)
+        self.pointed(&path, side, line, range, offset, token)
     }
 
-    /// The symbol at `range` of `path`'s line `line` (an index) on `side`.
+    /// The bounds the card shown hangs under: its span as this frame drew it, else the token's
+    /// when it was asked for.
+    fn card_bounds(&self, card: &HoverCard) -> Bounds<Pixels> {
+        let Some(lines) = self.lines(&card.at.path) else {
+            return card.token;
+        };
+        let Some(line) = line_index(lines, card.at.side, card.at.line) else {
+            return card.token;
+        };
+        let text = &lines[line].text;
+        let clamp = |at: usize| {
+            let mut at = at.min(text.len());
+            while !text.is_char_boundary(at) {
+                at -= 1;
+            }
+            at
+        };
+        let geometry = self.geometry.borrow();
+        let Some(drawn) = geometry.get(&(card.at.path.clone(), card.at.side, line)) else {
+            return card.token;
+        };
+        Bounds::from_corners(
+            point(drawn.x_of(clamp(card.span.start)), drawn.bounds.top()),
+            point(drawn.x_of(clamp(card.span.end)), drawn.bounds.bottom()),
+        )
+    }
+
+    /// The token at `range` of `path`'s line `line` (an index) on `side`, asked about at byte
+    /// `offset`.
     fn pointed(
         &self,
         path: &str,
         side: AnchorSide,
         line: usize,
         range: std::ops::Range<usize>,
+        offset: usize,
         token: Bounds<Pixels>,
     ) -> Option<Pointed> {
         let diff_line = self.line(path, line)?;
@@ -197,6 +247,7 @@ impl DiffPane {
                 line: number,
                 name: diff_line.text.get(range.clone())?.to_string(),
                 range,
+                offset,
             },
             token,
             diff,
@@ -224,7 +275,8 @@ impl DiffPane {
                 let origin = self.list.viewport_bounds().origin;
                 Bounds::new(origin, gpui::size(px(1.), px(20.)))
             });
-        self.pointed(&caret.path.clone(), caret.side, line, range, token)
+        let offset = range.start;
+        self.pointed(&caret.path.clone(), caret.side, line, range, offset, token)
     }
 
     /// The pointer moved over the pane without a button held (module docs, "Hover").
@@ -232,21 +284,34 @@ impl DiffPane {
         if self.intel.is_none() || self.text_drag.is_some() || self.line_drag.is_some() {
             return;
         }
-        let shown = self.shown_card(cx).map(|card| card.token);
-        // Over the card's token, or over the card: it stays.
-        if shown.is_some_and(|token| token.contains(&position)) || self.hover_ui.over_card {
+        let card = self.shown_card(cx).cloned();
+        let shown = card.as_ref().map(|card| self.card_bounds(card));
+        let pointed = self.hover_under(position);
+        // Over what the card is about (the server's range: a whole class name), or over the
+        // card: it stays, and nothing is asked again.
+        let covered = match (&card, &pointed) {
+            (Some(card), Some(pointed)) => card.covers(&pointed.at),
+            _ => false,
+        };
+        if covered
+            || shown.is_some_and(|token| token.contains(&position))
+            || self.hover_ui.over_card
+        {
             self.hover_ui.closing = None;
             self.hover_ui.waiting = None;
             return;
         }
-        match self.symbol_under(position) {
+        let same_token = |a: &SymbolAt, b: &SymbolAt| a.same_line(b) && a.range == b.range;
+        match pointed {
             Some(pointed) => {
                 let same = self
                     .hover_ui
                     .waiting
                     .as_ref()
-                    .is_some_and(|(at, _)| *at == pointed.at)
-                    || self.asking(cx).is_some_and(|at| at == pointed.at);
+                    .is_some_and(|(at, _)| same_token(at, &pointed.at))
+                    || self
+                        .asking(cx)
+                        .is_some_and(|at| same_token(&at, &pointed.at));
                 if same {
                     return;
                 }
@@ -545,11 +610,12 @@ impl DiffPane {
                 })
             }),
         };
+        let token = self.card_bounds(&card);
         let element = render_card(&card, &intel, actions, theme, cx);
         Some(
             deferred(
                 anchored()
-                    .position(point(card.token.left(), card.token.bottom() + px(2.)))
+                    .position(point(token.left(), token.bottom() + px(2.)))
                     .snap_to_window_with_margin(px(8.))
                     .child(element),
             )

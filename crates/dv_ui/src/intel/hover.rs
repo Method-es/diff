@@ -2,9 +2,12 @@
 //! about the symbol under the pointer (or at the caret), hung under the token on the `overlay`
 //! surface.
 //!
-//! Its parts stack in the server's order: Markdown through [`crate::markdown`] (sanitised, its
-//! fenced signature highlighted as code), code in a named language as a fenced block, plain
-//! text as it is. Its text can be selected (the copy goes through the clipboard seam,
+//! Several servers can serve a file (a `.tsx`: TypeScript and Tailwind CSS): their answers
+//! stack in the registry's order, each as it lands, a hairline between them and, when more than
+//! one answered, each headed by its server's name. Each answer's parts stack in the server's
+//! order: Markdown through [`crate::markdown`] (sanitised, its fenced signature highlighted as
+//! code), code in a named language as a fenced block, plain text as it is. Its text can be
+//! selected (the copy goes through the clipboard seam,
 //! `crate::shell`). A link to a file opens it (the stream or the file view, as go to definition
 //! does; `#L12` names a line); any other link goes through [`crate::system::open_url`]. Under
 //! the parts, "Read against the working tree" when the server read another side's text, then
@@ -14,7 +17,7 @@
 
 use std::rc::Rc;
 
-use dv_lsp::{HoverPart, SymbolLocation, TextPosition, TextRange, WorkspacePaths};
+use dv_lsp::{HoverInfo, HoverPart, SymbolLocation, TextPosition, TextRange, WorkspacePaths};
 use gpui::{
     AnyElement, App, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
     SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
@@ -47,11 +50,10 @@ pub struct CardActions {
     pub pressed: Handler,
 }
 
-/// `card`'s parts as one Markdown source: Markdown as it is, code fenced in its language,
-/// plain text as a paragraph of its own (its Markdown characters escaped).
-pub fn markdown_of(card: &HoverCard) -> String {
-    card.info
-        .parts
+/// One answer's parts as one Markdown source: Markdown as it is, code fenced in its
+/// language, plain text as a paragraph of its own (its Markdown characters escaped).
+pub fn markdown_of(info: &HoverInfo) -> String {
+    info.parts
         .iter()
         .map(|part| match part {
             HoverPart::Markdown(text) => text.trim().to_string(),
@@ -113,19 +115,42 @@ pub fn render_card(
         worktree: !card.against_worktree,
         definition: false,
     };
-    let source = markdown_of(card);
-    let body = crate::markdown::view_with_links(
-        SharedString::from(format!("hover-{}", card.id)),
-        &source,
-        move |url, cx| match link_target(url, &paths) {
-            Some(location) => link_intel.update(cx, |intel, cx| {
-                intel.go_to(location, Some(asked.clone()), cx)
-            }),
-            None => crate::system::open_url(url, cx),
-        },
-        cx,
-    )
-    .selectable(true);
+    let labelled = card.sections.len() > 1;
+    let sections = card.sections.iter().enumerate().map(|(index, section)| {
+        let (paths, link_intel, asked) = (paths.clone(), link_intel.clone(), asked.clone());
+        let body = crate::markdown::view_with_links(
+            SharedString::from(format!("hover-{}-{}", card.id, section.spec_id)),
+            &markdown_of(&section.info),
+            move |url, cx| match link_target(url, &paths) {
+                Some(location) => link_intel.update(cx, |intel, cx| {
+                    intel.go_to(location, Some(asked.clone()), cx)
+                }),
+                None => crate::system::open_url(url, cx),
+            },
+            cx,
+        )
+        .selectable(true);
+        div()
+            .flex()
+            .flex_col()
+            .gap(theme.spacing.xs)
+            .when(index > 0, |this| {
+                this.mt(theme.spacing.md)
+                    .pt(theme.spacing.md)
+                    .border_t_1()
+                    .border_color(c.line)
+            })
+            .when(labelled, |this| {
+                this.child(
+                    div()
+                        .text_spec(&theme.text.secondary)
+                        .text_color(c.fg3)
+                        .child(section.server),
+                )
+            })
+            .child(body)
+            .automation_target(format!("hover/section/{}", section.spec_id))
+    });
     let hovered = actions.hovered.clone();
     let pressed = actions.pressed.clone();
     let definition = actions.definition.clone();
@@ -160,7 +185,7 @@ pub fn render_card(
                 .overflow_y_scroll()
                 .px(theme.spacing.lg)
                 .py(theme.spacing.md)
-                .child(body),
+                .children(sections),
         )
         .child(
             div()
@@ -239,25 +264,32 @@ mod tests {
                 line: 1,
                 range: 0..1,
                 name: "a".into(),
+                offset: 0,
             },
+            span: 0..1,
             pane: super::super::Pane::Stream,
             token: Default::default(),
-            info: dv_lsp::HoverInfo {
-                parts: vec![
-                    HoverPart::Code {
-                        language: "typescript".into(),
-                        text: "const a: number\n".into(),
-                    },
-                    HoverPart::Markdown("The *answer*.".into()),
-                    HoverPart::Plain("a_b [c]".into()),
-                ],
-                range: None,
-            },
+            sections: vec![super::super::HoverSection {
+                order: 0,
+                spec_id: "typescript",
+                server: "TypeScript",
+                info: dv_lsp::HoverInfo {
+                    parts: vec![
+                        HoverPart::Code {
+                            language: "typescript".into(),
+                            text: "const a: number\n".into(),
+                        },
+                        HoverPart::Markdown("The *answer*.".into()),
+                        HoverPart::Plain("a_b [c]".into()),
+                    ],
+                    range: None,
+                },
+            }],
             against_worktree: false,
             id: 1,
         };
         assert_eq!(
-            markdown_of(&card),
+            markdown_of(&card.sections[0].info),
             "```typescript\nconst a: number\n```\n\nThe *answer*.\n\na\\_b \\[c\\]"
         );
     }

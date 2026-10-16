@@ -586,6 +586,19 @@ impl Shell {
                     })
                     .child(label("How to get it"))
                     .child(div().text_color(c.fg2).child(missing.hint.clone()))
+                    .child(
+                        div().mt(theme.spacing.sm).flex().child(
+                            small_button("server-check-again", "Check again", theme)
+                                .child(icon(DvIcon::RotateCw, px(12.), c.fg2))
+                                .on_click({
+                                    let intel = intel.clone();
+                                    move |_, _, cx| {
+                                        intel.update(cx, |intel, cx| intel.check_again(cx));
+                                    }
+                                })
+                                .automation_target(format!("statusbar/lsp/{spec_id}/check_again")),
+                        ),
+                    )
             }
         };
         let bottom = window.viewport_size().height - theme.sizes.status_bar_height;

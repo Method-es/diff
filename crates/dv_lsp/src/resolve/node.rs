@@ -154,6 +154,11 @@ impl<'a> Reader<'a> {
         self.style
     }
 
+    /// The backend it reads through.
+    pub fn backend(&self) -> &'a dyn Backend {
+        self.backend
+    }
+
     pub fn probe(&self, path: &AbsPath) -> Result<PathProbe, BackendError> {
         let native = path.native();
         if let Some(known) = self.seen.borrow().get(&native) {

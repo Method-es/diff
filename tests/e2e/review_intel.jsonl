@@ -11,7 +11,8 @@
 // The pointer resting on `helper`: the card, with the server's signature and docs.
 {"cmd": "mouse_move", "target": "code/src/a.ts/new/6/14"}
 {"cmd": "settle", "expect": [{"pointer": "/intel/hover/open", "equals": true}, {"pointer": "/intel/hover/symbol", "equals": "helper"}, {"pointer": "/intel/hover/line", "equals": 6}, {"pointer": "/intel/hover/pane", "equals": "stream"}, {"pointer": "/intel/hover/text", "contains": "function helper(x: number): number"}, {"pointer": "/intel/hover/text", "contains": "plus one"}, {"pointer": "/intel/hover/against_worktree", "equals": false}]}
-{"cmd": "query", "prefix": "hover/", "expect_result": {"pointer": "", "len": 2}}
+// The card's one answer (hover/section/typescript) and its two buttons.
+{"cmd": "query", "prefix": "hover/", "expect_result": {"pointer": "", "len": 3}}
 {"cmd": "screenshot", "name": "hover"}
 // Off the token (onto a line number), it closes; back on it and Esc closes it too.
 {"cmd": "mouse_move", "target": "stream/line/src/a.ts/new/9"}
@@ -97,4 +98,4 @@
 {"cmd": "settle", "expect": {"pointer": "/intel/hover/open", "equals": true}}
 {"cmd": "screenshot", "name": "hover-light"}
 // What the server read: the stream's text of src/a.ts, and the hover asked at `helper`.
-{"lsp_log": {}, "expect_result": [{"pointer": "", "contains": {"received": {"method": "textDocument/didOpen", "params": {"textDocument": {"text": "import { helper, scale } from './b';\n\nexport function total(values: number[]): number {\n  let sum = 0;\n  for (const value of values) {\n    sum += helper(value);\n  }\n  return scale(sum);\n}\n\nexport const answer = total([1, 2, 3]);\n"}}}}}, {"pointer": "", "contains": {"received": {"method": "textDocument/hover", "params": {"position": {"line": 5, "character": 11}}}}}]}
+{"lsp_log": {}, "expect_result": [{"pointer": "", "contains": {"received": {"method": "textDocument/didOpen", "params": {"textDocument": {"text": "import { helper, scale } from './b';\n\nexport function total(values: number[]): number {\n  let sum = 0;\n  for (const value of values) {\n    sum += helper(value);\n  }\n  return scale(sum);\n}\n\nexport const answer = total([1, 2, 3]);\n"}}}}}, {"pointer": "", "contains": {"received": {"method": "textDocument/hover", "params": {"position": {"line": 5, "character": 13}}}}}]}

@@ -1,6 +1,7 @@
 //! Where a spec's resolvers can be told about a server from outside the project (docs/PLAN.md
-//! §18.4, §18.7): `settings.json`'s `lsp.<id>.command`, and the `DV_LSP_<ID>` override tests
-//! and scenarios use, as `DV_GH` replaces `gh`.
+//! §18.4, §18.7): `settings.json`'s `lsp.<id>.command` and `lsp.runtime` (what runs the
+//! JavaScript servers), and the `DV_LSP_<ID>` override tests and scenarios use, as `DV_GH`
+//! replaces `gh`.
 
 use std::collections::BTreeMap;
 
@@ -14,6 +15,9 @@ use crate::spec::LanguageServerSpec;
 pub struct LspSettings {
     /// `lsp.<id>.command` by spec id: the program and its arguments.
     commands: BTreeMap<String, Vec<String>>,
+    /// `lsp.runtime`: the JavaScript runtime, a program (an absolute path, or a name looked
+    /// up on `PATH`) and its arguments.
+    runtime: Option<Vec<String>>,
 }
 
 impl LspSettings {
@@ -21,8 +25,26 @@ impl LspSettings {
     /// "--stdio"]}}`).
     pub fn from_json(lsp: &Value) -> Self {
         let mut commands = BTreeMap::new();
+        let mut runtime = None;
         if let Some(servers) = lsp.as_object() {
             for (id, server) in servers {
+                if id == "runtime" {
+                    runtime = match server {
+                        Value::String(program) if !program.trim().is_empty() => {
+                            Some(vec![program.trim().to_string()])
+                        }
+                        Value::Array(argv) => argv
+                            .iter()
+                            .map(|arg| arg.as_str().map(str::to_string))
+                            .collect::<Option<Vec<String>>>()
+                            .filter(|argv| !argv.is_empty()),
+                        _ => None,
+                    };
+                    if runtime.is_none() {
+                        log::warn!("settings: lsp.runtime isn't a program or a list of strings");
+                    }
+                    continue;
+                }
                 let Some(command) = server.get("command").and_then(Value::as_array) else {
                     continue;
                 };
@@ -38,7 +60,7 @@ impl LspSettings {
                 }
             }
         }
-        Self { commands }
+        Self { commands, runtime }
     }
 
     /// `lsp.<id>.command` set directly, for tests and the app's own settings.
@@ -47,9 +69,20 @@ impl LspSettings {
         self
     }
 
+    /// `lsp.runtime` set directly (tests).
+    pub fn with_runtime(mut self, argv: Vec<String>) -> Self {
+        self.runtime = Some(argv);
+        self
+    }
+
     /// The command configured for `id`: the program and its arguments.
     pub fn command(&self, id: &str) -> Option<&[String]> {
         self.commands.get(id).map(Vec::as_slice)
+    }
+
+    /// `lsp.runtime`: the JavaScript runtime and its arguments.
+    pub fn runtime(&self) -> Option<&[String]> {
+        self.runtime.as_deref()
     }
 }
 
@@ -123,6 +156,23 @@ mod tests {
         );
         assert_eq!(settings.command("css"), None);
         assert_eq!(settings.command("tailwindcss"), None);
+        assert_eq!(settings.runtime(), Some(&["bun".to_string()][..]));
+        assert_eq!(
+            LspSettings::from_json(
+                &json!({"runtime": ["/usr/bin/node", "--max-old-space-size=4096"]})
+            )
+            .runtime(),
+            Some(
+                &[
+                    "/usr/bin/node".to_string(),
+                    "--max-old-space-size=4096".into()
+                ][..]
+            )
+        );
+        assert_eq!(
+            LspSettings::from_json(&json!({"runtime": 3})).runtime(),
+            None
+        );
         assert_eq!(LspSettings::from_json(&json!(null)), LspSettings::default());
     }
 

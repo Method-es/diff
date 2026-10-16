@@ -190,6 +190,10 @@ if [[ "$linux" -eq 1 ]]; then
                 MSYS_NO_PATHCONV=1 DV_TEST_WSL_DISTRO=Ubuntu DV_WSL_HOME="$wsl_home" \
                     cargo test -p dv --test wsl_cli -- --test-threads=1 || wsl_status=$?
             fi
+            if [[ "$wsl_status" -eq 0 ]]; then
+                MSYS_NO_PATHCONV=1 DV_TEST_WSL_DISTRO=Ubuntu DV_WSL_HOME="$wsl_home" \
+                    cargo test -p dv_lsp --test wsl_shell -- --test-threads=1 || wsl_status=$?
+            fi
             if ! MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu --cd / --exec rmdir "$wsl_home" \
                 2> /dev/null; then
                 echo "script/check: $wsl_home in Ubuntu wasn't empty or wasn't made; look" \

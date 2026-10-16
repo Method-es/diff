@@ -35,6 +35,8 @@ use std::time::{Duration, Instant};
 use dv_backend::{Connection, ConnectionState};
 use dv_core::{Backend, Location};
 use dv_lsp::client::{CHANGE, DELETE};
+use dv_lsp::paths::PathStyle;
+use dv_lsp::resolve::HostEnv;
 use dv_lsp::{
     ClientEvent, LanguageServerSpec, LspClient, LspSettings, Missing, Platform, Progress,
     Resolution, Resolver, Restarts, ServerCommand, ServerStatus, StartError, Timeouts, languages,
@@ -43,6 +45,7 @@ use dv_lsp::{
 use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedSender, unbounded};
 use gpui::{AppContext as _, Context, EventEmitter, Task};
+use parking_lot::Mutex;
 
 /// How long a worktree's servers keep running after its last review closed (PLAN §18.5).
 pub const LINGER: Duration = Duration::from_secs(5 * 60);
@@ -210,6 +213,9 @@ struct Worktree {
     announcing: usize,
     /// Whether the connection was last heard down.
     down: bool,
+    /// When missing servers were last looked for again, and how many times.
+    rechecked: Option<Instant>,
+    rechecks: u32,
     _connection: Option<dv_backend::Subscription>,
 }
 
@@ -243,6 +249,16 @@ pub type Starter = Arc<
 /// Where the resolvers read `DV_LSP_<ID>` from: this process's environment, or a test's.
 pub type EnvReader = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
+/// Each remote server's machine (its user's `PATH`, read from their shell), by connection and
+/// server process: read once per connection, and again when it comes back as another server.
+/// Each entry has a lock of its own, held while it is read, so two reviews on one distro read
+/// it once and a slow distro holds up no other.
+type Hosts = Arc<Mutex<HashMap<(usize, u32), Arc<Mutex<Option<HostEnv>>>>>>;
+
+/// How often a missing server is looked for again on its own (a review opening, the window
+/// coming back to the front): an install meanwhile changes nothing in the worktree.
+pub const RECHECK_EVERY: Duration = Duration::from_secs(30);
+
 /// The language servers of every worktree a review is open on (module docs).
 pub struct LanguageServers {
     worktrees: HashMap<Location, Worktree>,
@@ -255,6 +271,7 @@ pub struct LanguageServers {
     linger: Duration,
     starter: Starter,
     env: Option<EnvReader>,
+    hosts: Hosts,
     _events: Task<()>,
 }
 
@@ -285,6 +302,7 @@ impl LanguageServers {
                 LspClient::start(backend, command, config, events, Timeouts::default())
             }),
             env: None,
+            hosts: Hosts::default(),
             _events: task,
         }
     }
@@ -300,12 +318,19 @@ impl LanguageServers {
         self.env = Some(env);
     }
 
-    /// A resolver for `backend`'s worktree on `platform`.
-    fn resolver(&self, backend: Arc<dyn Backend>, platform: Platform) -> Arc<Resolver> {
+    /// A resolver for `backend`'s worktree on `platform`, whose machine is `host` (`None`:
+    /// this process's environment).
+    fn resolver(
+        &self,
+        backend: Arc<dyn Backend>,
+        platform: Platform,
+        host: Option<HostEnv>,
+    ) -> Arc<Resolver> {
         let mut resolver = Resolver::new(backend, platform, self.settings.clone());
-        // An automated run (the app under `--automation`, its tests) starts only the servers
-        // it names (`DV_LSP_<ID>`), never one a fixture's surroundings happen to hold.
-        if cfg!(test) || crate::automation::is_active() {
+        if let Some(host) = host {
+            resolver = resolver.with_host(host);
+        }
+        if overrides_only() {
             resolver = resolver.overrides_only();
         }
         Arc::new(match self.env.clone() {
@@ -346,6 +371,8 @@ impl LanguageServers {
         if let Some(worktree) = self.worktrees.get_mut(&key) {
             worktree.users += 1;
             worktree.linger = None;
+            // Another review opens on it: a server missing until now may have been installed.
+            self.recheck(&key, false, cx);
             return key;
         }
         let subscription = connection.as_ref().map(|connection| {
@@ -379,6 +406,8 @@ impl LanguageServers {
                 resolve_generation: 0,
                 announcing: 0,
                 down,
+                rechecked: None,
+                rechecks: 0,
                 _connection: subscription,
             },
         );
@@ -407,7 +436,20 @@ impl LanguageServers {
                 {
                     log::info!("the language servers of {key:?} stop: no review uses them");
                     // Dropping the slots stops their servers off the UI thread.
-                    this.worktrees.remove(&key);
+                    let gone = this.worktrees.remove(&key);
+                    // Its connection's machine is forgotten once no worktree uses it.
+                    if let Some(connection) = gone.and_then(|gone| gone.connection) {
+                        let used = this.worktrees.values().any(|other| {
+                            other
+                                .connection
+                                .as_ref()
+                                .is_some_and(|known| Arc::ptr_eq(known, &connection))
+                        });
+                        if !used {
+                            let ptr = connection_key(&connection);
+                            this.hosts.lock().retain(|(known, _), _| *known != ptr);
+                        }
+                    }
                     cx.notify();
                 }
             })
@@ -452,56 +494,52 @@ impl LanguageServers {
         }
     }
 
-    /// The server for `path` of `worktree`, as a request needs it (module docs): asked for
-    /// when it hasn't been yet. Definition and references take the first spec's server that
-    /// serves the file (PLAN §18.4).
-    pub fn lookup(&mut self, worktree: &Location, path: &str, cx: &mut Context<Self>) -> Lookup {
+    /// `spec`'s server for `path` of `worktree`, as a request needs it (module docs): asked
+    /// for when it hasn't been yet. Hover asks every spec that serves the file; definition and
+    /// references ask them in the registry's order until one answers with anything (PLAN
+    /// §18.4).
+    pub fn lookup(
+        &mut self,
+        worktree: &Location,
+        path: &str,
+        spec: &'static LanguageServerSpec,
+        cx: &mut Context<Self>,
+    ) -> Lookup {
+        let Some(language_id) = spec.language_id(path) else {
+            return Lookup::Unavailable;
+        };
         let Some(entry) = self.worktrees.get_mut(worktree) else {
             return Lookup::Unavailable;
         };
-        let mut pending = false;
-        let mut queued = false;
-        for (spec, language_id) in languages::for_path(path) {
-            let key = (spec.id, parent(path).to_string());
-            match entry.routes.get(&key) {
-                None => {
-                    entry
-                        .known
-                        .entry(key.clone())
-                        .or_insert_with(|| (spec, path.to_string()));
-                    entry.routes.insert(key, Route::Pending);
-                    entry.queue.push_back((spec, path.to_string()));
-                    pending = true;
-                    queued = true;
-                }
-                Some(Route::Pending) => pending = true,
-                Some(Route::Server(id)) => {
-                    if let Some(server) = entry.servers.get(id) {
-                        match (&server.state, server.client.as_ref()) {
-                            (ServerState::Ready, Some(slot)) => {
-                                if let Some(client) = slot.client() {
-                                    return Lookup::Ready {
-                                        client: client.clone(),
-                                        language_id,
-                                        server: *id,
-                                    };
-                                }
-                            }
-                            (ServerState::Failed(_), _) => {}
-                            _ => pending = true,
-                        }
-                    }
-                }
-                Some(Route::Missing(_) | Route::NotApplicable) => {}
+        let key = (spec.id, parent(path).to_string());
+        match entry.routes.get(&key) {
+            None => {
+                entry
+                    .known
+                    .entry(key.clone())
+                    .or_insert_with(|| (spec, path.to_string()));
+                entry.routes.insert(key, Route::Pending);
+                entry.queue.push_back((spec, path.to_string()));
+                self.pump(worktree, cx);
+                Lookup::Pending
             }
-        }
-        if queued {
-            self.pump(worktree, cx);
-        }
-        if pending {
-            Lookup::Pending
-        } else {
-            Lookup::Unavailable
+            Some(Route::Pending) => Lookup::Pending,
+            Some(Route::Server(id)) => match entry.servers.get(id) {
+                Some(server) => match (&server.state, server.client.as_ref()) {
+                    (ServerState::Ready, Some(slot)) => match slot.client() {
+                        Some(client) => Lookup::Ready {
+                            client: client.clone(),
+                            language_id,
+                            server: *id,
+                        },
+                        None => Lookup::Unavailable,
+                    },
+                    (ServerState::Failed(_), _) => Lookup::Unavailable,
+                    _ => Lookup::Pending,
+                },
+                None => Lookup::Unavailable,
+            },
+            Some(Route::Missing(_) | Route::NotApplicable) => Lookup::Unavailable,
         }
     }
 
@@ -583,15 +621,7 @@ impl LanguageServers {
             }
         });
         if forgot {
-            // Every directory asked for is resolved again (the running servers go on until
-            // their routes move, `collect_unused`), and an answer under way is dropped.
-            entry.resolve_generation += 1;
-            entry.routes.clear();
-            entry.queue.clear();
-            for (key, (spec, path)) in &entry.known {
-                entry.routes.insert(key.clone(), Route::Pending);
-                entry.queue.push_back((spec, path.clone()));
-            }
+            requeue(entry);
         }
         let clients: Vec<Arc<LspClient>> = entry
             .servers
@@ -653,7 +683,8 @@ impl LanguageServers {
     }
 
     /// Makes the worktree's resolver once its platform is known: this machine's for a local
-    /// repository, its server's for a remote one (module docs).
+    /// repository, its server's for a remote one, whose `PATH` is its user's shell's (module
+    /// docs).
     fn ensure_resolver(&mut self, worktree: &Location, cx: &mut Context<Self>) {
         let Some(entry) = self.worktrees.get(worktree) else {
             return;
@@ -664,7 +695,7 @@ impl LanguageServers {
         let backend = entry.backend.clone();
         let local = entry.connection.is_none();
         if local {
-            let resolver = self.resolver(backend, Platform::this_machine());
+            let resolver = self.resolver(backend, Platform::this_machine(), None);
             if let Some(entry) = self.worktrees.get_mut(worktree) {
                 entry.resolver = Some(resolver);
             }
@@ -680,14 +711,15 @@ impl LanguageServers {
             // Asked again once the connection is back.
             return;
         }
+        let hosts = self.hosts.clone();
         let job = cx.background_spawn(async move {
             // Idle, the connection's next call starts the server; `connect` is that call.
             if connection.server().is_none() {
                 let _ = connection.connect();
             }
-            connection
-                .server()
-                .map(|hello| Platform::new(hello.os, hello.arch))
+            let hello = connection.server()?;
+            let host = read_host(&hosts, &connection, &hello, backend.as_ref(), false);
+            Some((Platform::new(hello.os, hello.arch), host))
         });
         let key = worktree.clone();
         entry.platform_task = Some(cx.spawn(async move |this, cx| {
@@ -698,9 +730,9 @@ impl LanguageServers {
                 };
                 entry.platform_task = None;
                 match platform {
-                    Some(platform) => {
+                    Some((platform, host)) => {
                         let backend = entry.backend.clone();
-                        let resolver = this.resolver(backend, platform);
+                        let resolver = this.resolver(backend, platform, Some(host));
                         if let Some(entry) = this.worktrees.get_mut(&key) {
                             entry.resolver = Some(resolver);
                         }
@@ -714,6 +746,120 @@ impl LanguageServers {
             })
             .ok();
         }));
+    }
+
+    /// A remote worktree's connection came back, maybe as another server: its machine is read
+    /// again (once per server), and when its `PATH` changed every directory is resolved again.
+    fn refresh_host(&mut self, worktree: &Location, cx: &mut Context<Self>) {
+        let Some(entry) = self.worktrees.get_mut(worktree) else {
+            return;
+        };
+        let (Some(resolver), Some(connection)) = (entry.resolver.clone(), entry.connection.clone())
+        else {
+            return;
+        };
+        if entry.platform_task.is_some() {
+            return;
+        }
+        let backend = entry.backend.clone();
+        let hosts = self.hosts.clone();
+        let job = cx.background_spawn(async move {
+            let hello = connection.server()?;
+            let host = read_host(&hosts, &connection, &hello, backend.as_ref(), false);
+            Some(resolver.set_host(host))
+        });
+        let key = worktree.clone();
+        entry.platform_task = Some(cx.spawn(async move |this, cx| {
+            let changed = job.await;
+            this.update(cx, |this, cx| {
+                let Some(entry) = this.worktrees.get_mut(&key) else {
+                    return;
+                };
+                entry.platform_task = None;
+                if changed == Some(true) {
+                    requeue(entry);
+                }
+                this.pump(&key, cx);
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// **Check again** on a missing server: the machine's `PATH` read afresh (a distro's
+    /// shell again), everything forgotten and every directory resolved again (PLAN §18.5).
+    pub fn check_again(&mut self, worktree: &Location, cx: &mut Context<Self>) {
+        self.recheck(worktree, true, cx);
+    }
+
+    /// The window came back to the front: missing servers are looked for again, at most every
+    /// [`RECHECK_EVERY`].
+    pub fn recheck_missing(&mut self, worktree: &Location, cx: &mut Context<Self>) {
+        self.recheck(worktree, false, cx);
+    }
+
+    /// How many times `worktree`'s missing servers were looked for again (automation).
+    pub fn rechecks(&self, worktree: &Location) -> u32 {
+        self.worktrees
+            .get(worktree)
+            .map_or(0, |entry| entry.rechecks)
+    }
+
+    /// Looks for `worktree`'s servers again (`force`: whatever is missing and however
+    /// recently; else only when one is missing, at most every [`RECHECK_EVERY`]).
+    fn recheck(&mut self, worktree: &Location, force: bool, cx: &mut Context<Self>) {
+        let Some(entry) = self.worktrees.get_mut(worktree) else {
+            return;
+        };
+        let missing = entry
+            .routes
+            .values()
+            .any(|route| matches!(route, Route::Missing(_)));
+        let recent = entry
+            .rechecked
+            .is_some_and(|at| at.elapsed() < RECHECK_EVERY);
+        if !force && (!missing || recent) {
+            return;
+        }
+        let Some(resolver) = entry.resolver.clone() else {
+            return;
+        };
+        if entry.platform_task.is_some() || entry.down {
+            return;
+        }
+        entry.rechecked = Some(Instant::now());
+        entry.rechecks += 1;
+        let backend = entry.backend.clone();
+        let connection = entry.connection.clone();
+        let hosts = self.hosts.clone();
+        let job = cx.background_spawn(async move {
+            let host = match &connection {
+                Some(connection) => connection
+                    .server()
+                    .map(|hello| read_host(&hosts, connection, &hello, backend.as_ref(), true)),
+                None if overrides_only() => None,
+                None => Some(HostEnv::this_process()),
+            };
+            if let Some(host) = host {
+                resolver.set_host(host);
+            }
+            resolver.forget();
+        });
+        let key = worktree.clone();
+        entry.platform_task = Some(cx.spawn(async move |this, cx| {
+            job.await;
+            this.update(cx, |this, cx| {
+                let Some(entry) = this.worktrees.get_mut(&key) else {
+                    return;
+                };
+                entry.platform_task = None;
+                requeue(entry);
+                this.pump(&key, cx);
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
     }
 
     /// Resolves the queued `(spec, file)`s in the background, one batch at a time.
@@ -1120,6 +1266,7 @@ impl LanguageServers {
                     .map(|(id, _)| *id)
                     .collect();
                 self.ensure_resolver(&worktree, cx);
+                self.refresh_host(&worktree, cx);
                 for id in waiting {
                     self.restart(&worktree, id, cx);
                 }
@@ -1128,6 +1275,68 @@ impl LanguageServers {
             }
         }
     }
+}
+
+/// Every directory asked for is resolved again (the running servers go on until their routes
+/// move, `collect_unused`), and an answer under way is dropped: the resolver forgot.
+fn requeue(entry: &mut Worktree) {
+    entry.resolve_generation += 1;
+    entry.routes.clear();
+    entry.queue.clear();
+    for (key, (spec, path)) in &entry.known {
+        entry.routes.insert(key.clone(), Route::Pending);
+        entry.queue.push_back((spec, path.clone()));
+    }
+}
+
+/// Whether servers come only from `DV_LSP_<ID>`: an automated run (the app under
+/// `--automation`, its tests) starts only the servers it names, never one a fixture's
+/// surroundings happen to hold.
+fn overrides_only() -> bool {
+    cfg!(test) || crate::automation::is_active()
+}
+
+/// The machine of a remote repository's server `hello` (PLAN §18.4): a distro's user's `PATH`
+/// read from their shell, once per server (`fresh`: again); a loopback server's on Windows,
+/// this machine's own. An automated run reads nothing ([`overrides_only`]). Blocks: called off
+/// the UI thread.
+fn read_host(
+    hosts: &Hosts,
+    connection: &Arc<Connection>,
+    hello: &dv_backend::proto::HelloReply,
+    backend: &dyn Backend,
+    fresh: bool,
+) -> HostEnv {
+    if overrides_only() {
+        return HostEnv::unknown(PathStyle::Posix);
+    }
+    if hello.os == "windows" {
+        return HostEnv::this_process();
+    }
+    let ptr = connection_key(connection);
+    let slot = {
+        let mut hosts = hosts.lock();
+        // An earlier server of this connection is gone.
+        hosts.retain(|(known, pid), _| *known != ptr || *pid == hello.pid);
+        hosts.entry((ptr, hello.pid)).or_default().clone()
+    };
+    let mut slot = slot.lock();
+    if !fresh && let Some(known) = slot.as_ref() {
+        return known.clone();
+    }
+    let host = dv_lsp::resolve::shell::read(backend);
+    log::info!(
+        "the language servers' PATH in the distro: {} ({} folders)",
+        host.path_label(),
+        host.path().len()
+    );
+    *slot = Some(host.clone());
+    host
+}
+
+/// A connection's identity in [`Hosts`].
+fn connection_key(connection: &Arc<Connection>) -> usize {
+    Arc::as_ptr(connection) as *const () as usize
 }
 
 /// Whether a connection in `state` takes calls: connected, or idle (the next call starts it).
@@ -1149,5 +1358,7 @@ fn source_label(source: &dv_lsp::CommandSource) -> String {
         dv_lsp::CommandSource::Override(var) => var.clone(),
         dv_lsp::CommandSource::Project(version) => format!("the project's own ({version})"),
         dv_lsp::CommandSource::Settings => "settings.json".to_string(),
+        dv_lsp::CommandSource::Path(path) => path.clone(),
+        dv_lsp::CommandSource::BunGlobal(version) => format!("bun's global packages ({version})"),
     }
 }

@@ -83,6 +83,7 @@ impl Setup {
             ],
             root: String::new(),
             source: CommandSource::Override("DV_LSP_TYPESCRIPT".into()),
+            env: Vec::new(),
         }
     }
 

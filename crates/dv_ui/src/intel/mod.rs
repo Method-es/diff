@@ -40,7 +40,9 @@ use std::time::{Duration, Instant};
 use dv_core::diff::FileDiff;
 use dv_core::review::{AnchorSide, side_lines};
 use dv_core::{Location, Side};
-use dv_lsp::{HoverInfo, LspClient, RequestError, SymbolLocation, TextPosition, Timeouts};
+use dv_lsp::{
+    HoverInfo, LanguageServerSpec, LspClient, RequestError, SymbolLocation, TextPosition, Timeouts,
+};
 use gpui::{App, AppContext as _, Bounds, Context, Entity, EventEmitter, Pixels, Subscription};
 
 use crate::failure::Failure;
@@ -63,42 +65,110 @@ pub enum Pane {
     FileView,
 }
 
-/// A symbol the reviewer points at: an identifier in a line of a file as a pane shows it.
+/// What the reviewer points at in a line of a file as a pane shows it: an identifier (the
+/// caret's, a `Ctrl`+click's), or for a hover the token under the pointer
+/// ([`hover_token_at`]: a class name in a string is one).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SymbolAt {
     pub path: String,
     pub side: AnchorSide,
     /// Its line's number on `side`.
     pub line: u32,
-    /// The identifier's bytes in the line's text.
+    /// The token's bytes in the line's text.
     pub range: Range<usize>,
-    /// The identifier.
+    /// The token.
     pub name: String,
+    /// The byte a server is asked at: the pointer's character for a hover, else the token's
+    /// first.
+    pub offset: usize,
 }
 
 impl SymbolAt {
-    /// Where a server is asked about it: its line (0-based) and its first byte.
+    /// Where a server is asked about it: its line (0-based) and [`SymbolAt::offset`].
     fn position(&self) -> TextPosition {
-        TextPosition::new(self.line.saturating_sub(1), self.range.start as u32)
+        TextPosition::new(self.line.saturating_sub(1), self.offset as u32)
+    }
+
+    /// Whether `other` is in the same line of the same file and side.
+    pub fn same_line(&self, other: &SymbolAt) -> bool {
+        self.path == other.path && self.side == other.side && self.line == other.line
     }
 }
 
-/// An open hover card (PLAN §18.1 "Hover").
+/// An open hover card (PLAN §18.1 "Hover"): the answers of every server of the file that said
+/// anything, in the registry's order, each added as it lands.
 #[derive(Clone, Debug)]
 pub struct HoverCard {
     pub at: SymbolAt,
     pub pane: Pane,
     /// The token's bounds in the window when it was asked for; the card hangs under it.
     pub token: Bounds<Pixels>,
-    pub info: HoverInfo,
+    /// Never empty.
+    pub sections: Vec<HoverSection>,
+    /// The bytes of the line the card is about: the union of the ranges the servers answered
+    /// for (Tailwind's is the whole class, `bg-red-500`), else the token asked about. The
+    /// card hangs under it, and the pointer anywhere in it keeps the card without asking again.
+    pub span: Range<usize>,
     /// The server read the file's text in place of the disk's, and the rest of the project
     /// from the working tree (PLAN §18.2).
     pub against_worktree: bool,
-    /// Tells this answer's Markdown views from another's.
+    /// Tells this card's Markdown views from another's; it stays as sections are added.
     pub id: u64,
 }
 
 impl HoverCard {
+    /// Its text as automation reads it: the sections' texts joined by blank lines.
+    pub fn text(&self) -> String {
+        self.sections
+            .iter()
+            .map(HoverSection::text)
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    /// Adds `section` in its place in the registry's order.
+    fn add(&mut self, section: HoverSection) {
+        let at = self
+            .sections
+            .iter()
+            .position(|known| known.order > section.order)
+            .unwrap_or(self.sections.len());
+        self.sections.insert(at, section);
+        self.span = span_of(&self.at, &self.sections);
+    }
+
+    /// Whether the card is about `at`: the same line, and its asked byte inside the span.
+    pub fn covers(&self, at: &SymbolAt) -> bool {
+        self.at.same_line(at) && self.span.contains(&at.offset)
+    }
+}
+
+/// The bytes of `at`'s line the `sections` answered for (module docs, [`HoverCard::span`]):
+/// the union of the ranges on that line that hold the asked byte, else the token.
+fn span_of(at: &SymbolAt, sections: &[HoverSection]) -> Range<usize> {
+    let line = at.line.saturating_sub(1);
+    sections
+        .iter()
+        .filter_map(|section| section.info.range)
+        .filter(|range| range.start.line == line && range.end.line == line)
+        .map(|range| range.start.column as usize..range.end.column as usize)
+        .filter(|range| range.contains(&at.offset))
+        .reduce(|a, b| a.start.min(b.start)..a.end.max(b.end))
+        .unwrap_or_else(|| at.range.clone())
+}
+
+/// One server's answer in a hover card.
+#[derive(Clone, Debug)]
+pub struct HoverSection {
+    /// Its spec's place in the registry (`languages::ALL`): sections stack in that order.
+    pub order: usize,
+    pub spec_id: &'static str,
+    /// What the card labels it with when more than one server answered.
+    pub server: &'static str,
+    pub info: HoverInfo,
+}
+
+impl HoverSection {
     /// Its text as automation reads it: the parts joined by blank lines.
     pub fn text(&self) -> String {
         self.info
@@ -111,6 +181,14 @@ impl HoverCard {
             .collect::<Vec<_>>()
             .join("\n\n")
     }
+}
+
+/// A hover being asked for, before any server answered with anything: one request per server
+/// of the file, by its registry place.
+struct Hovering {
+    at: SymbolAt,
+    pane: Pane,
+    requests: Vec<(usize, InFlight)>,
 }
 
 /// Where a place was asked from: the symbol, the pane, and whether the server read that
@@ -157,8 +235,10 @@ pub struct CodeIntel {
     /// The servers for the review's files were asked for (once its list landed).
     served: bool,
     /// The hover being asked for, and the card shown.
-    hovering: Option<(SymbolAt, Pane, InFlight)>,
+    hovering: Option<Hovering>,
     hover: Option<HoverCard>,
+    /// The requests of the card shown whose servers haven't answered yet, by registry place.
+    hover_more: Vec<(usize, InFlight)>,
     next_hover: u64,
     definition: Option<InFlight>,
     /// How many places the last go to definition found (`state.intel.definitions`).
@@ -203,6 +283,7 @@ impl CodeIntel {
             served: false,
             hovering: None,
             hover: None,
+            hover_more: Vec::new(),
             next_hover: 0,
             definition: None,
             last_definitions: None,
@@ -242,6 +323,25 @@ impl CodeIntel {
             .update(cx, |servers, cx| servers.retry(&worktree, server, cx));
     }
 
+    /// **Check again** on a missing server (PLAN §18.5).
+    pub fn check_again(&mut self, cx: &mut Context<Self>) {
+        let worktree = self.worktree.clone();
+        self.servers
+            .update(cx, |servers, cx| servers.check_again(&worktree, cx));
+    }
+
+    /// The window came back to the front: a missing server is looked for again (throttled).
+    pub fn window_activated(&mut self, cx: &mut Context<Self>) {
+        let worktree = self.worktree.clone();
+        self.servers
+            .update(cx, |servers, cx| servers.recheck_missing(&worktree, cx));
+    }
+
+    /// How many times the worktree's servers were looked for again.
+    pub fn rechecks(&self, cx: &App) -> u32 {
+        self.servers.read(cx).rechecks(&self.worktree)
+    }
+
     /// How the review's worktree names its files, for links a server answers with.
     pub fn paths(&self, cx: &App) -> dv_lsp::WorkspacePaths {
         dv_lsp::WorkspacePaths::new(&self.session.read(cx).backend().repo().toplevel)
@@ -266,7 +366,9 @@ impl CodeIntel {
 
     /// The symbol whose hover is being asked for, if any.
     pub fn hovering(&self) -> Option<(&SymbolAt, Pane)> {
-        self.hovering.as_ref().map(|(at, pane, _)| (at, *pane))
+        self.hovering
+            .as_ref()
+            .map(|asking| (&asking.at, asking.pane))
     }
 
     /// The references list (or several definitions) the References tab shows, if any.
@@ -300,6 +402,7 @@ impl CodeIntel {
     /// automation's `settled`.
     pub fn is_settled(&self, cx: &App) -> bool {
         self.hovering.is_none()
+            && self.hover_more.is_empty()
             && self.definition.is_none()
             && self.references_request.is_none()
             && self
@@ -377,7 +480,9 @@ impl CodeIntel {
     }
 
     /// Asks for `at`'s hover (the pointer rested on it, or `Ctrl I`), shown in `pane` under
-    /// `token`; the hover asked for before is abandoned. The same symbol again does nothing.
+    /// `token`, of every server of the file at once (PLAN §18.4): the card opens with the first
+    /// answer that says anything and takes the others in the registry's order as they land.
+    /// The hover asked for before is abandoned; the same symbol again does nothing.
     pub fn hover(
         &mut self,
         at: SymbolAt,
@@ -386,18 +491,19 @@ impl CodeIntel {
         diff: &Arc<FileDiff>,
         cx: &mut Context<Self>,
     ) {
+        // The card's span, or the token being asked about: nothing new to ask.
         if self
             .hover
             .as_ref()
-            .is_some_and(|card| card.at == at && card.pane == pane)
-            || self
-                .hovering
-                .as_ref()
-                .is_some_and(|(asked, on, _)| *asked == at && *on == pane)
+            .is_some_and(|card| card.pane == pane && card.covers(&at))
+            || self.hovering.as_ref().is_some_and(|asking| {
+                asking.pane == pane && asking.at.same_line(&at) && asking.at.range == at.range
+            })
         {
             return;
         }
         self.hovering = None;
+        self.hover_more.clear();
         if self.hover.take().is_some() {
             cx.notify();
         }
@@ -405,49 +511,109 @@ impl CodeIntel {
             return;
         };
         let against_worktree = !self.reads_worktree(at.side, cx);
-        let asked = at.clone();
-        let request = self.request(
-            &at,
-            text,
-            against_worktree,
-            Timeouts::default().hover,
-            |client, path, position| client.hover(path, position),
-            move |this, answer, cx| {
-                if !this
-                    .hovering
-                    .as_ref()
-                    .is_some_and(|(at, on, _)| *at == asked && *on == pane)
-                {
-                    return;
+        let mut requests = Vec::new();
+        for (order, spec) in dv_lsp::languages::ALL.iter().copied().enumerate() {
+            if spec.language_id(&at.path).is_none() {
+                continue;
+            }
+            let asked = at.clone();
+            let request = self.request(
+                &at,
+                text.clone(),
+                against_worktree,
+                Timeouts::default().hover,
+                vec![spec],
+                "hoverProvider",
+                |client, path, position| client.hover(path, position),
+                |_| true,
+                move |this, answer, cx| {
+                    let info = match answer {
+                        Some(Ok(Some(info))) if !info.parts.is_empty() => Some(info),
+                        // Nothing to show: no answer, no server, or a request that failed
+                        // quietly (PLAN §18.5).
+                        Some(Err(error)) => {
+                            log::info!("hover ({}): {error}", spec.id);
+                            None
+                        }
+                        _ => None,
+                    };
+                    let section = info.map(|info| HoverSection {
+                        order,
+                        spec_id: spec.id,
+                        server: spec.name,
+                        info,
+                    });
+                    this.hover_answered(order, asked, pane, token, against_worktree, section, cx);
+                },
+                cx,
+            );
+            requests.push((order, request));
+        }
+        if requests.is_empty() {
+            return;
+        }
+        self.hovering = Some(Hovering { at, pane, requests });
+        cx.notify();
+    }
+
+    /// One server's answer to the hover asked for `at` in `pane`: the first that says anything
+    /// opens the card, a later one joins it in its place.
+    #[allow(clippy::too_many_arguments)]
+    fn hover_answered(
+        &mut self,
+        order: usize,
+        at: SymbolAt,
+        pane: Pane,
+        token: Bounds<Pixels>,
+        against_worktree: bool,
+        section: Option<HoverSection>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(asking) = self
+            .hovering
+            .as_mut()
+            .filter(|asking| asking.at == at && asking.pane == pane)
+        {
+            asking.requests.retain(|(known, _)| *known != order);
+            match section {
+                Some(section) => {
+                    let rest = self
+                        .hovering
+                        .take()
+                        .map(|asking| asking.requests)
+                        .unwrap_or_default();
+                    self.next_hover += 1;
+                    let sections = vec![section];
+                    self.hover = Some(HoverCard {
+                        span: span_of(&at, &sections),
+                        at,
+                        pane,
+                        token,
+                        sections,
+                        against_worktree,
+                        id: self.next_hover,
+                    });
+                    self.hover_more = rest;
                 }
-                this.hovering = None;
-                match answer {
-                    Some(Ok(Some(info))) => {
-                        this.next_hover += 1;
-                        this.hover = Some(HoverCard {
-                            at: asked,
-                            pane,
-                            token,
-                            info,
-                            against_worktree,
-                            id: this.next_hover,
-                        });
-                    }
-                    // Nothing to show: no answer, no server, or a request that failed
-                    // quietly (PLAN §18.5).
-                    Some(Err(error)) => log::info!("hover: {error}"),
-                    _ => {}
-                }
-                cx.notify();
-            },
-            cx,
-        );
-        self.hovering = Some((at, pane, request));
+                None if asking.requests.is_empty() => self.hovering = None,
+                None => {}
+            }
+        } else if let Some(card) = self
+            .hover
+            .as_mut()
+            .filter(|card| card.at == at && card.pane == pane)
+        {
+            self.hover_more.retain(|(known, _)| *known != order);
+            if let Some(section) = section {
+                card.add(section);
+            }
+        }
         cx.notify();
     }
 
     /// Closes the hover card, leaving a hover asked for since (another token's) alone.
     pub fn close_card(&mut self, cx: &mut Context<Self>) {
+        self.hover_more.clear();
         if self.hover.take().is_some() {
             cx.notify();
         }
@@ -455,6 +621,7 @@ impl CodeIntel {
 
     /// Closes the hover card, abandoning a hover still asked for.
     pub fn close_hover(&mut self, cx: &mut Context<Self>) {
+        self.hover_more.clear();
         if self.hovering.take().is_some() | self.hover.take().is_some() {
             cx.notify();
         }
@@ -481,7 +648,10 @@ impl CodeIntel {
             text,
             against_worktree,
             Timeouts::default().definition,
+            servers_of(&at.path),
+            "definitionProvider",
             |client, path, position| client.definition(path, position),
+            |locations| !locations.is_empty(),
             move |this, answer, cx| {
                 this.definition = None;
                 let mut locations = match answer {
@@ -553,7 +723,10 @@ impl CodeIntel {
             text,
             against_worktree,
             Timeouts::default().references,
+            servers_of(&at.path),
+            "referencesProvider",
             |client, path, position| client.references(path, position, true),
+            |locations| !locations.is_empty(),
             move |this, answer, cx| {
                 this.references_request = None;
                 let found = match answer {
@@ -645,11 +818,15 @@ impl CodeIntel {
         }
     }
 
-    /// One request about `at`, whose file's text is `text` (module docs): waits for its
-    /// file's server up to `timeout`, then asks `ask` on a background thread and hands the
-    /// answer (`None` without a server) to `done` on the UI thread. A document that isn't the
-    /// working tree's (`close_after`) is closed once answered, so the server reads the file from
-    /// the working tree again for every other request (PLAN §18.2).
+    /// One request about `at`, whose file's text is `text` (module docs), to `specs`' servers
+    /// (PLAN §18.4): each is waited for while it is found or starts, skipped when its
+    /// capabilities lack `provider`, and asked by `ask` on a background thread, all at once.
+    /// The answer is the first that says something (`is_something`) in `specs`' order: a
+    /// server earlier in the order that hasn't answered yet holds a later one's answer back
+    /// until it answers or `timeout` (one deadline for all) passes. It goes to `done` on the UI
+    /// thread (`None` without a server; with nothing useful, an empty answer over an error). A
+    /// document that isn't the working tree's (`close_after`) is closed once answered, so the
+    /// server reads the file from the working tree again for every other request (PLAN §18.2).
     #[allow(clippy::too_many_arguments)]
     fn request<T: Send + 'static>(
         &mut self,
@@ -657,7 +834,10 @@ impl CodeIntel {
         text: Arc<str>,
         close_after: bool,
         timeout: Duration,
+        specs: Vec<&'static LanguageServerSpec>,
+        provider: &'static str,
         ask: fn(&LspClient, &str, TextPosition) -> dv_lsp::Pending<T>,
+        is_something: fn(&T) -> bool,
         done: impl FnOnce(&mut Self, Option<Result<T, RequestError>>, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> InFlight {
@@ -667,53 +847,168 @@ impl CodeIntel {
         let worktree = self.worktree.clone();
         InFlight::new(move |arming: Arming| {
             cx.spawn(async move |this, cx| {
+                /// Where one server's part of the request is.
+                enum Part<T> {
+                    /// Its server is being found or starts.
+                    Waiting,
+                    /// Asked; the answer comes through the channel.
+                    Asked,
+                    /// Answered (`None`: no server, or one that doesn't do this).
+                    Done(Option<Result<T, RequestError>>),
+                }
                 let deadline = Instant::now() + timeout;
-                let found = loop {
-                    let lookup = this
-                        .update(cx, |_, cx| {
-                            servers.update(cx, |servers, cx| servers.lookup(&worktree, &path, cx))
+                let (answers, answered) = std::sync::mpsc::channel();
+                let mut parts: Vec<Part<T>> = specs.iter().map(|_| Part::Waiting).collect();
+                loop {
+                    for (index, spec) in specs.iter().copied().enumerate() {
+                        if !matches!(parts[index], Part::Waiting) {
+                            continue;
+                        }
+                        let lookup = this
+                            .update(cx, |_, cx| {
+                                servers.update(cx, |servers, cx| {
+                                    servers.lookup(&worktree, &path, spec, cx)
+                                })
+                            })
+                            .unwrap_or(Lookup::Unavailable);
+                        parts[index] = match lookup {
+                            Lookup::Ready { client, .. } if !provides(&client, provider) => {
+                                Part::Done(None)
+                            }
+                            Lookup::Ready {
+                                client,
+                                language_id,
+                                ..
+                            } => {
+                                let (path, text, arming) =
+                                    (path.clone(), text.clone(), arming.clone());
+                                let answers = answers.clone();
+                                cx.background_spawn(async move {
+                                    let answer = if arming.is_abandoned() {
+                                        None
+                                    } else if let Err(error) =
+                                        client.open_document(&path, language_id, text)
+                                    {
+                                        Some(Err(error))
+                                    } else {
+                                        let pending = ask(&client, &path, position);
+                                        let answer = if arming.arm(&pending) {
+                                            Some(pending.wait())
+                                        } else {
+                                            drop(pending);
+                                            None
+                                        };
+                                        if close_after {
+                                            client.close_document(&path);
+                                        }
+                                        answer
+                                    };
+                                    let _ = answers.send((index, answer));
+                                })
+                                .detach();
+                                Part::Asked
+                            }
+                            Lookup::Unavailable => Part::Done(None),
+                            Lookup::Pending if Instant::now() >= deadline => Part::Done(None),
+                            Lookup::Pending => Part::Waiting,
+                        };
+                    }
+                    while let Ok((index, answer)) = answered.try_recv() {
+                        parts[index] = Part::Done(answer);
+                    }
+                    let late = Instant::now() >= deadline;
+                    // The first useful answer in order, unless an earlier server may still
+                    // give one (until the deadline).
+                    let mut winner = None;
+                    let mut open = false;
+                    for (index, part) in parts.iter().enumerate() {
+                        match part {
+                            Part::Done(Some(Ok(found))) if is_something(found) => {
+                                winner = Some(index);
+                                break;
+                            }
+                            Part::Done(_) => {}
+                            Part::Waiting | Part::Asked if late => {}
+                            Part::Waiting | Part::Asked => {
+                                open = true;
+                                break;
+                            }
+                        }
+                    }
+                    if winner.is_none() && open {
+                        cx.background_executor().timer(SERVER_POLL).await;
+                        continue;
+                    }
+                    let mut answers: Vec<Option<Result<T, RequestError>>> = parts
+                        .into_iter()
+                        .map(|part| match part {
+                            Part::Done(answer) => answer,
+                            Part::Waiting | Part::Asked => None,
                         })
-                        .unwrap_or(Lookup::Unavailable);
-                    match lookup {
-                        Lookup::Ready {
-                            client,
-                            language_id,
-                            ..
-                        } => break Some((client, language_id)),
-                        Lookup::Unavailable => break None,
-                        Lookup::Pending if Instant::now() >= deadline => break None,
-                        Lookup::Pending => cx.background_executor().timer(SERVER_POLL).await,
-                    }
-                };
-                let answer = match found {
-                    None => None,
-                    Some((client, language_id)) => {
-                        let job = cx.background_spawn(async move {
-                            if arming.is_abandoned() {
-                                return None;
-                            }
-                            if let Err(error) = client.open_document(&path, language_id, text) {
-                                return Some(Err(error));
-                            }
-                            let pending = ask(&client, &path, position);
-                            let answer = if arming.arm(&pending) {
-                                Some(pending.wait())
-                            } else {
-                                drop(pending);
-                                None
-                            };
-                            if close_after {
-                                client.close_document(&path);
-                            }
-                            answer
-                        });
-                        job.await
-                    }
-                };
-                this.update(cx, |this, cx| done(this, answer, cx)).ok();
+                        .collect();
+                    let best = match winner {
+                        Some(index) => answers[index].take(),
+                        None => {
+                            let empty = answers.iter().position(|a| matches!(a, Some(Ok(_))));
+                            let failed = answers.iter().position(Option::is_some);
+                            empty.or(failed).and_then(|index| answers[index].take())
+                        }
+                    };
+                    this.update(cx, |this, cx| done(this, best, cx)).ok();
+                    return;
+                }
             })
         })
     }
+}
+
+/// Whether `client`'s server does `provider` (`hoverProvider`, `definitionProvider`,
+/// `referencesProvider`): its capabilities say so with anything but `false` or `null`.
+fn provides(client: &LspClient, provider: &str) -> bool {
+    let capabilities = client.capabilities();
+    match capabilities.get(provider) {
+        Some(serde_json::Value::Bool(false)) | Some(serde_json::Value::Null) => false,
+        Some(_) => true,
+        // A server that said nothing at all about its capabilities is asked anyway.
+        None => capabilities.as_object().is_none_or(|map| map.is_empty()),
+    }
+}
+
+/// The specs that serve `path`, in the registry's order: who a definition or references asks.
+fn servers_of(path: &str) -> Vec<&'static LanguageServerSpec> {
+    dv_lsp::languages::for_path(path)
+        .map(|(spec, _)| spec)
+        .collect()
+}
+
+/// The token a hover at byte `offset` of `text` is about (PLAN §18.1 "Hover"): `None` on
+/// whitespace, a quote or past the end; else the identifier the character there is part of
+/// (alphanumerics, `_`, `$`; a number too, `500` of `bg-red-500`), else the run of characters
+/// around it that aren't whitespace or quotes (`-` of `bg-red-500`, `[--x:1px]`). The server is
+/// asked at the pointer's own character, and its answer's range takes over the card's place
+/// ([`HoverCard::span`]).
+pub fn hover_token_at(text: &str, offset: usize) -> Option<Range<usize>> {
+    let ch = text.get(offset..)?.chars().next()?;
+    let breaks = |ch: char| ch.is_whitespace() || matches!(ch, '"' | '\'' | '`');
+    if breaks(ch) {
+        return None;
+    }
+    let within: fn(char) -> bool = if is_identifier_char(ch) {
+        is_identifier_char
+    } else {
+        |ch| !(ch.is_whitespace() || matches!(ch, '"' | '\'' | '`'))
+    };
+    let start = text[..offset]
+        .char_indices()
+        .rev()
+        .take_while(|&(_, ch)| within(ch))
+        .last()
+        .map_or(offset, |(at, _)| at);
+    let end = text[offset..]
+        .char_indices()
+        .find(|&(_, ch)| !within(ch))
+        .map_or(text.len(), |(at, _)| offset + at);
+    Some(start..end)
 }
 
 /// Whether `ch` can be part of an identifier a language server answers about: alphanumerics,

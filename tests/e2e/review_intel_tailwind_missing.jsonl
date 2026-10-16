@@ -1,0 +1,18 @@
+{"scenario": {"window_size": "1440x900", "lsp": {"typescript": "fixtures/lsp/review_intel_stacked_ts.json"}, "description": "A Tailwind v4 project without its language server (PLAN §18.4, §18.5): TypeScript starts, Tailwind CSS shows as missing in the status bar (under automation only DV_LSP_<ID> finds servers), its details say why and how to get it (bun add -g @tailwindcss/language-server, or npm's) and offer Check again, which looks again (`intel.rechecks`; still missing here); a hover shows TypeScript's answer alone; a screenshot of the details."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "settle"}
+{"cmd": "seed_repo", "name": "web", "steps": [{"write": "package.json", "text": "{\"name\": \"web\", \"devDependencies\": {\"typescript\": \"^7\", \"tailwindcss\": \"^4\"}}\n"}, {"write": "tsconfig.json", "text": "{}\n"}, {"write": "src/app.css", "text": "@import \"tailwindcss\";\n"}, {"write": "src/Card.tsx", "text": "export function Card({ title }: { title: string }) {\n  return <div className=\"rounded-lg p-2\">{title}</div>;\n}\n"}, {"commit": "base"}, {"write": "src/Card.tsx", "text": "export function Card({ title }: { title: string }) {\n  return <div className=\"rounded-lg bg-red-500 p-4\">{title}</div>;\n}\n"}]}
+{"cmd": "open_review", "path": "${data_dir}/repos/web"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/servers", "len": 1}, {"pointer": "/intel/servers/0/id", "equals": "typescript"}, {"pointer": "/intel/missing", "len": 1}, {"pointer": "/intel/missing/0/id", "equals": "tailwindcss"}, {"pointer": "/intel/missing/0/reason", "equals": "DV_LSP_TAILWINDCSS isn't set, and automated runs find language servers only through it"}, {"pointer": "/intel/missing/0/hint", "contains": "bun add -g @tailwindcss/language-server"}, {"pointer": "/intel/missing/0/hint", "contains": "npm install -g @tailwindcss/language-server"}]}
+{"cmd": "mouse_move", "target": "code/src/Card.tsx/new/2/15"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/hover/sections", "len": 1}, {"pointer": "/intel/hover/sections/0/server", "equals": "typescript"}]}
+{"cmd": "mouse_move", "target": "stream/line/src/Card.tsx/old/3"}
+{"cmd": "settle", "expect": {"pointer": "/intel/hover", "equals": null}}
+{"cmd": "click", "target": "statusbar/lsp/tailwindcss"}
+{"cmd": "settle"}
+{"cmd": "query", "prefix": "statusbar/lsp/details", "expect_result": {"pointer": "", "len": 1}}
+{"cmd": "click", "target": "statusbar/lsp/tailwindcss/check_again"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/rechecks", "equals": 1}, {"pointer": "/intel/missing/0/id", "equals": "tailwindcss"}]}
+{"cmd": "query", "prefix": "statusbar/lsp/details", "expect_result": {"pointer": "", "len": 1}}
+{"cmd": "screenshot", "name": "tailwind-missing"}

@@ -445,13 +445,19 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   old side) whose old column is the round's snapshot — leaves it undrawn with its text and
   lines, until all changes show it again; `C` then switches to all changes and takes it up. Its
   file leaving the review (the agent reverted it) drops it.
-- **Hover card** (PLAN §18.1 "Hover"): the pointer resting 350 ms on an identifier in code (the
-  stream or the file view), or `Ctrl I` at the caret, hangs a card 2 below the token's line,
-  starting at the token's left edge (moved in to stay 8 inside the window): the `overlay` surface
+- **Hover card** (PLAN §18.1 "Hover"): the pointer resting 350 ms on code (the stream or the
+  file view; any character but whitespace and quotes), or `Ctrl I` at the caret, hangs a card 2
+  below what it is about, the servers' range (a whole class name) or else the token, starting
+  at its left edge (moved in to stay 8 inside the window): the `overlay` surface
   with its `overlayLine` outline and the overlay shadow, radius `card` (10), 280 to 560 wide. Its
   body (12/8 padding, scrolling past 360 high) is the server's answer as Markdown, its fenced
   signature highlighted as code, inline code on `icodeBg`, links in `accentText` (a file link opens
-  the file there, a web link the browser); the text can be selected. Under a hairline, two small
+  the file there, a web link the browser); the text can be selected. When several servers serve
+  the file (a `.tsx`: TypeScript and Tailwind CSS) their answers stack in the registry's order
+  (PLAN §18.4), the card opening with the first that says anything and growing as the others
+  land: a hairline (`line`, 8 above and below) between two answers and, while more than one is
+  shown, each headed by its server's name ("TypeScript", "Tailwind CSS") in `fg3` at 12 (the
+  secondary text), 4 above its answer; one answer alone has no heading. Under a hairline, two small
   buttons — **Go to definition** `F12` and **Find references** `Shift F12` with their keycaps — and,
   when the server read a side other than the working tree, "Read against the working tree" in
   `fg3` at the right. It stays while the pointer is over the token or the card and closes 300 ms
@@ -500,8 +506,8 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   its state, **Retry** (a small button) on a failed one with why it failed in `red`, then "Command"
   and the command line in mono on `icodeBg`, "From DV_LSP_TYPESCRIPT" (or "the project's own
   (7.0.2)", "settings.json") in `fg3`, and "Last output" with its last stderr lines in mono; a
-  missing one's say "TypeScript isn't available", why (where it looked in `fg3` under it), and "How
-  to get it". A click on the item again, or `Esc`, closes them.
+  missing one's say "TypeScript isn't available", why (where it looked in `fg3` under it), "How
+  to get it", and a small **Check again** button (the ↻ glyph) 6 below. A click on the item again, or `Esc`, closes them.
 - **Code notice** (PLAN §18.1 "Go to definition"): a place that can't be shown (outside the
   repository) heads the main area as a one-line banner (§4.4), "Defined outside the repository:
   `<path>:<line>`", with its detail and **Dismiss**; going to another place takes it away.

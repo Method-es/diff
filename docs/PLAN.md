@@ -2114,8 +2114,16 @@ to check one.
   is in its path, ignoring case, names matching before directories, the review's changed files
   first among equal matches, the rest by path. Filtering runs in memory on each keystroke (20,000
   paths take a few milliseconds). Not over the "Finish round" sheet.
-- **Hover.** The pointer resting 350 ms on an identifier (alphanumerics, `_` and `$`, not a
-  number), or `Ctrl I` at the caret, asks the file's servers. The card under the token shows the
+- **Hover.** The pointer resting 350 ms on any character of code but whitespace and quotes, or
+  `Ctrl I` at the caret's identifier, asks the file's servers, at the pointer's own character
+  (so every piece of a class name in a string asks Tailwind CSS: `bg-red-500`'s `500`,
+  `md:hover:text-sm`, `[--x:1px]`). Until an answer comes the token is the identifier there
+  (alphanumerics, `_` and `$`, numbers included), else the run of characters around it that
+  aren't whitespace or quotes (`dv_ui::intel::hover_token_at`); the card then hangs under the
+  range the servers answered for (the union of their ranges on that line that hold the asked
+  character: Tailwind's is the whole class), and the pointer anywhere in it keeps the card
+  without asking again. Go to definition, references and `Ctrl I` keep the identifier rule (a
+  number is no symbol). The card under the token shows the
   signature as highlighted code and the docs as Markdown (`dv_ui::markdown`, sanitised; a link to
   a file of the repository opens it as go to definition does, `#L12` naming its line; any other
   link goes through `system::open_url`). It stays while the pointer is over the token or the
@@ -2312,10 +2320,20 @@ A new crate, **`dv_lsp`** (never gpui), holds:
   options and settings. Each spec is one module in `dv_lsp::languages`, registered in one list
   (`languages::ALL`); a spec applies to a file it serves when one of its root markers is in the
   file's directory or above it, up to the worktree root (`typescript`'s: `tsconfig.json`,
-  `jsconfig.json`, `package.json`).
+  `jsconfig.json`, `package.json`; a spec without markers applies in every directory), and
+  when it passes the spec's worktree check if it has one (`tailwindcss`'s: the worktree uses
+  Tailwind), asked once per worktree and remembered until the resolver forgets.
   Adding a language is one module and its tests. Several servers can serve one file (a `.tsx`:
-  TypeScript and Tailwind CSS). Hover cards stack their answers in the list's order; definition
-  and references take the first server that answers with anything.
+  TypeScript and Tailwind CSS; a stylesheet: Tailwind CSS and CSS). A hover asks every one of
+  them at once, and the card opens with the first answer that says anything and takes each
+  other one as it lands, stacked in the list's order (`languages::ALL`: `typescript`,
+  `tailwindcss`, `css`) whatever order they landed in; a server whose answer is empty or fails
+  adds nothing. Definition and references skip the servers whose capabilities don't offer them
+  (`definitionProvider`, `referencesProvider`; hover likewise `hoverProvider`), ask the rest at
+  once, and take the first answer with anything in the list's order: an earlier server that
+  hasn't answered yet holds a later one's answer back until it answers or the request's one
+  deadline passes (then the first useful answer in order). With nothing useful, an empty answer
+  over an error.
 
 **Resolvers** run in order, each a function of the repo's files read through the backend, so the
 answer is the same wherever the repo lives:
@@ -2349,30 +2367,96 @@ answer is the same wherever the repo lives:
    TypeScript lacks its platform package is missing with that said. The server serves the
    worktree root, so files that resolve the same executable share one server.
 2. **Settings.** A command configured for that server (`settings.json`, `lsp.<id>.command`): an
-   argument list, never a shell string. Its program is an absolute path where the repo lives (a
-   bare name waits for `PATH`, step 4, and is reported as missing until then);
-   `dv_lsp::LspSettings` reads the `lsp` object leniently, and the app passes it in.
-3. **PATH.** The executable on `PATH`. In a distro this is the login shell's `PATH`, read once
-   per connection (`$SHELL -lc 'printf %s "$PATH"'`): the backend runs under `wsl.exe --exec`
-   without the user's profile, and that profile is where bun, nvm and the like add their tools.
-4. **None.** The status bar names the missing server and how to get it (§18.5); so does the
+   argument list, never a shell string. Its program is an absolute path where the repo lives,
+   or a bare name looked up on `PATH` (3) and run as found there (missing, saying so, when
+   `PATH` lacks it); for a JavaScript server a program ending in `.js`, `.mjs` or `.cjs` runs
+   with the runtime (below). Absolute means as the repository's machine spells paths: POSIX in a
+   distro, Windows locally (`lsp.runtime` likewise). `dv_lsp::LspSettings` reads the `lsp` object leniently, and the app
+   passes it in.
+3. **PATH.** The executable on `PATH`, the first folder that has it (`dv_lsp::resolve::host`):
+   on Windows only `<name>.exe`, never a batch file, which `spawn_stdio` refuses. Locally the
+   `PATH` is this process's. In a distro the backend runs under `wsl.exe --exec` without the
+   user's profile, and the profile is where bun, nvm and the like add their tools; a login
+   shell isn't enough either, since bun's installer and nvm edit `.zshrc` / `.bashrc`, which
+   only an interactive shell reads (checked 2026-10-17 on the owner's Ubuntu: `$SHELL` is
+   `/usr/bin/zsh`, `zsh -lc` has no `~/.bun/bin`, `zsh -lic` has, in 0.4 s). So the app reads
+   the user's shell once per connection (`dv_lsp::resolve::shell`, through `spawn_stdio`): it
+   runs `/usr/bin/env -0` (plain `env` where `-0` isn't known) for the backend's `SHELL`, `HOME`
+   and `PATH` (the shell from the user's `/etc/passwd` line when `SHELL` is unset), then
+   `<shell> -l -i -c '<print>'` through `/bin/sh` with stdin from `/dev/null`, and takes `PATH`
+   (and `BUN_INSTALL`) from between two markers made for the call (printed with `printf` and
+   `printenv`, which every shell runs alike, the markers in parts around a nonce the environment
+   carries, so a shell echoing its commands can't fake one), since an interactive shell's
+   startup files print banners and terminal titles; the shell is killed as soon as the end
+   marker is in, else after 4 s; failing that `-i -c` (csh and tcsh take `-l` only alone), then
+   `-l -c`, then the backend's own `PATH` (checked 2026-10-17 on the owner's zsh: 0.3 s). Entries under `/mnt/<drive>` (WSL's appended Windows folders, whose
+   programs interop would run as Windows executables, `/mnt/d/Software/diff/dist`'s old dv
+   among them) and relative ones are left out. The result is kept per connection and server
+   process (`hello`'s pid), each with a lock of its own held while it is read (two reviews on
+   one distro read it once; a slow distro holds up no other), an earlier server's entry dropped
+   when its connection comes back as another and every entry of a connection no worktree uses
+   any more; a connection that comes back is read again, and when the `PATH` changed the
+   resolver forgets and every directory resolves again. **Every server runs with that `PATH`**
+   (locally this process's): the string as given, unfiltered, set as the process's `PATH`
+   (`ServerCommand::env`), so the shims a server or its runtime goes through find what they call
+   (asdf's `node` is `exec asdf exec "node"`, with `asdf` in `~/.local/bin`; pnpm's shims run
+   `node`), which under the backend's own `PATH` exit 127. A loopback
+   server on Windows is this machine, its `PATH` this process's; an automated run reads none
+   (it finds servers only through `DV_LSP_<ID>`, §18.5).
+4. **Bun global.** A JavaScript server's package in bun's global folder (below).
+5. **None.** The status bar names the missing server and how to get it (§18.5); so does the
    doctor (§12).
+
+What `PATH`, bun's global folder and the runtime give doesn't depend on the file's directory,
+so each is found once per spec (a WSL repository's probes are calls to its distro) and
+forgotten with the rest.
 
 **The override.** `DV_LSP_<ID>` (the spec's id upper case, `-` as `_`: `DV_LSP_TYPESCRIPT`)
 names an executable, an absolute path where the repo lives, that replaces every resolver, as
 `DV_GH` replaces `gh` (§14.2); `DV_LSP_<ID>_ARGS`, a JSON array of strings, replaces the spec's
 arguments. A relative program, or arguments that aren't such an array, make the server missing,
 saying which (`settings::OverrideError`). It still applies only where the
-spec does (its root markers). Tests and scenarios point it at `mock_lsp` (§18.7). `PATH` comes
-with the JavaScript servers in step 4.
+spec does (its root markers and worktree check). Tests and scenarios point it at `mock_lsp`
+(§18.7).
 
-**JavaScript servers.** A server written in JavaScript (a spec marks it `runtime: js`) resolves
-to its package's entry script, the file its `bin` names, not to the `bin` shim, whose `#!/usr/bin/env
-node` line would pick the runtime. dv runs that script with a runtime of its own choosing: **bun**
-first, then **node**, each found through settings (`lsp.runtime`), then `PATH` as above, then bun's
-default install (`~/.bun/bin/bun`). A package installed with `bun add -g` is found in bun's global
-folder (`~/.bun/install/global/node_modules`) as well as through `PATH`. A spec whose server is
-known to break under bun can name node only.
+**JavaScript servers** (`dv_lsp::resolve::js`). A server written in JavaScript (a spec's
+`runtime` is `Js`, naming its package) resolves to its package's entry script, the file its
+`package.json` `bin` names under the spec's command name (a `bin` that is a string is the
+package's only one), not to the `bin` shim, whose `#!/usr/bin/env node` line would pick the
+runtime. Where the package is found:
+
+- **project:** Node's resolution of the package from the file's directory, as TypeScript's;
+- **PATH:** on POSIX the hit's real path (bun's `~/.bun/bin/<bin>` and npm's global `bin` are
+  links into the package), then the nearest `package.json` above it with the package's name;
+  a shell script that is a package manager's shim (pnpm's global `bin`, npm's `cmd-shim`:
+  `exec node "$basedir/…"`) runs its last quoted `$basedir/…` path that isn't node, relative
+  to the folder `PATH` has the shim in, traced to its package the same way; a hit outside the
+  package that is a script (`#!` naming node or bun) is that script, and anything else (a
+  wrapper that picks its own runtime) runs as it is. On Windows npm's shim is `<bin>.cmd`: its
+  last quoted `%dp0%\…` (or `%~dp0\…`) path that isn't `node.exe` or another batch file
+  (yarn's calls the `.cmd` in its `.bin`, not followed) is the script, traced to its package
+  the same way, else the package is found beside the shim in `node_modules`; a `.exe` on `PATH` (bun's Windows shims) is never taken for a JavaScript
+  server, whose bun install is found through the global folder;
+- **bun global:** `<bun>/install/global/node_modules/<package>`, `<bun>` being `BUN_INSTALL`
+  or `~/.bun` (the distro user's home, from the shell read above), where `bun add -g` puts it.
+
+dv runs the script with a runtime of its own choosing: `lsp.runtime` in settings (a program,
+an absolute path or a name looked up on `PATH`, or an argument list whose rest goes before the
+script); else **bun** on `PATH`, else bun's default install (`<bun>/bin/bun`, `bun.exe` on
+Windows); else **node** on `PATH`. A spec whose server breaks under bun takes node only
+(`JsServer::node_only`): bun is skipped wherever it comes from, `lsp.runtime` included. The
+command is `<runtime> [runtime args] <script> <spec args>`. A server found without a runtime is
+missing ("Tailwind CSS runs with bun or node, and neither is on PATH or in ~/.bun/bin"; install
+bun or Node.js, or set `lsp.runtime`), and an `lsp.runtime` dv can't use says so
+(`resolve::js::RuntimeError`).
+
+A missing JavaScript server says where it looked ("Tailwind CSS's language server isn't
+installed (no node_modules/@tailwindcss/language-server in /a or /; not on PATH; not in
+~/.bun/install/global/node_modules)") and how to get it on this machine: with bun there,
+"Install it with bun add -g @tailwindcss/language-server (or npm install -g …), or set
+lsp.tailwindcss.command in settings.json"; with node only, npm's command alone; with neither,
+"Install bun (bun.sh) or Node.js, then …". In an automated run the hint is the spec's own,
+naming both.
 
 dv installs neither language servers nor runtimes. The first implementation's Node and vtsls
 provisioning stays behind (§15).
@@ -2382,11 +2466,35 @@ The first languages:
 | Spec | Files | Server | Resolvers |
 |---|---|---|---|
 | `typescript` | `.ts .tsx .mts .cts .js .jsx .mjs .cjs` | TypeScript 7+'s native `tsc --lsp --stdio` | project, settings |
-| `tailwindcss` | `.tsx .jsx .html .css` in a project whose CSS imports `tailwindcss` (v4) or with a `tailwind.config.*` (v3) | `tailwindcss-language-server --stdio` (`@tailwindcss/language-server`, JavaScript) | project, settings, PATH, bun global |
-| `css` | `.css .scss .less` | `vscode-css-language-server --stdio` (`vscode-langservers-extracted`, JavaScript) | settings, PATH, bun global |
+| `tailwindcss` | the server's own defaults: `.html .vue .svelte .astro`, `.css .scss .less`, `.js .jsx .mjs .cjs .ts .tsx .mts .cts`, in a worktree that uses Tailwind (below) | `tailwindcss-language-server --stdio` (`@tailwindcss/language-server`, JavaScript) | project, settings, PATH, bun global |
+| `css` | `.css .scss .less`, every directory | `vscode-css-language-server --stdio` (`vscode-langservers-extracted`, JavaScript) | project, settings, PATH, bun global |
+
+**Tailwind CSS** (`languages::tailwindcss`) applies to a worktree that uses it: a stylesheet
+that imports it (v4's `@import "tailwindcss"`, also `"tailwindcss/…"` and `url(…)`, or v3's
+`@tailwind` directives) or a `tailwind.config.{js,cjs,mjs,ts,cts,mts}` (v3). The check lists the
+worktree's `*.css` and `*tailwind.config.*` through git (`ls-files --cached --others
+--exclude-standard`), then one `git grep -l -I --untracked -E` over every stylesheet (`*.css`,
+`*.scss`, `*.sass`, `*.less`, `*.pcss`, `*.postcss`) for the import, nothing under a
+`node_modules`, with no cap. It is remembered until the resolver forgets: a
+`tailwind.config.*` changing makes it forget (`affects_resolution`), and while the answer is
+no, so does a stylesheet changing (`WorktreeCheck::watches`). The whole worktree gets one
+server, rooted at the worktree: the server finds each project's stylesheet and the files it
+covers itself, so a monorepo's component package that another package's stylesheet scans is
+served too (the owner's monorepo: `apps/web/src/styles/tailwind.css` imports it, checked
+2026-10-17). It answers `workspace/configuration`'s `tailwindCSS` section with the defaults the
+extension documents (hovers, suggestions and validation on, `class` / `className` / `ngClass` /
+`class:list`, a 16 px root font size, the lint levels), with the class functions the common
+helpers name (`cn`, `cva`, `clsx`, `cx`, `tw`: shadcn's `cn` and `cva` are in the owner's
+project; the extension's own default is none), so their string arguments read as class lists,
+and `editor` with a tab size of 2.
+**CSS** (`languages::css`) answers `css`, `scss` and `less` with validation and hover
+documentation, `provideFormatter` off; it comes last, as its definition found nothing useful in a
+Tailwind v4 stylesheet (§18.8).
 
 A project on TypeScript 6 or older needs `typescript-language-server` (JavaScript), found through
-settings, `PATH` or bun's global folder. It is a spec like the others; its tests come when a project needs it.
+settings, `PATH` or bun's global folder. It isn't a spec yet: it serves the same files as
+`typescript`, so it needs a rule for which of the two a project gets (by the TypeScript version
+the project resolves), which comes when a project needs it.
 
 ### 18.5 Lifecycle
 
@@ -2406,8 +2514,10 @@ settings, `PATH` or bun's global folder. It is a spec like the others; its tests
   reports `node_modules` (git ignores it), so the app passes each batch's paths to
   `Resolver::files_changed`, which forgets everything when one is a `package.json`, a lockfile
   (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock`, …), `.npmrc`, a
-  `tsconfig.json` / `jsconfig.json` or anything under a `node_modules`, and resolves afresh
-  before each restart (`Resolver::resolve_fresh`), so an install between starts is seen.
+  `tsconfig.json` / `jsconfig.json`, a `tailwind.config.*` or anything under a `node_modules`
+  (and with them what `PATH`, bun's global folder, the runtime and the worktree checks gave),
+  and resolves afresh before each restart (`Resolver::resolve_fresh`), so an install between
+  starts is seen.
 - A hover times out after 5 s, a definition after 10 s, references after 30 s. A request whose
   file's server is still being found or starting waits for it within its own timeout.
 - **Off the UI thread.** `LspClient::start`, a request's wait, `stop` and dropping a client all
@@ -2420,7 +2530,10 @@ settings, `PATH` or bun's global folder. It is a spec like the others; its tests
   worktree's resolver and servers, shared by every review open on it. `(spec, directory)` pairs
   are resolved in the background, once, when the review's file list lands (its own files) and
   when a request asks about a file not seen yet (a file view of another file); a remote
-  repository's platform is its server's `hello`. The watch's batches (`SessionEvent::
+  repository's platform is its server's `hello`, and its `PATH` its user's shell's (§18.4,
+  resolver 3), read in the same background step before the first resolution and again when the
+  connection comes back (once per server process; a changed `PATH` resolves every directory
+  again). The watch's batches (`SessionEvent::
   WorktreeChanged`) reach `Resolver::files_changed`, which forgets the directories' answers when
   an install may have changed them (the running servers go on), and every ready server's
   `didChangeWatchedFiles`, each path a change or, gone, a deletion, worked out in the background.
@@ -2433,11 +2546,22 @@ settings, `PATH` or bun's global folder. It is a spec like the others; its tests
   (whether each is gone) before telling it.
 - **Automated runs** (the app under `--automation`, `dv_ui`'s tests) find servers only through
   `DV_LSP_<ID>` (`Resolver::overrides_only`; a scenario's `lsp` header sets it): the project,
-  settings and `PATH` resolvers are off, so no automated run starts a real server a fixture's
-  surroundings hold (a `node_modules` above `target/`); without the override a TypeScript file
-  shows TypeScript as missing, saying so.
+  settings, `PATH` and bun global resolvers are off and no distro's shell is read, so no
+  automated run starts a real server a fixture's surroundings hold (a `node_modules` above
+  `target/`); without the override a TypeScript file shows TypeScript as missing, saying so (a
+  spec's worktree check still decides whether it applies: a Tailwind project without
+  `DV_LSP_TAILWINDCSS` shows Tailwind CSS as missing, one without Tailwind nothing).
 - The status bar names each server and its state: loading (with its progress), ready, failed (a
-  click shows the command line, the last stderr lines and **Retry**), or missing (how to get it).
+  click shows the command line, the last stderr lines and **Retry**), or missing (how to get it,
+  per machine, §18.4, and **Check again**).
+- **A missing server installed meanwhile.** A global install changes nothing in the worktree,
+  so nothing the watch reports makes the resolver forget. **Check again** (the missing
+  server's details) reads the machine's `PATH` afresh (a distro's shell again), forgets
+  everything and resolves every directory again; the same happens on its own, while a server
+  is missing, when another review opens on the worktree and when the window comes back to the
+  front, at most every 30 s (`LanguageServers::recheck_missing`, `RECHECK_EVERY`). A `.tsx` in a Tailwind project shows both "TypeScript ready" and
+  "Tailwind CSS ready"; Tailwind CSS starts with the review like every server, so its scan of
+  the project (about 9 s, §18.8) is done, its progress shown, before the first hover asks.
 
 ### 18.6 In the app
 
@@ -2450,7 +2574,7 @@ and does the navigation its events ask for (`IntelEvent::GoTo`, `ShowReferences`
 `file_view`, the `references` panel tab, the hover card and the find bar. The stream and the file
 view map the pointer to a line and a byte offset through each line's painted slice as it was
 shaped (`gpui::ShapedLine`) and a map from its bytes to the source line's (tabs expand): the
-columns they paint, whatever width a glyph takes. Under automation, `state` shows the open hover's text, the file view (`file_view`: path, side,
+columns they paint, whatever width a glyph takes. Under automation, `state` shows the open hover's text, its sections (one per server that answered, in order), the byte it asked at and its span, how many times missing servers were looked for again, the file view (`file_view`: path, side,
 top line, line count, whether the review changes it and which lines, whether it is loading), the
 history (`history`: positions behind and ahead), the file finder (`file_finder`: query, rows,
 count, selection), the references rows, the find bar (`find`: query, current match, count, whether every
@@ -2497,12 +2621,36 @@ for hovering, clicking and dragging; they are recorded only while a capture is a
   list shows, hover reads the stream's text, a request the UI abandons is cancelled while its
   thread waits, definition into the file view and the stream and outside the repository,
   references with the changed rows, a crash's restarts until failed and Retry, a missing server,
-  the linger's stop (a `shutdown`, never a restart), and the keys at the caret.
+  the linger's stop (a `shutdown`, never a restart), and the keys at the caret; with two fake
+  servers (`tests/stacked.rs`), a `.tsx` hover stacking TypeScript's late answer above Tailwind
+  CSS's early one in the same card, a server that says nothing leaving the card to the other,
+  an earlier server's late definition winning over a later one's early one, a server without
+  `definitionProvider` never asked, a request abandoned while one server still answers
+  cancelling that one only, a hover's token at the pointer's character and the card's span
+  from the servers' ranges, **Check again** and the focus recheck finding a server installed
+  meanwhile, and a Tailwind project without its server showing it missing.
 - Resolver tests run on fixture trees with the npm, pnpm and bun layouts (symlinks, `.bun/`), on
   Windows and in WSL, through `LocalBackend` and through `RemoteBackend` over an in-process
   server, with packages above the worktree root, a link into a store outside it, a link dv can't
   read, an emulated CPU's fallback and an install seen after `files_changed`; where the OS won't
-  make a symbolic link (Windows without developer mode) a test says so and passes.
+  make a symbolic link (Windows without developer mode) a test says so and passes. The
+  JavaScript servers' (`resolve/tests/js.rs`): Tailwind CSS from bun's global folder under bun's
+  default install, the project's copy first, a `PATH` link traced to its package and a wrapper
+  run as it is (POSIX), npm's `.cmd` shim read for its script and the package beside it
+  (Windows), `lsp.runtime` as a path, an argument list and a name, a node-only spec, the missing
+  server's hint with bun, node or neither, a server without a runtime, Tailwind's worktree check
+  (v3's config, v4's stylesheet found by `git grep`, untracked included, a stylesheet change
+  heard while the answer is no, through both backends), a native server on `PATH`, pnpm's POSIX
+  shim traced to its package and, run for real through `LocalBackend`, an asdf-style `node`
+  shim that finds `asdf` only on the shell's `PATH` (exit 127 without it).
+- **The shell-`PATH` reader** (`resolve/shell/tests.rs`): the markers among banners, a title
+  escape and CRLF line ends; against a scripted backend, the interactive login shell first, a
+  failing or hanging one falling back to `-l`, then the backend's `PATH`, then nothing; on Unix fake shells
+  run through `LocalBackend` (one that reads its stdin to the end, which only a closed stdin
+  ends, and one that hangs until killed). The real-WSL case (`tests/wsl_shell.rs`, run by
+  `script/check --linux`) runs the user's shell and fake shells in the sandboxed home through
+  the distro's `dv backend --stdio`: the sandbox has none of the user's startup files, so it
+  checks the markers and the fallbacks.
 - `spawn_stdio` is tested by the conformance suite (§14.2) against `LocalBackend` and over the
   loopback, in-process and as a child process: output, stdin, kill, exit, what a process started
   dying with it, the server's stdin ending, and the idle-close accounting; `backend_loopback`
@@ -2514,6 +2662,12 @@ for hovering, clicking and dragging; they are recorded only while a capture is a
   whenever the variable is set; it is not an owner-only live check. Checked 2026-10-17 in WSL
   Ubuntu against the owner's TypeScript 7.0.2: the whole test took about 0.1 s, ending with a clean
   `stop` (`Stopped`, within the grace period, nothing killed).
+- **The real JavaScript servers**, opt-in the same way (`crates/dv_lsp/tests/real_js.rs`): with
+  `DV_TEST_JS_RUNTIME` naming bun or node and `DV_TEST_TAILWIND` naming Tailwind's entry script
+  (`bin/tailwindcss-language-server`), a `.tsx` class's hover shows its CSS; with `DV_TEST_CSS`
+  naming `bin/vscode-css-language-server`, a property's hover documents it. Not yet run against
+  the real servers: neither is installed on the owner's machine (2026-10-17), and nothing
+  automated installs one.
 
 ### 18.8 Order within phase 5
 
