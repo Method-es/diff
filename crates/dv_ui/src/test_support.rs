@@ -78,6 +78,9 @@ fn is_settled(shell: &Entity<Shell>, cx: &gpui::App) -> bool {
         && shell
             .session()
             .is_none_or(|session| session.read(cx).is_settled())
+        && shell
+            .intel()
+            .is_none_or(|intel| intel.read(cx).is_settled(cx))
 }
 
 /// Runs the app, letting real time pass for background git work and the watch, until

@@ -24,8 +24,8 @@ usage: e2e [options] <scenario.jsonl | directory | glob>...
 
 Runs each scenario against a fresh app process (--automation
 --automation-background --data-dir <out>/<scenario>/data --window-size WxH,
-with DV_DATA_DIR set to the same data dir and DV_GH to mock_gh) and exits
-non-zero if any fails.
+with DV_DATA_DIR set to the same data dir and DV_GH to mock_gh, a header's
+lsp files played by mock_lsp) and exits non-zero if any fails.
 
 options:
   --app <exe>          app under test (default: <target>/debug/dv, .exe on
@@ -33,6 +33,8 @@ options:
   --mock-gh <exe>      the fake gh every run's DV_GH points at; scenarios
                        with a \"gh\" header need it built (default:
                        <target>/debug/mock_gh, .exe on Windows)
+  --mock-lsp <exe>     the scripted language server a header's lsp files are
+                       played by (default: <target>/debug/mock_lsp)
   --filter <text>      only run scenarios whose name contains <text>
   --out <dir>          screenshots and logs (default: <target>/e2e); one run
                        at a time per directory
@@ -48,6 +50,7 @@ options:
 struct Cli {
     app: Option<PathBuf>,
     mock_gh: Option<PathBuf>,
+    mock_lsp: Option<PathBuf>,
     filter: Option<String>,
     out: Option<PathBuf>,
     step_timeout: Duration,
@@ -62,6 +65,7 @@ fn parse_cli(args: impl IntoIterator<Item = String>) -> Result<Option<Cli>> {
     let mut cli = Cli {
         app: None,
         mock_gh: None,
+        mock_lsp: None,
         filter: None,
         out: None,
         step_timeout: Duration::from_secs(30),
@@ -78,6 +82,7 @@ fn parse_cli(args: impl IntoIterator<Item = String>) -> Result<Option<Cli>> {
             "-h" | "--help" => return Ok(None),
             "--app" => cli.app = Some(value("--app")?.into()),
             "--mock-gh" => cli.mock_gh = Some(value("--mock-gh")?.into()),
+            "--mock-lsp" => cli.mock_lsp = Some(value("--mock-lsp")?.into()),
             "--filter" => cli.filter = Some(value("--filter")?),
             "--out" => cli.out = Some(value("--out")?.into()),
             "--timeout-ms" => cli.step_timeout = millis("--timeout-ms", &value("--timeout-ms")?)?,
@@ -154,6 +159,10 @@ fn real_main() -> Result<ExitCode> {
         mock_gh: absolute(
             cli.mock_gh
                 .unwrap_or_else(|| target.join("debug").join(exe("mock_gh"))),
+        ),
+        mock_lsp: absolute(
+            cli.mock_lsp
+                .unwrap_or_else(|| target.join("debug").join(exe("mock_lsp"))),
         ),
         out_root: absolute(cli.out.unwrap_or_else(|| target.join("e2e"))),
         workspace,

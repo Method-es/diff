@@ -1777,8 +1777,8 @@ Every gate runs locally through one script, `script/check` (bash; also used by a
 3. the gpui-boundary check (`cargo tree -e normal --target all`, §4): the headless crates with
    every feature, and `dv` without its default features
 4. `cargo test --workspace`
-5. a plain `cargo build -p dv -p mock_gh` (step 4's test build links the binaries with gpui's test
-   support), then the e2e scenarios (`cargo run -p gpui_automation --bin e2e -- tests/e2e`),
+5. a plain `cargo build -p dv -p mock_gh -p mock_lsp` (step 4's test build links the binaries
+   with gpui's test support), then the e2e scenarios (`cargo run -p gpui_automation --bin e2e -- tests/e2e`),
    background mode; `--fast` skips this step. `--foreground` also runs `tests/e2e/foreground/`,
    the scenarios that must take the focus (screen captures of the window materials, §14.2)
 6. `--linux`: inside WSL Ubuntu with `CARGO_TARGET_DIR` on ext4, `cargo test -p dv_core -p
@@ -2114,19 +2114,47 @@ to check one.
   is in its path, ignoring case, names matching before directories, the review's changed files
   first among equal matches, the rest by path. Filtering runs in memory on each keystroke (20,000
   paths take a few milliseconds). Not over the "Finish round" sheet.
-- **Hover.** The pointer resting 350 ms on an identifier, or `Ctrl I` at the caret, asks the
-  file's servers. The card under the token shows the signature as highlighted code and the docs
-  as Markdown (`dv_ui::markdown`, sanitised; a link to a file opens the file view, a web link goes
-  through `system::open_url`). It stays while the pointer is over the token or the card, so its
-  text can be selected, and offers **Go to definition** and **Find references**.
-- **Go to definition.** `Ctrl`+click, or `F12` at the caret. A location the stream shows (a
-  changed region of a listed file) scrolls the stream there; any other opens the file view there.
-  Several locations list in the references panel.
+- **Hover.** The pointer resting 350 ms on an identifier (alphanumerics, `_` and `$`, not a
+  number), or `Ctrl I` at the caret, asks the file's servers. The card under the token shows the
+  signature as highlighted code and the docs as Markdown (`dv_ui::markdown`, sanitised; a link to
+  a file of the repository opens it as go to definition does, `#L12` naming its line; any other
+  link goes through `system::open_url`). It stays while the pointer is over the token or the
+  card, closing 300 ms after the pointer left both (and at once on a scroll, a press in the code
+  or `Esc`), so its text can be selected (copied through the clipboard seam), and offers **Go to
+  definition** and **Find references**. Nothing shows while the answer is empty or the server
+  isn't there; the hover asked for before is cancelled when the pointer rests on another token.
+- **Go to definition.** `Ctrl`+click, or `F12` at the caret. Where a location shows
+  (`dv_ui::shell::intel`):
+  - in the file it was asked from, answered against that side's text (an old side, a round's
+    snapshot, the index: the text dv opened, §18.2): that side's line, in the pane it was asked
+    from (the stream, for a file it lists);
+  - in a review whose new side is the working tree (`working`, a branch checked out in its home
+    worktree, whose new side resolves to the working tree, §2.2): a line of a file the review
+    lists within three lines (the stream's context) of a changed line scrolls the stream there,
+    opening the gap around it (a listed file whose diff hasn't loaded loads first and is decided
+    then); any other location in the worktree opens the file view there, a file git ignores
+    included (a library's `.d.ts` under `node_modules` reads as an untracked file would,
+    `dv_core::diff::side_file`);
+  - in any other review (`staged`, a commit, a branch not checked out): the file view of the
+    file as the working tree holds it now, the text the server read ("as it stands now", §18.2;
+    the file view's working-tree mode, labelled "working tree", read-only: no comments, no
+    threads), ignored files included;
+  - outside the worktree: it can't be shown, and the main area's notice says where it is
+    ("Defined outside the repository: /usr/lib/…/lib.d.ts:10").
+
+  The caret goes to the symbol, and it is a jump the history keeps. An answer that lands after
+  the reviewer moved on (the view, the file or the line isn't where it was asked) is dropped.
+  Several locations list in the References tab ("Definitions"); none does nothing. A references
+  row and a hover card's file link go the same way.
 - **Find references.** `Shift F12` at the caret, or the hover card's button. The panel's
-  **References** tab (beside Files and Comments) lists them grouped by file in path order, each
-  row its line's text, highlighted, with the symbol marked. Rows on lines the review changed carry
-  the changed marker, and **In this review** keeps only those: "who else calls the function this
-  change rewrote, and did the agent update them?" A row goes there as go to definition does.
+  **References** tab lists them grouped by file in path order, each row its line's text (read from
+  the working tree as the server read it), highlighted, with the symbol marked. While a list is
+  open the panel heads its column with two tabs, **Review** (the file list and the comments) and
+  **References**; closing the list takes them away. Rows on lines the review changed (an added
+  line of its new side with that text) carry the changed marker, and **In this review** keeps
+  only those: "who else calls the function this change rewrote, and did the agent update them?"
+  A row goes there as go to definition does. The review's diffs of the files the rows are in load
+  for it (`ReviewSession::load_for_references`).
 - **Not included:** diagnostics (the agent's own checks report errors), completion, rename,
   code actions and formatting. dv never edits (§2.4).
 
@@ -2146,6 +2174,11 @@ text from its client instead. Mapped onto a review's sides:
   answered this way says "read against the working tree".
 - One version of a path is open at a time. Hovering the other side of the same file closes the
   document and opens that side's text.
+- A document that isn't the working tree's is closed once its request answers, so every other
+  request (another file's definition, a references search) reads that file from the working
+  tree again. One opened from the working tree's text stays open, and is closed when the review's
+  watch reports its path changed (an agent's edit; a server prefers an open document to the
+  disk and ignores `didChangeWatchedFiles` for it), so the next request opens it afresh.
 
 ### 18.3 Where servers run
 
@@ -2366,21 +2399,54 @@ settings, `PATH` or bun's global folder. It is a spec like the others; its tests
 - A server that exits restarts after 1, 2 and 5 s, then shows as failed until **Retry**, like a
   connection (§5.2); one that ran a minute or more before it ended counts afresh
   (`dv_lsp::Restarts`). Only `Exited` restarts; `Stopped` is a stop dv asked for (§18.4).
-  Requests in flight fail quietly: a hover just doesn't show.
+  Requests in flight fail quietly: a hover just doesn't show. A remote server that ended with its
+  connection (§18.3) waits for the connection to come back and starts then, its restart count
+  untouched; the app never starts a distro for it.
 - What resolves is remembered per directory (`dv_lsp::Resolver`). The review's watch never
   reports `node_modules` (git ignores it), so the app passes each batch's paths to
   `Resolver::files_changed`, which forgets everything when one is a `package.json`, a lockfile
   (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock`, …), `.npmrc`, a
   `tsconfig.json` / `jsconfig.json` or anything under a `node_modules`, and resolves afresh
   before each restart (`Resolver::resolve_fresh`), so an install between starts is seen.
-- A hover times out after 5 s, a definition after 10 s, references after 30 s.
+- A hover times out after 5 s, a definition after 10 s, references after 30 s. A request whose
+  file's server is still being found or starting waits for it within its own timeout.
+- **Off the UI thread.** `LspClient::start`, a request's wait, `stop` and dropping a client all
+  wait on the server, and for a WSL repository on the connection to its distro, so each runs on a
+  background thread: a request opens its document, sends itself and waits there, and the UI drops
+  it when it is no longer wanted (`dv_ui::intel::request::InFlight`, which cancels it at once
+  through `Pending::canceller`, even while the thread blocks); a client is held in a slot whose
+  drop stops it on a thread of its own. A blocked backend never freezes the window.
+- **Which servers.** The app-wide `dv_ui::intel::LanguageServers` (a service) keeps each
+  worktree's resolver and servers, shared by every review open on it. `(spec, directory)` pairs
+  are resolved in the background, once, when the review's file list lands (its own files) and
+  when a request asks about a file not seen yet (a file view of another file); a remote
+  repository's platform is its server's `hello`. The watch's batches (`SessionEvent::
+  WorktreeChanged`) reach `Resolver::files_changed`, which forgets the directories' answers when
+  an install may have changed them (the running servers go on), and every ready server's
+  `didChangeWatchedFiles`, each path a change or, gone, a deletion, worked out in the background.
+  A review whose new side isn't the working tree watches no worktree, so its servers hear of no
+  change until a restart. When the resolver forgets, every `(spec, directory)` ever asked for
+  is resolved again (a missing server stays shown as missing; one whose directory now resolves
+  to another executable is replaced, the old one stopped once no directory routes to it), and a
+  batch resolved before the forget is dropped (a generation; the resolver itself keeps no answer
+  worked out across a forget). Only the paths a server's watchers ask about are looked at
+  (whether each is gone) before telling it.
+- **Automated runs** (the app under `--automation`, `dv_ui`'s tests) find servers only through
+  `DV_LSP_<ID>` (`Resolver::overrides_only`; a scenario's `lsp` header sets it): the project,
+  settings and `PATH` resolvers are off, so no automated run starts a real server a fixture's
+  surroundings hold (a `node_modules` above `target/`); without the override a TypeScript file
+  shows TypeScript as missing, saying so.
 - The status bar names each server and its state: loading (with its progress), ready, failed (a
   click shows the command line, the last stderr lines and **Retry**), or missing (how to get it).
 
 ### 18.6 In the app
 
-`dv_ui::intel` holds a `CodeIntel` entity per open review: its servers (through the review's
-backend), the open documents, requests and their cancellation, and the last hover. The views are
+`dv_ui::intel` holds a `CodeIntel` entity per open review: its worktree's servers (through the
+review's backend and `LanguageServers`), the text of each document it opened, requests and their
+cancellation, the last hover, the references list and the notice for a place it can't show. The
+shell owns it with the session, made before the one it replaces goes (so a review reopened on the
+same worktree keeps its servers), hands it to the stream, the file view and the References tab,
+and does the navigation its events ask for (`IntelEvent::GoTo`, `ShowReferences`). The views are
 `file_view`, the `references` panel tab, the hover card and the find bar. The stream and the file
 view map the pointer to a line and a byte offset through each line's painted slice as it was
 shaped (`gpui::ShapedLine`) and a map from its bytes to the source line's (tabs expand): the
@@ -2389,7 +2455,9 @@ top line, line count, whether the review changes it and which lines, whether it 
 history (`history`: positions behind and ahead), the file finder (`file_finder`: query, rows,
 count, selection), the references rows, the find bar (`find`: query, current match, count, whether every
 file was searched, how many couldn't be), the selected text and the caret
-(`stream.text_selection`, `stream.caret`). Every character of a line in view is a target,
+(`stream.text_selection`, `stream.caret`) and code intelligence (`intel`: the servers and the
+missing ones, the hover, the last definition's count, the references rows, the panel tab, the
+notice). Every character of a line in view is a target,
 `code/<path>/<old|new>/<line>/<column>` (the column 1-based in characters of the source line),
 for hovering, clicking and dragging; they are recorded only while a capture is armed
 (`gpui_automation::record_target`), so they cost nothing otherwise.
@@ -2419,7 +2487,17 @@ for hovering, clicking and dragging; they are recorded only while a capture is a
   `initialize_delay_ms` slows `initialize`; `crash.after_requests: 0` dies at start. Like `tsc`
   it refuses `shutdown` with params (even `null`) and ignores an `exit` that has any, so a client
   that sends them fails its tests. Its own tests drive it with `dv_lsp`'s client through
-  `LocalBackend::spawn_stdio`.
+  `LocalBackend::spawn_stdio`. In an e2e scenario the header's `lsp` (`{"typescript":
+  "fixtures/lsp/review_intel.json"}`) has the runner point `DV_LSP_<ID>` at the built `mock_lsp`
+  playing that file and logging to the scenario's output dir, which `lsp_log` lines read; the
+  runner removes every inherited `DV_LSP_*`, so no scenario reaches a real server unless its
+  header names one (`tests/e2e/review_intel*.jsonl`).
+- **The app's own** (`dv_ui::intel::tests`): an in-process server through the pool's starter
+  seam (`LanguageServers::set_starter`, `set_env`) over real fixture repos: servers start once the
+  list shows, hover reads the stream's text, a request the UI abandons is cancelled while its
+  thread waits, definition into the file view and the stream and outside the repository,
+  references with the changed rows, a crash's restarts until failed and Retry, a missing server,
+  the linger's stop (a `shutdown`, never a restart), and the keys at the caret.
 - Resolver tests run on fixture trees with the npm, pnpm and bun layouts (symlinks, `.bun/`), on
   Windows and in WSL, through `LocalBackend` and through `RemoteBackend` over an in-process
   server, with packages above the worktree root, a link into a store outside it, a link dv can't

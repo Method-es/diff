@@ -20,8 +20,10 @@ anyhow.workspace = true
 dv_backend.workspace = true
 dv_cli.workspace = true
 dv_core.workspace = true
+dv_lsp.workspace = true
 futures.workspace = true
 gpui.workspace = true
+gpui-base.workspace = true
 gpui-component.workspace = true
 gpui_automation = { workspace = true, optional = true }
 log.workspace = true

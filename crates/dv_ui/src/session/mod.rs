@@ -189,6 +189,9 @@ pub enum SessionEvent {
     HistoryLoaded,
     /// Refreshing failed; [`ReviewSession::error`] says why.
     Error,
+    /// The watch saw these worktree paths change (`rescan`: anything may have, a reconnect's
+    /// rescan); the language servers hear of them (PLAN §18.5, `crate::intel`).
+    WorktreeChanged { paths: Arc<[String]>, rescan: bool },
 }
 
 /// One open review (see the module docs).
@@ -244,6 +247,8 @@ pub struct ReviewSession {
     /// The file the file view shows: it loads (a listed file's diff, else its read at the new
     /// side) and is highlighted whatever the stream's viewport (`side`).
     file_view: Option<String>,
+    /// The file view reads its file from the working tree as it stands (`side`).
+    file_view_worktree: bool,
     /// How many placements were worked out (tests: what keeping them saves).
     #[cfg(test)]
     worked_out: std::cell::Cell<usize>,
@@ -257,6 +262,9 @@ pub struct ReviewSession {
     /// The stream's find bar is searching: every listed file loads, after the wanted ones and
     /// those threads show in ([`ReviewSession::load_for_search`]).
     searching: bool,
+    /// The files a references list has rows in: they load whatever the viewport, so the rows
+    /// can say whether the review changed them ([`ReviewSession::load_for_references`]).
+    extra: HashMap<load::Extra, Vec<String>>,
     queue: VecDeque<String>,
     loads_in_flight: usize,
     /// Highlighting jobs by path, with the diff each one highlights.
@@ -337,6 +345,7 @@ impl ReviewSession {
             side_reads: HashMap::new(),
             side_paths: None,
             file_view: None,
+            file_view_worktree: false,
             #[cfg(test)]
             worked_out: std::cell::Cell::new(0),
             #[cfg(test)]
@@ -344,6 +353,7 @@ impl ReviewSession {
             unlimited: HashSet::new(),
             wanted: Vec::new(),
             searching: false,
+            extra: HashMap::new(),
             queue: VecDeque::new(),
             loads_in_flight: 0,
             highlighting: HashMap::new(),
@@ -647,7 +657,8 @@ impl ReviewSession {
         let wanted_landed = self.spec.is_none()
             || self.link.down
             || (self.wanted.iter().all(landed)
-                && self.file_view.iter().all(landed)
+                && (self.file_view_worktree || self.file_view.iter().all(landed))
+                && self.extra_paths().all(landed)
                 && self.thread_files().iter().all(landed)
                 && (!self.searching || self.list.files.iter().all(|entry| landed(&entry.path))));
         self.refreshing.is_none()

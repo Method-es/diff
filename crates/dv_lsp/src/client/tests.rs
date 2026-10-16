@@ -418,6 +418,27 @@ fn a_dropped_request_is_cancelled_and_its_late_answer_ignored() {
 }
 
 #[test]
+fn a_canceller_ends_a_wait_on_another_thread() {
+    let (client, received, _) = start(standard(utf8(), |_, _| {}));
+    client.open_document("a.ts", "typescript", "x").unwrap();
+    let pending = client.hover("a.ts", TextPosition::new(0, 0));
+    let id = pending.id().unwrap();
+    let canceller = pending.canceller().unwrap();
+    let waiting = std::thread::spawn(move || pending.wait());
+    received.wait_for("the hover", |m| m["method"] == "textDocument/hover");
+    let started = std::time::Instant::now();
+    canceller.cancel();
+    assert_eq!(waiting.join().unwrap().unwrap_err(), RequestError::Exited);
+    // Well before the hover's own timeout.
+    assert!(started.elapsed() < Duration::from_millis(250));
+    let cancel = received.wait_for("the cancel", |m| m["method"] == "$/cancelRequest");
+    assert_eq!(cancel["params"]["id"], id);
+    assert!(client.shared.state.lock().pending.is_empty());
+    // A second cancel, or one after the answer, sends nothing more.
+    canceller.cancel();
+}
+
+#[test]
 fn a_request_times_out_and_is_cancelled() {
     let (client, received, _) = start(standard(utf8(), |_, _| {}));
     client.open_document("a.ts", "typescript", "x").unwrap();
@@ -704,6 +725,16 @@ fn watched_files_follow_the_registrations() {
         ])
     );
     assert_eq!(client.files_changed(&[("x.png".into(), CHANGE)]), 0);
+    // Which paths are worth looking at before telling it (any kind of change).
+    assert_eq!(
+        client.watched(&[
+            "src/a.ts".to_string(),
+            "img.png".into(),
+            "README.md".into(),
+            "docs/x.md".into()
+        ]),
+        ["src/a.ts".to_string(), "README.md".into()]
+    );
 }
 
 #[test]

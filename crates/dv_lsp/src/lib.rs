@@ -27,8 +27,8 @@ pub mod spec;
 pub mod text;
 
 pub use client::{
-    ClientEvent, EventSink, HoverInfo, HoverPart, LspClient, Pending, Progress, RequestError,
-    ServerConfig, ServerStatus, StartError, SymbolLocation, Timeouts,
+    Canceller, ClientEvent, EventSink, HoverInfo, HoverPart, LspClient, Pending, Progress,
+    RequestError, ServerConfig, ServerStatus, StartError, SymbolLocation, Timeouts,
 };
 pub use paths::{UriTarget, WorkspacePaths};
 pub use resolve::{CommandSource, Missing, Platform, Resolution, Resolver, ServerCommand};

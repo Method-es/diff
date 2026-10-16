@@ -13,6 +13,11 @@
 //! file view until the new read lands, so nothing flickers; a read that fails says why to the
 //! file view and leaves its threads unplaced by it (outdated without a file, as before).
 //!
+//! **The working tree.** The file view also shows a file as the working tree holds it now
+//! ([`ReviewSession::worktree_file`]), whatever the review's sides are: where go to definition
+//! and references go in a review whose new side isn't the working tree, since a language server
+//! reads the working tree (PLAN §18.2). Read the same way, kept apart from the sides' reads.
+//!
 //! **Paths.** The side's paths are read once per review open and round, when `Ctrl P` first
 //! asks ([`ReviewSession::ensure_side_paths`]), and kept; the finder adds the review's own
 //! files to them, so a file the agent created since shows too.
@@ -30,6 +35,13 @@ use super::placement::KeptSide;
 use super::{ReviewSession, SessionEvent, Shown};
 use crate::failure::Failure;
 use crate::syntax::{FileHighlights, highlight_diff, language_for_path};
+
+/// Where a read reads a file: one of the review's sides, or the working tree as it stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ReadAt {
+    Side(AnchorSide),
+    Worktree,
+}
 
 /// One file read at one of the review's sides.
 pub(super) struct SideRead {
@@ -80,10 +92,28 @@ impl ReviewSession {
         })
     }
 
+    /// The side `at` reads: the review's `which`, or the working tree.
+    fn read_side(&self, at: ReadAt) -> Option<Side> {
+        match at {
+            ReadAt::Side(which) => self.review_side(which).cloned(),
+            ReadAt::Worktree => Some(Side::Worktree),
+        }
+    }
+
     /// Where `path` stands at the review's `which` side, as [`ReviewSession::ensure_side_file`]
     /// reads it.
     pub fn side_file(&self, which: AnchorSide, path: &str) -> SideFileState {
-        let Some(read) = self.side_reads.get(&(which, path.to_string())) else {
+        self.read_state(ReadAt::Side(which), path)
+    }
+
+    /// Where `path` stands in the working tree, as [`ReviewSession::ensure_worktree_file`]
+    /// reads it (module docs, "The working tree").
+    pub fn worktree_file(&self, path: &str) -> SideFileState {
+        self.read_state(ReadAt::Worktree, path)
+    }
+
+    fn read_state(&self, at: ReadAt, path: &str) -> SideFileState {
+        let Some(read) = self.side_reads.get(&(at, path.to_string())) else {
             return SideFileState::Loading;
         };
         match &read.read {
@@ -106,10 +136,20 @@ impl ReviewSession {
         highlight: bool,
         cx: &mut Context<Self>,
     ) {
-        let Some(side) = self.review_side(which).cloned() else {
+        self.ensure_read(ReadAt::Side(which), path, highlight, cx);
+    }
+
+    /// Reads `path` as the working tree holds it unless it is read, or being read; `highlight`
+    /// highlights it too (module docs, "The working tree").
+    pub fn ensure_worktree_file(&mut self, path: &str, highlight: bool, cx: &mut Context<Self>) {
+        self.ensure_read(ReadAt::Worktree, path, highlight, cx);
+    }
+
+    fn ensure_read(&mut self, at: ReadAt, path: &str, highlight: bool, cx: &mut Context<Self>) {
+        let Some(side) = self.read_side(at) else {
             return;
         };
-        let key = (which, path.to_string());
+        let key = (at, path.to_string());
         match self.side_reads.get_mut(&key) {
             Some(read) if read.side == side => {
                 if highlight && !read.highlight {
@@ -127,7 +167,7 @@ impl ReviewSession {
     pub(super) fn side_text(&self, path: &str) -> SideText<KeptSide<'_>> {
         match self
             .side_reads
-            .get(&(AnchorSide::New, path.to_string()))
+            .get(&(ReadAt::Side(AnchorSide::New), path.to_string()))
             .and_then(|read| read.read.as_ref())
         {
             None => SideText::Pending,
@@ -141,7 +181,7 @@ impl ReviewSession {
     pub(super) fn side_present(&self, path: &str) -> bool {
         matches!(
             self.side_reads
-                .get(&(AnchorSide::New, path.to_string()))
+                .get(&(ReadAt::Side(AnchorSide::New), path.to_string()))
                 .and_then(|read| read.read.as_ref()),
             Some(Ok(Some(_)))
         )
@@ -150,7 +190,7 @@ impl ReviewSession {
     /// Which read of `path` at the new side placement worked a thread out against.
     pub(super) fn side_version(&self, path: &str) -> Option<u64> {
         self.side_reads
-            .get(&(AnchorSide::New, path.to_string()))
+            .get(&(ReadAt::Side(AnchorSide::New), path.to_string()))
             .map(|read| read.version)
     }
 
@@ -183,11 +223,11 @@ impl ReviewSession {
         let Some(side) = self.new_side().cloned() else {
             return;
         };
-        let stale: Vec<((AnchorSide, String), Side, bool)> = self
+        let stale: Vec<((ReadAt, String), Side, bool)> = self
             .side_reads
             .iter()
             .filter_map(|((which, path), read)| {
-                let now = self.review_side(*which)?.clone();
+                let now = self.read_side(*which)?;
                 (batch.rescan || batch.git || read.side != now || batch.paths.contains(path))
                     .then(|| ((*which, path.clone()), now, read.highlight))
             })
@@ -207,7 +247,7 @@ impl ReviewSession {
 
     fn start_side_read(
         &mut self,
-        key: (AnchorSide, String),
+        key: (ReadAt, String),
         side: Side,
         highlight: bool,
         cx: &mut Context<Self>,
@@ -248,7 +288,7 @@ impl ReviewSession {
 
     fn finish_side_read(
         &mut self,
-        key: &(AnchorSide, String),
+        key: &(ReadAt, String),
         token: u64,
         read: Result<Option<FileDiff>, DiffError>,
         cx: &mut Context<Self>,
@@ -298,7 +338,7 @@ impl ReviewSession {
     }
 
     /// Highlights the read `key` names in the background, when its file has a grammar.
-    fn start_side_highlight(&mut self, key: &(AnchorSide, String), cx: &mut Context<Self>) {
+    fn start_side_highlight(&mut self, key: &(ReadAt, String), cx: &mut Context<Self>) {
         let path = key.1.as_str();
         let Some(diff) = self
             .side_reads
@@ -408,4 +448,4 @@ impl ReviewSession {
 }
 
 /// The reads kept per side and path.
-pub(super) type SideReads = HashMap<(AnchorSide, String), SideRead>;
+pub(super) type SideReads = HashMap<(ReadAt, String), SideRead>;

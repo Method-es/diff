@@ -10,6 +10,8 @@
 //!   its reviews and uncommitted changes, as the switcher lists them.
 //! - [`ReviewUi`] (`review_ui`): what the reviewer chose per review (`review_ui.json`: split or
 //!   unified).
+//! - [`LanguageServers`] (`language_servers`): the language servers of every worktree a review
+//!   is open on (`crate::intel::servers`, PLAN §18.5), with `settings.json`'s `lsp`.
 //!
 //! An open review is a `crate::session::ReviewSession`, which the shell holds; it works through
 //! the same `Locations` backend. The `System` seam (opening URLs, revealing files, the folder
@@ -25,6 +27,8 @@ pub mod settings;
 use std::path::{Path, PathBuf};
 
 use gpui::{App, AppContext as _, Entity, Global};
+
+use crate::intel::LanguageServers;
 
 pub use locations::{EnvOverlay, Locations, LocationsEvent, Reach, Route, WslAccess};
 pub use review_ui::{ReviewUi, ViewMode};
@@ -47,6 +51,7 @@ pub struct Services {
     pub locations: Entity<Locations>,
     pub reviews: Entity<Reviews>,
     pub review_ui: Entity<ReviewUi>,
+    pub language_servers: Entity<LanguageServers>,
     data_dir: PathBuf,
 }
 
@@ -63,6 +68,7 @@ impl Services {
             && self.locations.read(cx).is_settled()
             && self.reviews.read(cx).is_settled(cx)
             && self.review_ui.read(cx).is_settled(cx)
+            && self.language_servers.read(cx).is_settled()
     }
 }
 
@@ -75,11 +81,14 @@ pub fn init(config: ServicesConfig, cx: &mut App) {
     let locations = cx.new(|cx| Locations::new(wsl, cx));
     let reviews = cx.new(|cx| Reviews::new(locations.clone(), &data_dir, cx));
     let review_ui = cx.new(|cx| ReviewUi::new(&data_dir, cx));
+    let lsp = settings.read(cx).file().lsp_settings();
+    let language_servers = cx.new(|cx| LanguageServers::new(lsp, cx));
     cx.set_global(Services {
         settings,
         locations,
         reviews,
         review_ui,
+        language_servers,
         data_dir,
     });
 }

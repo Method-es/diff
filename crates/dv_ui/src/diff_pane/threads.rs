@@ -238,9 +238,13 @@ impl DiffPane {
     }
 
     pub(super) fn read_only(&self, cx: &gpui::App) -> bool {
-        self.session
-            .as_ref()
-            .is_none_or(|session| session.read(cx).is_read_only())
+        // The working tree read in a file view isn't the review's text: no comment anchors
+        // on it (`file_view`).
+        self.file_view_worktree()
+            || self
+                .session
+                .as_ref()
+                .is_none_or(|session| session.read(cx).is_read_only())
     }
 
     /// What the stream shows: an interdiff or all changes.

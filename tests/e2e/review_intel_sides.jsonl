@@ -1,0 +1,28 @@
+{"scenario": {"window_size": "1440x900", "lsp": {"typescript": "fixtures/lsp/review_intel_sides.json"}, "description": "Which text a server reads, and where its answers go (PLAN §18.1, §18.2): a hover on the old side opens that side's text at the path and says it was read against the working tree, and the document is closed once answered; Ctrl+click on the old side lands on the old side's line in the same file, not the new side's line of that number; in a staged review, a definition in another file opens the file view at the working tree (`file_view.worktree`, read-only), and Alt ← returns; screenshots of the old side's card and the working tree's file view."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "settle"}
+// f moves down four lines; the old side's line 5 calls it.
+{"cmd": "seed_repo", "name": "old", "steps": [{"write": "package.json", "text": "{}\n"}, {"write": "src/a.ts", "text": "export function f(): number {\n  return 1;\n}\n\nexport const x = f();\n"}, {"commit": "base"}, {"write": "src/a.ts", "text": "// one\n// two\n// three\n// four\nexport function f(): number {\n  return 1;\n}\n\nexport const y = f() + 1;\n"}]}
+{"cmd": "open_review", "path": "${data_dir}/repos/old"}
+{"cmd": "settle", "expect": {"pointer": "/intel/servers/0/state", "equals": "ready"}}
+{"cmd": "mouse_move", "target": "code/src/a.ts/old/5/18"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/hover/open", "equals": true}, {"pointer": "/intel/hover/side", "equals": "old"}, {"pointer": "/intel/hover/against_worktree", "equals": true}]}
+{"cmd": "screenshot", "name": "old-side-card"}
+{"lsp_log": {}, "expect_result": [{"pointer": "", "contains": {"received": {"method": "textDocument/didOpen", "params": {"textDocument": {"text": "export function f(): number {\n  return 1;\n}\n\nexport const x = f();\n"}}}}}, {"pointer": "", "contains": {"received": {"method": "textDocument/didClose"}}}]}
+{"cmd": "key", "keystroke": "escape"}
+{"cmd": "click", "target": "code/src/a.ts/old/5/18", "modifiers": "ctrl"}
+{"cmd": "settle", "expect": [{"pointer": "/file_view", "equals": null}, {"pointer": "/session/cursor", "equals": {"path": "src/a.ts", "side": "old", "line": 1}}, {"pointer": "/stream/caret", "equals": {"path": "src/a.ts", "side": "old", "line": 1, "column": 17}}]}
+
+// A staged review: helper is defined in src/b.ts, which the server read from the working tree.
+{"cmd": "seed_repo", "name": "web", "steps": [{"write": "package.json", "text": "{\"name\": \"web\", \"devDependencies\": {\"typescript\": \"^7\"}}\n"}, {"write": "tsconfig.json", "text": "{}\n"}, {"write": "src/a.ts", "text": "import { helper, scale } from './b';\n\nexport function total(values: number[]): number {\n  let sum = 0;\n  for (const value of values) {\n    sum += value;\n  }\n  return scale(sum);\n}\n"}, {"write": "src/b.ts", "text": "/** Adds one to `x`. */\nexport function helper(x: number): number {\n  return x + 1;\n}\n\nexport function scale(x: number): number {\n  return x * 2;\n}\n"}, {"write": "src/c.ts", "text": "import { helper } from './b';\n\nexport const two = helper(1);\n"}, {"commit": "base"}, {"write": "src/a.ts", "text": "import { helper, scale } from './b';\n\nexport function total(values: number[]): number {\n  let sum = 0;\n  for (const value of values) {\n    sum += helper(value);\n  }\n  return scale(sum);\n}\n\nexport const answer = total([1, 2, 3]);\n"}, {"git": ["add", "src/a.ts"]}]}
+{"cmd": "open_review", "path": "${data_dir}/repos/web", "target": "staged"}
+{"cmd": "settle", "expect": {"pointer": "/intel/servers/0/state", "equals": "ready"}}
+{"cmd": "click", "target": "code/src/a.ts/new/6/14", "modifiers": "ctrl"}
+{"cmd": "settle", "expect": [{"pointer": "/file_view/path", "equals": "src/b.ts"}, {"pointer": "/file_view/worktree", "equals": true}, {"pointer": "/file_view/line_count", "equals": 8}, {"pointer": "/file_view/changed_lines", "equals": []}, {"pointer": "/session/cursor/line", "equals": 2}, {"pointer": "/history/back", "equals": 1}]}
+{"cmd": "screenshot", "name": "working-tree-file-view"}
+// Read-only: C opens no composer.
+{"cmd": "key", "keystroke": "c"}
+{"cmd": "settle", "expect": {"pointer": "/session/composer", "equals": null}}
+{"cmd": "key", "keystroke": "alt-left"}
+{"cmd": "settle", "expect": {"pointer": "/file_view", "equals": null}}

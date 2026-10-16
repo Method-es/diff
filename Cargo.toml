@@ -16,6 +16,9 @@ publish = false
 # Pinned exactly; bump all of these together.
 gpui = { package = "gpui-pre", version = "=0.3.6" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.6" }
+# gpui-component's base: its window-wide text selection (`TextSelection`), which the hover
+# card's selectable Markdown copies through the clipboard seam (`dv_ui::shell`).
+gpui-base = "=0.6.6"
 # The tree-sitter grammars `dv_ui::syntax` highlights diffs with (PLAN §6 step 4): every one of
 # gpui-component's `tree-sitter-languages` except SQL, whose grammar crate pins `cc` below the
 # 1.5 gpui's build already locks.

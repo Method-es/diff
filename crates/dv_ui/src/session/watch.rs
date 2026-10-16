@@ -298,6 +298,12 @@ impl ReviewSession {
         if event.rescan || event.store_paths.contains(&log) {
             self.reload_fold(cx);
         }
+        if event.rescan || !event.worktree_paths.is_empty() {
+            cx.emit(super::SessionEvent::WorktreeChanged {
+                paths: event.worktree_paths.iter().cloned().collect(),
+                rescan: event.rescan,
+            });
+        }
         let batch = Batch {
             paths: event.worktree_paths.into_iter().collect(),
             git: event.git_changed,

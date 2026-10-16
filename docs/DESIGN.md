@@ -368,6 +368,11 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   another file opened (`Ctrl P`, View file, `F`), the close button, `Alt ←` / `Alt →` and a panel
   row that shows the stream do nothing but give the draft the keyboard; `Esc` in the composer
   discards it.
+- **File view at the working tree** (PLAN §18.1 "Go to definition"): in a review whose new
+  side isn't the working tree, a definition or reference elsewhere opens the file view of the
+  file as the working tree holds it now. Its header's side chip reads "working tree" and, in
+  place of the status pill, "As it stands now, not this review's side · read-only" in `fg3`; its
+  lines carry no changed marks, no threads and no comment `+` (`C` does nothing).
 - **File finder** (`Ctrl P`, PLAN §18.1): the switcher's look — an `overlay` panel 560 wide,
   radius 12, over the scrim, hung 8 under the title bar's command field and centred on it. A
   46-high filter field with the search glyph ("Go to file") has the keyboard; the list (up to 14
@@ -440,6 +445,39 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   old side) whose old column is the round's snapshot — leaves it undrawn with its text and
   lines, until all changes show it again; `C` then switches to all changes and takes it up. Its
   file leaving the review (the agent reverted it) drops it.
+- **Hover card** (PLAN §18.1 "Hover"): the pointer resting 350 ms on an identifier in code (the
+  stream or the file view), or `Ctrl I` at the caret, hangs a card 2 below the token's line,
+  starting at the token's left edge (moved in to stay 8 inside the window): the `overlay` surface
+  with its `overlayLine` outline and the overlay shadow, radius `card` (10), 280 to 560 wide. Its
+  body (12/8 padding, scrolling past 360 high) is the server's answer as Markdown, its fenced
+  signature highlighted as code, inline code on `icodeBg`, links in `accentText` (a file link opens
+  the file there, a web link the browser); the text can be selected. Under a hairline, two small
+  buttons — **Go to definition** `F12` and **Find references** `Shift F12` with their keycaps — and,
+  when the server read a side other than the working tree, "Read against the working tree" in
+  `fg3` at the right. It stays while the pointer is over the token or the card and closes 300 ms
+  after it left both (closing only the card: resting on the next token still asks about it),
+  at once on a scroll, a press in the code, `Esc` (first in the stream's chain) or its file's
+  diff changing. A hover asked for and not answered yet is cancelled as soon as the pointer
+  leaves its token. Text selected in the card takes the keyboard; when the card goes, the
+  keyboard returns where it was before the press in it. Nothing shows for an empty answer, or
+  without a server.
+- **References tab** (PLAN §18.1 "Find references"): while a references list (or several
+  definitions) is open, the panel heads its column with a segmented pair 8 below its top, 16 in
+  from its sides (the `ctrl` fill and `ctrlLine` outline of the Split | Unified control, radius 7,
+  3 padding; each tab half the width, 26 high, 13/500, the chosen one on `segOn` in `fg`, the other
+  `fg2`): **Review** (the file list and the comments, as without the tabs) and **References n**
+  (n once it answered). `Shift F12` and a go to definition with several places choose References.
+  Its body: a header — "References" (or "Definitions") at 600, the symbol in mono `accentText`,
+  the count in `fg3`, a 22-square × at the right ("Close the references") — then **In this review**
+  (the panel's checkbox and its label in `fg2` at 12) and, when it is so, "Read against the working
+  tree" in `fg3`, over a hairline. Then each file in path order: a 26-high row with the file glyph,
+  its path (directory `fg3`, name `fg` at 600; "outside the repository" in `fg3` after a path
+  outside it) and its row count in `fg3`; under it a 24-high row per place: a 3-wide changed marker
+  (`green`, on rows the review changed, else empty), the line number in mono 11 `fg3`
+  right-aligned in 36, then the line's text in mono 11.5 without its indentation, highlighted, the
+  symbol on `findCurrent` at 600; `controlHover` under the pointer. Loading, four skeleton bars;
+  none, "No references found" (or with **In this review**, "None on lines this review changed") in
+  `fg3`. A click on a row goes there as go to definition does.
 - **Next-file footer:** "Next: `src/routes/users.test.ts`" + "Mark viewed and go next `V` `J`"
   ("Go to next file `J`" once viewed; the last file says "Last file" with "Mark viewed `V`").
 - **Status bar:** a dot and the location with the backend's state — green "Local · watching for
@@ -452,8 +490,21 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   (PLAN §5.1) is up, so the review's own state shows, "· refreshes when focused" when its watch
   couldn't start; then, after a `|`, the review's
   status, round and thread counts ("Changes requested · round 2 · 3 open · 1 resolved", "no comments"
-  when there are none; an interdiff adds "· since round 1"); at the right, `Ctrl Enter finish
-  review` while the review can still be finished.
+  when there are none; an interdiff adds "· since round 1"); at the right, each language
+  server of the review's worktree (PLAN §18.5) — a 7 dot and its name and state in `fg2`, 22 high,
+  `controlHover` under the pointer: green "TypeScript ready", yellow "TypeScript loading 40%" (its
+  progress), "TypeScript restarting…" and "TypeScript waiting for the connection", `fg3` "TypeScript starting…", red
+  "failed", and `fg3` "TypeScript missing" for a server the project lacks — then `Ctrl Enter
+  finish review` while the review can still be finished. A click on a server opens its details
+  over the status bar's right end (a menu panel 420 wide, 16 padding): the dot, the name at 600 and
+  its state, **Retry** (a small button) on a failed one with why it failed in `red`, then "Command"
+  and the command line in mono on `icodeBg`, "From DV_LSP_TYPESCRIPT" (or "the project's own
+  (7.0.2)", "settings.json") in `fg3`, and "Last output" with its last stderr lines in mono; a
+  missing one's say "TypeScript isn't available", why (where it looked in `fg3` under it), and "How
+  to get it". A click on the item again, or `Esc`, closes them.
+- **Code notice** (PLAN §18.1 "Go to definition"): a place that can't be shown (outside the
+  repository) heads the main area as a one-line banner (§4.4), "Defined outside the repository:
+  `<path>:<line>`", with its detail and **Dismiss**; going to another place takes it away.
 
 ### 4.2 Finish review / Submit (`GlassSubmit`)
 - Sheet, 980 wide, centred, over `scrim`. Header: "Finish review", `PR #482`, checks state, close.
@@ -592,11 +643,14 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
 | `Ctrl G` | open a PR |
 | `Ctrl B` | toggle panel |
 | `Ctrl ,` | settings |
-| `Esc` | close the top overlay, else a comments row's menu, else the file menu, else cancel the composer, else close the find bar, else clear the selection (the lines and the text both), else, in the file view, close it (back to the stream where it was); in the find field it closes the bar first (the field has the keyboard, so the stream's chain doesn't run) |
+| `Esc` | close the top overlay, else a comments row's menu, else the language server's details, else the hover card, else the file menu, else cancel the composer, else close the find bar, else clear the selection (the lines and the text both), else, in the file view, close it (back to the stream where it was); in the find field it closes the bar first (the field has the keyboard, so the stream's chain doesn't run) |
 | `F` | the current file whole in the file view, at the cursor's line when the cursor is in it (a line on the other side only, a removed one, maps to the next line of the side shown) (the header menu's View file); nothing in the file view itself; with a draft in the file view's composer, the draft takes the keyboard instead |
 | `Ctrl P` | the file finder: every file of the review's new side (again, or `Esc`, closes it) |
 | `Alt ←` / `Alt →` | back / forward through the history of jumps between the stream and the file view, restoring the view, the file and the line; the mouse's back and forward buttons too. A step that would replace or close a file view holding a draft gives the draft the keyboard instead, the history left as it was |
 | `Ctrl C` | copy the selected text, else the selected lines (§4.1 "Text in code"); in a text field (the find field, the composer, the filters, the summary) its selection — that and `Ctrl X` going through the clipboard seam (`dv_ui::system`) like every copy |
+| `Ctrl I` | the hover card for the symbol at the caret (§4.1 "Hover card") |
+| `F12` / `Ctrl`+click | go to the definition of the symbol at the caret / under the pointer (one place: the stream or the file view there, a jump the history keeps; several: the References tab) |
+| `Shift F12` | find the references of the symbol at the caret: the panel's References tab |
 | `Ctrl F` | the find bar, its field focused (the selected text in it when that is one line); again, the field focused with its text selected (§4.1 "Find") |
 | `Enter` / `Shift Enter`, `Esc` | in the find bar: the next / previous match, wrapping; close it (the keyboard back to the stream) |
 | `↑` / `↓`, `Enter` | in the switcher, the source picker and the file finder: move (wrapping), open |

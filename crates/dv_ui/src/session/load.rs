@@ -20,6 +20,14 @@ use crate::failure::Failure;
 use crate::syntax::{FileHighlights, highlight_diff, language_for_path};
 use dv_core::label::LabelContext;
 
+/// Why files load beside the stream's and the threads' ([`ReviewSession::load_for_references`],
+/// [`ReviewSession::load_for_definition`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Extra {
+    References,
+    Definition,
+}
+
 /// What a refresh re-reads: the worktree paths a watch batch reported, whether the git state
 /// moved, and `rescan` for everything (the first load, an explicit rescan, a watch that may
 /// have lost events). Every refresh re-resolves the target and re-lists the files; the batch
@@ -379,11 +387,13 @@ impl ReviewSession {
         self.wanted = paths.into_iter().collect();
         let threaded = self.thread_files();
         let (wanted, searching, viewed) = (&self.wanted, self.searching, &self.file_view);
+        let referenced: Vec<&String> = self.extra.values().flatten().collect();
         self.queue.retain(|path| {
             searching
                 || wanted.contains(path)
                 || threaded.contains(path)
                 || viewed.as_ref() == Some(path)
+                || referenced.contains(&path)
         });
         self.requeue_wanted();
         self.highlight_shown(cx);
@@ -416,10 +426,22 @@ impl ReviewSession {
     /// highlighted whatever the stream's viewport; any other is read at the new side
     /// (`side`), highlighted.
     pub fn set_file_view(&mut self, path: Option<String>, cx: &mut Context<Self>) {
-        if self.file_view == path {
+        self.set_file_view_at(path, false, cx);
+    }
+
+    /// [`ReviewSession::set_file_view`], the file read as the working tree holds it now when
+    /// `worktree` (go to definition in a review whose new side isn't the working tree, `side`).
+    pub fn set_file_view_at(
+        &mut self,
+        path: Option<String>,
+        worktree: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.file_view == path && self.file_view_worktree == worktree {
             return;
         }
         self.file_view = path;
+        self.file_view_worktree = worktree;
         self.load_file_view(cx);
         cx.notify();
     }
@@ -434,7 +456,9 @@ impl ReviewSession {
         let Some(path) = self.file_view.clone() else {
             return;
         };
-        if self.view_from_stream(&path) {
+        if self.file_view_worktree {
+            self.ensure_worktree_file(&path, true, cx);
+        } else if self.view_from_stream(&path) {
             self.requeue_wanted();
             self.highlight_shown(cx);
             self.pump(cx);
@@ -487,6 +511,42 @@ impl ReviewSession {
                 .retain(|path| wanted.contains(path) || threaded.contains(path));
         }
         cx.notify();
+    }
+
+    /// Has the listed files among `paths` load (a references list's files, PLAN §18.1), after
+    /// the files the stream and the threads asked for, until another list replaces them; an
+    /// empty list lets them go.
+    pub fn load_for_references(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
+        self.load_for(Extra::References, paths, cx);
+    }
+
+    /// Has the listed file `path` load for go to definition, which decides between the stream
+    /// and the file view once its diff is there (`crate::shell::intel`); `None` lets it go.
+    pub fn load_for_definition(&mut self, path: Option<String>, cx: &mut Context<Self>) {
+        self.load_for(Extra::Definition, path.into_iter().collect(), cx);
+    }
+
+    fn load_for(&mut self, why: Extra, paths: Vec<String>, cx: &mut Context<Self>) {
+        let paths: Vec<String> = paths
+            .into_iter()
+            .filter(|path| self.file(path).is_some())
+            .collect();
+        if self
+            .extra
+            .get(&why)
+            .map_or(paths.is_empty(), |kept| *kept == paths)
+        {
+            return;
+        }
+        self.extra.insert(why, paths);
+        self.requeue_wanted();
+        self.pump(cx);
+        cx.notify();
+    }
+
+    /// The files loading for a references list or a go to definition.
+    pub(super) fn extra_paths(&self) -> impl Iterator<Item = &String> {
+        self.extra.values().flatten()
     }
 
     /// Whether every listed file is loading for the find bar ([`ReviewSession::load_for_search`]).
@@ -548,6 +608,7 @@ impl ReviewSession {
             .iter()
             .chain(viewed)
             .chain(&threaded)
+            .chain(self.extra.values().flatten())
             .chain(searched)
         {
             if matches!(self.states.get(path), Some(FileState::Unloaded))

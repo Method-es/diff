@@ -13,9 +13,9 @@ use super::rows::{
 use super::{Cursor, DiffPane, LineDrag, SelectionAnchor};
 use crate::actions::diff_pane::{
     ClearSelection, Comment, CommentOnFile, Copy, CursorDown, CursorLeft, CursorRight, CursorUp,
-    ExpandGap, ExpandGapFully, Find, NextChange, NextFile, NextThread, PageDown, PageUp,
-    PreviousChange, PreviousFile, PreviousThread, Reply, ResolveThread, SelectDown, SelectUp,
-    ToggleComparison, ToggleSplit, ToggleViewed, ViewFile,
+    ExpandGap, ExpandGapFully, Find, FindReferences, GoToDefinition, HoverAtCaret, NextChange,
+    NextFile, NextThread, PageDown, PageUp, PreviousChange, PreviousFile, PreviousThread, Reply,
+    ResolveThread, SelectDown, SelectUp, ToggleComparison, ToggleSplit, ToggleViewed, ViewFile,
 };
 use crate::actions::find;
 use crate::services::ViewMode;
@@ -113,6 +113,9 @@ impl DiffPane {
             PageUp => page_up,
             PageDown => page_down,
             Copy => copy,
+            HoverAtCaret => hover_at_caret,
+            GoToDefinition => definition_at_caret,
+            FindReferences => references_at_caret,
             find::Next => find_next,
             find::Previous => find_previous,
         )
@@ -668,13 +671,14 @@ impl DiffPane {
         }
     }
 
-    /// Closes the file menu, else drops the composer, else closes the find bar, else clears the
-    /// selection, the lines and the text both (DESIGN §5's `Esc`); `false` when there was none
-    /// of them.
+    /// Closes the hover card, else the file menu, else drops the composer, else closes the
+    /// find bar, else clears the selection, the lines and the text both (DESIGN §5's `Esc`);
+    /// `false` when there was none of them.
     fn clear_selection(&mut self, cx: &mut Context<Self>) -> bool {
         // A reply waiting for its card (the comments list's Reply) is forgotten too.
         self.reply_when_shown = None;
-        if self.menu.take().is_some()
+        if self.close_hover(cx)
+            || self.menu.take().is_some()
             || self.drop_composer(cx)
             || self.close_find(cx)
             || self.selection.take().is_some() | self.clear_text_selection()

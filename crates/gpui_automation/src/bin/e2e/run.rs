@@ -14,12 +14,15 @@ use serde_json::{Value, json};
 use crate::foreground::{self, Mark, Watch, WindowInfo};
 use crate::process::{self, ChildProcess, ReadError};
 use crate::scenario::{
-    Action, DATA_DIR_VAR, GH_VAR, GIT_CEILING_VAR, MOCK_GH_LOG_VAR, MOCK_GH_VAR, Restart, Scenario,
-    Step, WSL_HOME_VAR, substitute,
+    Action, DATA_DIR_VAR, GH_VAR, GIT_CEILING_VAR, LSP_VAR_PREFIX, MOCK_GH_LOG_VAR, MOCK_GH_VAR,
+    MOCK_LSP_VAR_PREFIX, Restart, Scenario, Step, WSL_HOME_VAR, substitute,
 };
 
 /// The file in a scenario's output dir that `DV_MOCK_GH_LOG` names.
 pub const GH_LOG_FILE: &str = "gh_calls.jsonl";
+
+/// The file in a scenario's output dir every `mock_lsp` it starts logs to.
+pub const LSP_LOG_FILE: &str = "lsp_messages.jsonl";
 
 /// How long the app may take to answer `quit`, and then to exit.
 const QUIT_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -29,6 +32,8 @@ pub struct Config {
     pub app: PathBuf,
     /// The fake `gh` every launch's `DV_GH` names (docs/PLAN.md §14.2).
     pub mock_gh: PathBuf,
+    /// The scripted language server a header's `lsp` points `DV_LSP_<ID>` at (PLAN §18.7).
+    pub mock_lsp: PathBuf,
     pub out_root: PathBuf,
     pub workspace: PathBuf,
     /// Base allowance for each reply, on top of the command's own waits.
@@ -81,6 +86,9 @@ struct Launcher<'a> {
     gh_scenario: Option<PathBuf>,
     /// `DV_MOCK_GH_LOG`: `<out_dir>/gh_calls.jsonl`.
     gh_log: PathBuf,
+    /// The header's `lsp` files by language server id, and where `mock_lsp` logs.
+    lsp_scenarios: Vec<(String, PathBuf)>,
+    lsp_log: PathBuf,
     vars: Vec<(&'static str, String)>,
     /// The header's `app_args` until a restart replaces them.
     app_args: Vec<String>,
@@ -115,6 +123,14 @@ impl Launcher<'_> {
             .arg("--window-size")
             .arg(self.scenario.window_size())
             .args(substituted_args(&self.app_args, &self.vars));
+        // Never a language server inherited from the runner's environment: only a header
+        // names one (`lsp`, or `env` for an exploratory run).
+        for (name, _) in std::env::vars_os() {
+            let upper = name.to_string_lossy().to_ascii_uppercase();
+            if upper.starts_with(LSP_VAR_PREFIX) || upper.starts_with(MOCK_LSP_VAR_PREFIX) {
+                command.env_remove(&name);
+            }
+        }
         command
             // Never one inherited from the runner's environment: only a header names a distro
             // home dv may install into.
@@ -132,6 +148,21 @@ impl Launcher<'_> {
             // mock_gh answers nothing.
             None => command.env_remove(MOCK_GH_VAR),
         };
+        for (id, path) in &self.lsp_scenarios {
+            let var = format!(
+                "{LSP_VAR_PREFIX}{}",
+                id.to_ascii_uppercase().replace('-', "_")
+            );
+            let args = json!([
+                "--scenario",
+                path.display().to_string(),
+                "--log",
+                self.lsp_log.display().to_string(),
+            ]);
+            command
+                .env(&var, &self.config.mock_lsp)
+                .env(format!("{var}_ARGS"), args.to_string());
+        }
         command
     }
 
@@ -267,6 +298,11 @@ fn vars(
         ("workspace", config.workspace.display().to_string()),
         ("dv_gh", config.mock_gh.display().to_string()),
         ("dv_mock_gh_log", gh_log.display().to_string()),
+        ("dv_mock_lsp", config.mock_lsp.display().to_string()),
+        (
+            "dv_mock_lsp_log",
+            out_dir.join(LSP_LOG_FILE).display().to_string(),
+        ),
     ];
     if let Some(path) = gh_scenario {
         vars.push(("dv_mock_gh", path.display().to_string()));
@@ -323,6 +359,10 @@ fn run_in(
         Err(err) => return failed(err),
     };
     let gh_log = out_dir.join(GH_LOG_FILE);
+    let lsp_scenarios = match resolve_lsp_scenarios(scenario, config) {
+        Ok(found) => found,
+        Err(err) => return failed(err),
+    };
     let mut launcher = Launcher {
         config,
         scenario,
@@ -331,6 +371,8 @@ fn run_in(
         vars: vars(config, out_dir, data_dir, gh_scenario.as_deref(), &gh_log),
         gh_scenario,
         gh_log,
+        lsp_scenarios,
+        lsp_log: out_dir.join(LSP_LOG_FILE),
         app_args: scenario.header.app_args.clone(),
         data_dir_arg: true,
         launches: 0,
@@ -393,6 +435,30 @@ fn substituted_args(args: &[String], vars: &[(&str, String)]) -> Vec<String> {
             value.as_str().map(str::to_string).unwrap_or_default()
         })
         .collect()
+}
+
+/// The header's `lsp` files as absolute paths, after checking that they and `mock_lsp` exist.
+fn resolve_lsp_scenarios(scenario: &Scenario, config: &Config) -> Result<Vec<(String, PathBuf)>> {
+    let scenarios = scenario.lsp_scenarios();
+    let mut resolved = Vec::with_capacity(scenarios.len());
+    for (id, path) in scenarios {
+        let path = std::path::absolute(&path).unwrap_or(path);
+        if !path.is_file() {
+            bail!(
+                "the scenario's lsp file for {id}, {}, does not exist (header lsp files are \
+                 relative to the scenario file)",
+                path.display()
+            );
+        }
+        resolved.push((id, path));
+    }
+    if !resolved.is_empty() && !config.mock_lsp.is_file() {
+        bail!(
+            "mock_lsp {} not found; build it (`cargo build -p mock_lsp`) or pass --mock-lsp",
+            config.mock_lsp.display()
+        );
+    }
+    Ok(resolved)
 }
 
 /// The calls in a `mock_gh` log: one JSON object per line (PLAN §14.2), as
@@ -537,7 +603,12 @@ impl Session<'_> {
     }
 
     fn run_step(&mut self, step: &Step) -> Result<(), Stop> {
-        if self.exited && !matches!(step.action, Action::Restart(_) | Action::GhLog) {
+        if self.exited
+            && !matches!(
+                step.action,
+                Action::Restart(_) | Action::GhLog | Action::LspLog
+            )
+        {
             // Scenario::parse rejects this; kept so a bad file can't hang here.
             return Err(anyhow!("the app has quit; only a restart may follow").into());
         }
@@ -546,6 +617,13 @@ impl Session<'_> {
             Action::GhLog => {
                 let calls = self.gh_log()?;
                 self.check_outcome(step, Ok(calls), "gh_log")?
+            }
+            Action::LspLog => {
+                let path = self.launcher.lsp_log.clone();
+                self.log(&format!("> lsp_log {}", path.display()));
+                let messages = read_gh_log(&path)?;
+                self.log(&format!("< lsp_log {}", compact(&messages)));
+                self.check_outcome(step, Ok(messages), "lsp_log")?
             }
             Action::Restart(restart) => {
                 let ready = self.restart(step, restart)?;
@@ -879,6 +957,7 @@ mod tests {
         Config {
             app: PathBuf::from("app.exe"),
             mock_gh: PathBuf::from("mock_gh.exe"),
+            mock_lsp: PathBuf::from("mock_lsp.exe"),
             out_root: PathBuf::from("out"),
             workspace: PathBuf::from("ws"),
             step_timeout: Duration::from_secs(30),
@@ -898,6 +977,8 @@ mod tests {
             config,
             scenario,
             vars: vars(config, &out_dir, &data_dir, gh_scenario.as_deref(), &gh_log),
+            lsp_scenarios: scenario.lsp_scenarios(),
+            lsp_log: out_dir.join(LSP_LOG_FILE),
             out_dir,
             data_dir,
             gh_scenario,
@@ -990,6 +1071,41 @@ mod tests {
     }
 
     #[test]
+    fn lsp_headers_point_a_language_server_at_mock_lsp() {
+        let config = config();
+        let lsp = scenario(
+            "{\"scenario\": {\"lsp\": {\"typescript\": \"fixtures/lsp/a.json\"}}}\n{\"cmd\": \"state\"}",
+        );
+        let set = envs(&launcher(&config, &lsp).command());
+        assert_eq!(set["DV_LSP_TYPESCRIPT"].as_deref(), Some("mock_lsp.exe"));
+        let args: Vec<String> =
+            serde_json::from_str(set["DV_LSP_TYPESCRIPT_ARGS"].as_deref().unwrap()).unwrap();
+        assert_eq!(args[0], "--scenario");
+        assert_eq!(
+            PathBuf::from(&args[1]),
+            Path::new("tests").join("fixtures/lsp/a.json")
+        );
+        assert_eq!(args[2], "--log");
+        assert_eq!(
+            PathBuf::from(&args[3]),
+            Path::new("out/demo").join(LSP_LOG_FILE)
+        );
+        // Without one, nothing names a language server.
+        let plain = scenario("{\"cmd\": \"state\"}");
+        let unset = envs(&launcher(&config, &plain).command());
+        assert!(unset.get("DV_LSP_TYPESCRIPT").is_none_or(Option::is_none));
+        // An id that isn't one is refused.
+        assert!(
+            Scenario::parse(
+                "demo",
+                Path::new("tests/demo.jsonl"),
+                "{\"scenario\": {\"lsp\": {\"Type Script\": \"a.json\"}}}\n{\"cmd\": \"state\"}"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn gh_headers_point_mock_gh_at_their_file() {
         let config = config();
         let scenario = scenario(
@@ -1016,6 +1132,8 @@ mod tests {
                 "workspace",
                 "dv_gh",
                 "dv_mock_gh_log",
+                "dv_mock_lsp",
+                "dv_mock_lsp_log",
                 "dv_mock_gh"
             ]
         );

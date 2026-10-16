@@ -1,6 +1,7 @@
-//! dv's settings (PLAN §11 `Settings`): the window material, the light/dark mode and the panel's
-//! width, kept in `<data dir>/settings.json` as `{"v": 1, "material": …, "mode": …,
-//! "panel_width": …}` (`panel_width` only once it was changed).
+//! dv's settings (PLAN §11 `Settings`): the window material, the light/dark mode, the panel's
+//! width and the language servers' commands, kept in `<data dir>/settings.json` as `{"v": 1,
+//! "material": …, "mode": …, "panel_width": …, "lsp": …}` (`panel_width` only once it was
+//! changed, `lsp` only when the file has it: the reviewer writes it by hand, PLAN §18.4).
 //!
 //! The default data dir is `%APPDATA%\dv` on Windows, which also holds the first
 //! implementation's `settings.json`, so reading is lenient: a missing key takes its default, an
@@ -86,6 +87,10 @@ pub struct SettingsFile {
     /// The panel's width in logical pixels, within [`PANEL_WIDTH_RANGE`]; `None` until the
     /// reviewer resizes it ([`PANEL_WIDTH_DEFAULT`]).
     pub panel_width: Option<f32>,
+    /// `lsp` as written (`{"typescript": {"command": ["/x/tsc", "--lsp", "--stdio"]}}`):
+    /// written back as it was read, its keys dv doesn't know included; read leniently through
+    /// [`SettingsFile::lsp_settings`] (PLAN §18.4).
+    pub lsp: Option<Value>,
     /// Keys this version doesn't know, written back as they were read.
     extra: Map<String, Value>,
 }
@@ -96,6 +101,7 @@ impl Default for SettingsFile {
             material: Material::platform_default(),
             mode: Mode::default(),
             panel_width: None,
+            lsp: None,
             extra: Map::new(),
         }
     }
@@ -109,6 +115,8 @@ struct Written<'a> {
     mode: Mode,
     #[serde(skip_serializing_if = "Option::is_none")]
     panel_width: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lsp: Option<&'a Value>,
     #[serde(flatten)]
     extra: &'a Map<String, Value>,
 }
@@ -166,6 +174,14 @@ impl SettingsFile {
                 )),
             }
         }
+        if let Some(value) = object.remove("lsp") {
+            if !value.is_object() {
+                problems.push(format!(
+                    "\"lsp\" is {value}, not an object of language servers; ignoring it"
+                ));
+            }
+            file.lsp = Some(value);
+        }
         file.extra = object;
         (file, problems)
     }
@@ -177,12 +193,22 @@ impl SettingsFile {
             material: self.material,
             mode: self.mode,
             panel_width: self.panel_width,
+            lsp: self.lsp.as_ref(),
             extra: &self.extra,
         };
         let mut text = serde_json::to_string_pretty(&written)
             .unwrap_or_else(|error| unreachable!("settings always serialize: {error}"));
         text.push('\n');
         text
+    }
+
+    /// `lsp` as the language servers' resolvers read it (`lsp.<id>.command`, PLAN §18.4): a
+    /// value of the wrong shape is ignored, as `dv_lsp::LspSettings` reads it.
+    pub fn lsp_settings(&self) -> dv_lsp::LspSettings {
+        self.lsp
+            .as_ref()
+            .map(dv_lsp::LspSettings::from_json)
+            .unwrap_or_default()
     }
 
     /// The keys kept from the file that this version doesn't know.
@@ -467,6 +493,36 @@ mod tests {
         let (file, problems) = SettingsFile::parse(r#"{"mode": 3, "v": "one"}"#);
         assert_eq!(file.mode, Mode::System);
         assert_eq!(problems.len(), 2, "{problems:?}");
+    }
+
+    #[test]
+    fn lsp_is_read_leniently_and_written_back_as_it_was() {
+        let text = r#"{"lsp": {"typescript": {"command": ["/opt/tsc", "--lsp", "--stdio"],
+            "later": true}, "css": {"command": "a shell string"}, "runtime": "bun"}}"#;
+        let (file, problems) = SettingsFile::parse(text);
+        assert!(problems.is_empty(), "{problems:?}");
+        let lsp = file.lsp_settings();
+        assert_eq!(
+            lsp.command("typescript"),
+            Some(&["/opt/tsc".to_string(), "--lsp".into(), "--stdio".into()][..])
+        );
+        assert_eq!(lsp.command("css"), None);
+        assert_eq!(file.unknown_keys().count(), 0);
+        let written: Value = serde_json::from_str(&file.to_json()).unwrap();
+        assert_eq!(
+            written["lsp"],
+            serde_json::json!({
+                "typescript": {"command": ["/opt/tsc", "--lsp", "--stdio"], "later": true},
+                "css": {"command": "a shell string"},
+                "runtime": "bun"
+            })
+        );
+        // Without one nothing is written; one of the wrong shape is kept, read as nothing.
+        assert!(!SettingsFile::default().to_json().contains("lsp"));
+        let (file, problems) = SettingsFile::parse(r#"{"lsp": [1]}"#);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert_eq!(file.lsp_settings(), dv_lsp::LspSettings::default());
+        assert!(file.to_json().contains("\"lsp\""));
     }
 
     #[test]

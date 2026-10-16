@@ -74,6 +74,10 @@ impl Render for Shell {
                 if this.comments_list.read(cx).menu_thread().is_some() {
                     this.close_comments_menu(cx);
                     cx.stop_propagation();
+                } else if this.server_details.take().is_some() {
+                    // A language server's details from the status bar (DESIGN §5).
+                    cx.notify();
+                    cx.stop_propagation();
                 }
             }))
             .on_drag_move(cx.listener(Self::resize_panel))
@@ -104,6 +108,7 @@ impl Render for Shell {
                 this.child(self.render_scrim(&theme, cx))
             })
             .children(self.render_sheet(window, &theme))
+            .children(self.render_server_details(window, &theme, cx))
     }
 }
 
@@ -123,8 +128,13 @@ impl Shell {
             .border_r_1()
             .border_color(c.line)
             .debug_selector(|| "panel".into())
-            .child(self.file_list.clone())
-            .child(self.comments_list.clone())
+            .children(self.render_panel_tabs(theme, cx))
+            .map(|this| match self.panel_tab(cx) {
+                super::intel::PanelTab::Review => this
+                    .child(self.file_list.clone())
+                    .child(self.comments_list.clone()),
+                super::intel::PanelTab::References => this.child(self.references_panel.clone()),
+            })
             .child(self.render_resize_handle(theme, cx))
             .automation_target("shell/panel")
     }
@@ -350,6 +360,7 @@ impl Shell {
             .children(session_banner)
             .children(viewed_banner)
             .children(comparison_banner)
+            .children(self.intel_banner(cx))
             .children(finished)
             .children(ready)
             .child(content)

@@ -39,7 +39,7 @@ use parking_lot::{Condvar, Mutex};
 use serde_json::{Value, json};
 
 pub use answers::{HoverInfo, HoverPart, SymbolLocation};
-pub use pending::{Pending, RequestError};
+pub use pending::{Canceller, Pending, RequestError};
 pub use watchers::{CHANGE, CREATE, DELETE};
 
 use crate::framing;
@@ -583,6 +583,22 @@ impl LspClient {
             );
         }
         events.len()
+    }
+
+    /// Those of `rels` (worktree paths) a watcher the server registered asks about, for any
+    /// kind of change: the paths worth telling it about ([`LspClient::files_changed`]).
+    pub fn watched(&self, rels: &[String]) -> Vec<String> {
+        let paths = &self.shared.paths;
+        let state = self.shared.state.lock();
+        rels.iter()
+            .filter(|rel| {
+                let absolute = paths.absolute(rel).replace('\\', "/");
+                state.watchers.iter().any(|watcher| {
+                    watcher.matches(&absolute, CREATE | CHANGE | DELETE, paths.style())
+                })
+            })
+            .cloned()
+            .collect()
     }
 
     /// Any request, its result as the server sent it.

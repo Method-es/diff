@@ -1,0 +1,205 @@
+{
+  "stderr": [
+    "mock_lsp: playing review_intel.json"
+  ],
+  "requests": [
+    {
+      "method": "textDocument/hover",
+      "params": {
+        "textDocument": {
+          "uri": "*/src/a.ts"
+        },
+        "position": {
+          "line": 2
+        }
+      },
+      "result": {
+        "contents": {
+          "kind": "markdown",
+          "value": "slow"
+        }
+      },
+      "delay_ms": 4000
+    },
+    {
+      "method": "textDocument/hover",
+      "params": {
+        "textDocument": {
+          "uri": "*/src/a.ts"
+        },
+        "position": {
+          "line": 5
+        }
+      },
+      "result": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```typescript\nfunction helper(x: number): number\n```\nAdds one to `x`, so a total counts every value **plus one**.\n\nDefined in [src/b.ts](${root}/src/b.ts#L2); see [the handbook](https://www.typescriptlang.org/docs/handbook/2/functions.html)."
+        },
+        "range": {
+          "start": {
+            "line": 5,
+            "character": 11
+          },
+          "end": {
+            "line": 5,
+            "character": 17
+          }
+        }
+      }
+    },
+    {
+      "method": "textDocument/hover",
+      "params": {
+        "textDocument": {
+          "uri": "*/src/a.ts"
+        },
+        "position": {
+          "line": 10
+        }
+      },
+      "result": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```typescript\nfunction total(values: number[]): number\n```"
+        }
+      }
+    },
+    {
+      "method": "textDocument/definition",
+      "params": {
+        "textDocument": {
+          "uri": "*/src/a.ts"
+        },
+        "position": {
+          "line": 5
+        }
+      },
+      "result": [
+        {
+          "targetUri": "${root}/src/b.ts",
+          "targetRange": {
+            "start": {
+              "line": 0,
+              "character": 0
+            },
+            "end": {
+              "line": 3,
+              "character": 1
+            }
+          },
+          "targetSelectionRange": {
+            "start": {
+              "line": 1,
+              "character": 16
+            },
+            "end": {
+              "line": 1,
+              "character": 22
+            }
+          }
+        }
+      ]
+    },
+    {
+      "method": "textDocument/definition",
+      "params": {
+        "textDocument": {
+          "uri": "*/src/a.ts"
+        },
+        "position": {
+          "line": 10
+        }
+      },
+      "result": [
+        {
+          "uri": "${root}/src/a.ts",
+          "range": {
+            "start": {
+              "line": 2,
+              "character": 16
+            },
+            "end": {
+              "line": 2,
+              "character": 21
+            }
+          }
+        }
+      ]
+    },
+    {
+      "method": "textDocument/references",
+      "params": {
+        "textDocument": {
+          "uri": "*/src/a.ts"
+        },
+        "position": {
+          "line": 5
+        }
+      },
+      "result": [
+        {
+          "uri": "${root}/src/b.ts",
+          "range": {
+            "start": {
+              "line": 1,
+              "character": 16
+            },
+            "end": {
+              "line": 1,
+              "character": 22
+            }
+          }
+        },
+        {
+          "uri": "${root}/src/a.ts",
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 9
+            },
+            "end": {
+              "line": 0,
+              "character": 15
+            }
+          }
+        },
+        {
+          "uri": "${root}/src/a.ts",
+          "range": {
+            "start": {
+              "line": 5,
+              "character": 11
+            },
+            "end": {
+              "line": 5,
+              "character": 17
+            }
+          }
+        },
+        {
+          "uri": "${root}/src/c.ts",
+          "range": {
+            "start": {
+              "line": 2,
+              "character": 19
+            },
+            "end": {
+              "line": 2,
+              "character": 25
+            }
+          }
+        }
+      ]
+    },
+    {
+      "method": "textDocument/hover",
+      "result": {
+        "contents": {
+          "kind": "markdown",
+          "value": "any other symbol"
+        }
+      }
+    }
+  ]
+}

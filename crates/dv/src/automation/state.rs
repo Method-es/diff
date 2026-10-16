@@ -509,6 +509,7 @@ pub fn file_view(shell: &Shell, cx: &App) -> Value {
         "changed_lines": view.changed_lines,
         "loading": view.loading,
         "notice": view.notice,
+        "worktree": view.worktree,
     })
 }
 
@@ -535,6 +536,120 @@ pub fn file_finder(shell: &Shell, window: &Window, cx: &App) -> Value {
 pub fn history(shell: &Shell) -> Value {
     let (back, forward) = shell.history().counts();
     json!({"back": back, "forward": forward})
+}
+
+/// `state.intel`: the open review's code intelligence (`null` with no review open): its
+/// worktree's servers, the specs missing, the hover card, the last go to definition's count,
+/// the references list, the panel tab and the notice (`tests/e2e/README.md`).
+pub fn intel(shell: &Shell, cx: &App) -> Value {
+    let Some(intel) = shell.intel() else {
+        return Value::Null;
+    };
+    let intel = intel.read(cx);
+    let session = intel.session().read(cx);
+    let servers: Vec<Value> = intel
+        .servers(cx)
+        .into_iter()
+        .map(|server| {
+            json!({
+                "id": server.spec_id,
+                "name": server.name,
+                "state": server.state.key(),
+                "error": match &server.state {
+                    dv_ui::intel::ServerState::Failed(why) => json!(why),
+                    _ => Value::Null,
+                },
+                "root": server.root,
+                "command": server.command_line,
+                "source": server.source,
+                "starts": server.starts,
+                "progress": server.progress.iter().map(|progress| json!({
+                    "title": progress.title,
+                    "message": progress.message,
+                    "percentage": progress.percentage,
+                })).collect::<Vec<_>>(),
+                "stderr": server.stderr,
+            })
+        })
+        .collect();
+    let missing: Vec<Value> = intel
+        .missing(cx)
+        .into_iter()
+        .map(|missing| {
+            json!({"id": missing.spec_id, "reason": missing.reason, "hint": missing.hint})
+        })
+        .collect();
+    let hover = match intel.hover_card() {
+        Some(card) => json!({
+            "open": true,
+            "pane": pane(card.pane),
+            "path": card.at.path,
+            "side": side(card.at.side),
+            "line": card.at.line,
+            "symbol": card.at.name,
+            "text": card.text(),
+            "against_worktree": card.against_worktree,
+        }),
+        None => match intel.hovering() {
+            Some((at, on)) => json!({
+                "open": false,
+                "pane": pane(on),
+                "path": at.path,
+                "side": side(at.side),
+                "line": at.line,
+                "symbol": at.name,
+            }),
+            None => Value::Null,
+        },
+    };
+    let references = intel.references().map(|list| {
+        let shown = list.shown(session);
+        let rows: Vec<Value> = shown
+            .iter()
+            .flat_map(|(file, rows)| {
+                rows.iter().map(move |(row, changed)| {
+                    json!({
+                        "path": file.label(),
+                        "in_repo": file.worktree_path().is_some(),
+                        "line": row.line,
+                        "column": row.location.range.start.column + 1,
+                        "text": row.text,
+                        "changed": changed,
+                    })
+                })
+            })
+            .collect();
+        json!({
+            "kind": list.kind.key(),
+            "symbol": list.from.name,
+            "loading": list.is_loading(),
+            "error": list.error,
+            "count": list.count(),
+            "in_review": list.in_review,
+            "against_worktree": list.against_worktree,
+            "files": shown.len(),
+            "rows": rows,
+        })
+    });
+    json!({
+        "servers": servers,
+        "missing": missing,
+        "hover": hover,
+        "definitions": intel.last_definitions(),
+        "references": references,
+        "panel_tab": match shell.panel_tab(cx) {
+            dv_ui::shell::intel::PanelTab::Review => "review",
+            dv_ui::shell::intel::PanelTab::References => "references",
+        },
+        "notice": intel.notice().map(|notice| notice.message.clone()),
+    })
+}
+
+fn pane(pane: dv_ui::intel::Pane) -> &'static str {
+    match pane {
+        dv_ui::intel::Pane::Stream => "stream",
+        dv_ui::intel::Pane::FileView => "file_view",
+    }
 }
 
 /// `state.find`: the stream's find bar (`null` with no review open): whether it is open, the

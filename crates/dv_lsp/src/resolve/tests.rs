@@ -513,6 +513,29 @@ fn the_override_must_be_absolute() {
 }
 
 #[test]
+fn overrides_only_ignores_the_project_and_settings() {
+    let repo = FixtureRepo::new();
+    project(&repo);
+    package(&repo, "node_modules/typescript", "typescript", "7.0.2");
+    native(&repo, &format!("node_modules/{NATIVE}"));
+    let settings = LspSettings::default().with_command("typescript", vec!["/opt/tsc".into()]);
+    let unnamed = resolver(local(&repo), settings.clone())
+        .with_env(|_| None)
+        .overrides_only();
+    assert_eq!(
+        missing(&unnamed, "src/a.ts").reason,
+        "DV_LSP_TYPESCRIPT isn't set, and automated runs find language servers only through it"
+    );
+    let named = resolver(local(&repo), settings)
+        .with_env(|name| (name == "DV_LSP_TYPESCRIPT").then(|| "/bin/mock_lsp".to_string()))
+        .overrides_only();
+    assert!(matches!(
+        named.resolve(&typescript::SPEC, "src/a.ts").unwrap(),
+        Some(Resolution::Found(ServerCommand { ref program, .. })) if program == "/bin/mock_lsp"
+    ));
+}
+
+#[test]
 fn an_install_is_seen_once_the_resolver_hears_of_it() {
     let repo = FixtureRepo::new();
     project(&repo);

@@ -1,0 +1,11 @@
+{
+  "crash": {"after_requests": 1, "exit": 3, "times": 1},
+  "stderr": ["mock_lsp: playing review_intel_crash.json"],
+  "requests": [
+    {
+      "method": "textDocument/hover",
+      "params": {"textDocument": {"uri": "*/src/a.ts"}},
+      "result": {"contents": {"kind": "markdown", "value": "```typescript\nfunction helper(x: number): number\n```"}}
+    }
+  ]
+}

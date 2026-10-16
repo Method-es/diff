@@ -6,8 +6,10 @@
 //! `state` ([`state`]): `app`, `data_dir`, `settings`, `shell`, `system`, `repos` (the known
 //! repositories), `switcher` and `source_picker` (the title bar's overlays), `file_list` (the
 //! panel), `session` (the open review, or `null`), `stream` (the diff stream, or `null`),
-//! `comments_list`, `cli` (the `cli_spawn` children not yet joined) and `backends` (the
-//! connections to `dv backend --stdio` servers).
+//! `comments_list`, `find`, `file_view`, `file_finder`, `history`, `intel` (code
+//! intelligence: the language servers, the hover card, the references), `cli` (the
+//! `cli_spawn` children not yet joined) and `backends` (the connections to `dv backend
+//! --stdio` servers).
 //!
 //! Commands:
 //! - `set_setting {key, value}` changes `material` (`mica`, `acrylic`, `opaque`) or `mode`
@@ -175,6 +177,7 @@ impl AutomationHost for DvAutomation {
             "file_view": state::file_view(self.shell.read(cx), cx),
             "file_finder": state::file_finder(self.shell.read(cx), window, cx),
             "history": state::history(self.shell.read(cx)),
+            "intel": state::intel(self.shell.read(cx), cx),
             "comments_list": state::comments_list(self.shell.read(cx), cx),
             "cli": self.cli_state(),
             "backends": state::backends(cx),
@@ -190,6 +193,9 @@ impl AutomationHost for DvAutomation {
             && shell
                 .session()
                 .is_none_or(|session| session.read(cx).is_settled())
+            && shell
+                .intel()
+                .is_none_or(|intel| intel.read(cx).is_settled(cx))
     }
 
     fn custom(

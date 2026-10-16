@@ -118,16 +118,16 @@ else
         # relink the binaries with gpui's test support (leak detection and other test-only
         # machinery), so the runner gets freshly built plain ones right before it starts them; the
         # runner itself never builds anything.
-        step 5 "cargo build -p dv -p mock_gh  (plain binaries for the runner)"
-        cargo build -p dv -p mock_gh
+        step 5 "cargo build -p dv -p mock_gh -p mock_lsp  (plain binaries for the runner)"
+        cargo build -p dv -p mock_gh -p mock_lsp
         step 5 "e2e scenarios: cargo run -p gpui_automation --bin e2e -- tests/e2e"
         cargo run -p gpui_automation --bin e2e -- tests/e2e
     fi
     if [[ "$foreground" -eq 1 ]]; then
         # These take the foreground for a few seconds each (tests/e2e/README.md, "Screenshots
         # and window materials"), so only an explicit flag runs them.
-        step 5 "cargo build -p dv -p mock_gh  (plain binaries for the runner)"
-        cargo build -p dv -p mock_gh
+        step 5 "cargo build -p dv -p mock_gh -p mock_lsp  (plain binaries for the runner)"
+        cargo build -p dv -p mock_gh -p mock_lsp
         step 5 "foreground e2e scenarios: cargo run -p gpui_automation --bin e2e -- tests/e2e/foreground"
         cargo run -p gpui_automation --bin e2e -- tests/e2e/foreground
     fi

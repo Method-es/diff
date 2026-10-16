@@ -59,7 +59,7 @@ impl Shell {
     }
 
     /// Where the reader is now, for the history.
-    fn position(&self, cx: &gpui::App) -> Option<Position> {
+    pub(super) fn position(&self, cx: &gpui::App) -> Option<Position> {
         let (view, (path, side, line)) = if self.file_view_open {
             (
                 View::FileView,
@@ -68,11 +68,13 @@ impl Shell {
         } else {
             (View::Stream, self.diff_pane.read(cx).position()?)
         };
+        let worktree = self.file_view_open && self.file_view.read(cx).file_view_worktree();
         Some(Position {
             view,
             path,
             side,
             line,
+            worktree,
         })
     }
 
@@ -86,6 +88,20 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_file_view_at(path, line, false, jump, window, cx);
+    }
+
+    /// [`Shell::open_file_view`], the file read from the working tree as it stands when
+    /// `worktree` (`intel`).
+    pub fn open_file_view_at(
+        &mut self,
+        path: &str,
+        line: Option<u32>,
+        worktree: bool,
+        jump: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.session.is_none() || self.keeps_draft(Some(path), window, cx) {
             return;
         }
@@ -94,7 +110,7 @@ impl Shell {
         }
         self.file_view_open = true;
         self.file_view
-            .update(cx, |pane, cx| pane.open_file(path, line, cx));
+            .update(cx, |pane, cx| pane.open_file_at(path, line, worktree, cx));
         self.file_view.read(cx).focus_handle(cx).focus(window, cx);
         cx.notify();
     }
@@ -169,7 +185,9 @@ impl Shell {
     /// Restores `to`: its view, file and line.
     fn go_to(&mut self, to: Position, window: &mut Window, cx: &mut Context<Self>) {
         match to.view {
-            View::FileView => self.open_file_view(&to.path, Some(to.line), false, window, cx),
+            View::FileView => {
+                self.open_file_view_at(&to.path, Some(to.line), to.worktree, false, window, cx)
+            }
             View::Stream => {
                 self.close_file_view(false, window, cx);
                 let (path, side, line): (String, AnchorSide, u32) = (to.path, to.side, to.line);

@@ -100,6 +100,8 @@ pub(super) struct TextDrag {
 /// as it paints, and how the slice's bytes map to the source line's.
 #[derive(Clone)]
 pub(super) struct LineGeometry {
+    /// The text cell's bounds: the pointer is on this line's code within them.
+    pub bounds: gpui::Bounds<Pixels>,
     pub origin_x: Pixels,
     pub shaped: ShapedLine,
     pub shown: Rc<Visible>,
@@ -354,6 +356,12 @@ impl DiffPane {
             return;
         };
         let text = &diff_line.text;
+        // `Ctrl`+click: go to definition, the press selecting nothing (PLAN §18.1).
+        if event.modifiers.secondary() && event.click_count == 1 && self.definition_click(event, cx)
+        {
+            return;
+        }
+        self.close_hover(cx);
         let (caret, unit) = self.at_x(path, line, side, event.position.x);
         let point = |offset: usize| TextPoint {
             path: path.to_string(),
@@ -649,7 +657,8 @@ impl DiffPane {
     /// A press in the stream outside code (the root's capture, before the press reaches what
     /// is under it): the selection and the caret go, unless Shift holds them for a shift-click.
     pub(super) fn press_outside_text(&mut self, shift: bool, cx: &mut Context<Self>) {
-        if shift {
+        // A press on the hover card (selecting its text, its buttons) leaves the stream's be.
+        if shift || self.hover_ui.is_over_card() {
             return;
         }
         if self.text_selection.take().is_some() | self.caret.take().is_some() {
@@ -660,6 +669,8 @@ impl DiffPane {
     /// Forgets the selection and the caret in `path`, whose diff was replaced: their line
     /// numbers and offsets named the text it had.
     pub(super) fn forget_text_in(&mut self, path: &str) {
+        // A hover card on the file named its text too (`intel`).
+        self.hover_ui.file_replaced(path);
         if self
             .text_selection
             .as_ref()

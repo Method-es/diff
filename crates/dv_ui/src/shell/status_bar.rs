@@ -253,6 +253,7 @@ impl Shell {
                     )
             })
             .child(div().flex_1())
+            .children(self.render_server_items(theme, cx))
             .when(line.finish, |this| {
                 this.child(
                     div()

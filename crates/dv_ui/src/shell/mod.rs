@@ -61,6 +61,7 @@
 //! saved in `settings.json` (DESIGN §2).
 
 mod file_view;
+pub mod intel;
 pub mod pending;
 mod render;
 mod status_bar;
@@ -247,6 +248,18 @@ pub struct Shell {
     file_view_open: bool,
     /// The positions jumps left (`file_view`, PLAN §18.1).
     history: History,
+    /// The open review's code intelligence (`intel`, PLAN §18.6).
+    intel: Option<Entity<crate::intel::CodeIntel>>,
+    /// The panel's References tab and which tab shows (`intel`).
+    references_panel: Entity<crate::intel::references::ReferencesPanel>,
+    panel_tab: intel::PanelTab,
+    /// The status bar item whose details are open (`intel`).
+    server_details: Option<intel::ServerDetails>,
+    /// Where the reviewer was when the last go to definition was asked for (`intel`).
+    definition_from: Option<Option<crate::history::Position>>,
+    /// A go to definition waiting for its listed file's diff (`intel`).
+    pending_goto: Option<(dv_lsp::SymbolLocation, Option<crate::intel::Asked>)>,
+    _intel_subscriptions: Vec<Subscription>,
     /// The file finder (`Ctrl P`), a menu like the switcher.
     file_finder: Option<Overlay<FileFinder>>,
     switcher: Option<Overlay<Switcher>>,
@@ -286,6 +299,7 @@ impl Shell {
         let file_view = cx.new(DiffPane::new_file_view);
         let file_list = cx.new(|cx| FileList::new(diff_pane.clone(), window, cx));
         let comments_list = cx.new(|cx| CommentsList::new(diff_pane.clone(), cx));
+        let references_panel = cx.new(|_| crate::intel::references::ReferencesPanel::new());
         let settings = cx.services().settings.clone();
         let locations = cx.services().locations.clone();
         let subscriptions = vec![
@@ -375,6 +389,13 @@ impl Shell {
             file_view,
             file_view_open: false,
             history: History::default(),
+            intel: None,
+            references_panel,
+            panel_tab: intel::PanelTab::default(),
+            server_details: None,
+            definition_from: None,
+            pending_goto: None,
+            _intel_subscriptions: Vec::new(),
             file_finder: None,
             switcher: None,
             source_picker: None,
@@ -479,11 +500,26 @@ impl Shell {
     }
 
     /// Shows `session`'s review, replacing (and so closing) the one open before.
-    pub fn open_session(&mut self, session: Entity<ReviewSession>, cx: &mut Context<Self>) {
+    pub fn open_session(
+        &mut self,
+        session: Entity<ReviewSession>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // The row the review belongs to in the switcher: the repository it was opened from.
         let location = session.read(cx).origin().clone();
         self._session_subscriptions = vec![
             cx.observe(&session, |_, _, cx| cx.notify()),
+            // A go to definition waiting for a file's diff goes on once it lands (`intel`).
+            cx.subscribe_in(
+                &session,
+                window,
+                |this, _, event: &SessionEvent, window, cx| {
+                    if let SessionEvent::FileLoaded(path) = event {
+                        this.file_loaded(path, window, cx);
+                    }
+                },
+            ),
             cx.subscribe(&session, move |this, session, event: &SessionEvent, cx| {
                 if !matches!(event, SessionEvent::ReviewChanged) {
                     return;
@@ -517,7 +553,10 @@ impl Shell {
         self.file_view
             .update(cx, |pane, cx| pane.set_session(Some(session.clone()), cx));
         self.diff_pane
-            .update(cx, |pane, cx| pane.set_session(Some(session), cx));
+            .update(cx, |pane, cx| pane.set_session(Some(session.clone()), cx));
+        // Its code intelligence, made before the one it replaces goes, so a review on the same
+        // worktree keeps its servers (`intel`).
+        self.start_intel(&session, window, cx);
         cx.notify();
     }
 
@@ -727,7 +766,7 @@ impl Shell {
                     }
                 } else {
                     let session = cx.new(|cx| ReviewSession::new(opened, cx));
-                    self.open_session(session, cx);
+                    self.open_session(session, window, cx);
                 }
                 // A sheet still open (the same review, resumed) keeps the keyboard, and so does
                 // a menu open while a pending pick ran again by itself.
@@ -1197,6 +1236,14 @@ fn field_clipboard(cut: bool, window: &mut Window, cx: &mut App) {
     match window.focused_input(cx) {
         Some(AnyInputState::Input(state)) => clip!(state),
         Some(AnyInputState::Textarea(state)) => clip!(state),
+        // Selectable Markdown (the hover card's): the window's text selection, never cut.
+        _ if !cut => {
+            let text = gpui_base::TextSelection::selected_text(window, cx);
+            let text = text.trim();
+            if !text.is_empty() {
+                crate::system::write_clipboard(text.to_string(), cx);
+            }
+        }
         _ => {}
     }
 }

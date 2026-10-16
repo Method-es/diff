@@ -39,7 +39,9 @@ impl DiffPane {
             return div().into_any_element();
         };
         let (old_label, new_label) = session.target_side_labels();
+        let worktree = self.file_view_worktree();
         let label = match side {
+            _ if worktree => "working tree".to_string(),
             dv_core::review::AnchorSide::Old => old_label,
             dv_core::review::AnchorSide::New => new_label,
         };
@@ -67,6 +69,9 @@ impl DiffPane {
                 .into_any_element()
         };
         let changed: AnyElement = match status {
+            _ if worktree => {
+                quiet("As it stands now, not this review's side · read-only".to_string())
+            }
             Some(letter) => {
                 let (fg, bg) = letter.colors(theme);
                 chip(fg, bg, theme)

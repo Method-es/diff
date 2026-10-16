@@ -106,14 +106,47 @@ fn an_untracked_file_is_on_the_working_tree_side_only() {
         .unwrap(),
         None
     );
-    // An ignored file isn't on any side dv reads.
+    // An ignored file reads as an untracked one would, in the working tree only (a
+    // definition under `node_modules`, PLAN §18.1).
+    let ignored = text_at(&git, &Side::Worktree, "debug.log");
+    assert_eq!(lines(&ignored), ["ignored"]);
     assert_eq!(
-        side_file(&git, &Side::Worktree, "debug.log", &DiffLimits::default()).unwrap(),
+        side_file(&git, &Side::Index, "debug.log", &DiffLimits::default()).unwrap(),
         None
     );
     assert_eq!(
         side_file(&git, &Side::Worktree, "nowhere.txt", &DiffLimits::default()).unwrap(),
         None
+    );
+}
+
+#[test]
+fn a_file_in_an_ignored_directory_reads_in_the_working_tree() {
+    let repo = FixtureRepo::new();
+    repo.write(".gitignore", "node_modules/\n")
+        .write("a.ts", "a\n");
+    repo.commit("base");
+    repo.write(
+        "node_modules/lib/index.d.ts",
+        "export declare function f(): void;\n",
+    );
+    let git = git_repo(&repo);
+    let whole = text_at(&git, &Side::Worktree, "node_modules/lib/index.d.ts");
+    assert_eq!(lines(&whole), ["export declare function f(): void;"]);
+    assert_eq!(
+        side_file(
+            &git,
+            &Side::Worktree,
+            "node_modules/lib/missing.d.ts",
+            &DiffLimits::default()
+        )
+        .unwrap(),
+        None
+    );
+    // Ctrl P's paths stay what git doesn't ignore.
+    assert_eq!(
+        side_paths(&git, &Side::Worktree).unwrap(),
+        [".gitignore", "a.ts"]
     );
 }
 

@@ -13,11 +13,14 @@
 //!
 //! **Which files.** A tree side's files are its blobs and links; the index's, every path it
 //! tracks; the working tree's, every tracked path still on disk plus the untracked files git
-//! doesn't ignore, as the review's file list sees them.
+//! doesn't ignore, as the review's file list sees them. One file of the working tree is read
+//! whatever git says of it, ignored ones too: a language server's definition can be in an
+//! ignored file inside the worktree (a library's `.d.ts` under `node_modules`, PLAN §18.1), and
+//! the file view shows it as git would show it untracked.
 
 use std::collections::BTreeSet;
 
-use super::list::{git, tracked, untracked_at};
+use super::list::{git, ignored_at, tracked, untracked_at};
 use super::{DiffError, DiffLimits, FileDiff, LineKind, TextDiff, file_diff};
 use crate::git::GitRepo;
 use crate::target::{DiffSpec, Side};
@@ -68,8 +71,9 @@ pub fn side_paths(repo: &GitRepo, side: &Side) -> Result<Vec<String>, DiffError>
 
 /// `path`'s content at `side` as the diff pipeline reads that side (module docs, "Decoding"):
 /// its lines as context lines, or binary, too large under `limits`, a submodule or unmerged, as
-/// a review's diff of the file would say. `None` when `side` holds no file at `path` (or, in
-/// the working tree, only an ignored one). Blocking: two or three git calls.
+/// a review's diff of the file would say; in the working tree an ignored file reads as an
+/// untracked one would. `None` when `side` holds no file at `path`. Blocking: two to four git
+/// calls.
 pub fn side_file(
     repo: &GitRepo,
     side: &Side,
@@ -86,6 +90,9 @@ pub fn side_file(
     let mut entries = tracked(repo, &spec, None, Some(path))?;
     if entries.is_empty() && *side == Side::Worktree {
         entries = untracked_at(repo, Some(path))?;
+    }
+    if entries.is_empty() && *side == Side::Worktree {
+        entries = ignored_at(repo, path)?;
     }
     let Some(entry) = entries.into_iter().find(|entry| entry.path == path) else {
         return Ok(None);

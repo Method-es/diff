@@ -1,0 +1,73 @@
+{
+  "requests": [
+    {
+      "method": "textDocument/hover",
+      "params": {
+        "textDocument": {
+          "uri": "*/src/a.ts"
+        },
+        "position": {
+          "line": 4
+        }
+      },
+      "result": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```typescript\nfunction f(): number\n```"
+        }
+      }
+    },
+    {
+      "method": "textDocument/definition",
+      "params": {
+        "textDocument": {
+          "uri": "*/src/a.ts"
+        },
+        "position": {
+          "line": 4
+        }
+      },
+      "result": [
+        {
+          "uri": "${root}/src/a.ts",
+          "range": {
+            "start": {
+              "line": 0,
+              "character": 16
+            },
+            "end": {
+              "line": 0,
+              "character": 17
+            }
+          }
+        }
+      ]
+    },
+    {
+      "method": "textDocument/definition",
+      "params": {
+        "textDocument": {
+          "uri": "*/src/a.ts"
+        },
+        "position": {
+          "line": 5
+        }
+      },
+      "result": [
+        {
+          "uri": "${root}/src/b.ts",
+          "range": {
+            "start": {
+              "line": 1,
+              "character": 16
+            },
+            "end": {
+              "line": 1,
+              "character": 22
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

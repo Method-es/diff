@@ -1,0 +1,13 @@
+{"scenario": {"window_size": "1440x900", "description": "A TypeScript project and no `lsp` header (PLAN §18.5, \"Automated runs\"): under automation servers come only from DV_LSP_<ID>, so none starts, the status bar says TypeScript is missing and its details say why and how to get it, and a hover shows nothing."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "settle"}
+{"cmd": "seed_repo", "name": "web", "steps": [{"write": "package.json", "text": "{\"name\": \"web\", \"devDependencies\": {\"typescript\": \"^7\"}}\n"}, {"write": "tsconfig.json", "text": "{}\n"}, {"write": "src/a.ts", "text": "import { helper, scale } from './b';\n\nexport function total(values: number[]): number {\n  let sum = 0;\n  for (const value of values) {\n    sum += value;\n  }\n  return scale(sum);\n}\n"}, {"write": "src/b.ts", "text": "/** Adds one to `x`. */\nexport function helper(x: number): number {\n  return x + 1;\n}\n\nexport function scale(x: number): number {\n  return x * 2;\n}\n"}, {"write": "src/c.ts", "text": "import { helper } from './b';\n\nexport const two = helper(1);\n"}, {"commit": "base"}, {"write": "src/a.ts", "text": "import { helper, scale } from './b';\n\nexport function total(values: number[]): number {\n  let sum = 0;\n  for (const value of values) {\n    sum += helper(value);\n  }\n  return scale(sum);\n}\n\nexport const answer = total([1, 2, 3]);\n"}]}
+{"cmd": "open_review", "path": "${data_dir}/repos/web"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/servers", "len": 0}, {"pointer": "/intel/missing", "len": 1}, {"pointer": "/intel/missing/0/id", "equals": "typescript"}, {"pointer": "/intel/missing/0/reason", "equals": "DV_LSP_TYPESCRIPT isn't set, and automated runs find language servers only through it"}, {"pointer": "/intel/missing/0/hint", "contains": "lsp.typescript.command"}]}
+{"cmd": "mouse_move", "target": "code/src/a.ts/new/6/14"}
+{"cmd": "settle", "expect": {"pointer": "/intel/hover", "equals": null}}
+{"cmd": "click", "target": "statusbar/lsp/typescript"}
+{"cmd": "settle"}
+{"cmd": "query", "prefix": "statusbar/lsp/details", "expect_result": {"pointer": "", "len": 1}}
+{"cmd": "screenshot", "name": "missing"}

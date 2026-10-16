@@ -776,6 +776,7 @@ fn marks_canvas(cx: MarksCx) -> impl IntoElement {
                     .text_system()
                     .shape_line(shown.text.clone().into(), font_size, &[run], None);
             let line = LineGeometry {
+                bounds,
                 origin_x: bounds.origin.x + px(inset),
                 shaped,
                 shown,

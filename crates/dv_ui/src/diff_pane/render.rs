@@ -53,6 +53,7 @@ impl Render for DiffPane {
             }));
         }
         self.release_orphaned_focus(window, cx);
+        self.hover_before_frame(window, cx);
         self.focus_waiting_composer(window, cx);
         self.open_waiting_reply(window, cx);
         // What the viewport shows is worked out again after this frame's layout, when it moved.
@@ -81,6 +82,7 @@ impl Render for DiffPane {
                 .child(self.render_header(block, true, &theme, cx))
         });
         let menu = self.render_menu(&theme, window, cx);
+        let hover_card = self.render_hover(&theme, cx);
         let find_bar = self.render_find_bar(&theme, cx);
         // While text is being selected the pointer is followed wherever it goes, in the
         // window or out of it, until the button comes up (`select`).
@@ -114,14 +116,30 @@ impl Render for DiffPane {
             .size_full()
         });
         div()
+            .id("diff-pane")
             .relative()
             .size_full()
             .overflow_hidden()
             .text_color(theme.colors.fg)
+            // The pointer leaving the pane (onto the panel, the status bar) leaves the card's
+            // token: it closes after its grace unless the pointer is over the card (`intel`).
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !*hovered {
+                    this.pointer_left_pane(cx);
+                }
+            }))
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
                 let delta = event.delta.pixel_delta(px(heights::CODE));
                 if delta.x != px(0.) {
                     this.scroll_sideways(-f32::from(delta.x), cx);
+                }
+                // The card hangs where its token was: a scroll takes it away.
+                this.close_hover(cx);
+            }))
+            // The pointer resting on an identifier asks for its hover (`intel`).
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if event.pressed_button.is_none() {
+                    this.hover_pointer_moved(event.position, cx);
                 }
             }))
             // A press anywhere in the stream clears the selected text and the caret before
@@ -151,6 +169,7 @@ impl Render for DiffPane {
             .children(find_bar)
             .children(text_drag)
             .children(menu)
+            .children(hover_card)
             .automation_target(if self.is_file_view() {
                 "file_view"
             } else {

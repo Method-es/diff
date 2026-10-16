@@ -301,9 +301,28 @@ pub(super) fn untracked_at(
     repo: &GitRepo,
     path: Option<&str>,
 ) -> Result<Vec<FileEntry>, DiffError> {
+    others_at(repo, path, false)
+}
+
+/// The entry of the file at `path` when git ignores it, counted as [`untracked`] counts its
+/// files: a definition a language server found under `node_modules` (PLAN §18.1).
+pub(super) fn ignored_at(repo: &GitRepo, path: &str) -> Result<Vec<FileEntry>, DiffError> {
+    others_at(repo, Some(path), true)
+}
+
+/// The files git doesn't track (`ls-files --others`): those it doesn't ignore, or with
+/// `ignored` those it does; of the one file at `path` when given.
+fn others_at(
+    repo: &GitRepo,
+    path: Option<&str>,
+    ignored: bool,
+) -> Result<Vec<FileEntry>, DiffError> {
     let mut args = ["ls-files", "--others", "--exclude-standard", "-z"]
         .map(String::from)
         .to_vec();
+    if ignored {
+        args.push("--ignored".to_string());
+    }
     if let Some(path) = path {
         args.extend(["--".to_string(), format!(":(literal){path}")]);
     }

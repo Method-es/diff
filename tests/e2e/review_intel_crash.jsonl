@@ -1,0 +1,15 @@
+{"scenario": {"window_size": "1440x900", "lsp": {"typescript": "fixtures/lsp/review_intel_crash.json"}, "description": "A language server that crashes (PLAN §18.5): mock_lsp exits on the first hover; the hover shows nothing, the server restarts after a second (its second start, ready again), and the next hover's card opens; the log has the crash and both starts."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "settle"}
+{"cmd": "seed_repo", "name": "web", "steps": [{"write": "package.json", "text": "{\"name\": \"web\", \"devDependencies\": {\"typescript\": \"^7\"}}\n"}, {"write": "tsconfig.json", "text": "{}\n"}, {"write": "src/a.ts", "text": "import { helper, scale } from './b';\n\nexport function total(values: number[]): number {\n  let sum = 0;\n  for (const value of values) {\n    sum += value;\n  }\n  return scale(sum);\n}\n"}, {"write": "src/b.ts", "text": "/** Adds one to `x`. */\nexport function helper(x: number): number {\n  return x + 1;\n}\n\nexport function scale(x: number): number {\n  return x * 2;\n}\n"}, {"write": "src/c.ts", "text": "import { helper } from './b';\n\nexport const two = helper(1);\n"}, {"commit": "base"}, {"write": "src/a.ts", "text": "import { helper, scale } from './b';\n\nexport function total(values: number[]): number {\n  let sum = 0;\n  for (const value of values) {\n    sum += helper(value);\n  }\n  return scale(sum);\n}\n\nexport const answer = total([1, 2, 3]);\n"}]}
+{"cmd": "open_review", "path": "${data_dir}/repos/web"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/servers/0/state", "equals": "ready"}, {"pointer": "/intel/servers/0/starts", "equals": 1}]}
+{"cmd": "mouse_move", "target": "code/src/a.ts/new/6/14"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/hover", "equals": null}, {"pointer": "/intel/servers/0/state", "equals": "ready"}, {"pointer": "/intel/servers/0/starts", "equals": 2}]}
+{"cmd": "mouse_move", "target": "stream/line/src/a.ts/new/9"}
+{"cmd": "settle"}
+{"cmd": "mouse_move", "target": "code/src/a.ts/new/6/14"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/hover/open", "equals": true}, {"pointer": "/intel/hover/text", "contains": "function helper"}]}
+{"cmd": "screenshot", "name": "hover-after-restart"}
+{"lsp_log": {}, "expect_result": [{"pointer": "", "contains": {"crashed": 3}}, {"pointer": "", "contains": {"received": {"method": "textDocument/hover"}}}]}

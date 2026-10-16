@@ -63,6 +63,7 @@
 mod file_comment;
 pub mod file_view;
 mod find;
+mod intel;
 mod nav;
 mod reload;
 mod render;
@@ -235,6 +236,9 @@ pub struct DiffPane {
     /// A line shown before its file's diff landed (the history going back): the cursor goes to
     /// it when it does (`DiffPane::show_line`).
     pending_line: Option<(String, AnchorSide, u32)>,
+    /// A caret asked for before its line was there (go to definition into a file still
+    /// loading): it is put once the line is (`intel`).
+    pending_caret: Option<select::TextPoint>,
     current_file: Option<String>,
     /// The sideways scroll, in pixels, shared by every code row.
     h_offset: f32,
@@ -306,6 +310,10 @@ pub struct DiffPane {
     activation: Option<Subscription>,
     /// The file view's scope, in the file view's pane; `None` in the stream (`file_view`).
     file_view: Option<file_view::FileView>,
+    /// The open review's code intelligence, and this pane's hover state (`intel`).
+    intel: Option<Entity<crate::intel::CodeIntel>>,
+    hover_ui: intel::HoverUi,
+    _intel_events: Option<Subscription>,
     _session_events: Vec<Subscription>,
 }
 
@@ -344,6 +352,7 @@ impl DiffPane {
             line_drag: None,
             pending_first_change: None,
             pending_line: None,
+            pending_caret: None,
             current_file: None,
             h_offset: 0.,
             view_columns: 0,
@@ -380,6 +389,9 @@ impl DiffPane {
             geometry: select::Geometry::default(),
             activation: None,
             file_view: None,
+            intel: None,
+            hover_ui: intel::HoverUi::default(),
+            _intel_events: None,
             _session_events: Vec::new(),
         }
     }
@@ -398,6 +410,7 @@ impl DiffPane {
                             this.refresh_blocks(cx)
                         }
                         SessionEvent::Error => cx.notify(),
+                        SessionEvent::WorktreeChanged { .. } => {}
                     }),
                     cx.observe(session, |this, _, cx| {
                         this.track_loading(cx);
@@ -427,6 +440,7 @@ impl DiffPane {
         self.selection = None;
         self.pending_first_change = None;
         self.pending_line = None;
+        self.pending_caret = None;
         self.menu = None;
         self.h_offset = 0.;
         self.wanted.clear();
@@ -493,7 +507,10 @@ impl DiffPane {
     /// Nothing is waiting on the next frame, and no post or thread change is on its way:
     /// automation's `settled`.
     pub fn is_settled(&self) -> bool {
-        !self.viewport_pending && self.writes == 0 && !self.find_pending()
+        !self.viewport_pending
+            && self.writes == 0
+            && !self.find_pending()
+            && !self.hover_ui.is_waiting()
     }
 
     /// Brings `path` into view as the current file (a click on its row in the panel): its
@@ -886,6 +903,7 @@ impl DiffPane {
             self.pending_line = None;
             self.show_line(&path, side, line, cx);
         }
+        self.place_pending_caret();
         if let Some(path) = self.pending_first_change.clone()
             && let Some(&index) = self.index.get(&path)
             && self.lines(&path).is_some()

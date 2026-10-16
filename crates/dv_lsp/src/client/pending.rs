@@ -104,6 +104,19 @@ impl<T> Pending<T> {
         }
     }
 
+    /// Something that cancels this request from another thread while [`Pending::wait`] blocks
+    /// on it (a hover the pointer left, PLAN §18.4): its waiter then fails at once
+    /// ([`RequestError::Exited`]); `None` when it was never sent.
+    pub fn canceller(&self) -> Option<Canceller> {
+        match &self.state {
+            PendingState::Sent { shared, id, .. } => Some(Canceller {
+                shared: shared.clone(),
+                id: *id,
+            }),
+            PendingState::Settled(_) => None,
+        }
+    }
+
     /// Blocks until the answer arrives or the request's timeout passes (counted from when it
     /// was sent); a timeout cancels it. Call it off the UI thread.
     pub fn wait(mut self) -> Result<T, RequestError> {
@@ -145,6 +158,28 @@ impl<T> Drop for Pending<T> {
         if let PendingState::Sent { shared, id, .. } = &self.state {
             cancel(shared, *id);
         }
+    }
+}
+
+/// Cancels one request from any thread ([`Pending::canceller`]). Never blocks: the
+/// `$/cancelRequest` goes through the client's writer thread.
+#[derive(Clone)]
+pub struct Canceller {
+    shared: Arc<Shared>,
+    id: i64,
+}
+
+impl Canceller {
+    /// Tells the server the request is no longer wanted, unless it was answered; whoever waits
+    /// on it stops waiting.
+    pub fn cancel(&self) {
+        cancel(&self.shared, self.id);
+    }
+}
+
+impl std::fmt::Debug for Canceller {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Canceller").field("id", &self.id).finish()
     }
 }
 

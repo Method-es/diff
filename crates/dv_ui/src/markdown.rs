@@ -26,6 +26,18 @@ pub fn view(id: impl Into<ElementId>, text: &str, cx: &App) -> TextView {
         .on_link_click(|url, _event, _window, cx| crate::system::open_url(url, cx))
 }
 
+/// [`view`] whose links go to `on_link` instead of [`crate::system::open_url`]: the hover
+/// card's, where a link to a file opens it in dv (PLAN §18.1). `on_link` must still send any
+/// other link through `open_url`.
+pub fn view_with_links(
+    id: impl Into<ElementId>,
+    text: &str,
+    on_link: impl Fn(&str, &mut App) + Send + Sync + 'static,
+    cx: &App,
+) -> TextView {
+    view(id, text, cx).on_link_click(move |url, _event, _window, cx| on_link(url, cx))
+}
+
 /// Neutralises the constructs that make `TextView` fetch anything or render markup from an
 /// untrusted body, before the source reaches it:
 ///

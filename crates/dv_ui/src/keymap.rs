@@ -42,6 +42,9 @@ pub const SHEET: &str = "Sheet";
 pub const FIND: &str = "Find";
 /// Key context gpui-component sets on its text fields; gpui-base keeps its constant private.
 pub const INPUT: &str = "Input";
+/// Key context of gpui-base's Markdown views (the hover card's, selectable); its constant is
+/// private too.
+pub const TEXT_VIEW: &str = "TextView";
 
 /// How a [`Shortcut`] reaches gpui.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -206,6 +209,20 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("alt-right", DIFF_PANE, diff_pane::GoForward, OutsideInputs),
     // A text field copies its own selection.
     shortcut!("secondary-c", DIFF_PANE, diff_pane::Copy, OutsideInputs),
+    // Code intelligence at the caret (PLAN §18.1).
+    shortcut!(
+        "secondary-i",
+        DIFF_PANE,
+        diff_pane::HoverAtCaret,
+        OutsideInputs
+    ),
+    shortcut!("f12", DIFF_PANE, diff_pane::GoToDefinition, OutsideInputs),
+    shortcut!(
+        "shift-f12",
+        DIFF_PANE,
+        diff_pane::FindReferences,
+        OutsideInputs
+    ),
     shortcut!("secondary-f", DIFF_PANE, diff_pane::Find, OutsideInputs),
     // The find bar: its field searches on `Ctrl F` itself, so the row sits ahead of it (again,
     // the field's text selected); a single-line field lets `Enter`, `Shift Enter` and an idle
@@ -234,6 +251,9 @@ pub const SHORTCUTS: &[Shortcut] = &[
     // Every text field: its copy and cut go through the clipboard seam, not gpui's clipboard
     // (dv's rows win over the field's own at the same depth).
     shortcut!("secondary-c", INPUT, field::Copy),
+    // A selectable Markdown view's own copy writes the clipboard itself: dv's goes through the
+    // seam (`crate::system`).
+    shortcut!("secondary-c", TEXT_VIEW, field::Copy),
     shortcut!("secondary-x", INPUT, field::Cut),
 ];
 

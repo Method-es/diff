@@ -1,6 +1,6 @@
 //! Scenario files: JSONL where each line is an automation command, possibly
 //! carrying runner-only assertion keys, or a runner-only step (reading the
-//! `mock_gh` call log or restarting the app). See tests/e2e/README.md.
+//! `mock_gh` or `mock_lsp` log, or restarting the app). See tests/e2e/README.md.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -28,6 +28,8 @@ pub const BUILTIN_VARS: &[&str] = &[
     "dv_gh",
     "dv_mock_gh",
     "dv_mock_gh_log",
+    "dv_mock_lsp",
+    "dv_mock_lsp_log",
 ];
 
 /// Default window size, matching dv's default window.
@@ -48,6 +50,15 @@ pub const MOCK_GH_VAR: &str = "DV_MOCK_GH";
 
 /// Where `mock_gh` appends one JSON line per call; `gh_log` steps read it.
 pub const MOCK_GH_LOG_VAR: &str = "DV_MOCK_GH_LOG";
+
+/// What dv runs in place of a language server's resolvers (docs/PLAN.md §18.4): `DV_LSP_<ID>`,
+/// with `DV_LSP_<ID>_ARGS`. The runner removes every inherited one, so a scenario reaches no
+/// real language server unless its header's `lsp` (or `env`) names one.
+pub const LSP_VAR_PREFIX: &str = "DV_LSP_";
+
+/// `mock_lsp`'s own variables, which the runner removes too: it passes the scenario and the
+/// log as arguments.
+pub const MOCK_LSP_VAR_PREFIX: &str = "DV_MOCK_LSP";
 
 /// The scratch home dv installs into and runs from inside a WSL distro (docs/PLAN.md §5.2).
 /// The runner removes an inherited one, so a scenario reaches WSL only through dv's stand-in
@@ -89,6 +100,11 @@ pub struct Header {
     /// Extra environment for the app (and the `mock_gh` it starts).
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// `mock_lsp` scenario files by language server id (`{"typescript":
+    /// "fixtures/lsp/hover.json"}`), relative to the scenario file: the runner points
+    /// `DV_LSP_<ID>` at `mock_lsp` playing that file, logging to `${dv_mock_lsp_log}`.
+    #[serde(default)]
+    pub lsp: BTreeMap<String, String>,
     /// Free text shown in verbose output.
     pub description: Option<String>,
     /// Operating systems the scenario runs on, as `std::env::consts::OS`
@@ -137,6 +153,9 @@ pub enum Action {
     /// `{"gh_log": {}}`: the calls `mock_gh` has logged so far, read by the
     /// runner from `DV_MOCK_GH_LOG`.
     GhLog,
+    /// `{"lsp_log": {}}`: what every `mock_lsp` the scenario started has logged so far (the
+    /// messages it read, its starts and crashes), read by the runner.
+    LspLog,
     /// Quit the app (unless a `quit` step already did) and start it again
     /// with the same data dir, `mock_gh` scenario and environment.
     Restart(Restart),
@@ -264,6 +283,18 @@ impl Scenario {
         if header.gh.as_deref().is_some_and(|gh| gh.trim().is_empty()) {
             bail!("the scenario header's gh must name a mock_gh scenario file");
         }
+        if let Some((id, _)) = header.lsp.iter().find(|(id, file)| {
+            file.trim().is_empty()
+                || id.is_empty()
+                || !id
+                    .chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+        }) {
+            bail!(
+                "the scenario header's lsp maps a language server id (lower case) to a mock_lsp \
+                 scenario file; {id:?} doesn't"
+            );
+        }
         if let Some(name) = header.env.keys().find(|name| {
             RUNNER_ENV
                 .iter()
@@ -305,12 +336,25 @@ impl Scenario {
     /// The header's `gh` file, resolved against the scenario file's directory.
     pub fn gh_scenario(&self) -> Option<PathBuf> {
         let gh = self.header.gh.as_deref()?;
-        let dir = self
-            .path
+        Some(self.dir().join(gh))
+    }
+
+    /// The header's `lsp` files, by language server id, resolved against the scenario file's
+    /// directory.
+    pub fn lsp_scenarios(&self) -> Vec<(String, PathBuf)> {
+        self.header
+            .lsp
+            .iter()
+            .map(|(id, file)| (id.clone(), self.dir().join(file)))
+            .collect()
+    }
+
+    /// The directory the scenario file is in.
+    fn dir(&self) -> &Path {
+        self.path
             .parent()
             .filter(|dir| !dir.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        Some(dir.join(gh))
+            .unwrap_or(Path::new("."))
     }
 }
 
@@ -358,6 +402,17 @@ fn parse_step(line: usize, mut object: Map<String, Value>) -> Result<Step> {
         }
         serde_json::from_value::<GhLogOptions>(options).context("bad gh_log")?;
         return Ok(step(Action::GhLog));
+    }
+    if let Some(options) = object.remove("lsp_log") {
+        ensure_alone(&object, "lsp_log")?;
+        if expect_error.is_some() {
+            bail!("an lsp_log step can't expect an error");
+        }
+        if timeout.is_some() {
+            bail!("runner_timeout_ms doesn't apply to an lsp_log step (it reads a file)");
+        }
+        serde_json::from_value::<GhLogOptions>(options).context("bad lsp_log")?;
+        return Ok(step(Action::LspLog));
     }
     if let Some(restart) = object.remove("restart") {
         ensure_alone(&object, "restart")?;
@@ -460,7 +515,7 @@ fn check_step_order(steps: &[Step]) -> Result<()> {
     for step in steps {
         match &step.action {
             Action::Restart(_) => quit = false,
-            Action::GhLog if step.expect.is_none() => {}
+            Action::GhLog | Action::LspLog if step.expect.is_none() => {}
             _ if quit => bail!(
                 "line {}: after quit only a restart (or a gh_log without expect) may follow",
                 step.line

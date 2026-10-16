@@ -32,6 +32,7 @@ pub mod file_finder;
 pub mod file_list;
 pub mod history;
 pub mod icons;
+pub mod intel;
 pub mod keymap;
 pub mod markdown;
 pub mod platform;

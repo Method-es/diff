@@ -1,0 +1,100 @@
+{"scenario": {"window_size": "1440x900", "lsp": {"typescript": "fixtures/lsp/review_intel.json"}, "description": "Code intelligence against mock_lsp (PLAN §18.1, §18.5, DESIGN §4.1): the TypeScript server starts once the file list shows (`intel.servers`, the status bar's item and its details); the pointer resting on an identifier opens the hover card (its text, Go to definition and Find references), moving off closes it and Esc closes it; Ctrl+click on a symbol defined in a file the review doesn't change opens the file view at its definition (the caret on it), Alt ← returns; F12 on a symbol defined near the change scrolls the stream there; Shift F12 lists the references in the panel's References tab, grouped by file with the changed row marked, In this review keeping that one; a row opens its place; closing the list takes the tabs away; screenshots of the hover card (dark, light), the references, the file view after a definition and the status bar's details."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "settle"}
+// src/a.ts calls helper (src/b.ts, unchanged) on its changed line 6; src/c.ts calls it too.
+{"cmd": "seed_repo", "name": "web", "steps": [{"write": "package.json", "text": "{\"name\": \"web\", \"devDependencies\": {\"typescript\": \"^7\"}}\n"}, {"write": "tsconfig.json", "text": "{}\n"}, {"write": "src/a.ts", "text": "import { helper, scale } from './b';\n\nexport function total(values: number[]): number {\n  let sum = 0;\n  for (const value of values) {\n    sum += value;\n  }\n  return scale(sum);\n}\n"}, {"write": "src/b.ts", "text": "/** Adds one to `x`. */\nexport function helper(x: number): number {\n  return x + 1;\n}\n\nexport function scale(x: number): number {\n  return x * 2;\n}\n"}, {"write": "src/c.ts", "text": "import { helper } from './b';\n\nexport const two = helper(1);\n"}, {"commit": "base"}, {"write": "src/a.ts", "text": "import { helper, scale } from './b';\n\nexport function total(values: number[]): number {\n  let sum = 0;\n  for (const value of values) {\n    sum += helper(value);\n  }\n  return scale(sum);\n}\n\nexport const answer = total([1, 2, 3]);\n"}]}
+{"cmd": "open_review", "path": "${data_dir}/repos/web"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/servers/0/id", "equals": "typescript"}, {"pointer": "/intel/servers/0/state", "equals": "ready"}, {"pointer": "/intel/servers/0/source", "equals": "DV_LSP_TYPESCRIPT"}, {"pointer": "/intel/servers", "len": 1}, {"pointer": "/intel/missing", "len": 0}, {"pointer": "/intel/hover", "equals": null}, {"pointer": "/intel/panel_tab", "equals": "review"}]}
+{"cmd": "query", "prefix": "statusbar/lsp/typescript", "expect_result": {"pointer": "", "len": 1}}
+
+// The pointer resting on `helper`: the card, with the server's signature and docs.
+{"cmd": "mouse_move", "target": "code/src/a.ts/new/6/14"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/hover/open", "equals": true}, {"pointer": "/intel/hover/symbol", "equals": "helper"}, {"pointer": "/intel/hover/line", "equals": 6}, {"pointer": "/intel/hover/pane", "equals": "stream"}, {"pointer": "/intel/hover/text", "contains": "function helper(x: number): number"}, {"pointer": "/intel/hover/text", "contains": "plus one"}, {"pointer": "/intel/hover/against_worktree", "equals": false}]}
+{"cmd": "query", "prefix": "hover/", "expect_result": {"pointer": "", "len": 2}}
+{"cmd": "screenshot", "name": "hover"}
+// Off the token (onto a line number), it closes; back on it and Esc closes it too.
+{"cmd": "mouse_move", "target": "stream/line/src/a.ts/new/9"}
+{"cmd": "settle", "expect": {"pointer": "/intel/hover", "equals": null}}
+{"cmd": "mouse_move", "target": "code/src/a.ts/new/6/14"}
+{"cmd": "settle", "expect": {"pointer": "/intel/hover/open", "equals": true}}
+{"cmd": "key", "keystroke": "escape"}
+{"cmd": "settle", "expect": {"pointer": "/intel/hover", "equals": null}}
+// Straight from one identifier onto another (the old column, clear of the card): the first card's grace closes the card, not the wait for the next.
+{"cmd": "mouse_move", "target": "code/src/a.ts/new/6/14"}
+{"cmd": "settle", "expect": {"pointer": "/intel/hover/symbol", "equals": "helper"}}
+{"cmd": "mouse_move", "target": "code/src/a.ts/old/8/12"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/hover/open", "equals": true}, {"pointer": "/intel/hover/symbol", "equals": "scale"}, {"pointer": "/intel/hover/side", "equals": "old"}, {"pointer": "/intel/hover/line", "equals": 8}]}
+// A hover the server is slow to answer (line 3's `total`) is cancelled once the pointer leaves it.
+{"cmd": "mouse_move", "target": "code/src/a.ts/new/3/19"}
+{"cmd": "wait", "ms": 800}
+{"expect": [{"pointer": "/intel/hover/open", "equals": false}, {"pointer": "/intel/hover/line", "equals": 3}]}
+{"cmd": "mouse_move", "target": "stream/line/src/a.ts/new/9"}
+{"cmd": "settle", "expect": {"pointer": "/intel/hover", "equals": null}}
+{"lsp_log": {}, "expect_result": {"pointer": "", "contains": {"received": {"method": "$/cancelRequest"}}}}
+// F12 with the pointer over the card: the card goes, and hovers go on working after it.
+{"cmd": "click", "target": "code/src/a.ts/new/6/14"}
+{"cmd": "mouse_move", "target": "stream/line/src/a.ts/new/9"}
+{"cmd": "mouse_move", "target": "code/src/a.ts/new/6/14"}
+{"cmd": "settle", "expect": {"pointer": "/intel/hover/open", "equals": true}}
+{"cmd": "mouse_move", "target": "hover"}
+{"cmd": "settle", "expect": {"pointer": "/intel/hover/open", "equals": true}}
+{"cmd": "key", "keystroke": "f12"}
+{"cmd": "settle", "expect": [{"pointer": "/file_view/path", "equals": "src/b.ts"}, {"pointer": "/intel/hover", "equals": null}]}
+{"cmd": "key", "keystroke": "alt-left"}
+{"cmd": "settle", "expect": {"pointer": "/file_view", "equals": null}}
+{"cmd": "mouse_move", "target": "stream/line/src/a.ts/new/9"}
+{"cmd": "mouse_move", "target": "code/src/a.ts/new/6/14"}
+{"cmd": "settle", "expect": {"pointer": "/intel/hover/open", "equals": true}}
+{"cmd": "key", "keystroke": "escape"}
+{"cmd": "settle", "expect": {"pointer": "/intel/hover", "equals": null}}
+
+// Ctrl+click: helper is defined in src/b.ts, which the review doesn't change: the file view opens there.
+{"cmd": "click", "target": "code/src/a.ts/new/6/14", "modifiers": "ctrl"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/definitions", "equals": 1}, {"pointer": "/file_view/path", "equals": "src/b.ts"}, {"pointer": "/session/cursor", "equals": {"path": "src/b.ts", "side": "new", "line": 2}}, {"pointer": "/stream/caret", "equals": {"path": "src/b.ts", "side": "new", "line": 2, "column": 17}}, {"pointer": "/history", "equals": {"back": 1, "forward": 0}}]}
+{"cmd": "screenshot", "name": "definition-file-view"}
+{"cmd": "key", "keystroke": "alt-left"}
+{"cmd": "settle", "expect": [{"pointer": "/file_view", "equals": null}, {"pointer": "/history", "equals": {"back": 0, "forward": 1}}]}
+// F12 on `total` (line 11): defined at line 3 of the same file, near the change, so the stream goes there.
+{"cmd": "click", "target": "code/src/a.ts/new/11/24"}
+{"cmd": "key", "keystroke": "f12"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/definitions", "equals": 1}, {"pointer": "/file_view", "equals": null}, {"pointer": "/session/cursor", "equals": {"path": "src/a.ts", "side": "new", "line": 3}}, {"pointer": "/stream/caret", "equals": {"path": "src/a.ts", "side": "new", "line": 3, "column": 17}}, {"pointer": "/history", "equals": {"back": 1, "forward": 0}}]}
+{"cmd": "key", "keystroke": "alt-left"}
+{"cmd": "settle", "expect": [{"pointer": "/session/cursor/line", "equals": 11}, {"pointer": "/history", "equals": {"back": 0, "forward": 1}}]}
+
+// Shift F12 at `helper`: the References tab, by file in path order, the review's changed row marked.
+{"cmd": "click", "target": "code/src/a.ts/new/6/14"}
+{"cmd": "key", "keystroke": "shift-f12"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/panel_tab", "equals": "references"}, {"pointer": "/intel/references/kind", "equals": "references"}, {"pointer": "/intel/references/symbol", "equals": "helper"}, {"pointer": "/intel/references/loading", "equals": false}, {"pointer": "/intel/references/count", "equals": 4}, {"pointer": "/intel/references/files", "equals": 3}, {"pointer": "/intel/references/rows", "equals": [{"path": "src/a.ts", "in_repo": true, "line": 1, "column": 10, "text": "import { helper, scale } from './b';", "changed": false}, {"path": "src/a.ts", "in_repo": true, "line": 6, "column": 12, "text": "    sum += helper(value);", "changed": true}, {"path": "src/b.ts", "in_repo": true, "line": 2, "column": 17, "text": "export function helper(x: number): number {", "changed": false}, {"path": "src/c.ts", "in_repo": true, "line": 3, "column": 20, "text": "export const two = helper(1);", "changed": false}]}]}
+{"cmd": "screenshot", "name": "references"}
+{"cmd": "click", "target": "references/in_review"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/references/in_review", "equals": true}, {"pointer": "/intel/references/rows", "len": 1}, {"pointer": "/intel/references/rows/0/line", "equals": 6}]}
+{"cmd": "screenshot", "name": "references-in-review"}
+{"cmd": "click", "target": "references/in_review"}
+// A row goes where go to definition goes: src/b.ts's opens the file view.
+{"cmd": "click", "target": "references/row/src/b.ts/2"}
+{"cmd": "settle", "expect": [{"pointer": "/file_view/path", "equals": "src/b.ts"}, {"pointer": "/session/cursor/line", "equals": 2}]}
+{"cmd": "key", "keystroke": "escape"}
+{"cmd": "settle", "expect": {"pointer": "/file_view", "equals": null}}
+// The tabs: Review shows the files and comments again; closing the list takes the tabs away.
+{"cmd": "click", "target": "panel/tab/review"}
+{"cmd": "settle", "expect": {"pointer": "/intel/panel_tab", "equals": "review"}}
+{"cmd": "click", "target": "panel/tab/references"}
+{"cmd": "click", "target": "references/close"}
+{"cmd": "settle", "expect": [{"pointer": "/intel/references", "equals": null}, {"pointer": "/intel/panel_tab", "equals": "review"}]}
+{"cmd": "query", "prefix": "panel/tab/", "expect_result": {"pointer": "", "len": 0}}
+
+// The status bar's item: its details (the command, where it came from, the last output).
+{"cmd": "click", "target": "statusbar/lsp/typescript"}
+{"cmd": "settle"}
+{"cmd": "query", "prefix": "statusbar/lsp/details", "expect_result": {"pointer": "", "len": 1}}
+{"cmd": "screenshot", "name": "status-details"}
+{"cmd": "click", "target": "statusbar/lsp/typescript"}
+{"cmd": "settle"}
+{"cmd": "query", "prefix": "statusbar/lsp/details", "expect_result": {"pointer": "", "len": 0}}
+{"cmd": "set_setting", "key": "mode", "value": "light"}
+{"cmd": "mouse_move", "target": "code/src/a.ts/new/6/14"}
+{"cmd": "settle", "expect": {"pointer": "/intel/hover/open", "equals": true}}
+{"cmd": "screenshot", "name": "hover-light"}
+// What the server read: the stream's text of src/a.ts, and the hover asked at `helper`.
+{"lsp_log": {}, "expect_result": [{"pointer": "", "contains": {"received": {"method": "textDocument/didOpen", "params": {"textDocument": {"text": "import { helper, scale } from './b';\n\nexport function total(values: number[]): number {\n  let sum = 0;\n  for (const value of values) {\n    sum += helper(value);\n  }\n  return scale(sum);\n}\n\nexport const answer = total([1, 2, 3]);\n"}}}}}, {"pointer": "", "contains": {"received": {"method": "textDocument/hover", "params": {"position": {"line": 5, "character": 11}}}}}]}

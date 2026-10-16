@@ -130,6 +130,12 @@ pub mod diff_pane {
             GoBack,
             /// Go forward again (`Alt →`).
             GoForward,
+            /// Show the hover card for the symbol at the caret (`Ctrl I`, PLAN §18.1).
+            HoverAtCaret,
+            /// Go to the definition of the symbol at the caret (`F12`).
+            GoToDefinition,
+            /// Find the references of the symbol at the caret (`Shift F12`).
+            FindReferences,
         ]
     );
 }

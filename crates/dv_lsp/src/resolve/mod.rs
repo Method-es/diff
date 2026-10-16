@@ -22,6 +22,7 @@ mod tests;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use dv_core::backend::{Backend, BackendError, ProcessSpec};
 use parking_lot::Mutex;
@@ -132,6 +133,10 @@ pub struct Resolver {
     env: EnvReader,
     /// Answers by spec id and directory: `None` where the spec doesn't apply.
     cache: Mutex<HashMap<(&'static str, String), Option<Resolution>>>,
+    /// Bumped by every [`Resolver::forget`]: an answer worked out before one isn't kept.
+    generation: AtomicU64,
+    /// Only `DV_LSP_<ID>` finds a server ([`Resolver::overrides_only`]).
+    overrides_only: bool,
 }
 
 impl Resolver {
@@ -148,6 +153,8 @@ impl Resolver {
             settings,
             env: Box::new(|name| std::env::var(name).ok()),
             cache: Mutex::new(HashMap::new()),
+            generation: AtomicU64::new(0),
+            overrides_only: false,
         }
     }
 
@@ -157,6 +164,15 @@ impl Resolver {
         env: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
     ) -> Self {
         self.env = Box::new(env);
+        self
+    }
+
+    /// Finds servers only through `DV_LSP_<ID>`: the project, settings and `PATH` resolvers are
+    /// off, so an automated run (the app under `--automation`, its tests) never starts a
+    /// server it didn't name, whatever `node_modules` lies above its fixtures. Without the
+    /// override a spec that applies is missing, saying so.
+    pub fn overrides_only(mut self) -> Self {
+        self.overrides_only = true;
         self
     }
 
@@ -185,13 +201,21 @@ impl Resolver {
                 reason: "the worktree root isn't an absolute path".into(),
             });
         };
+        let generation = self.generation.load(Ordering::SeqCst);
         let reader = Reader::new(self.backend.as_ref(), self.paths.style());
         let answer = if applies(&reader, root, spec, &dir)? {
             Some(self.resolve_in(&reader, root, spec, &dir)?)
         } else {
             None
         };
-        self.cache.lock().insert(key, answer.clone());
+        {
+            // A `forget` while this was worked out: the answer may be stale; it is given but
+            // not kept.
+            let mut cache = self.cache.lock();
+            if self.generation.load(Ordering::SeqCst) == generation {
+                cache.insert(key, answer.clone());
+            }
+        }
         Ok(answer)
     }
 
@@ -210,6 +234,7 @@ impl Resolver {
 
     /// Forgets every answer.
     pub fn forget(&self) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
         self.cache.lock().clear();
     }
 
@@ -251,6 +276,12 @@ impl Resolver {
             }
             Ok(None) => {}
             Err(reason) => return Ok(missing(reason.to_string())),
+        }
+        if self.overrides_only {
+            return Ok(missing(format!(
+                "{} isn't set, and automated runs find language servers only through it",
+                spec.override_var()
+            )));
         }
         let context = ResolveContext {
             reader,

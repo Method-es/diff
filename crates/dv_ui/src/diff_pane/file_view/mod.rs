@@ -19,6 +19,12 @@
 //! the text is there the view shows skeleton rows. A file the side doesn't hold, binary or too
 //! large shows a notice instead of lines.
 //!
+//! **The working tree.** Go to definition and references in a review whose new side isn't the
+//! working tree show their place as the working tree holds it now, as the language server read
+//! it (PLAN §18.2): the file view then reads the file there ([`DiffPane::open_file_at`],
+//! `ReviewSession::worktree_file`), labelled "working tree", read-only (no comments, no
+//! threads: its lines aren't the review's).
+//!
 //! **Threads.** Every live thread on the file's side that stands at lines of it shows inline
 //! under its last line (placed by the same placement the stream uses: in a listed file, or in
 //! a file the review doesn't change, `Placement::Unlisted`); comments on the whole file and
@@ -69,6 +75,8 @@ pub(super) struct OpenFile {
     pub go_to: Option<u32>,
     /// "Load anyway" on a file read at its side that is over the size caps.
     pub load_anyway: bool,
+    /// Read from the working tree as it stands, not at the review's side (module docs).
+    pub worktree: bool,
     /// The text shown, cut to its side, the diff it was cut from and whether it was cut with
     /// "Load anyway".
     cut: Option<(Arc<FileDiff>, bool, Arc<FileDiff>)>,
@@ -101,6 +109,8 @@ pub struct FileViewSummary {
     pub changed_lines: Vec<u32>,
     /// The text isn't there yet.
     pub loading: bool,
+    /// Read from the working tree as it stands (module docs, "The working tree").
+    pub worktree: bool,
     /// The notice it shows instead of lines (`rows::Notice::key`), if any.
     pub notice: Option<&'static str>,
 }
@@ -199,6 +209,11 @@ impl DiffPane {
         self.shown_file().map(|file| file.path.as_str())
     }
 
+    /// Whether the file view reads its file from the working tree as it stands.
+    pub fn file_view_worktree(&self) -> bool {
+        self.shown_file().is_some_and(|file| file.worktree)
+    }
+
     /// The side the file view shows.
     pub fn file_view_side(&self) -> Option<AnchorSide> {
         self.shown_file().map(|file| file.side)
@@ -232,13 +247,29 @@ impl DiffPane {
     /// Shows `path` whole (module docs), its cursor on line `line` of the side shown once the
     /// text is there (else the first line). The same file again only moves the cursor.
     pub fn open_file(&mut self, path: &str, line: Option<u32>, cx: &mut Context<Self>) {
+        self.open_file_at(path, line, false, cx);
+    }
+
+    /// [`DiffPane::open_file`], reading the file from the working tree as it stands when
+    /// `worktree` (module docs, "The working tree").
+    pub fn open_file_at(
+        &mut self,
+        path: &str,
+        line: Option<u32>,
+        worktree: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(session) = self.session.clone() else {
             return;
         };
-        let side = session.read(cx).view_side(path);
-        let same = self
-            .shown_file()
-            .is_some_and(|file| file.path == path && file.side == side);
+        let side = if worktree {
+            AnchorSide::New
+        } else {
+            session.read(cx).view_side(path)
+        };
+        let same = self.shown_file().is_some_and(|file| {
+            file.path == path && file.side == side && file.worktree == worktree
+        });
         // A draft is never dropped (the shell doesn't ask while one would be).
         if !same && self.has_draft(cx) {
             return;
@@ -252,6 +283,7 @@ impl DiffPane {
                 side,
                 go_to: line,
                 load_anyway: false,
+                worktree,
                 cut: None,
             });
             self.cursor = None;
@@ -274,7 +306,7 @@ impl DiffPane {
             file.go_to = line;
         }
         session.update(cx, |session, cx| {
-            session.set_file_view(Some(path.to_string()), cx)
+            session.set_file_view_at(Some(path.to_string()), worktree, cx)
         });
         self.rebuild_all(cx);
         self.go_to_pending_line(cx);
@@ -316,6 +348,14 @@ impl DiffPane {
             return Source::Loading;
         };
         let session = session.read(cx);
+        if file.worktree {
+            return match session.worktree_file(&file.path) {
+                SideFileState::Loaded(shown) => Source::Read(shown),
+                SideFileState::Loading => Source::Loading,
+                SideFileState::Missing => Source::Missing,
+                SideFileState::Failed(failure) => Source::Failed(failure),
+            };
+        }
         if session.view_from_stream(&file.path) {
             return match (session.shown(&file.path), session.file_state(&file.path)) {
                 (_, Some(FileState::Failed(failure))) => Source::Failed(failure.clone()),
@@ -393,9 +433,11 @@ impl DiffPane {
             };
         }
         let composer = self.composer.as_ref().map(|composer| &composer.target);
+        let worktree = self.file_view_worktree();
         let (inserts, heading) = match &shown {
-            Some(diff) => self.file_view_inserts(&path, side, diff, session, composer),
-            None => (Vec::new(), Vec::new()),
+            // The working tree's lines aren't the review's: its threads don't stand at them.
+            Some(diff) if !worktree => self.file_view_inserts(&path, side, diff, session, composer),
+            _ => (Vec::new(), Vec::new()),
         };
         let content = match (&shown, &source) {
             (Some(diff), _) => Content::Loaded(diff),
@@ -603,6 +645,7 @@ impl DiffPane {
             changed_lines,
             loading: file.cut.is_none() && notice.is_none(),
             notice,
+            worktree: file.worktree,
         })
     }
 }
