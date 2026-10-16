@@ -511,3 +511,32 @@ fn a_full_text_read_that_fails_leaves_its_thread_outdated_not_waiting(cx: &mut T
         assert_eq!(placement.file(), Some("big.txt"));
     });
 }
+
+#[gpui::test]
+fn no_thread_has_left_the_review_before_a_list_lands(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let repo = fixture();
+    let first = session(&repo, Target::Working, cx);
+    wait(cx, &first, "the list", |session| !session.is_loading());
+    load(cx, &first, &["notes.txt"]);
+    let id = comment(cx, &first, "notes.txt", 1, 1);
+    // The agent deletes the untracked file: the thread's file leaves the review.
+    repo.remove("notes.txt");
+    // The review opened again: until its first list lands the thread waits, at the path it
+    // was written on, rather than going to the "Not in the diff" section.
+    let again = session(&repo, Target::Working, cx);
+    again.read_with(cx, |session, _| {
+        assert!(session.is_first_load());
+        let placement = session.placement(thread(session, &id));
+        assert!(placement.is_pending(), "{placement:?}");
+        assert!(!placement.is_not_in_diff());
+        assert_eq!(session.threads_not_in_diff().count(), 0);
+    });
+    wait(cx, &again, "the list", |session| !session.is_loading());
+    again.read_with(cx, |session, _| {
+        let placement = session.placement(thread(session, &id));
+        assert!(placement.is_not_in_diff(), "{placement:?}");
+        let ids: Vec<&ThreadId> = session.threads_not_in_diff().map(|t| &t.id).collect();
+        assert_eq!(ids, [&id]);
+    });
+}

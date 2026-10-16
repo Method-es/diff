@@ -85,7 +85,8 @@
 {"cmd": "set_setting", "key": "mode", "value": "dark"}
 
 // The agent commits everything: the working tree is clean, and the thread, its file gone from
-// the diff, stays in the comments list as outdated.
+// the diff, stays in the comments list as outdated; the stream shows it in its "Not in the
+// diff" section rather than the clean working tree's empty state, so it can still be answered.
 {"cmd": "repo_edit", "name": "api-server", "steps": [{"commit": "cache users"}]}
 {"cmd": "wait_for", "pointer": "/session/total", "equals": 0, "timeout_ms": 15000}
-{"cmd": "settle", "expect": [{"pointer": "/shell/empty_state", "equals": "working_tree_clean"}, {"pointer": "/session/threads/0/outdated", "equals": true}, {"pointer": "/comments_list/rows", "len": 1}, {"pointer": "/comments_list/rows/0/outdated", "equals": true}]}
+{"cmd": "settle", "expect": [{"pointer": "/shell/empty_state", "equals": null}, {"pointer": "/stream/files", "len": 0}, {"pointer": "/stream/not_in_diff/threads", "len": 1}, {"pointer": "/session/threads/0/outdated", "equals": true}, {"pointer": "/comments_list/rows", "len": 1}, {"pointer": "/comments_list/rows/0/outdated", "equals": true}]}

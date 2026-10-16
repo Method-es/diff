@@ -147,6 +147,7 @@ fn copy_as_prompt_carries_where_the_code_the_comment_and_the_replies() {
     );
     // Each under where it shows now: the first moved down two lines since it was written.
     let text = prompt_markdown(
+        OPEN_PROMPT_HEADING,
         "working tree vs main",
         &[
             (&first, "src/lib/http.ts:16–17".to_string()),

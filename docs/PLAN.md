@@ -860,7 +860,8 @@ current full text, `side_lines`) runs on every refresh, one pure function for th
    best score wins (`FUZZY_MARGIN`: in repetitive text — rows of data, a flag list — an
    untouched window far away can score a little better than the anchored lines edited where they
    stand) → `Moved { how: Fuzzy { score } }`. A side over 20,000 lines skips this step.
-6. else **outdated**: shown in the comments list with its original code snippet, not inline.
+6. else **outdated**: shown with its original code snippet, not inline (its card heads its file,
+   placement below), and flagged in the comments list.
 
 An exact match from step 2 or 3 wins at once when its context stands around it too (every
 `context_before` and `context_after` line where it belongs). One standing among other lines (a
@@ -914,7 +915,9 @@ it is still placed, against the review's own diff of its file read in the backgr
 comments list, "Copy as prompt" and the sheet name where it stands in all changes, as the CLI
 does). An outdated thread whose file is still listed heads that file in the stream with the lines
 it was written on (DESIGN §4.1), so it can still be answered and resolved; one whose file left
-the list is in the comments list alone.
+the list (`Outdated` without a file) heads the stream itself, as a full card in its "Not in the
+diff" section before the first file, whichever comparison is shown, so it too can be answered
+and resolved there (and from its comments-list row's menu).
 
 **Recording a move.** Relocation is display-only until the next event on the thread, which records
 the new anchor: `reply_added` and `thread_state` carry an optional `anchor` (§7), the thread's
@@ -1528,7 +1531,9 @@ shared by its threads; a file shown without text to place against (too large to 
 review's own diff of it read in the background for the threads anchored in it, kept while the
 review's entry for the file stands as read — (`diff_pane::rows`: an insert after the last
 line of a thread's range on its side, those lines kept shown rather than folded into a gap, or
-an outdated card under the file's header) and draws them with `dv_ui::thread`'s card. In an
+an outdated card under the file's header; a thread whose file left the list in the stream's
+"Not in the diff" section, a block of its own before the first file, `diff_pane::section`) and
+draws them with `dv_ui::thread`'s card. In an
 interdiff, old-side threads and threads whose file isn't in it are "not in the comparison":
 not drawn, and listed with an "all changes" tag (DESIGN §4.1), placed against the review's own
 diff of their file, read in the background, for where they stand in all changes; it also holds the one composer (a new thread under the selection, or a reply inside its
@@ -1536,7 +1541,8 @@ card), the focused thread (`]`/`[`, `R`, `X`) and which resolved threads are ope
 replying, resolving and reopening are the session's `review::ops` writes; the pane counts them
 until their follow-up lands, for `settled`. `comments_list` (the panel, under the files) lists
 the waiting threads, addressed ones first, each group in stream order, and builds "Copy as prompt" (`thread::prompt_markdown`)
-for the clipboard seam. `Ctrl Enter` opens `submit::FinishSheet`, an overlay the shell holds
+for the clipboard seam; a row's right-click menu resolves, reopens, replies (through the pane)
+or copies that one thread. `Ctrl Enter` opens `submit::FinishSheet`, an overlay the shell holds
 like the switcher, whose Submit is `ops::finish_round` (§2.3); while that runs the sheet can't be
 closed or submitted again, so its outcome (or failure) always shows in it. A review whose status is
 final is read-only — the shell's banner offers "Start a new review", which opens the target again (§2.4).

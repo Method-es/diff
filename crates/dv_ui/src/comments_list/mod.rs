@@ -3,7 +3,8 @@
 //! but not yet resolved), one row per thread — its state, `path:line` where it shows now and
 //! the first line of its comment — and "Copy as prompt", which puts the open threads on the
 //! clipboard as Markdown (through the clipboard seam, `crate::system`). Addressed threads come
-//! first, then open ones, each in stream order (PLAN §3 workflow A step 5). An outdated thread
+//! first, then open ones, each in stream order (PLAN §3 workflow A step 5: the stream's "Not in
+//! the diff" section first, in the order its threads were added, then by file). An outdated thread
 //! (PLAN §8) is flagged and shows its first anchored line as it was; one the interdiff doesn't
 //! show carries a quiet "all changes" tag and names where it stands in all changes. A thread
 //! whose file's text hasn't landed yet shows the line it was written on, quietly, until it is
@@ -12,10 +13,15 @@
 //!
 //! A click on a row shows the thread in the stream ([`DiffPane::reveal_thread`]), which also
 //! focuses it, switching to all changes first for an "all changes" row; the focused thread's
-//! row is highlighted.
+//! row is highlighted. A right click opens the row's menu (DESIGN §4.1): the card's actions for
+//! the thread's state (Resolve; Resolve and Reopen; Reopen), Reply (the thread shown, its reply
+//! composer open) and Copy as prompt (that thread alone, as "Copy as prompt" words it); on a
+//! finished review the writes are disabled, as on the card. A click outside it, or on an item,
+//! closes it.
 //!
 //! Automation targets: `comments_list`, `comments_list/copy`, `comments_list/resolved` (show or
-//! hide the resolved threads) and `comments_list/<thread id>`.
+//! hide the resolved threads), `comments_list/<thread id>`, and the row menu's
+//! `comments_list/menu` with `/resolve`, `/reopen`, `/reply` and `/copy`.
 
 mod render;
 
@@ -23,11 +29,11 @@ mod render;
 mod tests;
 
 use dv_core::review::{Thread, ThreadId, ThreadState};
-use gpui::{Context, Entity, Subscription};
+use gpui::{Context, Entity, Pixels, Point, Subscription, Window};
 
 use crate::diff_pane::DiffPane;
 use crate::session::{Comparison, ReviewSession, ThreadPlacement};
-use crate::thread::{first_line, prompt_markdown};
+use crate::thread::{OPEN_PROMPT_HEADING, first_line, prompt_heading, prompt_markdown};
 
 /// One thread as the list shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,8 +66,9 @@ fn group(state: ThreadState) -> u8 {
 }
 
 /// The threads of `session`'s review: the addressed ones, then the open ones, each in stream
-/// order (by file, then the line they show at; the ones the stream doesn't show last), then,
-/// with `resolved`, the resolved ones.
+/// order (the "Not in the diff" section's first, in the order they were added; then by file,
+/// then the line they show at; the ones the stream doesn't show last), then, with `resolved`,
+/// the resolved ones.
 pub fn rows(session: &ReviewSession, resolved: bool) -> Vec<CommentRow> {
     let mut threads: Vec<(&Thread, ThreadPlacement)> = session
         .review()
@@ -70,10 +77,15 @@ pub fn rows(session: &ReviewSession, resolved: bool) -> Vec<CommentRow> {
         .map(|thread| (thread, session.placement(thread)))
         .collect();
     let order = |thread: &Thread, placement: &ThreadPlacement| {
+        if placement.is_not_in_diff() {
+            // The section heads the stream; its threads keep the order they were added (the
+            // sort is stable).
+            return (group(thread.state), 0, String::new(), 0);
+        }
         let file = placement
             .file()
             .and_then(|path| session.files().iter().position(|e| e.path == path))
-            .unwrap_or(usize::MAX);
+            .map_or(usize::MAX, |index| index + 1);
         let line = placement
             .lines(&thread.anchor)
             .map_or(thread.anchor.start_line, |(start, _)| start);
@@ -126,11 +138,19 @@ pub fn prompt_location(row: &CommentRow) -> String {
     }
 }
 
+/// A row's right-click menu: whose thread, and where it was opened.
+#[derive(Clone, Debug)]
+struct RowMenu {
+    thread: ThreadId,
+    position: Point<Pixels>,
+}
+
 /// The panel's comments (see the module docs).
 pub struct CommentsList {
     session: Option<Entity<ReviewSession>>,
     diff_pane: Entity<DiffPane>,
     show_resolved: bool,
+    menu: Option<RowMenu>,
     _session_events: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
@@ -143,6 +163,7 @@ impl CommentsList {
             session: None,
             diff_pane,
             show_resolved: false,
+            menu: None,
             _session_events: None,
             _subscriptions: subscriptions,
         }
@@ -150,11 +171,15 @@ impl CommentsList {
 
     /// Lists `session`'s threads (or nothing).
     pub fn set_session(&mut self, session: Option<Entity<ReviewSession>>, cx: &mut Context<Self>) {
-        self._session_events = session
-            .as_ref()
-            .map(|session| cx.observe(session, |_, _, cx| cx.notify()));
+        self._session_events = session.as_ref().map(|session| {
+            cx.observe(session, |this, _, cx| {
+                this.close_stale_menu(cx);
+                cx.notify();
+            })
+        });
         self.session = session;
         self.show_resolved = false;
+        self.menu = None;
         cx.notify();
     }
 
@@ -174,29 +199,118 @@ impl CommentsList {
     pub fn set_show_resolved(&mut self, show: bool, cx: &mut Context<Self>) {
         if self.show_resolved != show {
             self.show_resolved = show;
+            self.close_stale_menu(cx);
             cx.notify();
+        }
+    }
+
+    /// Closes the row menu once its row is no longer listed (its thread resolved while the
+    /// resolved ones are hidden, or deleted).
+    fn close_stale_menu(&mut self, cx: &mut Context<Self>) {
+        let Some(menu) = &self.menu else {
+            return;
+        };
+        if !self.rows(cx).iter().any(|row| row.id == menu.thread) {
+            self.close_menu(cx);
         }
     }
 
     /// Shows `thread` in the stream (a click on its row): one the interdiff doesn't show is
     /// shown in all changes, which the stream switches to first.
     pub fn reveal(&mut self, thread: &ThreadId, cx: &mut Context<Self>) {
-        if let Some(session) = &self.session {
-            let elsewhere = {
-                let session = session.read(cx);
-                session
-                    .review()
-                    .thread(thread)
-                    .is_some_and(|found| session.placement(found).is_not_in_comparison())
-            };
-            if elsewhere {
-                session.update(cx, |session, cx| {
-                    session.set_comparison(Comparison::All, cx)
-                });
-            }
-        }
+        self.close_menu(cx);
+        self.show_all_changes_for(thread, cx);
         self.diff_pane
             .update(cx, |pane, cx| pane.reveal_thread(thread, cx));
+    }
+
+    /// Switches the stream to all changes when the interdiff shown doesn't draw `thread`.
+    fn show_all_changes_for(&self, thread: &ThreadId, cx: &mut Context<Self>) {
+        let Some(session) = &self.session else {
+            return;
+        };
+        let elsewhere = {
+            let session = session.read(cx);
+            session
+                .review()
+                .thread(thread)
+                .is_some_and(|found| session.placement(found).is_not_in_comparison())
+        };
+        if elsewhere {
+            session.update(cx, |session, cx| {
+                session.set_comparison(Comparison::All, cx)
+            });
+        }
+    }
+
+    /// The thread whose row's menu is open.
+    pub fn menu_thread(&self) -> Option<&ThreadId> {
+        self.menu.as_ref().map(|menu| &menu.thread)
+    }
+
+    /// Opens `thread`'s row menu at `position` (a right click on its row).
+    pub fn open_menu(&mut self, thread: ThreadId, position: Point<Pixels>, cx: &mut Context<Self>) {
+        self.menu = Some(RowMenu { thread, position });
+        cx.notify();
+    }
+
+    pub fn close_menu(&mut self, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Resolve or Reopen from the row menu, as the card's buttons do (nothing on a finished
+    /// review).
+    pub fn set_state(&mut self, thread: &ThreadId, state: ThreadState, cx: &mut Context<Self>) {
+        self.close_menu(cx);
+        self.diff_pane
+            .update(cx, |pane, cx| pane.set_thread_state(thread, state, cx));
+        cx.notify();
+    }
+
+    /// Reply from the row menu: the thread shown (in all changes for an "all changes" row) and
+    /// its reply composer open in its card (nothing on a finished review).
+    pub fn reply(&mut self, thread: &ThreadId, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_menu(cx);
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        if session.read(cx).is_read_only() {
+            return;
+        }
+        self.show_all_changes_for(thread, cx);
+        self.diff_pane
+            .update(cx, |pane, cx| pane.reply_to_thread(thread, window, cx));
+        cx.notify();
+    }
+
+    /// Copy as prompt from the row menu: `thread` alone, in the words "Copy as prompt" uses,
+    /// headed for its state ("Resolved review comment on …").
+    pub fn copy_thread(&mut self, thread: &ThreadId, cx: &mut Context<Self>) {
+        self.close_menu(cx);
+        let Some(session) = &self.session else {
+            return;
+        };
+        let text = {
+            let session = session.read(cx);
+            let Some(row) = rows(session, true)
+                .into_iter()
+                .find(|row| &row.id == thread)
+            else {
+                return;
+            };
+            let Some(found) = session.review().thread(thread) else {
+                return;
+            };
+            prompt_markdown(
+                prompt_heading(found.state),
+                &session.target_label(),
+                &[(found, prompt_location(&row))],
+            )
+        };
+        crate::system::write_clipboard(text, cx);
+        cx.notify();
     }
 
     /// "Copy as prompt": the open threads as Markdown, on the clipboard (recorded under
@@ -211,7 +325,7 @@ impl CommentsList {
             if threads.is_empty() {
                 return;
             }
-            prompt_markdown(&session.target_label(), &threads)
+            prompt_markdown(OPEN_PROMPT_HEADING, &session.target_label(), &threads)
         };
         crate::system::write_clipboard(text, cx);
     }

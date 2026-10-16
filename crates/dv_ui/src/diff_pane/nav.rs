@@ -91,9 +91,13 @@ impl DiffPane {
             .and_then(|path| self.index.get(path).copied())
     }
 
-    /// Shows file `index`: its header at the top, the cursor on its first change (once its
-    /// diff lands, if it hasn't).
+    /// Shows file `index` (a block's index): its header at the top, the cursor on its first
+    /// change (once its diff lands, if it hasn't). The section has no lines: it only scrolls.
     pub(super) fn go_to_file(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.is_section(index) {
+            self.go_to_section(cx);
+            return;
+        }
         let Some(block) = self.blocks.get(index) else {
             return;
         };
@@ -124,15 +128,23 @@ impl DiffPane {
             .or_else(|| end_cell(&block.rows, lines, self.mode, Dir::Down, None).map(|(_, p)| p))
     }
 
+    /// `J`: the next file, or the first while no file is current (the section at the top).
     fn next_file(&mut self, cx: &mut Context<Self>) {
-        let next = self.current_index().map_or(0, |index| index + 1);
+        let next = self
+            .current_index()
+            .map_or(self.first_file_block(), |index| index + 1);
         if next < self.blocks.len() {
             self.go_to_file(next, cx);
         }
     }
 
+    /// `K`: the previous file; the section above the first isn't one.
     fn previous_file(&mut self, cx: &mut Context<Self>) {
-        if let Some(previous) = self.current_index().and_then(|index| index.checked_sub(1)) {
+        if let Some(previous) = self
+            .current_index()
+            .and_then(|index| index.checked_sub(1))
+            .filter(|&index| index >= self.first_file_block())
+        {
             self.go_to_file(previous, cx);
         }
     }
@@ -565,6 +577,8 @@ impl DiffPane {
     /// Closes the file menu, else drops the composer, else clears the selection (DESIGN §5's
     /// `Esc`); `false` when there was none of them.
     fn clear_selection(&mut self, cx: &mut Context<Self>) -> bool {
+        // A reply waiting for its card (the comments list's Reply) is forgotten too.
+        self.reply_when_shown = None;
         if self.menu.take().is_some() || self.drop_composer(cx) || self.selection.take().is_some() {
             cx.notify();
             return true;

@@ -179,13 +179,15 @@ pub fn state_note(thread: &Thread) -> Option<&str> {
 /// The Markdown "Copy as prompt" puts on the clipboard (DESIGN §4.1 panel): the open threads,
 /// each with where it shows now (`path:line`, its location beside it in `threads`, as the
 /// comments list names it), the anchored code, the comment and its replies, so an agent can be
-/// handed the review in one paste. `label` names the target ("working tree vs main").
-pub fn prompt_markdown(label: &str, threads: &[(&Thread, String)]) -> String {
+/// handed the review in one paste. `heading` says what they are ("Open review comments",
+/// [`prompt_heading`] for one thread of any state) and `label` names the target ("working tree
+/// vs main").
+pub fn prompt_markdown(heading: &str, label: &str, threads: &[(&Thread, String)]) -> String {
     let mut out = String::new();
     let count = threads.len();
     let _ = writeln!(
         out,
-        "Open review comments on {label} ({count} {}):",
+        "{heading} on {label} ({count} {}):",
         if count == 1 { "comment" } else { "comments" }
     );
     for (thread, location) in threads {
@@ -219,6 +221,20 @@ pub fn prompt_markdown(label: &str, threads: &[(&Thread, String)]) -> String {
         }
     }
     out
+}
+
+/// The heading "Copy as prompt" gives the threads it copies: "Open review comments" for the
+/// open ones (the panel's button).
+pub const OPEN_PROMPT_HEADING: &str = "Open review comments";
+
+/// The heading for one thread copied alone (a comments row's menu), worded for its state:
+/// "Open review comment", "Addressed review comment", "Resolved review comment".
+pub fn prompt_heading(state: ThreadState) -> &'static str {
+    match state {
+        ThreadState::Open => "Open review comment",
+        ThreadState::Addressed => "Addressed review comment",
+        ThreadState::Resolved => "Resolved review comment",
+    }
 }
 
 /// A code fence longer than any run of backticks in `code`, so the code can't close it.

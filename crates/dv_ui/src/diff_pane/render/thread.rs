@@ -1,6 +1,7 @@
 //! Thread cards and the composer in the stream (DESIGN §4.1): placed under the line they follow
 //! on its side — in split view in that side's half, over the line's tint, the other half
-//! `recess` (the board's inline card) — or across the file for an outdated thread.
+//! `recess` (the board's inline card) — or across the file for an outdated thread, and across
+//! the stream in the "Not in the diff" section, naming the path it was written on.
 
 use dv_core::diff::LineKind;
 use dv_core::review::{AnchorSide, ThreadId};
@@ -51,8 +52,13 @@ impl DiffPane {
             .map(|composer| self.composer_box(composer, true, cx));
         let error = self.thread_error(thread).cloned();
         let pane = cx.weak_entity();
+        // In the section, away from its file's rows, the card names the path it was written on.
+        let path = placement
+            .is_not_in_diff()
+            .then(|| found.anchor.path.clone());
         let card = ThreadCard::new(found, dv_core::review::event::now_ms())
             .outdated(placement.is_outdated())
+            .path(path)
             .shown_at(lines, moved)
             .focused(self.focused_thread.as_ref() == Some(thread))
             .collapsed(collapsed)

@@ -4,6 +4,7 @@
 //! side, the text clipped with a fade where it runs on.
 
 mod header;
+mod section;
 mod thread;
 
 use dv_core::diff::{DiffLine, EXPAND_STEP, Expand, FileEntry, LineKind};
@@ -57,6 +58,7 @@ impl Render for DiffPane {
         self.code_columns = self.columns_in_view();
         self.release_orphaned_focus(window, cx);
         self.focus_waiting_composer(window, cx);
+        self.open_waiting_reply(window, cx);
         // What the viewport shows is worked out again after this frame's layout, when it moved.
         if self.viewport_key != Some(self.current_viewport_key()) && !self.viewport_pending {
             self.viewport_pending = true;
@@ -190,6 +192,7 @@ impl DiffPane {
                 InsertItem::Composer => self.render_composer(block, insert, theme, cx),
             },
             Row::Outdated(thread) => self.render_thread(block, thread, None, theme, cx),
+            Row::Empty => self.render_section_empty(theme, cx),
         };
         div().w_full().child(element).into_any_element()
     }
@@ -201,7 +204,8 @@ impl DiffPane {
         cx: &gpui::App,
     ) -> Option<(FileEntry, Option<FileState>)> {
         let session = self.session.as_ref()?.read(cx);
-        let entry = session.files().get(block)?.clone();
+        let file = block.checked_sub(self.first_file_block())?;
+        let entry = session.files().get(file)?.clone();
         let state = session.file_state(&entry.path).cloned();
         Some((entry, state))
     }

@@ -191,7 +191,8 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   row shows that file in the diff, a click on the checkbox toggles viewed. Then, under a hairline,
   "Open comments" with the number of threads still waiting (open, and addressed but not yet
   resolved) and "Copy as prompt" — one row per thread, the addressed ones first (the reviewer's
-  turn, PLAN §3 workflow A step 5), then the open ones, each group in stream order (an accent
+  turn, PLAN §3 workflow A step 5), then the open ones, each group in stream order (the "Not in
+  the diff" section's threads first, in the order they were added, then by file; an accent
   ring dot for `open`, a blue dot and "addressed" for `addressed`, `path:line` in mono where the
   thread stands now (an old-side thread's ends in "(old)", as the CLI prints it, so its lines
   aren't taken for the file's lines now; while its file's text hasn't landed — briefly, since
@@ -203,11 +204,41 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   `path:line` and "outdated" are where it stands in all changes), then
   "n resolved · show", which lists the resolved ones too; with none waiting, "No open
   comments". A click on a row shows and focuses the thread in the diff — an "all changes" row
-  switches the stream to all changes first; the focused thread's row is `sel`. "Copy as prompt" puts the `open` threads on the clipboard as Markdown (`path:line` where each stands now, as its row,
+  switches the stream to all changes first; the focused thread's row is `sel`. A right click on
+  a row opens its menu at the pointer, in the file menu's style (the `overlay` panel, 200 wide,
+  items a control high with their glyphs; the row keeps its hover tint meanwhile): the card's
+  actions for the thread's state — **Resolve** (open), **Resolve** and **Reopen** (addressed),
+  **Reopen** (resolved) — then **Reply** (the thread shown and focused, its reply composer open
+  in its card, as `R`) and, under a hairline, **Copy as prompt** (that thread alone, in the
+  words "Copy as prompt" uses, headed for its state: "Open review comment", "Addressed review
+  comment" or "Resolved review comment on …"). On a finished review the writes are there,
+  dimmed and inert, as on the card. A click outside the menu or on an item, `Esc`, an overlay
+  opening (the switcher, the source picker, the sheet), the panel hiding, or its row leaving
+  the list closes it. "Copy as prompt" puts the `open` threads on the clipboard as Markdown (`path:line` where each stands now, as its row,
   "(where it was written; dv hasn't placed it yet)" beside one not placed yet, the thread id,
   the anchored code, the comment and its replies), for pasting to an agent; in a
   panel narrower than 270 it is its copy glyph alone, with the words in a tooltip, so the header
   never runs past the panel. The list grows to 240 high, then scrolls. The panel's right edge is a resize handle (a 2px accent line while hovered; a double click restores 280).
+- **Not in the diff:** threads whose file left the review's list (PLAN §8: the agent deleted
+  the file, reverted it, or renamed one git can't pair with its first name) head the stream, in
+  a section before the first file: a 44-high `codeHead` bar like a file header's — chevron, a
+  file-diff glyph in `fg3`, "Not in the diff" at 600, the count badge, and "comments on files
+  no longer among the review's changes" in `fg3` (truncating) — then one full thread card per
+  thread, in the order they were added, each as an outdated card heading a file looks (the
+  "Outdated" chip, its original lines in the `recess` block, Resolve / Reopen, the reply field)
+  with its anchor naming the path it was written on (`src/hooks/use-can.ts · new · line 12`,
+  truncating at its start). Resolved ones collapse as anywhere. The section shows whichever
+  comparison is shown (in an interdiff too, its threads never having a file there), collapses
+  to its bar with its chevron, its bar pins at the top while its cards scroll as a file's
+  header does, and is absent while no thread needs it. It isn't a file: while it is at the top
+  no file is current, and `J`/`K`, the headers' arrows and the footer pass over it, while
+  `]`/`[`, `R`, `X` and the comments list reach its cards like any other. With no file listed
+  (the agent reverted everything, or an empty interdiff) it keeps the stream rather than the
+  main area's empty state (§4.4), and ends with that state as a quiet 48-high row under its
+  cards (shown collapsed too): a file-diff glyph in `fg3`, the heading at 500 in `fg2`, its line
+  in `fg3`, and for an empty interdiff **Show all changes** with its `I` keycap. Before the
+  first file list lands, or while it fails, no thread has left the review: they wait, as
+  threads whose file's text hasn't landed (PLAN §8), and the section doesn't show.
 - **Diff:** one stream over every file (PLAN §6.7). Each file starts with its header: a 44-high
   `codeHead` bar — chevron, path (directory in `fg3`, name at 600; a renamed file shows
   `old → new`), status pill, totals, a quiet "Loading…" once its diff takes longer than 300 ms,
@@ -246,7 +277,8 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   totals are what changed since round n (its snapshot → now); `I` or the panel's toggle switches
   to all changes and back, the reading position staying where the same file and line still
   show. Its new side is the same text as in all changes, so new-side threads show there as in
-  all changes; old-side threads, and threads whose file isn't in the interdiff, aren't drawn in
+  all changes; old-side threads, and threads whose file isn't in the interdiff (but is among the
+  review's changes: one that left them is in the "Not in the diff" section), aren't drawn in
   the stream (`]`/`[` pass over them) and carry the comments list's "all changes" tag, named
   where they stand in all changes.
 - **Thread card:** avatar (reviewer round, agent square with the agent's icon), name, agent tag, time,
@@ -269,7 +301,8 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   thread whose code moved (lines inserted above it, its block moved, a small edit) follows it to
   its new lines. An outdated thread (relocation can't find its code at all, PLAN §8) has no line
   to follow: its card heads its file, under the header, with the lines it was anchored on in a
-  `recess` block. In a file shown without lines (too large to show, or "No content change": a
+  `recess` block; one whose file left the review heads the stream instead, in the "Not in the
+  diff" section above. In a file shown without lines (too large to show, or "No content change": a
   file only renamed, or only its mode changed), a thread still found in it (PLAN §8: placed
   against the file read in full, or against the unchanged text the diff carries) heads the file
   too, above its notice, with the anchor where it stands and no "Outdated". The
@@ -402,7 +435,10 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
 - **Empty:** no changes ("Working tree clean — nothing to review" for a `working` review, "No changes
   — nothing to review" for other targets), an empty interdiff ("No changes since round 1",
   "Nothing changed after the round was handed over.", and **Show all changes** with its `I`
-  keycap), no reviews ("Pick a repo to start a review"), no open comments. The switcher with no
+  keycap), no reviews ("Pick a repo to start a review"), no open comments. While threads whose
+  files left the review are in the "Not in the diff" section (§4.1), no changes and an empty
+  interdiff show the stream with that section instead, the same words (and Show all changes) a
+  row under its cards. The switcher with no
   known repo says "No repositories yet"; a filter that matches nothing says so.
 - **Read-only (submitted PR review):** banner "Submitted to GitHub · view on GitHub", composer and
   thread actions disabled, not hidden. A finished local review says "Approved · this review is
@@ -416,7 +452,7 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
 
 | Key | Action |
 |---|---|
-| `J` / `K` | next / previous file: its header at the top, the cursor on its first change |
+| `J` / `K` | next / previous file: its header at the top, the cursor on its first change (the "Not in the diff" section isn't a file: `J` from it goes to the first file) |
 | `N` / `P` | next / previous block of changed lines, on into the next files |
 | `]` / `[` | focus the next / previous thread that isn't resolved (open or addressed), scrolling to it, on into the next files (in an interdiff, the threads it shows) |
 | `I` | switch between the interdiff since the last round and all changes (the panel's toggle; while the review offers it, PLAN §2.3) |
@@ -436,7 +472,7 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
 | `Ctrl G` | open a PR |
 | `Ctrl B` | toggle panel |
 | `Ctrl ,` | settings |
-| `Esc` | close the top overlay, else the file menu, else cancel the composer, else clear the selection |
+| `Esc` | close the top overlay, else a comments row's menu, else the file menu, else cancel the composer, else clear the selection |
 | `↑` / `↓`, `Enter` | in the switcher and the source picker: move (wrapping), open |
 | `Enter` / `Esc` | in the file filter: show the first file left / clear the filter (both return to the diff) |
 | `Ctrl Enter` / `Esc` | in the composer: post / discard (both return to the diff; `Enter` is a newline) |

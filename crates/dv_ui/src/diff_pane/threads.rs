@@ -5,11 +5,13 @@
 //! A thread shows inline after the last line of its range on its side where the session places
 //! it (`ReviewSession::placement`, PLAN §8): at its recorded lines, or where relocation found
 //! them since ("· moved"). One relocation can't find is outdated (DESIGN §4.1) and its card
-//! heads its file, with its lines as they were. In an interdiff, old-side threads and those
-//! whose file isn't in it aren't drawn, and `C` comments on the new side only. Resolved threads
-//! collapse to one line until opened. The composer sits under the selection's last line (a new
-//! thread) or inside the card it answers (a reply), which stays open meanwhile, and takes the
-//! keyboard while it is open; posting or cancelling hands it back to the stream.
+//! heads its file, with its lines as they were; one whose file left the review heads the
+//! stream, in the "Not in the diff" section (`section`). In an interdiff, old-side threads and
+//! those whose file isn't in it (but is in the review) aren't drawn, and `C` comments on the
+//! new side only. Resolved threads collapse to one line until opened. The composer sits under
+//! the selection's last line (a new thread) or inside the card it answers (a reply, which goes
+//! wherever that card is drawn), which stays open meanwhile, and takes the keyboard while it is
+//! open; posting or cancelling hands it back to the stream.
 //!
 //! The composer's row carries its field's focus handle into the list, so the field stays
 //! rendered, and the keys work, while the stream scrolls it out of view; typing brings it back
@@ -30,19 +32,22 @@ use crate::failure::Failure;
 use crate::session::{Comparison, ReviewSession};
 use crate::thread::{COMPOSER_ROWS, Composer, ComposerTarget, REPLY_ROWS};
 
-/// Whether `row` of `path` holds `composer`: its own row, or the card of the thread it answers.
+/// Whether `row` of `path` holds `composer`: its own row in its file, or the card of the thread
+/// it answers, wherever that is drawn (a thread's card shows once in the stream).
 fn holds_composer(composer: &Composer, path: &str, row: &Row) -> bool {
-    composer.target.path == path
-        && match &composer.target.reply_to {
-            Some(thread) => row.thread() == Some(thread),
-            None => matches!(
-                row,
-                Row::Insert(Insert {
-                    item: InsertItem::Composer,
-                    ..
-                })
-            ),
+    match &composer.target.reply_to {
+        Some(thread) => row.thread() == Some(thread),
+        None => {
+            composer.target.path == path
+                && matches!(
+                    row,
+                    Row::Insert(Insert {
+                        item: InsertItem::Composer,
+                        ..
+                    })
+                )
         }
+    }
 }
 
 /// The thread cards and the composer of one file's rows: the inline inserts, and the outdated
@@ -264,20 +269,32 @@ impl DiffPane {
                 return;
             };
             let placement = session.placement(found);
-            let Some(entry) = placement.file().and_then(|path| session.file(path)) else {
-                return;
+            // Its file's path where the stream draws it there; in the section, the path it
+            // was written on.
+            let path = match placement.file().and_then(|path| session.file(path)) {
+                Some(entry) => entry.path.clone(),
+                None if placement.is_not_in_diff() => found.anchor.path.clone(),
+                None => return,
             };
             let (start_line, end_line) = placement
                 .lines(&found.anchor)
                 .unwrap_or((found.anchor.start_line, found.anchor.end_line));
             ComposerTarget {
-                path: entry.path.clone(),
+                path,
                 side: found.anchor.side,
                 start_line,
                 end_line,
                 reply_to: Some(thread.clone()),
             }
         };
+        // Only into a card the stream has a block for: a composer in a card that isn't drawn
+        // would hold the keyboard where nothing shows it.
+        if !self
+            .thread_block_path(thread, cx)
+            .is_some_and(|path| self.index.contains_key(&path))
+        {
+            return;
+        }
         self.focused_thread = Some(thread.clone());
         if self
             .composer
@@ -292,6 +309,81 @@ impl DiffPane {
         }
         self.opened_threads.insert(thread.clone());
         self.open_composer(target, window, cx);
+    }
+
+    /// Reply (the comments list's menu): shows `thread`'s card and opens the reply composer in
+    /// it, at once when the card is there, else once it is built (its file loading or
+    /// collapsed, all changes being listed).
+    pub fn reply_to_thread(
+        &mut self,
+        thread: &ThreadId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.read_only(cx) {
+            return;
+        }
+        self.reveal_thread(thread, cx);
+        if self.thread_item(thread).is_some() {
+            self.reply_when_shown = None;
+            self.start_reply(thread, window, cx);
+        } else {
+            self.reply_when_shown = Some(thread.clone());
+        }
+    }
+
+    /// Opens the reply [`DiffPane::reply_to_thread`] asked for once its card is built, or
+    /// forgets it once its card can't come (its block built without it). Runs as the stream
+    /// is drawn.
+    pub(super) fn open_waiting_reply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(thread) = self.reply_when_shown.clone() else {
+            return;
+        };
+        if self.thread_item(&thread).is_some() {
+            self.reply_when_shown = None;
+            cx.defer_in(window, move |this, window, cx| {
+                this.start_reply(&thread, window, cx);
+            });
+        } else if !self.card_may_come(&thread, cx) {
+            self.reply_when_shown = None;
+        }
+    }
+
+    /// Whether `thread`'s card, not built now, may still be: all changes are being listed, the
+    /// thread waits for its file's text, or its file is loading. Its block collapsed again, or
+    /// built without it, it won't.
+    fn card_may_come(&self, thread: &ThreadId, cx: &App) -> bool {
+        let Some(session) = self.session.as_ref().map(|session| session.read(cx)) else {
+            return false;
+        };
+        if session.asked_comparison() != session.comparison() {
+            return true;
+        }
+        let Some(found) = session.review().thread(thread) else {
+            return false;
+        };
+        if session.placement(found).is_pending() {
+            return true;
+        }
+        let Some(&index) = self
+            .thread_block_path(thread, cx)
+            .and_then(|path| self.index.get(&path))
+        else {
+            return false;
+        };
+        self.blocks[index]
+            .rows
+            .iter()
+            .any(|row| matches!(row, Row::Notice(rows::Notice::Loading)))
+    }
+
+    /// The block (by its key: a file's path, or the section's) that draws `target`'s composer:
+    /// a new thread's file, or the block of the card a reply answers.
+    fn target_block_path(&self, target: &ComposerTarget, cx: &App) -> Option<String> {
+        match &target.reply_to {
+            Some(thread) => self.thread_block_path(thread, cx),
+            None => Some(target.path.clone()),
+        }
     }
 
     /// A composer that holds text stays: it takes the keyboard and comes into view. `true`
@@ -317,15 +409,26 @@ impl DiffPane {
     }
 
     /// Whether the composer's draft waits for all changes: the stream shows an interdiff, and
-    /// the draft's file isn't in it or the draft is on the old side.
+    /// the draft's file isn't in it or the draft is on the old side; for a reply, the interdiff
+    /// doesn't draw its thread.
     fn composer_needs_all_changes(&self, cx: &App) -> bool {
         let Some(composer) = &self.composer else {
             return false;
         };
         let target = &composer.target;
-        self.comparison(cx).is_interdiff()
-            && (!self.index.contains_key(&target.path)
-                || (target.reply_to.is_none() && target.side == AnchorSide::Old))
+        if !self.comparison(cx).is_interdiff() {
+            return false;
+        }
+        match &target.reply_to {
+            Some(thread) => self.session.as_ref().is_some_and(|session| {
+                let session = session.read(cx);
+                session
+                    .review()
+                    .thread(thread)
+                    .is_some_and(|found| session.placement(found).is_not_in_comparison())
+            }),
+            None => !self.index.contains_key(&target.path) || target.side == AnchorSide::Old,
+        }
     }
 
     /// Gives a draft asked for while all changes were being listed the keyboard, once its row
@@ -351,14 +454,14 @@ impl DiffPane {
     /// keyboard, which a field that isn't drawn would swallow: the stream keeps it, and `false`
     /// says so.
     fn focus_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(path) = self
-            .composer
-            .as_ref()
-            .map(|composer| composer.target.path.clone())
-        else {
+        let Some(composer) = &self.composer else {
             return false;
         };
-        if self.composer_item().is_none() && self.is_collapsed(&path) {
+        let path = self.target_block_path(&composer.target, cx);
+        if self.composer_item().is_none()
+            && let Some(path) = path
+            && self.is_collapsed(&path)
+        {
             self.set_open(&path, true, cx);
         }
         let shown = match (self.composer_item(), &self.composer) {
@@ -420,19 +523,25 @@ impl DiffPane {
         closed
     }
 
-    /// Takes the composer away: its row goes (a reply's card drops its handle) and the file's
-    /// rows are rebuilt.
+    /// Takes the composer away: its row goes (a reply's card drops its handle) and the rows of
+    /// the block that drew it are rebuilt.
     fn release_composer(&mut self, cx: &mut Context<Self>) -> Option<Composer> {
         let item = self
             .composer
             .as_ref()
             .filter(|composer| composer.target.reply_to.is_some())
             .and_then(|_| self.composer_item());
+        let path = self
+            .composer
+            .as_ref()
+            .and_then(|composer| self.target_block_path(&composer.target, cx));
         let composer = self.composer.take()?;
         if let Some(item) = item {
             self.set_item_focus(item, None);
         }
-        self.refresh_path(&composer.target.path, cx);
+        if let Some(path) = path {
+            self.refresh_path(&path, cx);
+        }
         Some(composer)
     }
 
@@ -469,6 +578,8 @@ impl DiffPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A reply waiting for its card is superseded by any composer.
+        self.reply_when_shown = None;
         let (rows, placeholder) = match target.reply_to {
             Some(_) => (REPLY_ROWS, "Reply… (Markdown)"),
             None => (COMPOSER_ROWS, "Leave a comment… (Markdown)"),
@@ -503,7 +614,9 @@ impl DiffPane {
             error: None,
             _subscription: subscription,
         });
-        self.refresh_path(&target.path, cx);
+        if let Some(path) = self.target_block_path(&target, cx) {
+            self.refresh_path(&path, cx);
+        }
         // A reply's card was there already, so no rebuild gave it the field's handle.
         if target.reply_to.is_some() {
             self.attach_composer_focus(cx);
@@ -602,7 +715,9 @@ impl DiffPane {
                 }
                 self.focused_thread = Some(thread.clone());
                 self.pending_thread = Some(thread);
-                self.refresh_path(&target.path, cx);
+                if let Some(path) = self.target_block_path(&target, cx) {
+                    self.refresh_path(&path, cx);
+                }
             }
             (Err(failure), Some(composer)) => {
                 composer.posting = false;
@@ -615,6 +730,7 @@ impl DiffPane {
 
     /// Discards the composer (`Esc` in it) and hands the keyboard back to the stream.
     pub fn cancel_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.reply_when_shown = None;
         if self.close_composer(cx).is_none() {
             return;
         }
@@ -666,7 +782,8 @@ impl DiffPane {
             self.focus_item(item, id, cx);
             return;
         }
-        // The next thread may live in a file whose cards aren't built: collapsed, or loading.
+        // The next thread may live in a file (or the section) whose cards aren't built:
+        // collapsed, or loading.
         let Some((from_block, _)) = self.locate(from) else {
             return;
         };
@@ -675,10 +792,9 @@ impl DiffPane {
             Dir::Up => (0..from_block).rev().collect(),
         };
         for index in order {
-            let path = self.blocks[index].path.clone();
-            let waiting: Vec<ThreadId> = session
-                .read(cx)
-                .threads_in(&path)
+            let waiting: Vec<ThreadId> = self
+                .block_threads(index, session.read(cx))
+                .into_iter()
                 .filter(|thread| thread.state != ThreadState::Resolved)
                 .map(|thread| thread.id.clone())
                 .collect();
@@ -700,6 +816,10 @@ impl DiffPane {
     /// A thread whose card isn't built yet — its file collapsed or still loading, or the
     /// comparison asked for still being listed — is shown once it is.
     pub fn reveal_thread(&mut self, thread: &ThreadId, cx: &mut Context<Self>) {
+        // Showing another thread forgets a reply waiting for its card.
+        if self.reply_when_shown.as_ref() != Some(thread) {
+            self.reply_when_shown = None;
+        }
         let Some(session) = self.session.clone() else {
             return;
         };
@@ -707,18 +827,13 @@ impl DiffPane {
             self.focus_item(item, thread.clone(), cx);
             return;
         }
-        let (path, switching) = {
+        let path = self.thread_block_path(thread, cx);
+        let switching = {
             let session = session.read(cx);
-            let path = session
-                .review()
-                .thread(thread)
-                .and_then(|found| session.file_of(found))
-                .map(|entry| entry.path.clone());
-            (path, session.asked_comparison() != session.comparison())
+            session.asked_comparison() != session.comparison()
         };
         let Some(path) = path else {
-            // Its file left the diff (the comments list is the only place it shows), or the
-            // comparison being listed shows it once it lands.
+            // The comparison being listed shows it once it lands (or nothing draws it).
             self.focused_thread = Some(thread.clone());
             self.reveal_after_listing = switching.then(|| thread.clone());
             cx.notify();
@@ -845,10 +960,22 @@ impl DiffPane {
             .map(|(item, _)| item)
     }
 
+    /// The block (by its key) and the card (the thread it answers, for a reply) of the
+    /// composer's row (tests).
+    #[cfg(test)]
+    pub(crate) fn composer_card(&self) -> Option<(&str, Option<&ThreadId>)> {
+        let (block, row) = self.locate(self.composer_item()?)?;
+        let block = &self.blocks[block];
+        Some((block.path.as_str(), block.rows[row].thread()))
+    }
+
     /// The composer's list item: its own row, or the card of the thread it answers.
     pub(super) fn composer_item(&self) -> Option<usize> {
         let composer = self.composer.as_ref()?;
-        // Only its own file's rows can hold it.
+        if let Some(thread) = &composer.target.reply_to {
+            return self.thread_item(thread);
+        }
+        // Only its own file's rows can hold a new thread's.
         let block = *self.index.get(&composer.target.path)?;
         self.blocks[block]
             .rows
@@ -931,6 +1058,9 @@ impl DiffPane {
             .is_some_and(|id| !exists(id))
         {
             self.reveal_after_listing = None;
+        }
+        if self.reply_when_shown.as_ref().is_some_and(|id| !exists(id)) {
+            self.reply_when_shown = None;
         }
         self.opened_threads.retain(exists);
         let reply_gone = self

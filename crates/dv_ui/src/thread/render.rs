@@ -32,6 +32,9 @@ pub struct ThreadCard {
     thread: Thread,
     now: u64,
     outdated: bool,
+    /// The path its anchor names, before the anchor: a card away from its file's rows (the
+    /// stream's "Not in the diff" section).
+    path: Option<String>,
     /// The lines it shows at now, when they aren't its anchor's.
     lines: Option<(u32, u32)>,
     moved: bool,
@@ -53,6 +56,7 @@ impl ThreadCard {
             thread,
             now,
             outdated: false,
+            path: None,
             lines: None,
             moved: false,
             focused: false,
@@ -70,6 +74,13 @@ impl ThreadCard {
     /// Its anchored text can't be found (PLAN §8): the yellow chip and its lines as they were.
     pub fn outdated(mut self, outdated: bool) -> Self {
         self.outdated = outdated;
+        self
+    }
+
+    /// Names `path` before the anchor ("src/hooks/use-can.ts · new · line 12"), for a card
+    /// that isn't under its file's header (DESIGN §4.1, "Not in the diff").
+    pub fn path(mut self, path: Option<String>) -> Self {
+        self.path = path;
         self
     }
 
@@ -142,7 +153,13 @@ impl RenderOnce for ThreadCard {
         let c = &theme.colors;
         let name = format!("thread/{}", self.thread.id);
         let anchor = &self.thread.anchor;
-        let anchor_text = shown_anchor_label(anchor, self.lines, self.moved);
+        let anchor_text = match &self.path {
+            Some(path) => format!(
+                "{path} · {}",
+                shown_anchor_label(anchor, self.lines, self.moved)
+            ),
+            None => shown_anchor_label(anchor, self.lines, self.moved),
+        };
         let resolved = self.thread.state == ThreadState::Resolved;
 
         let header = div()
@@ -178,7 +195,17 @@ impl RenderOnce for ThreadCard {
                     .child(
                         div()
                             .min_w_0()
-                            .truncate()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            // A path before the anchor gives way at its start, so its name
+                            // and the lines stay (as paths do everywhere, DESIGN §4.1).
+                            .map(|this| {
+                                if self.path.is_some() {
+                                    this.text_ellipsis_start()
+                                } else {
+                                    this.text_ellipsis()
+                                }
+                            })
                             .text_spec(&theme.text.secondary)
                             .text_color(c.fg3)
                             .child(anchor_text),

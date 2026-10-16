@@ -391,7 +391,8 @@ fn sheet(shell: &Shell, cx: &App) -> Value {
 }
 
 /// `state.comments_list`: the panel's comments (`null` with no review open): the rows shown,
-/// in order, and whether the resolved threads are among them.
+/// in order, whether the resolved threads are among them, and the thread whose row menu is
+/// open.
 pub fn comments_list(shell: &Shell, cx: &App) -> Value {
     if shell.session().is_none() {
         return Value::Null;
@@ -413,7 +414,7 @@ pub fn comments_list(shell: &Shell, cx: &App) -> Value {
             })
         })
         .collect();
-    json!({"show_resolved": list.shows_resolved(), "rows": rows})
+    json!({"show_resolved": list.shows_resolved(), "rows": rows, "menu": list.menu_thread()})
 }
 
 fn side(side: AnchorSide) -> &'static str {
@@ -424,8 +425,9 @@ fn side(side: AnchorSide) -> &'static str {
 }
 
 /// `state.stream`: the diff stream's own state (`null` with no review open): the file at the
-/// top, the one whose header is pinned, the sideways scroll, and per file whether it is
-/// collapsed, its rows, the lines each gap hides and the notice it shows.
+/// top, the one whose header is pinned, the sideways scroll, per file whether it is collapsed,
+/// its rows, the lines each gap hides and the notice it shows, and the "Not in the diff"
+/// section (`null` while it doesn't show): whether it is collapsed and its threads.
 pub fn stream(shell: &Shell, window: &Window, cx: &App) -> Value {
     if shell.session().is_none() {
         return Value::Null;
@@ -444,12 +446,20 @@ pub fn stream(shell: &Shell, window: &Window, cx: &App) -> Value {
             })
         })
         .collect();
+    let section = pane.section_summary(cx).map(|section| {
+        json!({
+            "collapsed": section.collapsed,
+            "threads": section.threads,
+            "empty": section.empty,
+        })
+    });
     json!({
         "top_file": pane.top_file(),
         "pinned_file": pane.pinned_file(),
         "h_offset": pane.h_offset(),
         "focused": shell.focus_handle(cx).is_focused(window),
         "files": files,
+        "not_in_diff": section,
     })
 }
 

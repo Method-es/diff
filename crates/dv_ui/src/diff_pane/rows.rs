@@ -153,6 +153,9 @@ pub enum Row {
     Insert(Insert),
     /// An outdated thread's card, under the header (see the module docs).
     Outdated(ThreadId),
+    /// Under the "Not in the diff" section while no file is listed: the main area's empty
+    /// state as a row (its words, and an empty interdiff's Show all changes, DESIGN §4.1).
+    Empty,
     /// "Next: `path`" and "Mark viewed and go next".
     Footer,
 }
@@ -199,7 +202,7 @@ impl Row {
             Self::Gap(_) => heights::GAP,
             Self::Notice(Notice::Loading) => heights::LOADING,
             Self::Notice(Notice::Failed) => heights::FAILED,
-            Self::Notice(_) => heights::NOTICE,
+            Self::Notice(_) | Self::Empty => heights::NOTICE,
             Self::Insert(_) | Self::Outdated(_) => heights::INSERT,
             Self::Footer => heights::FOOTER,
         }
@@ -233,7 +236,7 @@ impl Row {
             Self::Line(line) => RowKey::Line(*line),
             Self::Pair { old, new } => RowKey::Line(new.or(*old).unwrap_or_default()),
             Self::Gap(gap) => RowKey::Gap(gap.lines.start),
-            Self::Notice(_) => RowKey::Notice,
+            Self::Notice(_) | Self::Empty => RowKey::Notice,
             Self::Insert(insert) => RowKey::Insert(insert.item.clone()),
             Self::Outdated(id) => RowKey::Insert(InsertItem::Thread(id.clone())),
             Self::Footer => RowKey::Footer,

@@ -11,6 +11,7 @@ use gpui::{
 use dv_core::review::ReviewStatus;
 
 use super::{EmptyState, ReadyNote, Shell};
+use crate::actions::diff_pane::ClearSelection;
 use crate::automation::AutomationTargetExt as _;
 use crate::banner::{Banner, BannerAction};
 use crate::components::{icon, inline_code, kbd, skeleton, small_button, status_label};
@@ -60,6 +61,14 @@ impl Render for Shell {
             .on_action(cx.listener(Self::toggle_switcher))
             .on_action(cx.listener(Self::toggle_panel))
             .on_action(cx.listener(Self::finish_review))
+            // `Esc` closes the comments list's row menu before the stream hears it (DESIGN §5:
+            // the top overlay first).
+            .capture_action(cx.listener(|this, _: &ClearSelection, _, cx| {
+                if this.comments_list.read(cx).menu_thread().is_some() {
+                    this.close_comments_menu(cx);
+                    cx.stop_propagation();
+                }
+            }))
             .on_drag_move(cx.listener(Self::resize_panel))
             .relative()
             .size_full()
@@ -666,36 +675,31 @@ fn empty_view(empty: EmptyState, theme: &DvTheme, cx: &mut Context<Shell>) -> An
     };
     let note = |text: &'static str| div().text_color(c.fg2).child(text);
     match empty {
-        EmptyState::NoReview => centred
-            .child(heading("Pick a repo to start a review".into()))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(theme.spacing.sm)
-                    .text_color(c.fg2)
-                    .child("Open a folder with")
-                    // The comma hugs the keycap.
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .child(kbd(keymap::label("secondary-o"), theme))
-                            .child(","),
-                    )
-                    .child("or run")
-                    .child(inline_code("dv", theme))
-                    .child("inside a repo"),
-            ),
-        EmptyState::WorkingTreeClean => centred
-            .child(heading("Working tree clean — nothing to review".into()))
-            .child(note("The review picks up changes as soon as files change.")),
-        EmptyState::NoChanges => centred
-            .child(heading("No changes — nothing to review".into()))
-            .child(note("The two sides of this review are the same.")),
-        EmptyState::NoChangesSince(n) => centred
-            .child(heading(format!("No changes since round {n}")))
-            .child(note("Nothing changed after the round was handed over."))
+        EmptyState::NoReview => centred.child(heading(empty.heading())).child(
+            div()
+                .flex()
+                .items_center()
+                .gap(theme.spacing.sm)
+                .text_color(c.fg2)
+                .child("Open a folder with")
+                // The comma hugs the keycap.
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .child(kbd(keymap::label("secondary-o"), theme))
+                        .child(","),
+                )
+                .child("or run")
+                .child(inline_code("dv", theme))
+                .child("inside a repo"),
+        ),
+        EmptyState::WorkingTreeClean | EmptyState::NoChanges => centred
+            .child(heading(empty.heading()))
+            .child(note(empty.note())),
+        EmptyState::NoChangesSince(_) => centred
+            .child(heading(empty.heading()))
+            .child(note(empty.note()))
             .child(
                 crate::components::button("show-all-changes", theme)
                     .debug_selector(|| "show-all-changes".into())

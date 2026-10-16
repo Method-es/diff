@@ -109,6 +109,42 @@ pub enum EmptyState {
 }
 
 impl EmptyState {
+    /// What `session` has to say for want of changes, whatever else the stream shows: its file
+    /// list has landed, without an error, and lists nothing (DESIGN §4.4). A refresh of an
+    /// empty list keeps saying so until it lands.
+    pub fn of_session(session: &ReviewSession) -> Option<Self> {
+        let empty = session.spec().is_some()
+            && !session.is_first_load()
+            && session.error().is_none()
+            && session.files().is_empty();
+        empty.then(|| match (session.comparison(), &session.review().target) {
+            (Comparison::SinceRound(n), _) => Self::NoChangesSince(n),
+            (Comparison::All, Target::Working) => Self::WorkingTreeClean,
+            (Comparison::All, _) => Self::NoChanges,
+        })
+    }
+
+    /// Its heading (DESIGN §4.4).
+    pub fn heading(self) -> String {
+        match self {
+            Self::NoReview => "Pick a repo to start a review".to_string(),
+            Self::WorkingTreeClean => "Working tree clean — nothing to review".to_string(),
+            Self::NoChanges => "No changes — nothing to review".to_string(),
+            Self::NoChangesSince(n) => format!("No changes since round {n}"),
+        }
+    }
+
+    /// The line under the heading (none for [`EmptyState::NoReview`], whose line has a
+    /// keycap and a command in it).
+    pub fn note(self) -> &'static str {
+        match self {
+            Self::NoReview => "",
+            Self::WorkingTreeClean => "The review picks up changes as soon as files change.",
+            Self::NoChanges => "The two sides of this review are the same.",
+            Self::NoChangesSince(_) => "Nothing changed after the round was handed over.",
+        }
+    }
+
     /// `"no_review"`, `"working_tree_clean"`, `"no_changes"` or `"no_changes_since"`, as
     /// automation state spells it.
     pub fn key(self) -> &'static str {
@@ -468,8 +504,18 @@ impl Shell {
     pub fn set_panel_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
         if self.panel_visible != visible {
             self.panel_visible = visible;
+            if !visible {
+                self.close_comments_menu(cx);
+            }
             cx.notify();
         }
+    }
+
+    /// Closes the comments list's row menu, if it is open: an overlay opening (the switcher,
+    /// the source picker, the sheet) or the panel hiding takes it away.
+    pub(super) fn close_comments_menu(&mut self, cx: &mut Context<Self>) {
+        self.comments_list
+            .update(cx, |list, cx| list.close_menu(cx));
     }
 
     /// The empty state the main area shows, if any.
@@ -478,16 +524,12 @@ impl Shell {
             return self.opening.is_none().then_some(EmptyState::NoReview);
         };
         let session = session.read(cx);
-        // A refresh of an empty list keeps saying so until it lands (DESIGN §4.4).
-        let empty = session.spec().is_some()
-            && !session.is_first_load()
-            && session.error().is_none()
-            && session.files().is_empty();
-        empty.then(|| match (session.comparison(), &session.review().target) {
-            (Comparison::SinceRound(n), _) => EmptyState::NoChangesSince(n),
-            (Comparison::All, Target::Working) => EmptyState::WorkingTreeClean,
-            (Comparison::All, _) => EmptyState::NoChanges,
-        })
+        // Threads whose files left the review keep the stream: its "Not in the diff" section
+        // shows them, with the empty state's words and action as a row under it (DESIGN §4.1).
+        if session.threads_not_in_diff().next().is_some() {
+            return None;
+        }
+        EmptyState::of_session(session)
     }
 
     /// The agent's handoff the main area shows while the review is `ready` (DESIGN §4.4).
@@ -686,6 +728,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let return_focus = self.take_menu().unwrap_or_else(|| window.focused(cx));
+        self.close_comments_menu(cx);
         let reviews = cx.services().reviews.clone();
         reviews.update(cx, |reviews, cx| reviews.refresh_all(cx));
         let current = self
@@ -721,6 +764,7 @@ impl Shell {
             )
         };
         let return_focus = self.take_menu().unwrap_or_else(|| window.focused(cx));
+        self.close_comments_menu(cx);
         let reviews = cx.services().reviews.clone();
         reviews.update(cx, |reviews, cx| reviews.refresh(location.clone(), cx));
         let view = cx.new(|cx| SourcePicker::new(reviews, location, target, cx));
@@ -745,6 +789,7 @@ impl Shell {
             return;
         }
         let return_focus = self.take_menu().unwrap_or_else(|| window.focused(cx));
+        self.close_comments_menu(cx);
         let view = cx.new(|cx| FinishSheet::new(session, window, cx));
         let subscription = cx.subscribe_in(&view, window, Self::on_sheet_event);
         view.update(cx, |sheet, cx| sheet.focus(window, cx));

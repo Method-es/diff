@@ -1,17 +1,19 @@
 //! The comments section's layout (the board's "Open comments" block under the files: a header
 //! with the count and "Copy as prompt", then `listBtn` rows with a dot, `path:line` in mono and
-//! the comment's first line).
+//! the comment's first line), and a row's right-click menu, in the file menu's style.
 
 use dv_core::review::ThreadState;
 use gpui::{
-    AnyElement, Context, ElementId, FontWeight, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, Window, div,
-    prelude::FluentBuilder as _, px,
+    AnyElement, Context, ElementId, FontWeight, InteractiveElement as _, IntoElement, MouseButton,
+    MouseDownEvent, ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _,
+    Window, anchored, deferred, div, prelude::FluentBuilder as _, px,
 };
 
 use super::{CommentRow, CommentsList};
 use crate::automation::AutomationTargetExt as _;
-use crate::components::{count_badge, icon, small_button, small_icon_button, tooltip};
+use crate::components::{
+    count_badge, icon, menu_item, menu_panel, small_button, small_icon_button, tooltip,
+};
 use crate::icons::DvIcon;
 use crate::services::ActiveServices as _;
 use crate::theme::{ActiveTheme as _, DvTheme, StyledText as _};
@@ -22,6 +24,9 @@ const MAX_ROWS_HEIGHT: f32 = 240.;
 /// The narrowest panel (DESIGN §2: 220–420) whose comments header has room for "Copy as
 /// prompt" beside "Open comments" and a three-digit count.
 const COPY_LABEL_FROM: f32 = 270.;
+
+/// The row menu's paint order: over the panel and the stream, as the file menu's.
+const MENU_PRIORITY: usize = 2;
 
 impl Render for CommentsList {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -146,6 +151,7 @@ impl Render for CommentsList {
                     .flex_col()
                     .children(rows),
             )
+            .children(self.render_menu(&theme, cx))
             .automation_target("comments_list")
     }
 }
@@ -200,6 +206,8 @@ impl CommentsList {
             flags.push(flag("all changes", c.fg3, FontWeight::NORMAL));
         }
         let id = row.id.clone();
+        // The row whose menu is open keeps its hover tint while the pointer is on the menu.
+        let menu_open = self.menu_thread() == Some(&row.id);
         div()
             .id(ElementId::Name(format!("comment-row-{}", row.id).into()))
             .flex()
@@ -213,11 +221,24 @@ impl CommentsList {
             .map(|this| {
                 if focused {
                     this.bg(c.sel)
+                } else if menu_open {
+                    this.bg(hover)
                 } else {
                     this.hover(move |style| style.bg(hover))
                 }
             })
-            .on_click(cx.listener(move |this, _, _, cx| this.reveal(&id, cx)))
+            .on_click({
+                let id = id.clone();
+                cx.listener(move |this, _, _, cx| this.reveal(&id, cx))
+            })
+            .on_mouse_down(MouseButton::Right, {
+                let id = id.clone();
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    this.open_menu(id.clone(), event.position, cx);
+                    cx.stop_propagation();
+                })
+            })
+            .debug_selector(move || format!("comment-row-{id}"))
             .child(
                 div()
                     .flex()
@@ -286,5 +307,102 @@ impl CommentsList {
             }))
             .automation_target(format!("comments_list/{}", row.id))
             .into_any_element()
+    }
+
+    /// The open row menu, at the pointer where it was opened (module docs): the card's actions
+    /// for the thread's state, Reply, and Copy as prompt.
+    fn render_menu(&self, theme: &DvTheme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let menu = self.menu.clone()?;
+        let found = self.session.as_ref().and_then(|session| {
+            let session = session.read(cx);
+            let thread = session
+                .review()
+                .thread(&menu.thread)
+                .filter(|thread| !thread.is_deleted())?;
+            Some((thread.state, session.is_read_only()))
+        });
+        // A thread gone meanwhile shows no menu; the session's change closes it
+        // (`CommentsList::close_stale_menu`).
+        let (state, read_only) = found?;
+        let c = &theme.colors;
+        let writable = !read_only;
+        let states: &[(&'static str, &'static str, DvIcon, ThreadState)] = match state {
+            ThreadState::Open => &[(
+                "resolve",
+                "Resolve",
+                DvIcon::CircleCheck,
+                ThreadState::Resolved,
+            )],
+            ThreadState::Addressed => &[
+                (
+                    "resolve",
+                    "Resolve",
+                    DvIcon::CircleCheck,
+                    ThreadState::Resolved,
+                ),
+                ("reopen", "Reopen", DvIcon::RotateCw, ThreadState::Open),
+            ],
+            ThreadState::Resolved => &[("reopen", "Reopen", DvIcon::RotateCw, ThreadState::Open)],
+        };
+        let item = |key: &'static str, label: &'static str, glyph: DvIcon, enabled: bool| {
+            menu_item(
+                ElementId::Name(format!("comments-menu-{key}").into()),
+                label,
+                glyph,
+                enabled,
+                theme,
+            )
+            .debug_selector(move || format!("comments-menu-{key}"))
+        };
+        let mut items: Vec<AnyElement> = states
+            .iter()
+            .map(|&(key, label, glyph, state)| {
+                let thread = menu.thread.clone();
+                item(key, label, glyph, writable)
+                    .when(writable, |this| {
+                        this.on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_state(&thread, state, cx);
+                        }))
+                    })
+                    .automation_target(format!("comments_list/menu/{key}"))
+            })
+            .collect();
+        let thread = menu.thread.clone();
+        items.push(
+            item("reply", "Reply", DvIcon::MessageSquare, writable)
+                .when(writable, |this| {
+                    this.on_click(cx.listener(move |this, _, window, cx| {
+                        this.reply(&thread, window, cx);
+                    }))
+                })
+                .automation_target("comments_list/menu/reply"),
+        );
+        items.push(
+            div()
+                .h(px(1.))
+                .my(theme.spacing.xs)
+                .bg(c.line)
+                .into_any_element(),
+        );
+        let thread = menu.thread.clone();
+        items.push(
+            item("copy", "Copy as prompt", DvIcon::Copy, true)
+                .on_click(cx.listener(move |this, _, _, cx| this.copy_thread(&thread, cx)))
+                .automation_target("comments_list/menu/copy"),
+        );
+        let panel = menu_panel("comments-menu", theme)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_menu(cx)))
+            .children(items)
+            .automation_target("comments_list/menu");
+        Some(
+            deferred(
+                anchored()
+                    .position(menu.position)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(panel),
+            )
+            .with_priority(MENU_PRIORITY)
+            .into_any_element(),
+        )
     }
 }

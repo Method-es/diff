@@ -6,7 +6,9 @@
 //! (`dv_core::review::anchored_entry`): in all changes that is the list shown; in an interdiff
 //! it is the target's own list (all changes), which the session keeps beside the interdiff's,
 //! so a thread is in the same file, or outdated, whichever comparison is shown, as the CLI
-//! (which always works on all changes) says.
+//! (which always works on all changes) says. Until a list has landed (the first listing is
+//! under way, or it failed) no file has left the review: every thread is `Pending` at the path
+//! it was written on, never in the stream's "Not in the diff" section.
 //!
 //! **Interdiff.** Its new side is the same text as in all changes, so a new-side thread whose
 //! file is also in the interdiff places exactly as there. The old column is round n's
@@ -90,6 +92,12 @@ impl ThreadPlacement {
     /// Relocation can't find it (PLAN §8 step 6), or its file left the diff.
     pub fn is_outdated(&self) -> bool {
         self.placement().is_outdated()
+    }
+
+    /// Its file left the review's list (`Placement::Outdated` without a file), whichever
+    /// comparison is shown: the stream draws it in its "Not in the diff" section (DESIGN §4.1).
+    pub fn is_not_in_diff(&self) -> bool {
+        matches!(self, Self::Placed(Placement::Outdated { file: None, .. }))
     }
 
     /// Its file's text isn't there to place it against yet.
@@ -188,6 +196,8 @@ struct Key {
     /// The diff its side is read from ([`ReviewSession::basis`]), held so its address can't be
     /// reused; `None` while there is none yet.
     diff: Option<Arc<FileDiff>>,
+    /// Whether a file list has landed: before one, no thread's file has left the review.
+    listed: bool,
 }
 
 impl Key {
@@ -201,6 +211,7 @@ impl Key {
             && self.comparison == other.comparison
             && self.entry == other.entry
             && self.drawn == other.drawn
+            && self.listed == other.listed
     }
 }
 
@@ -263,6 +274,7 @@ impl ReviewSession {
             entry: entry.map(|entry| (entry.path.clone(), entry.old_path.clone(), entry.status)),
             drawn,
             diff,
+            listed: self.listed,
         }
     }
 
@@ -276,7 +288,16 @@ impl ReviewSession {
         #[cfg(test)]
         self.worked_out.set(self.worked_out.get() + 1);
         let Some(entry) = self.review_entry(&thread.anchor) else {
-            // Its file left the review: outdated whichever comparison is shown.
+            if !self.listed {
+                // No file list has landed (the first is under way, or it failed): nothing says
+                // its file left the review, so it waits as one whose text isn't there yet,
+                // named by the path it was written on.
+                return ThreadPlacement::Placed(Placement::Pending {
+                    file: thread.anchor.path.clone(),
+                });
+            }
+            // Its file left the review: outdated whichever comparison is shown, drawn in the
+            // stream's "Not in the diff" section.
             return ThreadPlacement::Placed(Placement::Outdated { file: None });
         };
         let drawn = self.draws(thread, entry);
@@ -422,6 +443,14 @@ impl ReviewSession {
         self.review
             .live_threads()
             .filter(move |thread| self.placement(thread).file() == Some(path))
+    }
+
+    /// The live threads whose file left the review's list ([`ThreadPlacement::is_not_in_diff`]),
+    /// in the order they were added: the stream's "Not in the diff" section (DESIGN §4.1).
+    pub fn threads_not_in_diff(&self) -> impl Iterator<Item = &Thread> + '_ {
+        self.review
+            .live_threads()
+            .filter(move |thread| self.placement(thread).is_not_in_diff())
     }
 
     /// The listed file `thread` shows in, if any.

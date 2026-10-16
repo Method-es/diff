@@ -424,7 +424,7 @@ fn a_seeded_repo_opens_as_a_review_and_the_agent_answers(cx: &mut TestAppContext
         json!({"show_resolved": false, "rows": [{
             "id": thread, "state": "open", "outdated": false, "not_in_comparison": false,
             "pending": false, "location": "src/app.ts:2", "summary": "Why 3?", "snippet": null,
-        }]})
+        }], "menu": null})
     );
     let thread_state = &state["session"]["threads"][0];
     assert_eq!(thread_state["placement"], "unchanged");
@@ -856,8 +856,9 @@ fn a_loopback_repo_rides_out_a_kill_and_a_block(cx: &mut TestAppContext) {
         .unwrap();
     assert_eq!(reply, json!({"name": "loopback", "blocked": true}));
     run_waiting(&host, "backend_kill", json!({"name": "loopback"}), cx).unwrap();
+    // The banner follows the connection's state a notification later, so wait for both.
     let state = wait_for_state(&host, cx, "the connection to fail", |state| {
-        state["backends"][0]["state"] == "failed"
+        state["backends"][0]["state"] == "failed" && !state["shell"]["backend_banner"].is_null()
     });
     assert!(
         state["backends"][0]["error"]

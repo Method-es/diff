@@ -355,3 +355,50 @@ pub fn ghost_button(id: impl Into<gpui::ElementId>, theme: &DvTheme) -> Stateful
         .cursor_pointer()
         .hover(move |style| style.bg(hover))
 }
+
+/// A menu's panel (the file header's `⋯` menu, a comment row's right-click menu): 200 wide,
+/// radius 8, the `overlay` surface with its outline and shadow, its items stacked. It takes the
+/// pointer's clicks (`occlude`); hang it with `deferred(anchored())` and close it on a click
+/// outside it.
+pub fn menu_panel(id: impl Into<gpui::ElementId>, theme: &DvTheme) -> Stateful<Div> {
+    let c = &theme.colors;
+    div()
+        .id(id)
+        .occlude()
+        .w(px(200.))
+        .p(theme.spacing.xs)
+        .rounded(px(8.))
+        .border_1()
+        .border_color(c.overlay_line)
+        .bg(c.overlay)
+        .shadow(theme.shadows.overlay.clone())
+}
+
+/// One of a menu's items: its glyph and label, a control's height, `control_hover` under the
+/// pointer. A disabled one is dimmed and takes no pointer; give an enabled one its `on_click`.
+pub fn menu_item(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    glyph: DvIcon,
+    enabled: bool,
+    theme: &DvTheme,
+) -> Stateful<Div> {
+    let c = &theme.colors;
+    let hover = c.control_hover;
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap(theme.spacing.md)
+        .h(theme.sizes.control_height)
+        .px(theme.spacing.md)
+        .rounded(theme.radii.control)
+        .text_spec(&theme.text.body)
+        .text_color(c.fg)
+        .child(icon(glyph, px(14.), c.fg2))
+        .child(label.into())
+        .when(enabled, |this| {
+            this.cursor_pointer().hover(move |style| style.bg(hover))
+        })
+        .when(!enabled, |this| this.opacity(0.5))
+}

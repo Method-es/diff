@@ -31,8 +31,9 @@
 //! stream (`Shift`+wheel, a trackpad).
 //!
 //! **Threads** (`threads`, cards from [`crate::thread`]): a thread's card follows the last line
-//! of its range on its side, an outdated one heads its file, and the composer sits under the
-//! selected lines (or in the card it answers). `C` comments, `]`/`[` focus the next and previous
+//! of its range on its side, an outdated one heads its file, one whose file left the diff heads
+//! the stream in its "Not in the diff" section (`section`, before the first file), and the
+//! composer sits under the selected lines (or in the card it answers). `C` comments, `]`/`[` focus the next and previous
 //! unresolved thread, `R` replies to the focused one and `X` resolves or reopens it; every
 //! change goes through the session's `review::ops` writes.
 //!
@@ -41,6 +42,7 @@
 //!
 //! Automation targets: `stream`, `stream/file/<path>/header` (and its `/chevron`, `/viewed`,
 //! `/split`, `/unified`, `/prev`, `/next`, `/menu`), `stream/pinned` (the same parts),
+//! `stream/not_in_diff/header` (and its `/chevron`; pinned, `stream/pinned` and its `/chevron`),
 //! `stream/menu/<copy_path|reveal>`, `stream/gap/<path>/<n>` (`/expand`, `/expand_all`),
 //! `stream/line/<path>/<old|new>/<n>` (a line number), `stream/notice/<path>` (`/load_anyway`,
 //! and a failure's banner parts), `stream/footer/<path>` (`/next`), and the cards' and the
@@ -50,6 +52,7 @@ mod nav;
 mod reload;
 mod render;
 pub mod rows;
+mod section;
 pub mod text;
 mod threads;
 
@@ -75,6 +78,7 @@ use rows::{
     Content, LinePos, Row, RowKey, RowsSpec, file_rows, find_row, heights, selected_numbers,
     side_number,
 };
+pub use section::{SECTION, SectionSummary};
 
 /// How long a file shows skeleton rows before its header also says "Loading…" (DESIGN §4.4).
 pub const SKELETON_FOR: Duration = Duration::from_millis(300);
@@ -248,6 +252,9 @@ pub struct DiffPane {
     /// A draft the comparison shown can't hold, asked for (`C`) while all changes are being
     /// listed: it takes the keyboard once its row is there (`threads`).
     focus_composer_after_listing: bool,
+    /// A reply asked for (the comments list's menu) before its thread's card was built: the
+    /// reply composer opens in the card once it is (`threads`).
+    reply_when_shown: Option<ThreadId>,
     /// Resolved threads the reviewer opened; the rest show collapsed (DESIGN §4.1).
     opened_threads: HashSet<ThreadId>,
     /// Why the last change to a thread's state failed, by thread.
@@ -314,6 +321,7 @@ impl DiffPane {
             pending_thread: None,
             reveal_after_listing: None,
             focus_composer_after_listing: false,
+            reply_when_shown: None,
             opened_threads: HashSet::new(),
             thread_error: None,
             writes: 0,
@@ -365,6 +373,7 @@ impl DiffPane {
         self.pending_thread = None;
         self.reveal_after_listing = None;
         self.focus_composer_after_listing = false;
+        self.reply_when_shown = None;
         self.opened_threads.clear();
         self.thread_error = None;
         self.measured.clear();
@@ -435,6 +444,7 @@ impl DiffPane {
     pub fn file_summaries(&self) -> Vec<FileSummary> {
         self.blocks
             .iter()
+            .filter(|block| block.path != SECTION)
             .map(|block| FileSummary {
                 path: block.path.clone(),
                 collapsed: matches!(
@@ -461,17 +471,19 @@ impl DiffPane {
             .collect()
     }
 
-    /// The file whose header is pinned at the top, if one is.
+    /// The file whose header is pinned at the top, if one is (not the section's).
     pub fn pinned_file(&self) -> Option<&str> {
         self.pinned()
             .map(|(block, _)| self.blocks[block].path.as_str())
+            .filter(|path| *path != SECTION)
     }
 
-    /// The file at the top of the viewport.
+    /// The file at the top of the viewport (`None` while the section is).
     pub fn top_file(&self) -> Option<&str> {
         let top = self.list.logical_scroll_top();
         self.locate(top.item_ix)
             .map(|(block, _)| self.blocks[block].path.as_str())
+            .filter(|path| *path != SECTION)
     }
 
     /// Switches split / unified (`S`), remembered for the review; the reading position and the
@@ -509,16 +521,14 @@ impl DiffPane {
         self.after_rows_changed(cx);
     }
 
-    /// Opens or collapses `path` (the header's chevron).
+    /// Opens or collapses `path` (the header's chevron; [`SECTION`] for the section's).
     pub fn set_open(&mut self, path: &str, open: bool, cx: &mut Context<Self>) {
         let viewed = self.is_viewed(path, cx);
         let Some(&index) = self.index.get(path) else {
             return;
         };
-        if let Some(ui) = self.files.get_mut(path) {
-            // Opening a viewed file, or collapsing one that isn't, overrides the default.
-            ui.open = (open == viewed).then_some(open);
-        }
+        // Opening a viewed file, or collapsing one that isn't, overrides the default.
+        self.files.entry(path.to_string()).or_default().open = (open == viewed).then_some(open);
         self.refresh_block(index, cx);
         self.after_rows_changed(cx);
     }
@@ -557,8 +567,16 @@ impl DiffPane {
 
     // The blocks and the list.
 
-    /// Rebuilds one block's rows from the session (`index` is the file's place in its list).
+    /// Rebuilds block `index`'s rows from the session: the section's, or a file's.
     fn build_block(&mut self, index: usize, cx: &App) -> Option<Block> {
+        if self.is_section(index) {
+            return self.section_block(cx);
+        }
+        self.build_file_block(index - self.first_file_block(), cx)
+    }
+
+    /// Builds one file's block from the session (`index` is the file's place in its list).
+    fn build_file_block(&mut self, index: usize, cx: &App) -> Option<Block> {
         let session = self.session.clone()?;
         let session = session.read(cx);
         let entry = session.files().get(index)?;
@@ -604,18 +622,25 @@ impl DiffPane {
         })
     }
 
-    /// Rebuilds every block (the file list changed, or the view mode), keeping the reading
-    /// position.
+    /// Rebuilds every block (the file list changed, or the view mode, or the section came or
+    /// went), keeping the reading position.
     fn rebuild_all(&mut self, cx: &mut Context<Self>) {
-        let anchor = self.capture_anchor();
+        let mut anchor = self.capture_anchor();
+        let first_before = self.first_file_block();
         let count = self
             .session
             .as_ref()
             .map_or(0, |session| session.read(cx).files().len());
-        let blocks: Vec<Block> = (0..count)
-            .filter_map(|index| self.build_block(index, cx))
+        let section = self.section_block(cx);
+        let files: Vec<Block> = (0..count)
+            .filter_map(|index| self.build_file_block(index, cx))
             .collect();
-        self.blocks = blocks;
+        self.blocks = section.into_iter().chain(files).collect();
+        // A file gone falls back to the block now in its place: the section coming or going
+        // shifts every file's block by one.
+        if let Some(anchor) = anchor.as_mut() {
+            anchor.block = (anchor.block + self.first_file_block()).saturating_sub(first_before);
+        }
         let listed: HashSet<&str> = self.blocks.iter().map(|b| b.path.as_str()).collect();
         self.files.retain(|path, _| listed.contains(path.as_str()));
         self.measured
@@ -623,14 +648,17 @@ impl DiffPane {
         self.recompute_starts();
         // A comment on a file that left the review (the agent reverted it) has nowhere to go.
         // One on a file the comparison shown doesn't list (an interdiff) keeps its draft until
-        // its file shows again (DESIGN §4.1).
+        // its file shows again (DESIGN §4.1). A reply goes with its thread's card, wherever that
+        // is drawn (the section, once its file left the review).
         let in_review = |path: &str| {
             self.session
                 .as_ref()
                 .is_some_and(|session| session.read(cx).in_review(path))
         };
         if self.composer.as_ref().is_some_and(|composer| {
-            !self.index.contains_key(&composer.target.path) && !in_review(&composer.target.path)
+            composer.target.reply_to.is_none()
+                && !self.index.contains_key(&composer.target.path)
+                && !in_review(&composer.target.path)
         }) {
             self.composer = None;
             cx.emit(DiffPaneEvent::ComposerClosed);
@@ -653,8 +681,13 @@ impl DiffPane {
     }
 
     /// Rebuilds every block in place, splicing only those whose rows changed (the review
-    /// changed: viewed files collapse).
+    /// changed: viewed files collapse), or the whole stream when the section comes or goes.
     fn refresh_blocks(&mut self, cx: &mut Context<Self>) {
+        if self.section_comes_or_goes(cx) {
+            self.rebuild_all(cx);
+            self.forget_gone_threads(cx);
+            return;
+        }
         let mut changed = false;
         for index in 0..self.blocks.len() {
             changed |= self.refresh_block(index, cx);
@@ -671,12 +704,21 @@ impl DiffPane {
         }
     }
 
-    /// A file's state changed in the session (its diff or highlights landed, or it loads again).
+    /// A file's state changed in the session (its diff or highlights landed, or it loads again),
+    /// which can also change the threads the section holds.
     fn file_changed(&mut self, path: &str, cx: &mut Context<Self>) {
+        if self.section_comes_or_goes(cx) {
+            self.rebuild_all(cx);
+            return;
+        }
+        let section = self.refresh_section(cx);
         let Some(&index) = self.index.get(path) else {
+            if section {
+                self.after_rows_changed(cx);
+            }
             return;
         };
-        if self.refresh_block(index, cx) {
+        if self.refresh_block(index, cx) || section {
             self.after_rows_changed(cx);
         } else {
             cx.notify();
@@ -968,7 +1010,9 @@ impl DiffPane {
             let ahead = (last + 1..=last + PREFETCH_AHEAD).filter(|&i| i < self.blocks.len());
             let behind = first.saturating_sub(PREFETCH_BEHIND)..first;
             for index in (first..=last).chain(ahead).chain(behind) {
-                wanted.push(self.blocks[index].path.clone());
+                if !self.is_section(index) {
+                    wanted.push(self.blocks[index].path.clone());
+                }
             }
             columns = (first..=last)
                 .filter_map(|index| self.files.get(&self.blocks[index].path))
@@ -1009,8 +1053,10 @@ impl DiffPane {
     }
 
     fn update_current(&mut self, cx: &mut Context<Self>) {
+        // The section isn't a file: while it is at the top, no file is current.
         let current = self
             .compute_current()
+            .filter(|&block| !self.is_section(block))
             .map(|block| self.blocks[block].path.clone());
         if current != self.current_file {
             self.current_file = current;

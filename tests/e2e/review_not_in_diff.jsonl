@@ -1,0 +1,93 @@
+{"scenario": {"window_size": "1440x900", "description": "threads whose file left the review (PLAN §8, DESIGN §4.1): the reviewer comments (through the CLI) on an untracked file the agent then deletes, on a file the agent reverts, and on one that stays; opened, the two head the stream in its \"Not in the diff\" section as full cards and come first in the comments list; one is resolved from its row's right-click menu, the other answered through the menu's Reply and resolved from its card, the agent replies through the CLI; after Request changes the empty interdiff keeps the section (the empty state a row under it, its cards answering `R`), and once the agent edits again the interdiff still shows it. Screenshots in dark Mica and one light."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "settle"}
+
+// The agent's work: a new hook (untracked), an edit to a file that is in the base, and one
+// more edit that stays.
+{"cmd": "seed_repo", "name": "web", "steps": [{"write": "src/hooks/use-auth.ts", "text": "export function useAuth() {\n  return { user: null };\n}\n"}, {"write": "src/lib/format.ts", "text": "export function format(value: number) {\n  return value.toFixed(2);\n}\n"}, {"commit": "base"}, {"write": "src/hooks/use-can.ts", "text": "import { useAuth } from \"./use-auth\";\n\nexport function useCan(permission: string) {\n  const { user } = useAuth();\n  return user?.permissions.includes(permission) ?? false;\n}\n"}, {"write": "src/lib/format.ts", "text": "export function format(value: number) {\n  return value.toFixed(3);\n}\n"}, {"write": "src/hooks/use-auth.ts", "text": "export function useAuth() {\n  return { user: null as null | { permissions: string[] } };\n}\n"}]}
+{"cmd": "cli", "cwd": "repos/web", "args": ["review", "new", "--json"], "expect_result": {"pointer": "/exit", "equals": 0}}
+{"cmd": "cli", "cwd": "repos/web", "args": ["comment", "add", "--file", "src/hooks/use-can.ts", "--lines", "5", "--body", "A missing user should throw, not read as \"no permission\".", "--json"], "save": {"t1": "/json/thread/id"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/thread/placement", "equals": "unchanged"}]}
+{"cmd": "cli", "cwd": "repos/web", "args": ["comment", "add", "--file", "src/lib/format.ts", "--lines", "2", "--body", "Why three decimals?", "--json"], "save": {"t2": "/json/thread/id"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/thread/placement", "equals": "unchanged"}]}
+{"cmd": "cli", "cwd": "repos/web", "args": ["comment", "add", "--file", "src/hooks/use-auth.ts", "--lines", "2", "--body", "Type the user once, in types.ts.", "--json"], "save": {"t3": "/json/thread/id"}, "expect_result": {"pointer": "/exit", "equals": 0}}
+// The agent deletes the hook (it was never committed) and reverts format.ts: both files leave
+// the review's list, and their threads with them (PLAN §8: outdated, no file).
+{"cmd": "repo_edit", "name": "web", "steps": [{"remove": "src/hooks/use-can.ts"}, {"write": "src/lib/format.ts", "text": "export function format(value: number) {\n  return value.toFixed(2);\n}\n"}]}
+{"cmd": "cli", "cwd": "repos/web", "args": ["comment", "list", "--json"], "env": {"CLAUDECODE": "1"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/threads/0/id", "equals": "${t1}"}, {"pointer": "/json/threads/0/placement", "equals": "outdated"}, {"pointer": "/json/threads/1/placement", "equals": "outdated"}, {"pointer": "/json/threads/2/placement", "equals": "unchanged"}]}
+
+// Opened: one file, and the section heading the stream with the two cards, in the order they
+// were added; the comments list names them first, flagged outdated, where they were written.
+{"cmd": "open_review", "path": "${data_dir}/repos/web"}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 1}
+{"cmd": "settle", "expect": [{"pointer": "/session/files/0/path", "equals": "src/hooks/use-auth.ts"}, {"pointer": "/stream/not_in_diff", "equals": {"collapsed": false, "threads": ["${t1}", "${t2}"], "empty": null}}, {"pointer": "/stream/files", "len": 1}, {"pointer": "/stream/top_file", "equals": null}, {"pointer": "/session/threads/0/placement", "equals": "outdated"}, {"pointer": "/session/threads/1/placement", "equals": "outdated"}, {"pointer": "/session/threads/2/placement", "equals": "unchanged"}, {"pointer": "/comments_list/rows/0/id", "equals": "${t1}"}, {"pointer": "/comments_list/rows/0/location", "equals": "src/hooks/use-can.ts:5"}, {"pointer": "/comments_list/rows/0/outdated", "equals": true}, {"pointer": "/comments_list/rows/1/id", "equals": "${t2}"}, {"pointer": "/comments_list/rows/2/id", "equals": "${t3}"}, {"pointer": "/shell/empty_state", "equals": null}]}
+{"cmd": "query", "prefix": "stream/not_in_diff/", "expect_result": {"pointer": "", "len": 2}}
+{"cmd": "query", "prefix": "thread/${t1}/resolve", "expect_result": {"pointer": "", "len": 1}}
+{"cmd": "screenshot", "name": "section-dark-mica"}
+
+// A click on a section thread's row shows and focuses its card.
+{"cmd": "click", "target": "comments_list/${t2}"}
+{"cmd": "settle", "expect": {"pointer": "/session/focused_thread", "equals": "${t2}"}}
+
+// A right click on the first row: its menu, with Resolve, Reply and Copy as prompt.
+{"cmd": "click", "target": "comments_list/${t1}", "button": "right"}
+{"cmd": "settle", "expect": {"pointer": "/comments_list/menu", "equals": "${t1}"}}
+{"cmd": "query", "prefix": "comments_list/menu/", "expect_result": {"pointer": "", "len": 3}}
+{"cmd": "screenshot", "name": "row-menu-dark-mica"}
+// Copy as prompt: that thread alone.
+{"cmd": "click", "target": "comments_list/menu/copy"}
+{"cmd": "settle", "expect": [{"pointer": "/comments_list/menu", "equals": null}, {"pointer": "/system/requests/0/kind", "equals": "clipboard"}, {"pointer": "/system/requests/0/text", "contains": "## src/hooks/use-can.ts:5"}, {"pointer": "/system/requests/0/text", "contains": "(1 comment)"}]}
+// Resolve from the menu.
+{"cmd": "click", "target": "comments_list/${t1}", "button": "right"}
+{"cmd": "click", "target": "comments_list/menu/resolve"}
+{"cmd": "settle"}
+{"cmd": "wait_for", "pointer": "/session/threads/0/state", "equals": "resolved"}
+{"cmd": "settle", "expect": [{"pointer": "/comments_list/menu", "equals": null}, {"pointer": "/stream/not_in_diff/threads", "equals": ["${t1}", "${t2}"]}]}
+
+// Reply from the second row's menu: the reply composer opens in its card, in the section.
+{"cmd": "click", "target": "comments_list/${t2}", "button": "right"}
+{"cmd": "click", "target": "comments_list/menu/reply"}
+{"cmd": "settle", "expect": [{"pointer": "/session/composer/reply_to", "equals": "${t2}"}, {"pointer": "/session/focused_thread", "equals": "${t2}"}]}
+{"cmd": "type", "text": "Two decimals again: fine as it was."}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle", "expect": [{"pointer": "/session/composer", "equals": null}, {"pointer": "/session/threads/1/replies/0/body", "equals": "Two decimals again: fine as it was."}]}
+// Resolve from its card.
+{"cmd": "click", "target": "thread/${t2}/resolve"}
+{"cmd": "settle"}
+{"cmd": "wait_for", "pointer": "/session/threads/1/state", "equals": "resolved"}
+
+// The agent answers the deleted hook's thread through the CLI; the card shows it.
+{"cmd": "cli", "cwd": "repos/web", "args": ["comment", "reply", "${t1}", "--body", "Deleted: the check moved into useAuth.", "--json"], "env": {"CLAUDECODE": "1"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/thread/placement", "equals": "outdated"}]}
+{"cmd": "wait_for", "pointer": "/session/threads/0/replies/0/body", "equals": "Deleted: the check moved into useAuth.", "timeout_ms": 15000}
+{"cmd": "click", "target": "thread/${t1}/toggle"}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "answered-dark-mica"}
+
+// Request changes on the thread that stays; the agent edits the file again. The interdiff since
+// round 1 shows that file, and the section still heads the stream.
+{"cmd": "click", "target": "stream/line/src/hooks/use-auth.ts/new/2"}
+{"cmd": "settle", "expect": {"pointer": "/stream/focused", "equals": true}}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle", "expect": {"pointer": "/session/sheet/verdict", "equals": "request_changes"}}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle"}
+{"cmd": "wait_for", "pointer": "/session/status", "equals": "changes_requested"}
+// The interdiff since round 1 is empty: the stream keeps the section, the empty state's words
+// and Show all changes a row under its cards, and its cards still answer.
+{"cmd": "wait_for", "pointer": "/stream/not_in_diff/empty", "equals": "no_changes_since"}
+{"cmd": "settle", "expect": [{"pointer": "/session/comparison", "equals": {"kind": "since_round", "round": 1}}, {"pointer": "/shell/empty_state", "equals": null}, {"pointer": "/stream/files", "len": 0}, {"pointer": "/stream/not_in_diff/threads", "equals": ["${t1}", "${t2}"]}]}
+{"cmd": "query", "prefix": "stream/not_in_diff/empty/show_all", "expect_result": {"pointer": "", "len": 1}}
+{"cmd": "screenshot", "name": "empty-interdiff-dark-mica"}
+{"cmd": "click", "target": "comments_list/resolved"}
+{"cmd": "click", "target": "comments_list/${t2}"}
+{"cmd": "settle", "expect": {"pointer": "/session/focused_thread", "equals": "${t2}"}}
+{"cmd": "key", "keystroke": "r"}
+{"cmd": "settle", "expect": [{"pointer": "/session/composer/reply_to", "equals": "${t2}"}, {"pointer": "/session/composer/path", "equals": "src/lib/format.ts"}]}
+{"cmd": "key", "keystroke": "escape"}
+{"cmd": "settle", "expect": {"pointer": "/session/composer", "equals": null}}
+{"cmd": "repo_edit", "name": "web", "steps": [{"write": "src/hooks/use-auth.ts", "text": "import type { User } from \"../types\";\n\nexport function useAuth() {\n  return { user: null as User | null };\n}\n"}]}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 1, "timeout_ms": 15000}
+{"cmd": "wait_for", "pointer": "/stream/files/0/path", "equals": "src/hooks/use-auth.ts", "timeout_ms": 15000}
+{"cmd": "settle", "expect": [{"pointer": "/session/comparison", "equals": {"kind": "since_round", "round": 1}}, {"pointer": "/stream/not_in_diff/threads", "equals": ["${t1}", "${t2}"]}]}
+{"cmd": "set_setting", "key": "mode", "value": "light"}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "interdiff-light"}

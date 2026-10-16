@@ -17,7 +17,7 @@ use super::super::rows::{Row, heights};
 use super::super::{DiffPane, Menu};
 
 use crate::automation::AutomationTargetExt as _;
-use crate::components::{checkbox, chip, icon, kbd, totals};
+use crate::components::{checkbox, chip, icon, kbd, menu_item, menu_panel, totals};
 use crate::file_list::{split_path, status_letter};
 use crate::icons::DvIcon;
 use crate::keymap;
@@ -37,6 +37,9 @@ impl DiffPane {
         theme: &DvTheme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if self.is_section(block) {
+            return self.render_section_header(block, pinned, theme, cx);
+        }
         let c = &theme.colors;
         let Some((entry, _)) = self.entry_and_state(block, cx) else {
             return div().into_any_element();
@@ -167,9 +170,11 @@ impl DiffPane {
                 })
                 .automation_target(format!("{base}/viewed"))
         };
+        // The section above the first file isn't a file to step to.
         let last = self.blocks.len().saturating_sub(1);
-        let previous = icon_button("prev", DvIcon::ArrowUp, block > 0)
-            .when(block > 0, |this| {
+        let has_previous = block > self.first_file_block();
+        let previous = icon_button("prev", DvIcon::ArrowUp, has_previous)
+            .when(has_previous, |this| {
                 this.on_click(cx.listener(move |this, _, _, cx| this.go_to_file(block - 1, cx)))
             })
             .automation_target(format!("{base}/prev"));
@@ -293,7 +298,6 @@ impl DiffPane {
             self.menu = None;
         }
         let menu = self.menu.clone()?;
-        let c = &theme.colors;
         let root = self
             .session
             .as_ref()
@@ -304,34 +308,17 @@ impl DiffPane {
             .and_then(|&block| self.entry_and_state(block, cx))
             .is_some_and(|(entry, _)| entry.status == FileStatus::Deleted);
         let target = reveal_target(&root, &menu.path, deleted);
-        let hover = c.control_hover;
         let item = |key: &'static str, label: &'static str, glyph: DvIcon| {
-            div()
-                .id(SharedString::from(format!("stream-menu-{key}")))
-                .flex()
-                .items_center()
-                .gap(theme.spacing.md)
-                .h(theme.sizes.control_height)
-                .px(theme.spacing.md)
-                .rounded(theme.radii.control)
-                .text_spec(&theme.text.body)
-                .text_color(c.fg)
-                .cursor_pointer()
-                .hover(move |style| style.bg(hover))
-                .child(icon(glyph, px(14.), c.fg2))
-                .child(label)
+            menu_item(
+                SharedString::from(format!("stream-menu-{key}")),
+                label,
+                glyph,
+                true,
+                theme,
+            )
         };
         let path = menu.path.clone();
-        let panel = div()
-            .id("stream-menu")
-            .occlude()
-            .w(px(200.))
-            .p(theme.spacing.xs)
-            .rounded(px(8.))
-            .border_1()
-            .border_color(c.overlay_line)
-            .bg(c.overlay)
-            .shadow(theme.shadows.overlay.clone())
+        let panel = menu_panel("stream-menu", theme)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.menu = None;
                 cx.notify();
@@ -473,7 +460,7 @@ fn side_labels(
 
 /// `surface` drawn without its translucency for the pinned copy of a header, which sits over
 /// the stream's rows rather than the window material: nothing scrolls through it.
-fn opaque(surface: gpui::Hsla, pinned: bool) -> gpui::Hsla {
+pub(super) fn opaque(surface: gpui::Hsla, pinned: bool) -> gpui::Hsla {
     if pinned { surface.alpha(1.) } else { surface }
 }
 
