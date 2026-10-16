@@ -4,8 +4,10 @@
 //! - [`relocate`] finds an anchor's text in its side's current full text: still at its
 //!   recorded lines, moved (an exact match nearby, the only exact match in the file, or a fuzzy
 //!   match), or outdated.
-//! - [`place_thread`] decides the listed file a thread belongs to now (its path, or the file
-//!   renamed from it) and runs [`relocate`] on that file's side.
+//! - [`place_thread`] decides the listed file a thread belongs to now ([`thread_file`]: its path,
+//!   the file renamed from it, or what its round's history says the file is called now) and
+//!   runs [`relocate`] on that file's side; a new-side thread relocation can't find is traced
+//!   through its round's snapshot to where its code went (`super::history`).
 //! - [`relocated_anchor`] is the anchor the next event on a moved thread records (PLAN §8:
 //!   relocation is display-only until then).
 //!
@@ -16,6 +18,7 @@ use std::cell::OnceCell;
 use std::cmp::Reverse;
 
 use super::anchor::{ANCHOR_CONTEXT, AnchorPlace, anchor_selection};
+use super::history::{History, PathHistory, Trail, trace};
 use super::model::{Anchor, AnchorSide, Thread};
 use crate::diff::{FileEntry, FileStatus};
 
@@ -596,21 +599,34 @@ pub enum Placement {
         end_line: u32,
         how: MoveKind,
     },
-    /// In `file`, whose text isn't loaded yet.
-    Pending { file: String },
+    /// Not placed yet: `file`'s text isn't loaded, or its round's history isn't read (`file`
+    /// then the listed file at its path, if any: a deleted file).
+    Pending { file: Option<String> },
     /// At no line: its file left the list (`file: None`), or the listed `file` no longer has
-    /// its side (a new-side thread on a deleted file) or its text isn't found there.
-    Outdated { file: Option<String> },
+    /// its side (a new-side thread on a deleted file) or its text isn't found there. `trail`
+    /// says where its code went since its round, when its round's snapshot tells
+    /// (`super::history::trace`): still outdated, its anchor no line of the file now.
+    Outdated {
+        file: Option<String>,
+        trail: Option<Trail>,
+    },
 }
 
 impl Placement {
-    /// The listed file the thread belongs to; `None` when its file left the list.
+    /// The listed file the thread belongs to; `None` when its file left the list (or isn't
+    /// known yet).
     pub fn file(&self) -> Option<&str> {
         match self {
-            Self::Unchanged { file } | Self::Moved { file, .. } | Self::Pending { file } => {
-                Some(file)
-            }
-            Self::Outdated { file } => file.as_deref(),
+            Self::Unchanged { file } | Self::Moved { file, .. } => Some(file),
+            Self::Pending { file } | Self::Outdated { file, .. } => file.as_deref(),
+        }
+    }
+
+    /// Where an outdated thread's code went since its round, when its snapshot tells.
+    pub fn trail(&self) -> Option<&Trail> {
+        match self {
+            Self::Outdated { trail, .. } => trail.as_ref(),
+            _ => None,
         }
     }
 
@@ -683,6 +699,16 @@ pub fn shows_edited(thread: &Thread, placement: &Placement) -> bool {
 /// which git reports as one rename from its first name). An old-side anchor on a renamed file
 /// records the rename's source, which finds the same entry.
 pub fn anchored_entry<'e>(anchor: &Anchor, entries: &'e [FileEntry]) -> Option<&'e FileEntry> {
+    entry_for(&anchor.path, anchor.old_path.as_deref(), entries)
+}
+
+/// [`anchored_entry`]'s rule for a file at `path`, renamed from `old_path` when it was
+/// written.
+pub fn entry_for<'e>(
+    path: &str,
+    old_path: Option<&str>,
+    entries: &'e [FileEntry],
+) -> Option<&'e FileEntry> {
     let renamed_from = |path: &str| {
         entries
             .iter()
@@ -690,9 +716,58 @@ pub fn anchored_entry<'e>(anchor: &Anchor, entries: &'e [FileEntry]) -> Option<&
     };
     entries
         .iter()
-        .find(|entry| entry.path == anchor.path)
-        .or_else(|| renamed_from(&anchor.path))
-        .or_else(|| anchor.old_path.as_deref().and_then(renamed_from))
+        .find(|entry| entry.path == path)
+        .or_else(|| renamed_from(path))
+        .or_else(|| old_path.and_then(renamed_from))
+}
+
+/// The listed file a thread's anchor belongs to now ([`thread_file`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadFile<'e> {
+    /// That file (which may lack the anchor's side: a new-side thread on a deleted file).
+    Found(&'e FileEntry),
+    /// Its round's history, which would say what the file is called now, isn't read yet; the
+    /// listed file at its path, when there is one (deleted).
+    Pending(Option<&'e FileEntry>),
+    /// Its file left the list.
+    Gone,
+}
+
+/// The file rule of PLAN §8: [`anchored_entry`]'s entry (`find` looks a path up by that rule,
+/// [`entry_for`] over the caller's list) when it has the anchor's side; else, for a new-side
+/// anchor, the entry at the path its round's history says the file has now (`super::history`:
+/// a rename git reports since the round, or a file git can't pair, untracked now, paired by
+/// content), through the same rule; else the anchored entry, if any (a deleted file, where the
+/// thread is outdated). `history` is the anchor's round's ([`History::None`] while that round
+/// is in progress).
+pub fn thread_file<'e>(
+    anchor: &Anchor,
+    history: History<'_>,
+    find: impl Fn(&str, Option<&str>) -> Option<&'e FileEntry>,
+) -> ThreadFile<'e> {
+    let anchored = find(&anchor.path, anchor.old_path.as_deref());
+    if let Some(entry) = anchored
+        && has_side(entry, anchor.side)
+    {
+        return ThreadFile::Found(entry);
+    }
+    if anchor.side == AnchorSide::New {
+        match history.of(&anchor.path) {
+            PathHistory::Pending => return ThreadFile::Pending(anchored),
+            PathHistory::Read(file) => {
+                if let Some(entry) = file
+                    .now
+                    .as_deref()
+                    .and_then(|now| find(now, None))
+                    .filter(|entry| has_side(entry, AnchorSide::New))
+                {
+                    return ThreadFile::Found(entry);
+                }
+            }
+            PathHistory::None => {}
+        }
+    }
+    anchored.map_or(ThreadFile::Gone, ThreadFile::Found)
 }
 
 /// Whether `entry`'s file exists on `side`: an added or untracked file has no old side, a
@@ -705,25 +780,45 @@ pub fn has_side(entry: &FileEntry, side: AnchorSide) -> bool {
 }
 
 /// Where `thread` shows among `entries`, the current file list (PLAN §8): its file is
-/// [`anchored_entry`]; `text` gives that file's side (the anchor's) as the caller has it, and
+/// [`thread_file`]'s; `text` gives that file's side (the anchor's) as the caller has it, and
 /// [`relocate`] finds the anchor in it. A thread whose file left the list, or whose side the
-/// file no longer has, is outdated.
+/// file no longer has, is outdated. A new-side thread relocation can't find is traced through
+/// its round's snapshot (`super::history::trace`): outdated still, with the [`Trail`] to where
+/// its code went when the snapshot tells. `history` is the anchor's round's history as the
+/// caller has it ([`History::None`] for a round in progress); a thread that needs it before
+/// it is read is `Pending`, so it never shows outdated first and then jumps.
 pub fn place_thread<L: SideLines>(
     thread: &Thread,
     entries: &[FileEntry],
+    history: History<'_>,
     text: impl FnOnce(&FileEntry, AnchorSide) -> SideText<L>,
 ) -> Placement {
     let anchor = &thread.anchor;
-    let Some(entry) = anchored_entry(anchor, entries) else {
-        return Placement::Outdated { file: None };
+    let entry = match thread_file(anchor, history, |path, old| entry_for(path, old, entries)) {
+        ThreadFile::Found(entry) => entry,
+        ThreadFile::Pending(entry) => {
+            return Placement::Pending {
+                file: entry.map(|entry| entry.path.clone()),
+            };
+        }
+        ThreadFile::Gone => {
+            return Placement::Outdated {
+                file: None,
+                trail: None,
+            };
+        }
     };
     let file = entry.path.clone();
+    let outdated = |file: String| Placement::Outdated {
+        file: Some(file),
+        trail: None,
+    };
     if !has_side(entry, anchor.side) {
-        return Placement::Outdated { file: Some(file) };
+        return outdated(file);
     }
     let side = match text(entry, anchor.side) {
-        SideText::Pending => return Placement::Pending { file },
-        SideText::Unavailable => return Placement::Outdated { file: Some(file) },
+        SideText::Pending => return Placement::Pending { file: Some(file) },
+        SideText::Unavailable => return outdated(file),
         SideText::Lines(side) => side,
     };
     let relocation = match side.fuzzy() {
@@ -742,7 +837,22 @@ pub fn place_thread<L: SideLines>(
             end_line,
             how,
         },
-        Relocation::Outdated => Placement::Outdated { file: Some(file) },
+        Relocation::Outdated if anchor.side == AnchorSide::Old => outdated(file),
+        Relocation::Outdated => match history.of(&anchor.path) {
+            PathHistory::None => outdated(file),
+            PathHistory::Pending => Placement::Pending { file: Some(file) },
+            PathHistory::Read(past) => Placement::Outdated {
+                file: Some(file),
+                trail: past
+                    .snapshot
+                    .as_deref()
+                    .and_then(|snapshot| trace(anchor, snapshot, side.lines()))
+                    .map(|went| Trail {
+                        round: anchor.round,
+                        went,
+                    }),
+            },
+        },
     }
 }
 

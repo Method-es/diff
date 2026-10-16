@@ -538,7 +538,18 @@ fn thread_state(session: &ReviewSession, thread: &Thread) -> Value {
             json!(false)
         },
         "placement": placement.key(thread),
+        "file": placement.file(),
         "lines": lines(placement.lines(anchor)),
+        // Where an outdated thread's code went since its round (PLAN §8), `null` without one.
+        "trail": placement.trail().map(|trail| {
+            let (start, end) = trail.lines();
+            json!({
+                "round": trail.round,
+                "went": trail.went.as_str(),
+                "start": start,
+                "end": end,
+            })
+        }),
         "original_lines": lines(Some((first.start_line, first.end_line))),
         "round": anchor.round,
     })

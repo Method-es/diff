@@ -540,3 +540,160 @@ fn no_thread_has_left_the_review_before_a_list_lands(cx: &mut TestAppContext) {
         assert_eq!(ids, [&id]);
     });
 }
+
+/// The hook an agent wrote and never committed (PLAN §8: a file that only ever existed on the
+/// branch), renamed between rounds.
+const USE_CAN: &str = "import { useAuth } from './use-auth';\n\nexport function useCan(permission: string) {\n  const { user } = useAuth();\n  if (!user) {\n    return false;\n  }\n  return user.permissions.includes(permission);\n}\n";
+
+#[gpui::test]
+fn a_thread_follows_its_untracked_file_renamed_after_the_round(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let repo = FixtureRepo::new();
+    repo.write("README.md", "# web\n");
+    repo.commit("base");
+    repo.write("src/use-can.ts", USE_CAN);
+    let session = session(&repo, Target::Working, cx);
+    wait(cx, &session, "the list", |session| {
+        session.files().len() == 1
+    });
+    load(cx, &session, &["src/use-can.ts"]);
+    let id = comment(cx, &session, "src/use-can.ts", 8, 8);
+    finish(cx, &session, Verdict::RequestChanges);
+    // The agent renames it: the review lists the new name alone, untracked.
+    repo.remove("src/use-can.ts");
+    repo.write(
+        "src/use-has-permission.ts",
+        USE_CAN.replace("useCan", "useHasPermission"),
+    );
+    wait(cx, &session, "the rename to be followed", |session| {
+        let thread = thread(session, &id);
+        session.placement(thread).file() == Some("src/use-has-permission.ts")
+    });
+    session.read_with(cx, |session, _| {
+        let thread = thread(session, &id);
+        let placement = session.placement(thread);
+        assert_eq!(
+            placement.key(thread),
+            "unchanged",
+            "as dv comment list says"
+        );
+        assert!(!placement.is_not_in_diff());
+        assert_eq!(placement.lines(&thread.anchor), Some((8, 8)));
+        assert_eq!(session.location(thread), "src/use-has-permission.ts:8");
+        assert_eq!(session.threads_not_in_diff().count(), 0);
+        // A reply records it under the file's name now.
+        let recorded = session
+            .relocated_anchor(&id)
+            .expect("an anchor under the new name");
+        assert_eq!(recorded.path, "src/use-has-permission.ts");
+    });
+}
+
+#[gpui::test]
+fn code_rewritten_after_the_round_is_outdated_where_it_went(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let repo = FixtureRepo::new();
+    let lines: Vec<String> = (1..=30)
+        .map(|n| format!("let value_{n} = compute({n});"))
+        .collect();
+    repo.write("x.rs", lines.join("\n") + "\n");
+    repo.commit("base");
+    let mut edited = lines.clone();
+    edited[11] = "let value_12 = compute_twice(12);".to_string();
+    repo.write("x.rs", edited.join("\n") + "\n");
+    let session = session(&repo, Target::Working, cx);
+    wait(cx, &session, "the list", |session| {
+        session.files().len() == 1
+    });
+    load(cx, &session, &["x.rs"]);
+    let id = comment(cx, &session, "x.rs", 12, 12);
+    finish(cx, &session, Verdict::RequestChanges);
+    // The agent replaces the line with two that share nothing with it.
+    edited.splice(11..12, ["struct Q;".to_string(), "impl Q {}".to_string()]);
+    repo.write("x.rs", edited.join("\n") + "\n");
+    wait(cx, &session, "its trail", |session| {
+        session.placement(thread(session, &id)).trail().is_some()
+    });
+    session.read_with(cx, |session, _| {
+        let thread = thread(session, &id);
+        let placement = session.placement(thread);
+        assert!(placement.is_outdated());
+        assert_eq!(placement.key(thread), "outdated", "as dv comment list says");
+        assert_eq!(placement.lines(&thread.anchor), None);
+        assert_eq!(
+            placement.trail().map(|trail| (trail.round, trail.lines())),
+            Some((1, (12, 13)))
+        );
+        assert_eq!(session.location(thread), "x.rs:12–13");
+        // A reply records no anchor from it.
+        assert_eq!(session.relocated_anchor(&id), None);
+    });
+}
+
+#[gpui::test]
+fn a_thread_placed_against_the_full_read_asks_for_its_history_once_that_lands(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    let repo = FixtureRepo::new();
+    let lines: Vec<String> = (1..=30)
+        .map(|n| format!("let value_{n} = compute({n});"))
+        .collect();
+    repo.write("x.rs", lines.join("\n") + "\n");
+    repo.write("y.rs", "y\n");
+    repo.commit("base");
+    let mut edited = lines.clone();
+    edited[11] = "let value_12 = compute_twice(12);".to_string();
+    repo.write("x.rs", edited.join("\n") + "\n");
+    repo.write("y.rs", "y changed\n");
+    // Before the app opens the review: a thread on x.rs's line 12 in round 1, round 1 closed,
+    // the agent rewrites that line, round 2 closed, then an edit to y.rs alone.
+    let backend = backend(&repo);
+    let store = ReviewStore::new(backend.clone());
+    let git = GitRepo::new(backend);
+    let review = ops::open_review(&store, Target::Working, reviewer())
+        .unwrap()
+        .review;
+    let anchor = dv_core::review::anchor_selection(
+        dv_core::review::AnchorPlace {
+            round: 1,
+            path: "x.rs".to_string(),
+            old_path: None,
+            side: AnchorSide::New,
+        },
+        &edited,
+        12,
+        12,
+    )
+    .unwrap();
+    let id = ops::add_thread(&store, &review.id, anchor, "Why twice?", reviewer()).unwrap();
+    let finish_now = || {
+        ops::finish_round(
+            &store,
+            &git,
+            &review.id,
+            Some(Verdict::RequestChanges),
+            None,
+            &reviewer(),
+        )
+        .unwrap()
+    };
+    finish_now();
+    edited.splice(11..12, ["struct Q;".to_string(), "impl Q {}".to_string()]);
+    repo.write("x.rs", edited.join("\n") + "\n");
+    finish_now();
+    repo.write("y.rs", "y changed again\n");
+
+    // Opened on the interdiff since round 2, which lists y.rs alone: the thread is placed
+    // against the review's own read of x.rs, and only then does it need round 1's history.
+    let session = session(&repo, Target::Working, cx);
+    wait(cx, &session, "its trail", |session| {
+        let placement = session.placement(thread(session, &id));
+        placement.is_not_in_comparison() && placement.trail().is_some()
+    });
+    session.read_with(cx, |session, _| {
+        assert_eq!(session.comparison(), Comparison::SinceRound(2));
+        let thread = thread(session, &id);
+        assert_eq!(session.location(thread), "x.rs:12–13");
+    });
+}

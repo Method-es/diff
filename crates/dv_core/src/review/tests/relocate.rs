@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use crate::diff::{FileEntry, FileMode, FileStatus};
 use crate::review::anchor::{AnchorPlace, anchor_selection};
+use crate::review::history::History;
 use crate::review::relocate::{
     FUZZY_MAX_ANCHORED, FUZZY_MAX_LINES, FuzzyLines, MoveKind, NEARBY_LINES, Placement, Relocation,
     SideLines, SideText, is_slight, line_similarity, place_thread, relocate, relocate_with,
@@ -487,13 +488,15 @@ fn threads_on_one_side_can_share_its_fuzzy_table() {
         );
         let thread = thread_on(anchor.clone());
         let entries = [entry("a.rs", None, FileStatus::Modified)];
-        let kept = place_thread(&thread, &entries, |_, _| {
+        let kept = place_thread(&thread, &entries, History::None, |_, _| {
             SideText::Lines(Kept {
                 lines: &now,
                 fuzzy: &fuzzy,
             })
         });
-        let fresh = place_thread(&thread, &entries, |_, _| SideText::Lines(now.clone()));
+        let fresh = place_thread(&thread, &entries, History::None, |_, _| {
+            SideText::Lines(now.clone())
+        });
         assert_eq!(kept, fresh);
     }
 }
@@ -546,12 +549,12 @@ fn placement_follows_the_file_and_its_side() {
         }
     };
     assert_eq!(
-        place_thread(&thread, &modified, text(&lines)),
+        place_thread(&thread, &modified, History::None, text(&lines)),
         Placement::Unchanged {
             file: "a.rs".to_string()
         }
     );
-    let placed = place_thread(&thread, &modified, text(&shifted));
+    let placed = place_thread(&thread, &modified, History::None, text(&shifted));
     assert_eq!(
         placed,
         Placement::Moved {
@@ -570,7 +573,7 @@ fn placement_follows_the_file_and_its_side() {
         entry("c.rs", Some("a.rs"), FileStatus::Renamed { similarity: 90 }),
     ];
     assert_eq!(
-        place_thread(&thread, &renamed, |entry: &FileEntry, _| {
+        place_thread(&thread, &renamed, History::None, |entry: &FileEntry, _| {
             assert_eq!(entry.path, "c.rs");
             SideText::Lines(shifted.clone())
         })
@@ -580,24 +583,25 @@ fn placement_follows_the_file_and_its_side() {
 
     // Not loaded yet, or no lines on that side.
     assert_eq!(
-        place_thread(&thread, &modified, |_: &FileEntry, _| {
+        place_thread(&thread, &modified, History::None, |_: &FileEntry, _| {
             SideText::<Vec<&str>>::Pending
         }),
         Placement::Pending {
-            file: "a.rs".to_string()
+            file: Some("a.rs".to_string())
         }
     );
     assert_eq!(
-        place_thread(&thread, &modified, |_: &FileEntry, _| {
+        place_thread(&thread, &modified, History::None, |_: &FileEntry, _| {
             SideText::<Vec<&str>>::Unavailable
         }),
         Placement::Outdated {
-            file: Some("a.rs".to_string())
+            file: Some("a.rs".to_string()),
+            trail: None,
         }
     );
     // Its text gone from the file.
     let rewritten = vec!["nothing"; 30];
-    let gone = place_thread(&thread, &modified, |_: &FileEntry, _| {
+    let gone = place_thread(&thread, &modified, History::None, |_: &FileEntry, _| {
         SideText::Lines(rewritten.clone())
     });
     assert!(gone.is_outdated() && gone.file() == Some("a.rs"));
@@ -615,15 +619,25 @@ fn a_thread_whose_file_or_side_is_gone_is_outdated() {
         place_thread(
             &thread,
             &[entry("other.rs", None, FileStatus::Modified)],
+            History::None,
             never
         ),
-        Placement::Outdated { file: None }
+        Placement::Outdated {
+            file: None,
+            trail: None,
+        }
     );
     // A new-side thread on a file deleted since.
     assert_eq!(
-        place_thread(&thread, &[entry("a.rs", None, FileStatus::Deleted)], never),
+        place_thread(
+            &thread,
+            &[entry("a.rs", None, FileStatus::Deleted)],
+            History::None,
+            never
+        ),
         Placement::Outdated {
-            file: Some("a.rs".to_string())
+            file: Some("a.rs".to_string()),
+            trail: None,
         }
     );
     // An old-side thread on a file that is new now.
@@ -633,9 +647,15 @@ fn a_thread_whose_file_or_side_is_gone_is_outdated() {
     });
     for status in [FileStatus::Added, FileStatus::Untracked] {
         assert_eq!(
-            place_thread(&old_side, &[entry("a.rs", None, status)], never),
+            place_thread(
+                &old_side,
+                &[entry("a.rs", None, status)],
+                History::None,
+                never
+            ),
             Placement::Outdated {
-                file: Some("a.rs".to_string())
+                file: Some("a.rs".to_string()),
+                trail: None,
             }
         );
     }
@@ -653,10 +673,15 @@ fn an_old_side_thread_on_a_renamed_file_finds_its_entry_by_the_source() {
     );
     let anchor = anchor_selection(place, &lines, 7, 8).unwrap();
     let thread = thread_on(anchor);
-    let placed = place_thread(&thread, std::slice::from_ref(&renamed), |entry, side| {
-        assert_eq!((entry.path.as_str(), side), ("c.rs", AnchorSide::Old));
-        SideText::Lines(lines.clone())
-    });
+    let placed = place_thread(
+        &thread,
+        std::slice::from_ref(&renamed),
+        History::None,
+        |entry, side| {
+            assert_eq!((entry.path.as_str(), side), ("c.rs", AnchorSide::Old));
+            SideText::Lines(lines.clone())
+        },
+    );
     assert_eq!(
         placed,
         Placement::Unchanged {
@@ -684,10 +709,15 @@ fn a_file_renamed_again_keeps_its_threads() {
     );
     let thread = thread_on(anchor);
     let again = entry("c.rs", Some("a.rs"), FileStatus::Renamed { similarity: 95 });
-    let placed = place_thread(&thread, std::slice::from_ref(&again), |entry, side| {
-        assert_eq!((entry.path.as_str(), side), ("c.rs", AnchorSide::New));
-        SideText::Lines(lines.clone())
-    });
+    let placed = place_thread(
+        &thread,
+        std::slice::from_ref(&again),
+        History::None,
+        |entry, side| {
+            assert_eq!((entry.path.as_str(), side), ("c.rs", AnchorSide::New));
+            SideText::Lines(lines.clone())
+        },
+    );
     assert_eq!(
         placed,
         Placement::Unchanged {
@@ -700,8 +730,13 @@ fn a_file_renamed_again_keeps_its_threads() {
         entry("z.rs", None, FileStatus::Modified),
     ];
     assert_eq!(
-        place_thread(&thread, &other, |_, _| SideText::Lines(lines.clone())),
-        Placement::Outdated { file: None }
+        place_thread(&thread, &other, History::None, |_, _| SideText::Lines(
+            lines.clone()
+        )),
+        Placement::Outdated {
+            file: None,
+            trail: None,
+        }
     );
 }
 
@@ -712,9 +747,12 @@ fn a_moved_thread_records_its_anchor_retaken_where_it_moved() {
     let thread = thread_on(anchor.clone());
     let now = insert(&lines, 1, 4);
     let renamed = entry("b.rs", Some("a.rs"), FileStatus::Renamed { similarity: 90 });
-    let placed = place_thread(&thread, std::slice::from_ref(&renamed), |_, _| {
-        SideText::Lines(now.clone())
-    });
+    let placed = place_thread(
+        &thread,
+        std::slice::from_ref(&renamed),
+        History::None,
+        |_, _| SideText::Lines(now.clone()),
+    );
     let recorded = relocated_anchor(&anchor, &placed, &renamed, &now, 3).expect("it moved");
     assert_eq!(recorded.round, 3);
     assert_eq!(recorded.path, "b.rs");
@@ -739,7 +777,10 @@ fn a_moved_thread_records_its_anchor_retaken_where_it_moved() {
         relocated_anchor(&anchor, &in_place, &modified, &lines, 3),
         None
     );
-    let lost = Placement::Outdated { file: None };
+    let lost = Placement::Outdated {
+        file: None,
+        trail: None,
+    };
     assert_eq!(relocated_anchor(&anchor, &lost, &renamed, &now, 3), None);
 
     // It shows as moved while relocation finds it moved, and still once the move is recorded
@@ -751,9 +792,12 @@ fn a_moved_thread_records_its_anchor_retaken_where_it_moved() {
         original_anchor: Some(anchor.clone()),
         ..thread.clone()
     };
-    let placed = place_thread(&recorded_thread, std::slice::from_ref(&renamed), |_, _| {
-        SideText::Lines(now.clone())
-    });
+    let placed = place_thread(
+        &recorded_thread,
+        std::slice::from_ref(&renamed),
+        History::None,
+        |_, _| SideText::Lines(now.clone()),
+    );
     assert!(matches!(placed, Placement::Unchanged { .. }));
     assert!(shows_moved(&recorded_thread, &placed));
     assert!(!shows_moved(&recorded_thread, &lost));
@@ -766,9 +810,12 @@ fn a_thread_unchanged_in_a_renamed_file_records_the_files_new_name() {
     let thread = thread_on(anchor.clone());
     // `a.rs` renamed to `b.rs` since, its text where it was.
     let renamed = entry("b.rs", Some("a.rs"), FileStatus::Renamed { similarity: 97 });
-    let placed = place_thread(&thread, std::slice::from_ref(&renamed), |_, _| {
-        SideText::Lines(lines.clone())
-    });
+    let placed = place_thread(
+        &thread,
+        std::slice::from_ref(&renamed),
+        History::None,
+        |_, _| SideText::Lines(lines.clone()),
+    );
     assert_eq!(
         placed,
         Placement::Unchanged {
@@ -795,14 +842,17 @@ fn a_thread_unchanged_in_a_renamed_file_records_the_files_new_name() {
     let committed = [entry("b.rs", None, FileStatus::Modified)];
     let text = |_: &FileEntry, _| SideText::Lines(lines.clone());
     assert_eq!(
-        place_thread(&recorded_thread, &committed, text),
+        place_thread(&recorded_thread, &committed, History::None, text),
         Placement::Unchanged {
             file: "b.rs".to_string()
         }
     );
     assert_eq!(
-        place_thread(&thread, &committed, text),
-        Placement::Outdated { file: None }
+        place_thread(&thread, &committed, History::None, text),
+        Placement::Outdated {
+            file: None,
+            trail: None,
+        }
     );
     // An old-side thread names the rename's source, which doesn't change.
     let old_anchor = Anchor {
@@ -1142,7 +1192,12 @@ fn a_line_rewritten_into_a_block_where_it_stands_does_not_show_as_moved() {
     );
     let modified = entry("a.rs", None, FileStatus::Modified);
     let text = |_: &FileEntry, _| SideText::Lines(now.clone());
-    let placed = place_thread(&thread, std::slice::from_ref(&modified), text);
+    let placed = place_thread(
+        &thread,
+        std::slice::from_ref(&modified),
+        History::None,
+        text,
+    );
     assert!(
         matches!(
             placed,
@@ -1163,7 +1218,12 @@ fn a_line_rewritten_into_a_block_where_it_stands_does_not_show_as_moved() {
         original_anchor: Some(anchor.clone()),
         ..thread.clone()
     };
-    let placed = place_thread(&recorded_thread, std::slice::from_ref(&modified), text);
+    let placed = place_thread(
+        &recorded_thread,
+        std::slice::from_ref(&modified),
+        History::None,
+        text,
+    );
     assert!(matches!(placed, Placement::Unchanged { .. }), "{placed:?}");
     assert!(!shows_moved(&recorded_thread, &placed));
     assert!(
@@ -1172,9 +1232,12 @@ fn a_line_rewritten_into_a_block_where_it_stands_does_not_show_as_moved() {
     );
     // Lines inserted above it as well: it starts elsewhere now, and that is a move.
     let shifted = insert(&now, 2, 3);
-    let placed = place_thread(&recorded_thread, std::slice::from_ref(&modified), |_, _| {
-        SideText::Lines(shifted.clone())
-    });
+    let placed = place_thread(
+        &recorded_thread,
+        std::slice::from_ref(&modified),
+        History::None,
+        |_, _| SideText::Lines(shifted.clone()),
+    );
     assert!(shows_moved(&recorded_thread, &placed), "{placed:?}");
     assert!(
         !shows_edited(&recorded_thread, &placed),
@@ -1191,7 +1254,12 @@ fn a_line_edited_where_it_stands_does_not_show_as_moved() {
     now[5] = "    println!(\"here: {}\", text.len());".to_string();
     let modified = entry("a.rs", None, FileStatus::Modified);
     let text = |_: &FileEntry, _| SideText::Lines(now.clone());
-    let placed = place_thread(&thread, std::slice::from_ref(&modified), text);
+    let placed = place_thread(
+        &thread,
+        std::slice::from_ref(&modified),
+        History::None,
+        text,
+    );
     assert!(matches!(
         placed,
         Placement::Moved {
@@ -1208,7 +1276,12 @@ fn a_line_edited_where_it_stands_does_not_show_as_moved() {
         original_anchor: Some(anchor.clone()),
         ..thread.clone()
     };
-    let placed = place_thread(&recorded_thread, std::slice::from_ref(&modified), text);
+    let placed = place_thread(
+        &recorded_thread,
+        std::slice::from_ref(&modified),
+        History::None,
+        text,
+    );
     assert!(matches!(placed, Placement::Unchanged { .. }));
     assert!(!shows_moved(&recorded_thread, &placed));
     // Moved back to the lines it was written on after a recorded move: not moved either.

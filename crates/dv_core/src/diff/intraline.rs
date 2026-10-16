@@ -148,8 +148,9 @@ fn tokenize(text: &str) -> Vec<Range<usize>> {
     tokens
 }
 
-/// A pre-split token list as imara-diff input.
-struct Tokens<'a>(&'a [&'a str]);
+/// A pre-split token list as imara-diff input: a line's words here, a text's lines for a
+/// thread's trail (`crate::review::history`).
+pub(crate) struct Tokens<'a>(pub(crate) &'a [&'a str]);
 
 impl<'a> TokenSource for Tokens<'a> {
     type Token = &'a str;

@@ -42,6 +42,12 @@
 //! around `code` then; only when `anchor.current` is `null`), `current_code` (the lines at
 //! `anchor.current` now, or `null`), `excerpt` (the review's diff around `anchor.current` now,
 //! the rows `dv comment show` prints, PLAN §10.3; `null` exactly when `anchor.current` is),
+//! `trail` (for an `outdated` thread, where its code went since the round it was written in,
+//! when that round's snapshot tells, PLAN §8: `{round, went, path, start_line, end_line,
+//! before_line, code, excerpt}`, `went` `replaced` — `start_line..end_line` of `path` replaced
+//! it, `code` those lines now and `excerpt` the diff around them, as `excerpt` is for a found
+//! thread — or `removed` — nothing replaced it; it stood just before line `before_line` of
+//! `path` now, one past the last line at its end, `code` and `excerpt` `null`; else `null`),
 //! `body` (Markdown), `author: {kind, name}`, `created_at`, `note` (the last state change's
 //! note), `replies: [{id, author, body, created_at}]`. Act on `anchor.current`, never on the
 //! original line numbers.
@@ -51,8 +57,8 @@
 
 use dv_core::label::Labels;
 use dv_core::review::{
-    Anchor, AnchorSide, Author, Comment, Placement, Review, Round, Thread, shows_edited,
-    shows_moved,
+    Anchor, AnchorSide, Author, Comment, Placement, Review, Round, Thread, Trail, Went,
+    shows_edited, shows_moved,
 };
 use dv_core::target::Target;
 use serde::Serialize;
@@ -356,6 +362,67 @@ pub struct Located {
     pub file: Option<String>,
     /// Its code now, when it was found.
     pub current: Option<CurrentCode>,
+    /// Where its code went since its round, when it is outdated and its round's snapshot
+    /// tells.
+    pub trail: Option<TrailCode>,
+}
+
+/// Where an outdated thread's code went ([`Trail`]), in the listed file's new side now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrailCode {
+    pub trail: Trail,
+    /// The file's path on the new side.
+    pub path: String,
+    /// The lines that replaced it, with the excerpt around them; `None` when it was removed.
+    pub current: Option<CurrentCode>,
+    /// It was removed at the file's end.
+    pub at_end: bool,
+}
+
+/// Where an outdated thread's code went (module docs: a thread's `trail`).
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct TrailDto {
+    /// The round whose snapshot its code was found in: it changed since.
+    pub round: u32,
+    /// `replaced` or `removed`.
+    pub went: &'static str,
+    pub path: String,
+    /// The lines that replaced it, when it was replaced.
+    pub start_line: Option<u32>,
+    pub end_line: Option<u32>,
+    /// The line it stood just before now, when it was removed.
+    pub before_line: Option<u32>,
+    /// The lines that replaced it, as they are now.
+    pub code: Option<String>,
+    /// The review's diff around the lines that replaced it, as `excerpt` is for a found thread.
+    pub excerpt: Option<String>,
+    /// It was removed at the file's end (`before_line` is past its last line now): the text
+    /// output says so rather than name a line that isn't there.
+    #[serde(skip)]
+    pub at_end: bool,
+}
+
+impl From<&TrailCode> for TrailDto {
+    fn from(code: &TrailCode) -> Self {
+        let (start_line, end_line, before_line) = match code.trail.went {
+            Went::Replaced {
+                start_line,
+                end_line,
+            } => (Some(start_line), Some(end_line), None),
+            Went::Removed { before_line } => (None, None, Some(before_line)),
+        };
+        Self {
+            round: code.trail.round,
+            went: code.trail.went.as_str(),
+            path: code.path.clone(),
+            start_line,
+            end_line,
+            before_line,
+            code: code.current.as_ref().map(|current| current.code.clone()),
+            excerpt: code.current.as_ref().map(|current| current.excerpt.clone()),
+            at_end: code.at_end,
+        }
+    }
 }
 
 /// A thread's code as it stands now: its lines, their text and the excerpt of the diff around
@@ -397,6 +464,8 @@ pub struct ThreadDto {
     /// The review's diff around `anchor.current` now, as the text output prints it (PLAN
     /// §10.3); `null` exactly when `anchor.current` is.
     pub excerpt: Option<String>,
+    /// Where an outdated thread's code went since its round (module docs).
+    pub trail: Option<TrailDto>,
     pub body: String,
     pub author: AuthorDto,
     pub created_at: u64,
@@ -438,6 +507,7 @@ impl ThreadDto {
             code_context,
             current_code: current.map(|current| current.code.clone()),
             excerpt: current.map(|current| current.excerpt.clone()),
+            trail: located.trail.as_ref().map(TrailDto::from),
             body: thread.body.clone(),
             author: (&thread.author).into(),
             created_at: thread.created_at,

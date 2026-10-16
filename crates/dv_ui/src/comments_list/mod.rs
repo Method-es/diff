@@ -87,7 +87,7 @@ pub fn rows(session: &ReviewSession, resolved: bool) -> Vec<CommentRow> {
             .and_then(|path| session.files().iter().position(|e| e.path == path))
             .map_or(usize::MAX, |index| index + 1);
         let line = placement
-            .lines(&thread.anchor)
+            .named_lines(&thread.anchor)
             .map_or(thread.anchor.start_line, |(start, _)| start);
         (group(thread.state), file, thread.anchor.path.clone(), line)
     };

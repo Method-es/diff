@@ -231,8 +231,9 @@ fn the_list_shows_each_thread_with_the_diff_around_its_code_now() {
         "reviewer dv fixture, round 1:".to_string(),
         "    Return the email too.".to_string(),
         String::new(),
-        // Outdated: the lines as written, with what stood around them, unnumbered.
-        format!("{format}  open  src/app.ts (outdated, was 18)"),
+        // Outdated: the lines as written, with what stood around them, unnumbered, then where
+        // they went since the round (PLAN §8: removed, before what is line 19 now).
+        format!("{format}  open  src/app.ts (outdated, was 18, removed before 19)"),
         "as commented in round 1 (not found in the file now):".to_string(),
         "  | }".to_string(),
         "  |".to_string(),
@@ -240,6 +241,8 @@ fn the_list_shows_each_thread_with_the_diff_around_its_code_now() {
         "> |   return user.name.trim();".to_string(),
         "  | }".to_string(),
         "  | // end".to_string(),
+        "code changed since round 1; it was removed: it stood before line 19 of src/app.ts"
+            .to_string(),
         "reviewer dv fixture, round 1:".to_string(),
         "    Trim earlier.".to_string(),
     ];
@@ -329,6 +332,7 @@ fn a_thread_shows_in_full() {
             "code_context": null,
             "current_code": "export interface User {\n  id: string;\n  name: string;\n}",
             "excerpt": moved_interface_rows().join("\n"),
+            "trail": null,
             "body": "Add an **email**.\n\nIt's needed.",
             "author": {"kind": "reviewer", "name": "dv fixture"},
             "created_at": thread.created_at,

@@ -48,10 +48,13 @@
 //! on the UI thread, kept until what it read changes. Every file a thread shows in loads
 //! whatever the stream's viewport, and the review's own uncapped diff of a file is read in the
 //! background for the threads the stream can't place against what it shows (a file too large to
-//! show; in an interdiff, a file it doesn't list, or an old-side thread) (`load`).
+//! show; in an interdiff, a file it doesn't list, or an old-side thread) (`load`). A closed
+//! round's history is read, also in the background, for the threads anchored in it that the
+//! current text alone can't place (`history`, PLAN §8).
 
 mod comparison;
 mod connection;
+mod history;
 mod load;
 mod placement;
 mod watch;
@@ -178,6 +181,9 @@ pub enum SessionEvent {
     FileLoaded(String),
     /// The folded review changed.
     ReviewChanged,
+    /// A round's history landed (`history`): threads waiting for it are placed, some in
+    /// another file or where their code went.
+    HistoryLoaded,
     /// Refreshing failed; [`ReviewSession::error`] says why.
     Error,
 }
@@ -223,6 +229,10 @@ pub struct ReviewSession {
     /// The review's own uncapped diffs of files whose threads the stream can't place against
     /// what it shows, read for those threads, by path (`load`).
     review_texts: HashMap<String, ReviewText>,
+    /// The closed rounds' histories threads are placed with, by round (`history`).
+    histories: HashMap<u32, history::RoundRead>,
+    /// History reads wait while this is set (tests: what shows while a history is missing).
+    histories_held: bool,
     /// How many placements were worked out (tests: what keeping them saves).
     #[cfg(test)]
     worked_out: std::cell::Cell<usize>,
@@ -308,6 +318,8 @@ impl ReviewSession {
             placements: RefCell::new(HashMap::new()),
             fuzzy: RefCell::new(HashMap::new()),
             review_texts: HashMap::new(),
+            histories: HashMap::new(),
+            histories_held: false,
             #[cfg(test)]
             worked_out: std::cell::Cell::new(0),
             #[cfg(test)]
@@ -621,6 +633,7 @@ impl ReviewSession {
             && self.loads_in_flight == 0
             && self.highlighting.is_empty()
             && !self.review_texts.values().any(ReviewText::is_loading)
+            && !self.histories_loading()
             && wanted_landed
     }
 

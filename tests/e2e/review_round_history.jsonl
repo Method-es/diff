@@ -1,0 +1,63 @@
+{"scenario": {"window_size": "1440x900", "description": "Threads read against their round's snapshot (PLAN §8 \"Round history\", DESIGN §4.1): the CLI comments on lines the agent wrote in format.ts and on its untracked hook use-can.ts; Request changes closes round 1; the agent rewrites the commented lines and renames the hook (use-has-permission.ts, untracked: git can't pair it with its first name). The first thread is outdated with its trail, its card inline under the line that replaced it with \"code changed since round 1\"; the second follows the rename; the agent's CLI says the same; a reply records no anchor; all changes shows the same. Screenshots in dark Mica and one light."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "settle"}
+
+// The agent's round 1: a percent helper in format.ts, and a new hook it hasn't committed.
+{"cmd": "seed_repo", "name": "web", "steps": [{"write": "src/lib/format.ts", "text": "export function format(value: number) {\n  return value.toFixed(2);\n}\n"}, {"write": "README.md", "text": "# web\n"}, {"commit": "base"}, {"write": "src/lib/format.ts", "text": "export function format(value: number) {\n  return value.toFixed(2);\n}\n\nexport function percent(value: number) {\n  const scaled = value * 100;\n  return `${scaled.toFixed(1)}%`;\n}\n"}, {"write": "src/hooks/use-can.ts", "text": "import { useAuth } from \"./use-auth\";\n\nexport function useCan(permission: string) {\n  const { user } = useAuth();\n  if (!user) {\n    return false;\n  }\n  return user.permissions.includes(permission);\n}\n"}]}
+{"cmd": "cli", "cwd": "repos/web", "args": ["review", "new", "--json"], "expect_result": {"pointer": "/exit", "equals": 0}}
+{"cmd": "cli", "cwd": "repos/web", "args": ["comment", "add", "--file", "src/lib/format.ts", "--lines", "6:7", "--body", "Use `Intl.NumberFormat` with `style: \"percent\"`.", "--json"], "save": {"t1": "/json/thread/id"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/thread/placement", "equals": "unchanged"}]}
+{"cmd": "cli", "cwd": "repos/web", "args": ["comment", "add", "--file", "src/hooks/use-can.ts", "--lines", "8", "--body", "A set would make this O(1).", "--json"], "save": {"t2": "/json/thread/id"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/thread/placement", "equals": "unchanged"}]}
+
+// Opened, then round 1 closes with Request changes.
+{"cmd": "open_review", "path": "${data_dir}/repos/web"}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 2}
+{"cmd": "settle", "expect": [{"pointer": "/session/threads/0/placement", "equals": "unchanged"}, {"pointer": "/session/threads/1/placement", "equals": "unchanged"}]}
+{"cmd": "click", "target": "stream/line/src/lib/format.ts/new/2"}
+{"cmd": "settle", "expect": {"pointer": "/stream/focused", "equals": true}}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle", "expect": {"pointer": "/session/sheet/verdict", "equals": "request_changes"}}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle"}
+{"cmd": "wait_for", "pointer": "/session/status", "equals": "changes_requested"}
+{"cmd": "wait_for", "pointer": "/session/comparison", "equals": {"kind": "since_round", "round": 1}}
+
+// The agent rewrites the commented lines into one, and renames the hook (still untracked).
+{"cmd": "repo_edit", "name": "web", "steps": [{"write": "src/lib/format.ts", "text": "export function format(value: number) {\n  return value.toFixed(2);\n}\n\nexport function percent(value: number) {\n  return new Intl.NumberFormat(\"en\", { style: \"percent\", maximumFractionDigits: 1 }).format(value);\n}\n"}, {"remove": "src/hooks/use-can.ts"}, {"write": "src/hooks/use-has-permission.ts", "text": "import { useAuth } from \"./use-auth\";\n\nexport function useHasPermission(permission: string) {\n  const { user } = useAuth();\n  if (!user) {\n    return false;\n  }\n  return user.permissions.includes(permission);\n}\n"}]}
+{"cmd": "wait_for", "pointer": "/session/threads/1/file", "equals": "src/hooks/use-has-permission.ts", "timeout_ms": 15000}
+{"cmd": "wait_for", "pointer": "/session/threads/0/trail/round", "equals": 1, "timeout_ms": 15000}
+// The rewritten lines: outdated, its trail at the line that replaced them, its card drawn there.
+// The renamed hook: its thread at its line in the new file, nothing in "Not in the diff".
+{"cmd": "settle", "expect": [{"pointer": "/session/threads/0/placement", "equals": "outdated"}, {"pointer": "/session/threads/0/outdated", "equals": true}, {"pointer": "/session/threads/0/lines", "equals": null}, {"pointer": "/session/threads/0/file", "equals": "src/lib/format.ts"}, {"pointer": "/session/threads/0/trail", "equals": {"round": 1, "went": "replaced", "start": 6, "end": 6}}, {"pointer": "/session/threads/1/placement", "equals": "unchanged"}, {"pointer": "/session/threads/1/lines", "equals": {"start": 8, "end": 8}}, {"pointer": "/stream/not_in_diff", "equals": null}, {"pointer": "/comments_list/rows/0/id", "equals": "${t2}"}, {"pointer": "/comments_list/rows/0/location", "equals": "src/hooks/use-has-permission.ts:8"}, {"pointer": "/comments_list/rows/0/outdated", "equals": false}, {"pointer": "/comments_list/rows/1/id", "equals": "${t1}"}, {"pointer": "/comments_list/rows/1/location", "equals": "src/lib/format.ts:6"}, {"pointer": "/comments_list/rows/1/outdated", "equals": true}]}
+
+// A click on its row shows the outdated card where its code went.
+{"cmd": "click", "target": "comments_list/${t1}"}
+{"cmd": "settle", "expect": {"pointer": "/session/focused_thread", "equals": "${t1}"}}
+{"cmd": "query", "prefix": "thread/${t1}/resolve", "expect_result": {"pointer": "", "len": 1}}
+{"cmd": "screenshot", "name": "trail-dark-mica"}
+{"cmd": "click", "target": "comments_list/${t2}"}
+{"cmd": "settle", "expect": {"pointer": "/session/focused_thread", "equals": "${t2}"}}
+{"cmd": "screenshot", "name": "renamed-dark-mica"}
+
+// The agent reads the same through the CLI: where the rewritten code went, and the new file.
+{"cmd": "cli", "cwd": "repos/web", "args": ["comment", "list", "--json"], "env": {"CLAUDECODE": "1"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/threads/0/id", "equals": "${t1}"}, {"pointer": "/json/threads/0/placement", "equals": "outdated"}, {"pointer": "/json/threads/0/trail/went", "equals": "replaced"}, {"pointer": "/json/threads/0/trail/round", "equals": 1}, {"pointer": "/json/threads/0/trail/start_line", "equals": 6}, {"pointer": "/json/threads/0/trail/end_line", "equals": 6}, {"pointer": "/json/threads/1/placement", "equals": "unchanged"}, {"pointer": "/json/threads/1/path", "equals": "src/hooks/use-has-permission.ts"}, {"pointer": "/json/threads/1/anchor/current/path", "equals": "src/hooks/use-has-permission.ts"}]}
+
+// The reviewer answers the outdated thread from its card: the reply records no anchor, so the
+// thread stays on the code it was written on, outdated, its trail where it was.
+{"cmd": "click", "target": "comments_list/${t1}"}
+{"cmd": "settle", "expect": {"pointer": "/session/focused_thread", "equals": "${t1}"}}
+{"cmd": "key", "keystroke": "r"}
+{"cmd": "settle", "expect": {"pointer": "/session/composer/reply_to", "equals": "${t1}"}}
+{"cmd": "type", "text": "Better. Keep the rounding at one digit."}
+{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "settle", "expect": [{"pointer": "/session/composer", "equals": null}, {"pointer": "/session/threads/0/replies/0/body", "equals": "Better. Keep the rounding at one digit."}, {"pointer": "/session/threads/0/start_line", "equals": 6}, {"pointer": "/session/threads/0/end_line", "equals": 7}, {"pointer": "/session/threads/0/round", "equals": 1}, {"pointer": "/session/threads/0/trail/start", "equals": 6}]}
+
+// All changes: the same places.
+{"cmd": "key", "keystroke": "i"}
+{"cmd": "wait_for", "pointer": "/session/comparison", "equals": {"kind": "all"}}
+{"cmd": "settle", "expect": [{"pointer": "/session/threads/0/trail", "equals": {"round": 1, "went": "replaced", "start": 6, "end": 6}}, {"pointer": "/session/threads/1/file", "equals": "src/hooks/use-has-permission.ts"}, {"pointer": "/session/threads/1/placement", "equals": "unchanged"}, {"pointer": "/stream/not_in_diff", "equals": null}]}
+{"cmd": "click", "target": "comments_list/${t1}"}
+{"cmd": "settle", "expect": {"pointer": "/session/focused_thread", "equals": "${t1}"}}
+{"cmd": "set_setting", "key": "mode", "value": "light"}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "trail-all-changes-light"}

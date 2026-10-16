@@ -27,6 +27,7 @@ use crate::target::{DiffSpec, Side};
 
 pub use collapse::{EXPAND_STEP, Expand, MIN_GAP, Segment, expand_gap, segments, segments_showing};
 pub use file::file_diff;
+pub(crate) use intraline::Tokens;
 pub use intraline::{diff_pair as intraline_pair, mark_intraline};
 pub use list::file_list;
 pub use remap::remap_lines;

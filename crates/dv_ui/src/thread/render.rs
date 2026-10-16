@@ -14,6 +14,7 @@ use gpui_component::input::{Textarea, TextareaState};
 
 use super::{
     first_line, initial, relative_time, role_word, shown_anchor_label, state_label, state_note,
+    trail_label,
 };
 use crate::actions::composer::{Cancel, Post};
 use crate::automation::AutomationTargetExt as _;
@@ -37,6 +38,8 @@ pub struct ThreadCard {
     path: Option<String>,
     /// The lines it shows at now, when they aren't its anchor's.
     lines: Option<(u32, u32)>,
+    /// Outdated, drawn where its code went since this round (PLAN §8): the anchor says so.
+    trail: Option<u32>,
     moved: bool,
     focused: bool,
     collapsed: bool,
@@ -58,6 +61,7 @@ impl ThreadCard {
             outdated: false,
             path: None,
             lines: None,
+            trail: None,
             moved: false,
             focused: false,
             collapsed: false,
@@ -74,6 +78,13 @@ impl ThreadCard {
     /// Its anchored text can't be found (PLAN §8): the yellow chip and its lines as they were.
     pub fn outdated(mut self, outdated: bool) -> Self {
         self.outdated = outdated;
+        self
+    }
+
+    /// Drawn where its code went since round `round` (an outdated thread with a trail, PLAN
+    /// §8): the anchor reads "code changed since round 1" (DESIGN §4.1).
+    pub fn trail(mut self, round: Option<u32>) -> Self {
+        self.trail = round;
         self
     }
 
@@ -153,12 +164,13 @@ impl RenderOnce for ThreadCard {
         let c = &theme.colors;
         let name = format!("thread/{}", self.thread.id);
         let anchor = &self.thread.anchor;
-        let anchor_text = match &self.path {
-            Some(path) => format!(
+        let anchor_text = match (&self.path, self.trail) {
+            (_, Some(round)) => trail_label(round),
+            (Some(path), None) => format!(
                 "{path} · {}",
                 shown_anchor_label(anchor, self.lines, self.moved)
             ),
-            None => shown_anchor_label(anchor, self.lines, self.moved),
+            (None, None) => shown_anchor_label(anchor, self.lines, self.moved),
         };
         let resolved = self.thread.state == ThreadState::Resolved;
 

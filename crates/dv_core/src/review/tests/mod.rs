@@ -7,6 +7,7 @@ mod event;
 mod excerpt;
 mod fold;
 mod hand_back;
+mod history;
 mod home;
 mod id;
 mod ops;

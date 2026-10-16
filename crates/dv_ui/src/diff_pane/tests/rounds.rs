@@ -569,3 +569,189 @@ fn an_old_side_draft_keeps_its_line_across_the_comparisons(cx: &mut TestAppConte
     });
     assert_eq!(posted, [(AnchorSide::Old, 2, vec!["two".to_string()])]);
 }
+
+#[gpui::test]
+fn an_outdated_card_shows_where_its_code_went_since_its_round(cx: &mut TestAppContext) {
+    let repo = stream_fixture(80);
+    let (_dir, shell, cx) = open(&repo, cx);
+    let pane = pane(&shell, cx);
+    let session = session(&shell, cx);
+    let anchor = session
+        .read_with(cx, |session, _| {
+            session.anchor_for("a/long.txt", AnchorSide::New, 10, 10)
+        })
+        .expect("a/long.txt is loaded");
+    let adding = session.update(cx, |session, cx| {
+        session.add_thread(anchor, "Ten in words?".to_string(), cx)
+    });
+    settle_drawn(cx, &shell, "the thread", |_, _| true);
+    let id: ThreadId = cx
+        .foreground_executor()
+        .block_test(adding)
+        .expect("the thread is added");
+    let finishing = session.update(cx, |session, cx| {
+        session.finish_round(Some(Verdict::RequestChanges), None, cx)
+    });
+    settle_drawn(cx, &shell, "the interdiff", |shell, cx| {
+        shell.empty_state(cx) == Some(EmptyState::NoChangesSince(1))
+    });
+    cx.foreground_executor()
+        .block_test(finishing)
+        .expect("the round finishes");
+    // The agent replaces line 10 with two lines that share nothing with it.
+    let long: String = (1..=80)
+        .map(|i| match i {
+            10 => "struct Q;\nimpl Q {}\n".to_string(),
+            70 => "line seventy\n".to_string(),
+            i => format!("line {i}\n"),
+        })
+        .collect();
+    repo.write("a/long.txt", &long);
+    let watched = session.clone();
+    let wanted = id.clone();
+    settle_drawn(cx, &shell, "its trail", move |_, cx| {
+        let session = watched.read(cx);
+        let thread = session.review().thread(&wanted).expect("the thread");
+        session.placement(thread).trail().is_some()
+    });
+    // Outdated, its card sits under new line 11, the last line that replaced it, rather than
+    // heading the file.
+    let at = new_index(&pane, "a/long.txt", 11, cx);
+    pane.read_with(cx, |pane, _| {
+        let rows = &pane.blocks[0].rows;
+        assert!(!rows.contains(&Row::Outdated(id.clone())));
+        assert!(rows.contains(&Row::Insert(rows::Insert {
+            line: at,
+            side: AnchorSide::New,
+            item: rows::InsertItem::Thread(id.clone()),
+        })));
+    });
+    session.read_with(cx, |session, _| {
+        let thread = session.review().thread(&id).expect("the thread");
+        let placement = session.placement(thread);
+        assert!(placement.is_outdated());
+        assert_eq!(
+            placement.trail().map(|trail| trail.round),
+            Some(1),
+            "code changed since round 1"
+        );
+        assert_eq!(session.location(thread), "a/long.txt:10–11");
+    });
+}
+
+#[gpui::test]
+fn a_reply_being_typed_keeps_its_card_while_its_history_is_read(cx: &mut TestAppContext) {
+    let repo = stream_fixture(80);
+    let (_dir, shell, cx) = open(&repo, cx);
+    let pane = pane(&shell, cx);
+    let session = session(&shell, cx);
+    let anchor = session
+        .read_with(cx, |session, _| {
+            session.anchor_for("a/long.txt", AnchorSide::New, 10, 10)
+        })
+        .expect("a/long.txt is loaded");
+    let adding = session.update(cx, |session, cx| {
+        session.add_thread(anchor, "Ten in words?".to_string(), cx)
+    });
+    settle_drawn(cx, &shell, "the thread", |_, _| true);
+    let id: ThreadId = cx
+        .foreground_executor()
+        .block_test(adding)
+        .expect("the thread is added");
+    let finishing = session.update(cx, |session, cx| {
+        session.finish_round(Some(Verdict::RequestChanges), None, cx)
+    });
+    settle_drawn(cx, &shell, "the interdiff", |shell, cx| {
+        shell.empty_state(cx) == Some(EmptyState::NoChangesSince(1))
+    });
+    cx.foreground_executor()
+        .block_test(finishing)
+        .expect("the round finishes");
+    switch(&shell, Comparison::All, cx);
+    // History reads wait, so what shows meanwhile can be looked at.
+    session.update(cx, |session, cx| session.hold_histories(true, cx));
+    pane.update(cx, |pane, cx| pane.focus_thread(&id, cx));
+    press(cx, &shell, "r");
+    cx.simulate_input("Half a reply");
+    settle_drawn(cx, &shell, "typing", |_, _| true);
+
+    // The agent rewrites the commented line while the reviewer writes.
+    let long: String = (1..=80)
+        .map(|i| match i {
+            10 => "struct Q;\nimpl Q {}\n".to_string(),
+            70 => "line seventy\n".to_string(),
+            i => format!("line {i}\n"),
+        })
+        .collect();
+    repo.write("a/long.txt", &long);
+    let watched = pane.clone();
+    settle_drawn(cx, &shell, "the agent's edit", move |_, cx| {
+        watched
+            .read(cx)
+            .lines("a/long.txt")
+            .is_some_and(|lines| lines.iter().any(|line| line.text == "impl Q {}"))
+    });
+    let card = |pane: &Entity<DiffPane>, cx: &mut VisualTestContext| {
+        pane.read_with(cx, |pane, _| {
+            pane.composer_card()
+                .map(|(path, thread)| (path.to_string(), thread.cloned()))
+        })
+    };
+    let focused_field = |pane: &Entity<DiffPane>, cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            pane.read(cx)
+                .composer()
+                .is_some_and(|composer| composer.input.focus_handle(cx).is_focused(window))
+        })
+    };
+    // Its history missing, the thread keeps the placement it had: the card, the reply and
+    // the keyboard stay.
+    session.read_with(cx, |session, _| {
+        let thread = session.review().thread(&id).expect("the thread");
+        assert!(!session.placement(thread).is_pending());
+    });
+    assert_eq!(
+        card(&pane, cx),
+        Some(("a/long.txt".to_string(), Some(id.clone())))
+    );
+    assert!(
+        focused_field(&pane, cx),
+        "the reply field keeps the keyboard"
+    );
+
+    // The history lands: the card goes where the code went, the reply with it.
+    session.update(cx, |session, cx| session.hold_histories(false, cx));
+    let watched = session.clone();
+    let wanted = id.clone();
+    settle_drawn(cx, &shell, "its trail", move |_, cx| {
+        let session = watched.read(cx);
+        let thread = session.review().thread(&wanted).expect("the thread");
+        session.placement(thread).trail().is_some()
+    });
+    let at = new_index(&pane, "a/long.txt", 11, cx);
+    pane.read_with(cx, |pane, _| {
+        let block = pane
+            .blocks
+            .iter()
+            .find(|block| block.path == "a/long.txt")
+            .expect("its block");
+        assert!(block.rows.contains(&Row::Insert(rows::Insert {
+            line: at,
+            side: AnchorSide::New,
+            item: rows::InsertItem::Thread(id.clone()),
+        })));
+    });
+    assert_eq!(
+        card(&pane, cx),
+        Some(("a/long.txt".to_string(), Some(id.clone())))
+    );
+    assert!(
+        focused_field(&pane, cx),
+        "the reply field keeps the keyboard"
+    );
+    assert_eq!(
+        pane.read_with(cx, |pane, cx| pane.composer_text(cx))
+            .as_deref(),
+        Some("Half a reply")
+    );
+}

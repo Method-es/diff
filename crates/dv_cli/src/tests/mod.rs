@@ -8,6 +8,7 @@ mod comment;
 mod comment_write;
 mod errors;
 mod hand_back;
+mod history;
 mod home;
 mod placement;
 mod reexec;

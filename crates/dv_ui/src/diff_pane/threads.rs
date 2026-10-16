@@ -4,9 +4,11 @@
 //!
 //! A thread shows inline after the last line of its range on its side where the session places
 //! it (`ReviewSession::placement`, PLAN §8): at its recorded lines, or where relocation found
-//! them since ("· moved"). One relocation can't find is outdated (DESIGN §4.1) and its card
-//! heads its file, with its lines as they were; one whose file left the review heads the
-//! stream, in the "Not in the diff" section (`section`). In an interdiff, old-side threads and
+//! them since ("· moved"). One relocation can't find is outdated (DESIGN §4.1): when its
+//! round's snapshot tells where its code went (a trail, PLAN §8), its card shows there, under
+//! the last line that replaced it (or the line before where it was removed), with its lines as
+//! they were; else it heads its file. One whose file left the review heads the stream, in the
+//! "Not in the diff" section (`section`). In an interdiff, old-side threads and
 //! those whose file isn't in it (but is in the review) aren't drawn, and `C` comments on the
 //! new side only. Resolved threads collapse to one line until opened. The composer sits under
 //! the selection's last line (a new thread) or inside the card it answers (a reply, which goes
@@ -74,8 +76,17 @@ pub(super) fn thread_rows(
             // Its side isn't there to place it against yet: it is drawn once it is.
             continue;
         }
-        match (placement.lines(&thread.anchor), lines) {
-            (Some((_, end)), Some(lines)) => match line_index(lines, side, end) {
+        // Found, it follows the last line of its range; outdated with a trail, the line its
+        // code went to (a trail is on the new side); else it heads the file.
+        let after = match placement.lines(&thread.anchor) {
+            Some((_, end)) => Some((side, end)),
+            None => placement
+                .trail()
+                .and_then(|trail| trail.after_line())
+                .map(|line| (AnchorSide::New, line)),
+        };
+        match (after, lines) {
+            (Some((side, end)), Some(lines)) => match line_index(lines, side, end) {
                 Some(line) => inserts.push(Insert {
                     line,
                     side,
@@ -110,15 +121,28 @@ pub(super) fn thread_rows(
 }
 
 /// The lines (indexes into `diff`'s lines) of the threads that show inline in `path`: each
-/// one's whole range on its side, which the stream keeps shown (`reload`).
+/// one's whole range on its side, or for an outdated one with a trail the lines its code went
+/// to (and the line after removed code), which the stream keeps shown (`reload`).
 pub(super) fn thread_lines(path: &str, diff: &FileDiff, session: &ReviewSession) -> Vec<usize> {
     let Some(text) = diff.as_text() else {
         return Vec::new();
     };
     let mut out = Vec::new();
     for thread in session.threads_in(path) {
-        let side = thread.anchor.side;
-        if let Some((start, end)) = session.placement(thread).lines(&thread.anchor) {
+        let placement = session.placement(thread);
+        let shown = match placement.lines(&thread.anchor) {
+            Some(lines) => Some((thread.anchor.side, lines)),
+            None => placement.trail().map(|trail| {
+                let (start, end) = trail.lines();
+                // Removed code stood between the line it follows and the next one.
+                let end = match trail.went {
+                    dv_core::review::Went::Removed { before_line } => before_line.max(end),
+                    dv_core::review::Went::Replaced { .. } => end,
+                };
+                (AnchorSide::New, (start, end))
+            }),
+        };
+        if let Some((side, (start, end))) = shown {
             out.extend(text.lines.iter().enumerate().filter_map(|(index, line)| {
                 side_number(line, side)
                     .filter(|number| (start..=end).contains(number))

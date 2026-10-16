@@ -341,6 +341,8 @@ impl ReviewSession {
                 self.requeue_wanted();
                 self.pump(cx);
                 self.ensure_review_texts(cx);
+                self.refresh_histories(&batch, cx);
+                self.ensure_histories(cx);
                 self.ensure_watch(cx);
             }
             Err(error) => match self.lost_connection(&error) {
@@ -526,6 +528,7 @@ impl ReviewSession {
                     );
                     self.start_highlight(path, diff, cx);
                     self.ensure_review_texts(cx);
+                    self.ensure_histories(cx);
                 }
                 Err(error) => {
                     self.states
@@ -622,7 +625,7 @@ impl ReviewSession {
         };
         let mut wanted: Vec<FileEntry> = Vec::new();
         for thread in self.review.live_threads() {
-            let Some(entry) = self.review_entry(&thread.anchor) else {
+            let Some(entry) = self.thread_entry(thread) else {
                 continue;
             };
             let needed = if self.draws(thread, entry) {
@@ -707,6 +710,8 @@ impl ReviewSession {
                 FullState::Failed
             }
         };
+        // A thread placed against this read may need its round's history now.
+        self.ensure_histories(cx);
         cx.emit(SessionEvent::FileLoaded(path.to_string()));
         cx.notify();
     }
@@ -755,6 +760,7 @@ impl ReviewSession {
                     self.requeue_wanted();
                     self.pump(cx);
                     self.ensure_review_texts(cx);
+                    self.ensure_histories(cx);
                     if self.review.rounds.len() > rounds
                         || self.review.status.is_final() != finished
                     {

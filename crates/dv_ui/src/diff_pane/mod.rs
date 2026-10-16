@@ -339,7 +339,9 @@ impl DiffPane {
                     cx.subscribe(session, |this, _, event: &SessionEvent, cx| match event {
                         SessionEvent::FilesChanged => this.rebuild_all(cx),
                         SessionEvent::FileLoaded(path) => this.file_changed(path, cx),
-                        SessionEvent::ReviewChanged => this.refresh_blocks(cx),
+                        SessionEvent::ReviewChanged | SessionEvent::HistoryLoaded => {
+                            this.refresh_blocks(cx)
+                        }
                         SessionEvent::Error => cx.notify(),
                     }),
                     cx.observe(session, |this, _, cx| {
@@ -592,6 +594,7 @@ impl DiffPane {
                 .shown_comparison(&entry.path)
                 .unwrap_or(session.comparison());
             self.take_diff(&entry.path, diff, comparison, &threads);
+            self.show_thread_lines(&entry.path, diff, &threads);
         }
         let composer = self.composer.as_ref().map(|composer| &composer.target);
         let ui = self.files.entry(entry.path.clone()).or_default();

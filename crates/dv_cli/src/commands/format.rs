@@ -6,7 +6,7 @@
 
 use dv_core::review::excerpt::{code_row, hidden_span};
 
-use crate::dto::{ReviewDto, RoundDto, ThreadCountsDto, ThreadDto};
+use crate::dto::{ReviewDto, RoundDto, ThreadCountsDto, ThreadDto, TrailDto};
 
 /// What every line someone wrote starts with.
 pub(crate) const BODY_INDENT: &str = "    ";
@@ -39,7 +39,8 @@ pub(crate) fn thread_line(thread: &ThreadDto) -> String {
 /// A thread as `dv comment list` and `dv comment show` print it (PLAN §10.3): its header
 /// ([`thread_line`]); the excerpt of the diff around its code now, then, when that code changed
 /// since the comment, `as commented in round N:` and the lines as written; or, when its code
-/// can't be found, only those lines between the ones that stood around them. Then the comment
+/// can't be found, only those lines between the ones that stood around them, then where that
+/// code went when its round's snapshot tells ([`trail_lines`]). Then the comment
 /// under `<kind> <name>, round <n>:`, each reply under `<kind> <name>:` and the last state
 /// change's note under `<state> note:`, each body indented.
 pub(crate) fn thread_block(thread: &ThreadDto) -> Vec<String> {
@@ -64,6 +65,9 @@ pub(crate) fn thread_block(thread: &ThreadDto) -> Vec<String> {
             lines.extend(before.iter().map(|line| unnumbered(' ', line)));
             lines.extend(commented_code(&thread.code));
             lines.extend(after.iter().map(|line| unnumbered(' ', line)));
+            if let Some(trail) = &thread.trail {
+                lines.extend(trail_lines(trail));
+            }
         }
     }
     lines.push(format!(
@@ -80,6 +84,41 @@ pub(crate) fn thread_block(thread: &ThreadDto) -> Vec<String> {
         lines.extend(indented(note));
     }
     lines
+}
+
+/// Where an outdated thread's code went (PLAN §10.3): `code changed since round N; these lines
+/// replaced it (path:40-45):` and the excerpt around them, its `>` rows the replacing lines; or
+/// `code changed since round N; it was removed: it stood before line 12 of path` (`at the end
+/// of path` past its last line).
+fn trail_lines(trail: &TrailDto) -> Vec<String> {
+    let round = trail.round;
+    match (trail.start_line, trail.end_line, &trail.excerpt) {
+        (Some(start), Some(end), Some(excerpt)) => {
+            let mut out = vec![format!(
+                "code changed since round {round}; these lines replaced it ({}:{}):",
+                trail.path,
+                lines(start, end)
+            )];
+            out.extend(excerpt.split('\n').map(str::to_string));
+            out
+        }
+        (Some(start), Some(end), None) => vec![format!(
+            "code changed since round {round}; lines {} of {} replaced it",
+            lines(start, end),
+            trail.path
+        )],
+        _ => vec![match trail.before_line {
+            Some(_) if trail.at_end => format!(
+                "code changed since round {round}; it was removed: it stood at the end of {}",
+                trail.path
+            ),
+            Some(before) => format!(
+                "code changed since round {round}; it was removed: it stood before line {before} of {}",
+                trail.path
+            ),
+            None => format!("code changed since round {round}; it was removed"),
+        }],
+    }
 }
 
 /// A line of code without a number: `> | text`, `  | text`; an empty one ends at `|`.
@@ -133,9 +172,11 @@ pub(crate) fn round_line(round: &RoundDto) -> String {
 }
 
 /// A thread's place: `src/a.ts:12`, `src/a.ts:12-14`, `src/a.ts:14-16 (moved from 12-14)`, or
-/// `src/a.ts (outdated, was 12-14)`. A thread on the old side says so first, `src/a.ts:12
-/// (old)`, `src/a.ts:14 (old, moved from 12)`, so its lines aren't taken for the file's lines
-/// as they are now; the GUI names it the same way (DESIGN §4.1).
+/// `src/a.ts (outdated, was 12-14)`, with where its code went when its round tells
+/// (`(outdated, was 12-14, replaced by 40-45)`, `(outdated, was 12-14, removed before 40)`,
+/// `(outdated, was 12-14, removed at the end)`). A thread on the old side says so first,
+/// `src/a.ts:12 (old)`, `src/a.ts:14 (old, moved from 12)`, so its lines aren't taken for the
+/// file's lines as they are now; the GUI names it the same way (DESIGN §4.1).
 pub(crate) fn location(thread: &ThreadDto) -> String {
     let original = &thread.anchor.original;
     let was = lines(original.start_line, original.end_line);
@@ -156,6 +197,16 @@ pub(crate) fn location(thread: &ThreadDto) -> String {
         }
         None => {
             notes.push(format!("outdated, was {was}"));
+            if let Some(trail) = &thread.trail {
+                notes.push(
+                    match (trail.start_line, trail.end_line, trail.before_line) {
+                        (Some(start), Some(end), _) => format!("replaced by {}", lines(start, end)),
+                        (_, _, Some(_)) if trail.at_end => "removed at the end".to_string(),
+                        (_, _, Some(before)) => format!("removed before {before}"),
+                        _ => "removed".to_string(),
+                    },
+                );
+            }
             thread.path.clone()
         }
     };

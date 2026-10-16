@@ -60,6 +60,41 @@ impl DiffPane {
         ui.comparison = Some(comparison);
     }
 
+    /// Shows `threads`' lines (indexes into `diff`'s lines, `diff` the one `path` holds) where
+    /// a gap hides them, keeping everything else shown as it is: a thread placed after its
+    /// file's diff was taken (its round's history landed later, PLAN §8) still has its lines
+    /// shown under its card, as [`DiffPane::take_diff`] keeps them.
+    pub(super) fn show_thread_lines(
+        &mut self,
+        path: &str,
+        diff: &Arc<FileDiff>,
+        threads: &[usize],
+    ) {
+        let Some(text) = diff.as_text() else {
+            return;
+        };
+        let Some(ui) = self
+            .files
+            .get_mut(path)
+            .filter(|ui| ui.diff.as_ref().is_some_and(|kept| Arc::ptr_eq(kept, diff)))
+        else {
+            return;
+        };
+        let mut shown = shown_mask(&ui.segments, text.lines.len());
+        let hidden = threads
+            .iter()
+            .filter(|&&line| line < shown.len() && !shown[line])
+            .count();
+        if hidden == 0 {
+            return;
+        }
+        let len = shown.len();
+        for &line in threads.iter().filter(|&&line| line < len) {
+            shown[line] = true;
+        }
+        ui.segments = segments_showing(&text.lines, CONTEXT_LINES, &shown);
+    }
+
     /// Carries what the stream holds of `path` from `from`'s lines onto `to`'s: the cursor, the
     /// selection and the composer move with their lines, and the new segments, returned, keep
     /// shown what the reviewer opened beyond the usual context, what is on screen, the

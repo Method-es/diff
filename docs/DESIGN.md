@@ -195,7 +195,8 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   the diff" section's threads first, in the order they were added, then by file; an accent
   ring dot for `open`, a blue dot and "addressed" for `addressed`, `path:line` in mono where the
   thread stands now (an old-side thread's ends in "(old)", as the CLI prints it, so its lines
-  aren't taken for the file's lines now; while its file's text hasn't landed — briefly, since
+  aren't taken for the file's lines now; an outdated thread with a trail, PLAN §8, where its
+  code went, `path:40–45`, still flagged "outdated"; while its file's text hasn't landed — briefly, since
   every file a thread shows in loads at once — the line it was written on, in `fg3`), the first
   line of the
   comment as plain text — its Markdown dropped, a fenced block's first line of code, as in every
@@ -301,7 +302,13 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   thread whose code moved (lines inserted above it, its block moved, a small edit) follows it to
   its new lines. An outdated thread (relocation can't find its code at all, PLAN §8) has no line
   to follow: its card heads its file, under the header, with the lines it was anchored on in a
-  `recess` block; one whose file left the review heads the stream instead, in the "Not in the
+  `recess` block. When its round's snapshot tells where that code went (its trail: a new-side
+  thread of a closed round, PLAN §8 "Round history"), the card stands there instead, inline
+  as any card, under the last line that replaced the code (or, for code removed, under the line
+  before where it stood; heading the file only when it stood at the top), with the "Outdated"
+  chip, the anchor "code changed since round 1" and its original lines in the `recess` block;
+  those lines stay shown as any card's. A thread whose file was renamed since its round, one
+  git can't pair (an untracked file renamed), follows it by content into the new file; one whose file left the review heads the stream instead, in the "Not in the
   diff" section above. In a file shown without lines (too large to show, or "No content change": a
   file only renamed, or only its mode changed), a thread still found in it (PLAN §8: placed
   against the file read in full, or against the unchanged text the diff carries) heads the file

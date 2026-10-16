@@ -56,8 +56,10 @@ impl DiffPane {
         let path = placement
             .is_not_in_diff()
             .then(|| found.anchor.path.clone());
+        let trail = placement.trail().map(|trail| trail.round);
         let card = ThreadCard::new(found, dv_core::review::event::now_ms())
             .outdated(placement.is_outdated())
+            .trail(trail)
             .path(path)
             .shown_at(lines, moved)
             .focused(self.focused_thread.as_ref() == Some(thread))

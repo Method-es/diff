@@ -86,7 +86,15 @@ marks the lines the comment is on, and `⋮` lines left out. A thread marked `(o
 file as it was: place it by the numbered rows around its `>` rows. `as commented in round <n>:`
 follows when the code has changed since the comment. When the code can't be found any more
 (`outdated`), only that is shown, with the lines that stood around it: judge from it and the
-comment, and find the place by those lines.
+comment, and find the place by those lines. When dv can tell where that code went since the
+round the comment was written in, a line after them says so: `code changed since round <n>;
+these lines replaced it (<path>:<lines>):`, then the numbered rows around the lines that
+replaced it, those lines marked `>`: the comment is about what they replaced, so act on them
+(`code changed since round <n>; lines <lines> of <path> replaced it` when dv can't show them);
+or `code changed since round <n>; it was removed: it stood before line <k> of <path>` (`at the
+end of <path>`), the header then saying `removed before <k>` (`removed at the end`). In
+`--json` that is the thread's `trail` (`went`: `replaced` with `start_line`, `end_line`,
+`code` and `excerpt`, or `removed` with `before_line`).
 
 A thread opened by an agent (`agent <name>, round <n>:`; `author.kind` `agent` in `--json`) is
 a question an agent asked the reviewer (`dv comment add`, below), not a request. While the

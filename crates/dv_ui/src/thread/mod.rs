@@ -104,6 +104,12 @@ pub fn shown_anchor_label(anchor: &Anchor, lines: Option<(u32, u32)>, moved: boo
     }
 }
 
+/// "code changed since round 1": the anchor of an outdated card drawn where its code went
+/// since that round (PLAN §8, DESIGN §4.1).
+pub fn trail_label(round: u32) -> String {
+    format!("code changed since round {round}")
+}
+
 /// `path:31` or `path:12–14`: where a thread sits, as the comments list and prompts name it.
 pub fn location_label(thread: &Thread) -> String {
     let anchor = &thread.anchor;

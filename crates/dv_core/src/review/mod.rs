@@ -9,6 +9,8 @@
 //! - [`anchor`]: anchors built from a selection of a side's lines (PLAN §2.5).
 //! - [`relocate`]: relocation and placement — where a thread shows once its file moved on
 //!   (PLAN §8).
+//! - [`history`]: a thread's round history: its file followed since its round, and where its
+//!   code went (PLAN §8).
 //! - [`excerpt`]: the rows of the diff around a thread's lines now, as the CLI prints them
 //!   (PLAN §10.3).
 //! - [`identity`]: the reviewer's name (PLAN §2.5).
@@ -24,6 +26,7 @@ pub mod anchor;
 pub mod event;
 pub mod excerpt;
 pub mod fold;
+pub mod history;
 pub mod home;
 pub mod id;
 pub mod identity;
@@ -37,6 +40,11 @@ pub use anchor::{ANCHOR_CONTEXT, AnchorError, AnchorPlace, anchor_selection, sid
 pub use event::{EVENT_VERSION, Event, EventBody, LogWarning, ParsedLog, parse_log};
 pub use excerpt::{ExcerptGap, ExcerptRow, excerpt, excerpt_lines};
 pub use fold::{FoldError, Folded, Outcome, Rejection, fold};
+pub use history::{
+    FileHistory, History, MAX_PAIR_READS, PAIR_MIN_SHARED_CHARS, PAIR_MIN_SHARED_LINES,
+    PAIR_THRESHOLD, RoundHistory, SUBSTANTIVE_CHARS, Trail, Went, content_match,
+    content_similarity, is_substantive, read_round_history, trace,
+};
 pub use home::{Home, HomeError, Worktrees, home, same_worktree};
 pub use id::{CommentId, EventId, InvalidId, ItemId, ReviewId, ThreadId};
 pub use identity::reviewer_identity;
@@ -46,8 +54,9 @@ pub use model::{
 };
 pub use ops::{FinishedRound, OpError, Opened};
 pub use relocate::{
-    FuzzyLines, MoveKind, Placement, Relocation, SideLines, SideText, anchored_entry, has_side,
-    place_thread, relocate, relocate_with, relocated_anchor, shows_edited, shows_moved,
+    FuzzyLines, MoveKind, Placement, Relocation, SideLines, SideText, ThreadFile, anchored_entry,
+    entry_for, has_side, place_thread, relocate, relocate_with, relocated_anchor, shows_edited,
+    shows_moved, thread_file,
 };
 pub use snapshot::SnapshotError;
 pub use store::{ListEntry, LoadedReview, ReviewStore, StoreError};

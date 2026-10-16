@@ -3,12 +3,16 @@
 //! plus the interdiff's own rule.
 //!
 //! **The file.** A thread belongs to the file of the review's changes its anchor names
-//! (`dv_core::review::anchored_entry`): in all changes that is the list shown; in an interdiff
-//! it is the target's own list (all changes), which the session keeps beside the interdiff's,
-//! so a thread is in the same file, or outdated, whichever comparison is shown, as the CLI
-//! (which always works on all changes) says. Until a list has landed (the first listing is
-//! under way, or it failed) no file has left the review: every thread is `Pending` at the path
-//! it was written on, never in the stream's "Not in the diff" section.
+//! (`dv_core::review::thread_file`: its path or a rename of it, else what its round's history
+//! says the file is called now, `history`): in all changes that is the list shown; in an
+//! interdiff it is the target's own list (all changes), which the session keeps beside the
+//! interdiff's, so a thread is in the same file, or outdated, whichever comparison is shown, as
+//! the CLI (which always works on all changes) says. Until a list has landed (the first listing
+//! is under way, or it failed) no file has left the review: every thread is `Pending` without a
+//! file, never in the stream's "Not in the diff" section; one waiting for its round's history
+//! is `Pending` too, so it never shows there, or heading its file, before it jumps — unless it
+//! was placed before: then it keeps that placement until the history lands, so its card, and a
+//! reply being typed in it, don't go.
 //!
 //! **Interdiff.** Its new side is the same text as in all changes, so a new-side thread whose
 //! file is also in the interdiff places exactly as there. The old column is round n's
@@ -35,7 +39,8 @@
 //! **Cost.** Relocation can run its fuzzy step over a whole side, so each thread's placement is
 //! kept until something it was worked out from changes: its anchor, the comparison, the file
 //! that holds it (path, rename and status), whether the stream draws it there, or the text it
-//! was placed against (which diff, and whether a read is still under way). A refresh that keeps
+//! was placed against (which diff, and whether a read is still under way), and its round's
+//! history (which read, `history`). A refresh that keeps
 //! a file's diff keeps its threads' placements. The fuzzy step's form of a side is built once
 //! and shared by every thread on it (`dv_core::review::FuzzyLines`).
 
@@ -45,10 +50,12 @@ use std::sync::Arc;
 
 use dv_core::diff::{FileDiff, FileEntry, FileStatus};
 use dv_core::review::{
-    Anchor, AnchorPlace, AnchorSide, FuzzyLines, Placement, SideLines, SideText, Thread, ThreadId,
-    ThreadState, place_thread, relocated_anchor, shows_edited, shows_moved, side_lines,
+    Anchor, AnchorPlace, AnchorSide, FuzzyLines, History, Placement, SideLines, SideText, Thread,
+    ThreadFile, ThreadId, ThreadState, Trail, place_thread, relocated_anchor, shows_edited,
+    shows_moved, side_lines, thread_file,
 };
 
+use super::history::HistoryKey;
 use super::load::FullRead;
 use super::{FileState, ReviewSession};
 use crate::session::Comparison;
@@ -100,7 +107,20 @@ impl ThreadPlacement {
         matches!(self, Self::Placed(Placement::Outdated { file: None, .. }))
     }
 
-    /// Its file's text isn't there to place it against yet.
+    /// Where an outdated thread's code went since its round, when its snapshot tells (PLAN
+    /// §8): the stream draws its card there.
+    pub fn trail(&self) -> Option<&Trail> {
+        self.placement().trail()
+    }
+
+    /// The lines it is named by: where it stands ([`ThreadPlacement::lines`]), else for an
+    /// outdated thread with a trail the lines its code went to.
+    pub fn named_lines(&self, anchor: &Anchor) -> Option<(u32, u32)> {
+        self.lines(anchor)
+            .or_else(|| self.trail().map(Trail::lines))
+    }
+
+    /// Its file's text, or its round's history, isn't there to place it against yet.
     pub fn is_pending(&self) -> bool {
         matches!(self.placement(), Placement::Pending { .. })
     }
@@ -178,9 +198,15 @@ impl FileIndex {
     /// The entry `anchor` belongs to: `dv_core::review::anchored_entry`'s rule, through the
     /// indexes.
     pub fn anchored(&self, anchor: &Anchor) -> Option<&FileEntry> {
-        self.get(&anchor.path)
-            .or_else(|| self.renamed(&anchor.path))
-            .or_else(|| anchor.old_path.as_deref().and_then(|old| self.renamed(old)))
+        self.lookup(&anchor.path, anchor.old_path.as_deref())
+    }
+
+    /// The entry for a file at `path`, renamed from `old_path` when it was written:
+    /// `dv_core::review::entry_for`'s rule, through the indexes.
+    pub fn lookup(&self, path: &str, old_path: Option<&str>) -> Option<&FileEntry> {
+        self.get(path)
+            .or_else(|| self.renamed(path))
+            .or_else(|| old_path.and_then(|old| self.renamed(old)))
     }
 }
 
@@ -198,6 +224,8 @@ struct Key {
     diff: Option<Arc<FileDiff>>,
     /// Whether a file list has landed: before one, no thread's file has left the review.
     listed: bool,
+    /// Its round's history, as read (`history`).
+    history: HistoryKey,
 }
 
 impl Key {
@@ -212,6 +240,7 @@ impl Key {
             && self.entry == other.entry
             && self.drawn == other.drawn
             && self.listed == other.listed
+            && self.history == other.history
     }
 }
 
@@ -219,10 +248,13 @@ impl Key {
 pub(super) struct Cached {
     key: Key,
     placement: ThreadPlacement,
+    /// It is the placement worked out before, held while only the thread's round history is
+    /// missing (module docs, "The file").
+    held: bool,
 }
 
 /// A side's lines with the fuzzy table the session keeps for that side.
-struct KeptSide<'a> {
+pub(super) struct KeptSide<'a> {
     lines: Vec<&'a str>,
     fuzzy: Rc<FuzzyLines>,
 }
@@ -246,24 +278,54 @@ impl ReviewSession {
     /// Where `thread` shows now (module docs).
     pub fn placement(&self, thread: &Thread) -> ThreadPlacement {
         let key = self.placement_key(thread);
-        if let Some(cached) = self.placements.borrow().get(&thread.id)
-            && cached.key.same(&key)
+        let earlier = {
+            let placements = self.placements.borrow();
+            let cached = placements.get(&thread.id);
+            if let Some(cached) = cached
+                && cached.key.same(&key)
+            {
+                return cached.placement.clone();
+            }
+            cached
+                .map(|cached| cached.placement.clone())
+                .filter(|earlier| !earlier.is_pending())
+        };
+        let history = self.history_for(thread);
+        let mut placement = self.place_with(thread, history);
+        let mut held = false;
+        // Waiting for its round's history alone (placed without one, it isn't waiting), a
+        // thread placed before keeps that placement: its card, and a reply being typed in it,
+        // stay until the history lands.
+        if placement.is_pending()
+            && !matches!(history, History::None)
+            && let Some(earlier) = earlier
+            && !self.place_with(thread, History::None).is_pending()
         {
-            return cached.placement.clone();
+            placement = earlier;
+            held = true;
         }
-        let placement = self.place(thread);
         self.placements.borrow_mut().insert(
             thread.id.clone(),
             Cached {
                 key,
                 placement: placement.clone(),
+                held,
             },
         );
         placement
     }
 
+    /// Whether `thread`'s placement is one held while its round's history is missing
+    /// ([`ReviewSession::placement`]).
+    pub(super) fn placement_held(&self, thread: &Thread) -> bool {
+        self.placements
+            .borrow()
+            .get(&thread.id)
+            .is_some_and(|cached| cached.held)
+    }
+
     fn placement_key(&self, thread: &Thread) -> Key {
-        let entry = self.review_entry(&thread.anchor);
+        let entry = self.thread_entry(thread);
         let drawn = entry.is_some_and(|entry| self.draws(thread, entry));
         let diff = entry
             .and_then(|entry| self.basis(&entry.path, thread.anchor.side, drawn))
@@ -275,6 +337,7 @@ impl ReviewSession {
             drawn,
             diff,
             listed: self.listed,
+            history: self.history_key(thread),
         }
     }
 
@@ -284,27 +347,37 @@ impl ReviewSession {
         self.worked_out.get()
     }
 
-    fn place(&self, thread: &Thread) -> ThreadPlacement {
+    fn place_with(&self, thread: &Thread, history: History<'_>) -> ThreadPlacement {
         #[cfg(test)]
         self.worked_out.set(self.worked_out.get() + 1);
-        let Some(entry) = self.review_entry(&thread.anchor) else {
-            if !self.listed {
-                // No file list has landed (the first is under way, or it failed): nothing says
-                // its file left the review, so it waits as one whose text isn't there yet,
-                // named by the path it was written on.
+        let entry = match self.thread_file_with(thread, history) {
+            ThreadFile::Found(entry) => entry,
+            // Its round's history would say what its file is called now: it waits for it.
+            ThreadFile::Pending(entry) => {
                 return ThreadPlacement::Placed(Placement::Pending {
-                    file: thread.anchor.path.clone(),
+                    file: entry.map(|entry| entry.path.clone()),
                 });
+            }
+            // No file list has landed (the first is under way, or it failed): nothing says its
+            // file left the review, so it waits as one whose text isn't there yet.
+            ThreadFile::Gone if !self.listed => {
+                return ThreadPlacement::Placed(Placement::Pending { file: None });
             }
             // Its file left the review: outdated whichever comparison is shown, drawn in the
             // stream's "Not in the diff" section.
-            return ThreadPlacement::Placed(Placement::Outdated { file: None });
+            ThreadFile::Gone => {
+                return ThreadPlacement::Placed(Placement::Outdated {
+                    file: None,
+                    trail: None,
+                });
+            }
         };
         let drawn = self.draws(thread, entry);
         let basis = self.basis(&entry.path, thread.anchor.side, drawn);
         let placement = place_thread(
             thread,
             std::slice::from_ref(entry),
+            history,
             |entry, side| match basis {
                 Some(diff) => self.lines_of(&entry.path, side, diff),
                 None => SideText::Pending,
@@ -329,7 +402,7 @@ impl ReviewSession {
     pub(super) fn thread_files(&self) -> Vec<String> {
         let mut paths: Vec<String> = Vec::new();
         for thread in self.review.live_threads() {
-            if let Some(entry) = self.review_entry(&thread.anchor)
+            if let Some(entry) = self.thread_entry(thread)
                 && self.draws(thread, entry)
                 && !paths.contains(&entry.path)
             {
@@ -339,10 +412,20 @@ impl ReviewSession {
         paths
     }
 
-    /// The file of the review's changes `anchor` belongs to (module docs, "The file"): in the
-    /// list shown, or in an interdiff the target's own list.
-    pub fn review_entry(&self, anchor: &Anchor) -> Option<&FileEntry> {
-        self.target_index().anchored(anchor)
+    /// The file of the review's changes `thread` belongs to (module docs, "The file"): in the
+    /// list shown, or in an interdiff the target's own list; `None` while its round's history,
+    /// which would say, isn't read.
+    pub fn thread_entry(&self, thread: &Thread) -> Option<&FileEntry> {
+        match self.thread_file_with(thread, self.history_for(thread)) {
+            ThreadFile::Found(entry) => Some(entry),
+            ThreadFile::Pending(_) | ThreadFile::Gone => None,
+        }
+    }
+
+    /// `dv_core::review::thread_file` over the review's files, with `history`.
+    pub(super) fn thread_file_with(&self, thread: &Thread, history: History<'_>) -> ThreadFile<'_> {
+        let index = self.target_index();
+        thread_file(&thread.anchor, history, |path, old| index.lookup(path, old))
     }
 
     /// The listed file `anchor` belongs to among the files shown (`dv_core::review::
@@ -361,7 +444,12 @@ impl ReviewSession {
     /// docs, "Text"): for a thread the stream draws (`drawn`), [`ReviewSession::placement_diff`];
     /// for one it doesn't, the review's own diff of the file once it is read. `None` until
     /// there is one.
-    fn basis(&self, path: &str, side: AnchorSide, drawn: bool) -> Option<&Arc<FileDiff>> {
+    pub(super) fn basis(
+        &self,
+        path: &str,
+        side: AnchorSide,
+        drawn: bool,
+    ) -> Option<&Arc<FileDiff>> {
         if drawn {
             return self.placement_diff(path, side);
         }
@@ -407,7 +495,7 @@ impl ReviewSession {
     /// `diff`'s `side` of `path` as placement reads it: its lines (with the side's fuzzy
     /// table), or `Unavailable` for a diff without lines (binary, too large, a submodule,
     /// unmerged).
-    fn lines_of<'a>(
+    pub(super) fn lines_of<'a>(
         &'a self,
         path: &str,
         side: AnchorSide,
@@ -469,14 +557,15 @@ impl ReviewSession {
 
     /// `path:31`, `path:12–14`: where `thread` stands now (its side's path in the file that
     /// holds it, at the lines it shows at; for a thread the interdiff doesn't show, where it
-    /// stands in all changes), else where it was anchored. An old-side thread's ends in "(old)",
+    /// stands in all changes; for an outdated one with a trail, where its code went, PLAN §8),
+    /// else where it was anchored. An old-side thread's ends in "(old)",
     /// as the CLI prints it, so its lines aren't taken for the file's lines now. The comments
     /// list, the "Finish round" sheet and "Copy as prompt" all name a thread so (DESIGN §4.1);
     /// [`ThreadPlacement::is_pending`] says when it hasn't been placed yet.
     pub fn location(&self, thread: &Thread) -> String {
         let placement = self.placement(thread);
-        let entry = self.review_entry(&thread.anchor);
-        let label = match (entry, placement.lines(&thread.anchor)) {
+        let entry = self.thread_entry(thread);
+        let label = match (entry, placement.named_lines(&thread.anchor)) {
             (Some(entry), Some((start, end))) => {
                 let place = AnchorPlace::for_entry(entry, thread.anchor.side, 0);
                 path_lines(&place.path, start, end)
@@ -497,7 +586,7 @@ impl ReviewSession {
     /// its paths, as the CLI's writes do, whichever comparison is shown.
     pub fn relocated_anchor(&self, thread: &ThreadId) -> Option<Anchor> {
         let thread = self.review.thread(thread)?;
-        let entry = self.review_entry(&thread.anchor)?;
+        let entry = self.thread_entry(thread)?;
         let drawn = self.draws(thread, entry);
         if drawn && !matches!(self.states.get(&entry.path), Some(FileState::Loaded { .. })) {
             return None;

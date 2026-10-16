@@ -861,7 +861,8 @@ current full text, `side_lines`) runs on every refresh, one pure function for th
    untouched window far away can score a little better than the anchored lines edited where they
    stand) → `Moved { how: Fuzzy { score } }`. A side over 20,000 lines skips this step.
 6. else **outdated**: shown with its original code snippet, not inline (its card heads its file,
-   placement below), and flagged in the comments list.
+   placement below, or stands where its code went when its round's snapshot tells: "Round
+   history" below), and flagged in the comments list.
 
 An exact match from step 2 or 3 wins at once when its context stands around it too (every
 `context_before` and `context_after` line where it belongs). One standing among other lines (a
@@ -894,12 +895,14 @@ thread placed on it (`review::FuzzyLines`); in a release build a 20,000-line sid
 16 ms for a 3-line anchor and about 30 ms for a 200-line one that moved far or is gone (measured
 2026-10-09).
 
-**Placement** (`review::place_thread(thread, entries, text) -> Placement`) decides the file and side
-a thread shows on now. Renames carry anchors: its file is the entry at the anchor's path, else the
-entry renamed from it (`entry.old_path == anchor.path`), else the entry renamed from the path the
-anchor's file had been renamed from (`entry.old_path == anchor.old_path`: renamed again since,
-which git reports as one rename from the first name; an added file renamed later has no such
-path, and its threads go outdated). The side's text comes from a callback (the GUI's loaded diff
+**Placement** (`review::place_thread(thread, entries, history, text) -> Placement`) decides the
+file and side a thread shows on now. Renames carry anchors (`review::thread_file`): its file is
+the entry at the anchor's path, else the entry renamed from it (`entry.old_path == anchor.path`),
+else the entry renamed from the path the anchor's file had been renamed from (`entry.old_path ==
+anchor.old_path`: renamed again since, which git reports as one rename from the first name);
+when that entry is missing or lacks the anchor's side, a new-side thread of a closed round takes
+the entry at the path its round's history says the file has now, by the same rule (an added file
+renamed since, which no list of the review pairs with its first name: "Round history" below). The side's text comes from a callback (the GUI's loaded diff
 — every file a thread shows in loads whatever the stream's viewport; where the diff shown holds
 no text, a file too large to show, the review's own diff of the file without caps, read in the
 background for the threads anchored there —, the CLI's `file_diff` without caps; a file renamed
@@ -908,16 +911,64 @@ can say it isn't loaded yet (`Pending`) or that the side has no lines (binary, a
 unmerged: outdated). A thread
 whose file left the list, or whose side the file no longer has (a new-side thread on a deleted
 file, an old-side one on an added file), is `Outdated`; otherwise `relocate` decides `Unchanged`,
-`Moved` or `Outdated`. The GUI and the CLI place threads only through it, against the review's
+`Moved` or `Outdated`, and an `Outdated` new-side thread of a closed round carries its trail
+when its round's snapshot tells (below). The GUI and the CLI place threads only through it, against the review's
 own file list (all changes), so they never disagree (the GUI's interdiff adds one rule after it:
 a thread whose file the interdiff doesn't show, and an old-side thread, isn't drawn, §2.3, §11;
 it is still placed, against the review's own diff of its file read in the background, so the
 comments list, "Copy as prompt" and the sheet name where it stands in all changes, as the CLI
 does). An outdated thread whose file is still listed heads that file in the stream with the lines
-it was written on (DESIGN §4.1), so it can still be answered and resolved; one whose file left
+it was written on (DESIGN §4.1), or with a trail stands where its code went, so it can still be
+answered and resolved; one whose file left
 the list (`Outdated` without a file) heads the stream itself, as a full card in its "Not in the
 diff" section before the first file, whichever comparison is shown, so it too can be answered
 and resolved there (and from its comments-list row's menu).
+
+**Round history** (`review::history`). A thread's `anchor.round` is the round its line numbers
+refer to; once that round has closed, its snapshot (`refs/dv/reviews/<id>/<n>`, §2.3) holds the
+text the anchor was taken from, and a new-side thread the current text alone can't place (its
+file not listed, or lacking its side, or relocation calling it outdated) is read against it.
+`review::read_round_history(repo, resolved, round, paths)` runs blocking over `GitRepo` (so
+through any backend, the WSL one included): one file list of the interdiff since the round
+(`DiffSpec::since`, snapshot → now) and the texts it needs through `file_diff`. It follows each
+path: an entry renamed from it names it now (git's rename detection); a path that list shows
+deleted is paired with its most similar added or untracked entry, because git can't pair a file
+the snapshot holds with an untracked one (dv lists those apart, §6 step 1) and an agent's new
+files are untracked until committed — on substantive lines only (trimmed, at least 3
+alphanumeric characters: `}`, `);` don't count), each weighed by its length, the Dice
+coefficient of the two texts' lines as a multiset must be over 0.5 (`PAIR_THRESHOLD`, git's
+default rename threshold) and they must share at least 3 such lines (`PAIR_MIN_SHARED_LINES`)
+adding up to at least 60 characters (`PAIR_MIN_SHARED_CHARS`), so two small unrelated files
+(functions sharing a `return 0;` and their braces, barrel files sharing one `export *` line)
+never pair; the candidates ranked by same extension, then name likeness, then path, at most 30
+read (`MAX_PAIR_READS`) within the default `DiffLimits`, a tie going to the one ranked first;
+any other path is where it was. A round whose snapshot is missing says nothing. Where the code
+went (`review::trace`): the anchor is found in the snapshot's text (`relocate`: at its lines or
+moved), and those lines are mapped through a line diff (imara-diff, Myers) of the snapshot's
+text against the current text; the change blocks overlapping them (a pure insertion counting
+when it falls between two of them) give `Went::Replaced` at the new-side lines of those blocks
+and the unchanged lines between, cut at the anchored count plus `REWRITE_SLACK` lines from its
+start (a file rewritten whole doesn't point far down it), or, when every such block replaces
+its lines with nothing, `Went::Removed` before new-side line k where the first of them stood (1
+at the top, one past the last line at the end), never `Replaced` at anchored lines left
+standing. A read again takes the snapshot's texts from the history it replaces (a snapshot
+never changes) and reads only the interdiff's list and the candidates. Old-side anchors (a snapshot
+is a new side), anchors of the round in progress and an anchor the snapshot doesn't hold get no
+trail. The trail rides on the placement, `Outdated { file, trail: Some(Trail { round, went }) }`:
+the thread is still outdated (`is_outdated()`, `as_str()` "outdated", no `lines()`), and no
+relocated anchor is recorded from it, so answering it never re-anchors it onto other code.
+`place_thread` takes the history the caller read (`History::None` for a round in progress or a
+read that failed, `Pending` before it is read, `Read`); a thread that needs it before it is read
+is `Pending` (its file then `None` when no entry is at its path), so it never shows outdated, in
+the "Not in the diff" section or heading its file, and then jumps; in the GUI a thread placed
+before keeps that placement while only its history is missing, so its card and a reply being
+typed in it stay. Both callers read it only for the rounds some thread needs, for those
+threads' paths: the CLI synchronously, for threads that placed without history are outdated (a
+round it can't read is a warning on stderr, its threads placed without it); the GUI in the
+background, one read per round at a time (paths asked for meanwhile follow it), for the paths
+live threads still name, kept while the target resolves the same, the review's files (paths and
+statuses) stand as read and no refresh touches a path the history read, the one it had placing
+threads while it is read again, dropped when a read again against another basis fails (§11).
 
 **Recording a move.** Relocation is display-only until the next event on the thread, which records
 the new anchor: `reply_added` and `thread_state` carry an optional `anchor` (§7), the thread's
@@ -1214,8 +1265,13 @@ doesn't. A deleted thread is not found.
   `code` then, from its first anchor; non-null exactly when `anchor.current` is `null`),
   `current_code` (the lines at `anchor.current` now), `excerpt` (the review's diff around
   `anchor.current` now, the rows the text prints, below, joined by `\n`; non-null exactly when
-  `anchor.current` is), `body`, `author: {kind, name}`, `created_at`, `note` (the last state
-  change's), `replies: [{id, author, body, created_at}]`. The writes print: `review new` `{created, review}`; `review done` and `close`
+  `anchor.current` is), `trail` (an outdated thread's code since its round, §8 "Round history":
+  `{round, went, path, start_line, end_line, before_line, code, excerpt}`, `went` `replaced` —
+  lines `start_line..end_line` of `path` replaced it, `code` those lines now and `excerpt` the
+  diff around them as `excerpt` is for a found thread — or `removed`, standing before
+  `before_line` now, `code` and `excerpt` `null`; else `null`; `placement` stays `outdated`),
+  `body`, `author: {kind, name}`, `created_at`, `note` (the last state change's), `replies: [{id,
+  author, body, created_at}]`. The writes print: `review new` `{created, review}`; `review done` and `close`
   `{changed, review}`; `review submit` `{review, round}`; `review delete` `{deleted}`; `comment
   add` `{thread}`; `comment reply` `{reply, thread}`; `comment address | resolve | reopen`
   `{changed, thread}`; `setup agents` `{agents: [{agent, path, action: installed | updated |
@@ -1241,7 +1297,9 @@ doesn't. A deleted thread is not found.
   help on stderr, "'dv review' requires a subcommand but one was not provided"); `--help` and
   `--version` print on stdout and exit 0.
 - Human output: short stable lines, fields two spaces apart, no colour. A thread's place reads
-  `path:12`, `path:14-16 (moved from 12-14)` or `path (outdated, was 12)`, and a thread on the old
+  `path:12`, `path:14-16 (moved from 12-14)` or `path (outdated, was 12)` (with its trail,
+  `path (outdated, was 12, replaced by 40-45)` or `(outdated, was 12, removed before 40)`), and a
+  thread on the old
   side says so first (`path:12 (old)`, `path:14 (old, moved from 12)`), as the GUI names it
   (DESIGN §4.1). The candidates of an `ambiguous_review` / `no_review` error follow the message,
   one per line: `id  label  status  round n  worktree`. No line ends in whitespace.
@@ -1274,8 +1332,11 @@ doesn't. A deleted thread is not found.
     rule above.
   - An outdated thread has no excerpt: only `as commented in round N (not found in the file
     now):`, then `code_context.before` as `  | line`, the code as `> | line` (bounded by the
-    same span rule), and `code_context.after`, unnumbered: lines to search for. These rows, too,
-    end without whitespace.
+    same span rule), and `code_context.after`, unnumbered: lines to search for. With a trail,
+    where that code went follows: `code changed since round N; these lines replaced it
+    (path:40-45):` and the excerpt around those lines, their rows marked `>`; or `code changed
+    since round N; it was removed: it stood before line K of path` (`at the end of path`). These
+    rows, too, end without whitespace.
   - Who wrote what: `<kind> <name>, round <n>:` above the comment, `<kind> <name>:` above each
     reply, `<state> note:` above the last state change's note, all at column 0; every body is
     indented 4 spaces, each line's whitespace at its end left out and its blank lines left
@@ -1529,9 +1590,11 @@ something it read changes (its anchor, the comparison, its file's entry, the dif
 refresh that keeps a file's diff keeps its threads' placements, and a side's fuzzy table is
 shared by its threads; a file shown without text to place against (too large to show) has the
 review's own diff of it read in the background for the threads anchored in it, kept while the
-review's entry for the file stands as read — (`diff_pane::rows`: an insert after the last
-line of a thread's range on its side, those lines kept shown rather than folded into a gap, or
-an outdated card under the file's header; a thread whose file left the list in the stream's
+review's entry for the file stands as read; a closed round's history (§8) is read the same way
+for the threads that need it, `session::history` — (`diff_pane::rows`: an insert after the last
+line of a thread's range on its side, those lines kept shown rather than folded into a gap, an
+outdated card with a trail after the line its code went to, or an outdated card under the
+file's header; a thread whose file left the list in the stream's
 "Not in the diff" section, a block of its own before the first file, `diff_pane::section`) and
 draws them with `dv_ui::thread`'s card. In an
 interdiff, old-side threads and threads whose file isn't in it are "not in the comparison":
