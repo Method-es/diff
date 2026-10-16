@@ -401,6 +401,7 @@ pub trait Backend: Send + Sync {
     fn store_remove(&self, rel: &str) -> Result<bool, BackendError>;
     fn copy_index_to_store(&self, rel: &str) -> Result<bool, BackendError>; // §2.3 snapshots
     fn watch(&self, spec: WatchSpec, sink: WatchSink) -> Result<WatchHandle, BackendError>; // §5.3
+    fn spawn_stdio(&self, spec: &ProcessSpec, sink: ProcessSink) -> Result<ProcessHandle, BackendError>; // §18.3
 }
 ```
 
@@ -436,15 +437,17 @@ of the index this way (§2.3), so the user's index is never written.
   `LocalBackend` running natively on Linux. Binary payloads are base64. Requests carry ids;
   responses and watch events interleave on stdout.
 
-**The wire** (`dv_backend::proto`, `PROTO = 1`): JSON, one object per line (`\n`), UTF-8, over the
+**The wire** (`dv_backend::proto`, `PROTO = 2`): JSON, one object per line (`\n`), UTF-8, over the
 server's stdin and stdout. A request is `{"id": <u64>, "op": "<name>", …args}`; a response
 `{"id": n, "ok": <value>}` or `{"id": n, "err": <WireError>}`; a watch batch `{"watch": <u32>,
-"event": <WatchEvent>}`. The server runs each request on a thread of its own (a long `git` must
-not hold up a `store_read`) and answers in the order calls finish; the client matches ids. Every
+"event": <WatchEvent>}`; a process's output `{"proc": <u32>, "out": <base64>}`, `{"proc": n,
+"err": <stderr line>}` and, last, `{"proc": n, "exit": <code or null>}` (§18.3). The server runs
+each request on a thread of its own (a long `git` must not hold up a `store_read`) and answers in
+the order calls finish; the client matches ids. Every
 byte field (git's stdin, stdout and stderr, file contents, store lines and bytes) is base64
 (standard alphabet) in dedicated wire types: `GitOpts` and `GitOutput`, whose bytes would
-serialise as JSON number arrays, never cross as they are; `RepoInfo`, `WatchSpec`, `WatchEvent`
-and `TextStats` do. The ops:
+serialise as JSON number arrays, never cross as they are; `RepoInfo`, `WatchSpec`, `WatchEvent`,
+`TextStats` and `ProcessSpec` do. The ops:
 - `hello {proto, build}` → `{proto, build_ok, pid, os, arch, version}`: the client's first request.
   `build_ok` says whether the sha256 of the server's own executable is `build` (§5.2), `null` when
   none was sent; the executable is hashed only when asked.
@@ -456,53 +459,55 @@ and `TextStats` do. The ops:
   `store_write_atomic`, `store_remove`, `copy_index_to_store`; `watch {repo, spec}` →
   `{watch, worktree_error}`, whose batches the server holds back until that answer is out;
   `unwatch {watch}`.
+- `spawn {repo, spec}` → `{proc, pid}`, whose output lines the server holds back the same way;
+  `proc_write {proc, bytes}` (base64) → `null` once written, an `io` error once it has ended;
+  `proc_kill {proc}` → `null`, its exit line following (§18.3).
 
 `WireError` carries every `BackendError` variant with its fields (an `io::Error` as `{kind,
-message}`), so the client rebuilds the same variant, whose `Display` and `detail()` read as they
-did on the server; `protocol` answers a line that isn't a request (id 0 when none can be read),
-after which the server serves on, and reaches the caller as `Unavailable`. One writer thread
-owns the server's stdout and writes whole lines (logging goes to stderr). When stdin ends the
-server stops its watches, writes out what it has queued and exits, whatever calls are still in
-git: that is how a server dies with its client.
+message}`), so the client rebuilds the same variant, whose `Display` and `detail()` read as they did
+on the server; `protocol` answers a line that isn't a request (id 0 when none can be read), after
+which the server serves on, and reaches the caller as `Unavailable`. One writer thread owns the
+server's stdout and writes whole lines (logging goes to stderr). When stdin ends the server stops
+its watches, kills its processes, writes out what it has queued and exits, whatever calls are still
+in git: that is how a server dies with its client.
 
-**The client** (`dv_backend::client`): a `Connection` (one per distro, or a named loopback)
-starts its server through its `Launcher` (`dv_backend::launch`) on the first call and shakes
-hands; every `RemoteBackend` of that server shares it, each call blocking its thread until its
-reply comes. `Launcher::Command` runs a child process with piped stdio (`CREATE_NO_WINDOW` on
-Windows, where the detached app has no console), such as a loopback `dv backend --stdio`, and
-may name the build hash `hello` checks; `Launcher::InProcess` serves on a thread over in-memory
-pipes; `Launcher::Wsl` starts a distro's server through `wsl.exe`, installing this app's Linux
-build there first when it is missing (§5.2). A launcher also answers whether its host runs
-(`host_running`: a distro's state, listed afresh; `None` for this machine), which every
-automatic start asks first (§5.2's connecting rule). Every process a launcher starts, and every
-`wsl.exe` dv runs, joins a job object this process holds with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
-(`dv_backend::job`), so it dies with dv however dv ends. A reader thread routes replies by id and watch batches to their watch's channel, which
-delivers to the sink on a thread of the watch's own, so the `WatchHandle` contract (§5.3) holds
-over the wire. Before the first reply, lines that aren't the protocol are kept as diagnostics
-(`wsl.exe` can print warnings on stdout first); after it, such a line, or a reply nobody asked
-for, is a protocol failure. `repo().location` is `Location::Wsl { distro, path: <toplevel> }`
-through a distro and the server's own path through a loopback. A server that dies (its output
-ends, a read or write fails, a protocol failure, its process exits — watched on its own, since
-on Windows a git the server started inherits its stdout and can keep it open) fails every call
-in flight at once with `BackendError::Disconnected` ("lost the connection to dv in Ubuntu: …");
-what follows is §5.2's reconnect. A connection's `ConnectionState` (`Idle`, `Connecting`,
-`Installing { done, total }`, `Connected`, `Reconnecting { attempt }`, `Stopped`, `Failed {
-error }`) is readable and observable (`subscribe`, called in order on a thread of the connection's own,
-which the UI forwards to its executor); `diagnostics()` gives the launcher's command line, the
-state history and the servers' last stderr lines, and `kill()` kills the server as a crash
-would (a test seam). The app holds its connections in a `Connections` registry, one per distro
-(names compared without case, as `wsl.exe` takes them) and one per named loopback; the CLI
-never uses one (§10.4). Dropping the last handle on a connection (every `RemoteBackend` and
-remote watch holds one) closes its server's stdin, which ends the server, and reaps its
-process; so does a server with no live watch and no call in flight for 60 s, counted from when
-it last became unused — its last call ended, or its last watch went (the **idle close**: the
-state is `Idle` again, the `RemoteBackend`s stay valid, and the next call starts a server
-automatically), so a connection made for a listing keeps no process in a distro and WSL can
-shut an unused one down; an open review holds a watch, so its server stays (one whose watch
-couldn't start, an inotify limit in the distro say, holds none and may idle out: the next call,
-its refresh on focus, starts the server again, and its status bar shows the review's own state
-meanwhile, an idle connection being up). The
-conformance suite (§14.2) runs the same cases against both implementations.
+**The client** (`dv_backend::client`): a `Connection` (one per distro, or a named loopback) starts
+its server through its `Launcher` (`dv_backend::launch`) on the first call and shakes hands; every
+`RemoteBackend` of that server shares it, each call blocking its thread until its reply comes.
+`Launcher::Command` runs a child process with piped stdio (`CREATE_NO_WINDOW` on Windows, where the
+detached app has no console), such as a loopback `dv backend --stdio`, and may name the build hash
+`hello` checks; `Launcher::InProcess` serves on a thread over in-memory pipes; `Launcher::Wsl`
+starts a distro's server through `wsl.exe`, installing this app's Linux build there first when it is
+missing (§5.2). A launcher also answers whether its host runs (`host_running`: a distro's state,
+listed afresh; `None` for this machine), which every automatic start asks first (§5.2's connecting
+rule). Every process a launcher starts, and every `wsl.exe` dv runs, joins a job object this process
+holds with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (`dv_core::job`), so it dies with dv however dv
+ends. A reader thread routes replies by id and watch batches to their watch's channel, which
+delivers to the sink on a thread of the watch's own, so the `WatchHandle` contract (§5.3) holds over
+the wire. Before the first reply, lines that aren't the protocol are kept as diagnostics (`wsl.exe`
+can print warnings on stdout first); after it, such a line, or a reply nobody asked for, is a
+protocol failure. `repo().location` is `Location::Wsl { distro, path: <toplevel> }` through a distro
+and the server's own path through a loopback. A server that dies (its output ends, a read or write
+fails, a protocol failure, its process exits — watched on its own, since on Windows a git the server
+started inherits its stdout and can keep it open) fails every call in flight at once with
+`BackendError::Disconnected` ("lost the connection to dv in Ubuntu: …"); what follows is §5.2's
+reconnect. A connection's `ConnectionState` (`Idle`, `Connecting`, `Installing { done, total }`,
+`Connected`, `Reconnecting { attempt }`, `Stopped`, `Failed { error }`) is readable and observable
+(`subscribe`, called in order on a thread of the connection's own, which the UI forwards to its
+executor); `diagnostics()` gives the launcher's command line, the state history and the servers'
+last stderr lines, and `kill()` kills the server as a crash would (a test seam). The app holds its
+connections in a `Connections` registry, one per distro (names compared without case, as `wsl.exe`
+takes them) and one per named loopback; the CLI never uses one (§10.4). Dropping the last handle on
+a connection (every `RemoteBackend` and remote watch holds one) closes its server's stdin, which
+ends the server, and reaps its process; so does a server with no live watch, no running process and
+no call in flight for 60 s, counted from when it last became unused — its last call ended, its last
+watch or its last process went (the **idle close**: the state is `Idle` again, the `RemoteBackend`s
+stay valid, and the next call starts a server automatically), so a connection made for a listing
+keeps no process in a distro and WSL can shut an unused one down; an open review holds a watch, so
+its server stays (one whose watch couldn't start, an inotify limit in the distro say, holds none and
+may idle out: the next call, its refresh on focus, starts the server again, and its status bar shows
+the review's own state meanwhile, an idle connection being up). The conformance suite (§14.2) runs
+the same cases against both implementations.
 
 ### 5.2 Lifecycle (WSL)
 - **The connecting rule: only an explicit open boots a distro.** One connection per distro.
@@ -573,7 +578,13 @@ conformance suite (§14.2) runs the same cases against both implementations.
   directory, which it warns about when it can't.
 - Handshake: `hello` carries the hash of the build the launch picked; the server hashes its own
   executable. Mismatch → install it again once (the server's `arch` says which build) → if still
-  mismatched, `Failed` ("the dv in Ubuntu doesn't match this app") and the banner. A launch
+  mismatched, `Failed` ("the dv in Ubuntu doesn't match this app") and the banner. Another build
+  is judged before the protocol: an older build speaks an older protocol too, and installing
+  this app's build is what fixes both. A server of another protocol that is this build, or that
+  was asked for none (a loopback), fails the connection ("dv in Ubuntu speaks protocol 1; this
+  app speaks 2"). The launch runs a distro's build by its hash, so an older build already
+  installed there is never the one started: the new hash is missing, and the launch installs
+  it. A launch
   that can't succeed until someone acts (no build for the architecture, no such distro) fails
   the connection at once, a respawn too.
 - **Install** (`dv_backend::install`): one `wsl.exe … /bin/sh -c <install script> sh <hash>`
@@ -1820,9 +1831,17 @@ owner's live check (§14.3).
   against `LocalBackend` and against `RemoteBackend` over a server on in-memory pipes
   (`Launcher::InProcess`): repo info, git (failures, timeouts, ok codes, stdin, an index file),
   worktree reads (missing, links, binary, a 5 MB file), the store (concurrent appends, atomic
-  writes, the index copy), invalid paths, every error's `Display` and `detail()`, and watches
+  writes, the index copy), invalid paths, every error's `Display` and `detail()`, watches
   (worktree, store, git state; dropping the handle, the sink gone when `drop` returns and a sink
-  in progress finishing first; from inside the sink too).
+  in progress finishing first; from inside the sink too), and processes (§18.3), also against a
+  server that is a process of its own: output, stderr lines and the exit in order, a megabyte
+  through stdin and back, the working directory and environment, refusals, a kill, a drop (from
+  inside the sink too) and an exit each ending what the process started; then a server killing
+  its processes when its input ends (also one a write is blocked on, and one a `spawn` racing
+  that end starts), a process printing faster than the client reads waiting for it while other
+  answers get through, a running process holding the server against the idle close, and a lost
+  connection ending its processes with an exit. The process is `dv_test_child`, a helper bin of
+  `dv_backend` that is never shipped (no shell, no tool of the OS's).
 - **Backend loopback** — `crates/dv/tests/backend_loopback.rs` starts the built `dv backend
   --stdio` as a child (`Launcher::Command`, no WSL), in every shape of `dv`, so the protocol,
   reconnect and watch paths run on Windows and inside WSL with no distro setup: the handshake with
@@ -2121,22 +2140,72 @@ A server runs where its repo lives, beside the repo's backend. `LocalBackend` sp
 machine. For a WSL repo, the distro's `dv backend --stdio` spawns it inside the distro, so it
 reads the distro's files natively; no file crosses 9P.
 
-The `Backend` trait (§5.1) gains one generic capability rather than an LSP one:
+The `Backend` trait (§5.1) gains one generic capability rather than an LSP one
+(`dv_core::backend::process`):
 
 ```rust
 fn spawn_stdio(&self, spec: &ProcessSpec, sink: ProcessSink) -> Result<ProcessHandle, BackendError>;
-// ProcessSpec: the executable (an absolute path a resolver found, §18.4), args, a cwd relative to
-// the worktree root, an env overlay. ProcessHandle: write stdin bytes, kill; dropping it kills.
-// ProcessSink: stdout chunks, stderr lines (kept as diagnostics), the exit status.
+// ProcessSpec { program, args, cwd, env }: the executable (an absolute path a resolver found,
+// §18.4), its arguments, a cwd relative to the worktree root ("" is the root), env changes.
+// ProcessHandle: pid(), write(bytes), kill(); dropping it kills.
+// ProcessSink: ProcessEvent::Stdout(chunk) | Stderr(line) | Exit(Option<i32>), on a thread of
+// the process's own, in order, the exit last.
 ```
 
-On the wire (`PROTO = 2`): `spawn {repo, spec}` → `{proc}`, `proc_write {proc, bytes}`,
-`proc_kill {proc}`, and `{"proc": n, "out": <base64>}` / `{"proc": n, "exit": <code>}`
-interleaved like watch batches. A running process counts as in use for the idle close (§5.1).
-Locally it joins the job object (`dv_backend::job`); in a distro the server puts it in a process
-group of its own and kills that group when it is killed or when the backend's stdin ends, so a
-language server never outlives dv. Nothing runs through a shell: the executable is one a resolver
-found, and its arguments come from the language's spec.
+- **What runs.** Nothing runs through a shell: `Command::new(program).args(args)`, the executable
+  one a resolver found and its arguments the language's spec's. A program that isn't an absolute
+  path, NUL in an argument or the environment, and on Windows a batch file (`.bat`, `.cmd`, which
+  only `cmd.exe` runs) are refused before anything starts (`BackendError::InvalidProcess`); the
+  working directory is validated like every worktree path and must be a directory; a program
+  that can't start is `BackendError::StartProcess`. Its stdio is piped, and on Windows it gets no
+  console window.
+- **What the sink hears.** Stdout in chunks as the pipe gives them (a message can span chunks);
+  stderr a line at a time, decoded leniently and cut at 8 KiB (diagnostics, which the caller
+  keeps a few of); then the exit code: `None` for a signal, which is what a kill gives on Unix,
+  while a kill on Windows ends the process's job with exit code 1, so it reads `Some(1)` there.
+  The exit comes after both pipes end, or 1 s after the process exited when something it
+  started still holds one: something that escaped its tree (it made itself a session or a job
+  of its own), whose pipe's reader thread then stays blocked until it closes the pipe or exits.
+  Two reader threads feed the delivery thread through a queue of 64 chunks or lines, so a sink
+  that falls behind makes the process wait on its pipes rather than dv buffer without end.
+  Dropping the handle stops the delivery: once `drop` returns the sink is never called again
+  and has been dropped (from inside the sink, after it returns), as for a watch (§5.3). A write
+  to a process that has ended fails as `io` "writing to <program> failed: the process has
+  ended", locally and through the wire alike.
+- **Its tree.** A process takes everything it starts with it: on Unix it leads a process group of
+  its own (`process_group(0)`), on Windows it is alone in a job object of its own with the
+  kill-on-close limit (`dv_core::job::Job`), which also kills it when dv ends however it ends.
+  A kill, a dropped handle, and the process's own exit each kill the group or the job: its exit
+  is seen before it is reaped (`waitid` with `WNOWAIT`), so the group's id is still its own then;
+  a wait that fails (the process reaped elsewhere) kills nothing. So a language server's
+  children never outlive it. On Windows a process joins its job right after it starts, so a
+  child it starts in that instant stays outside: closing the window needs the process created
+  suspended and its first thread resumed once in the job, and `std::process::Command` keeps
+  that thread's handle to itself. A language server starts its children only after it has read
+  a request.
+- **On the wire** (`PROTO = 2`, §5.1): `spawn {repo, spec}` → `{proc, pid}` (the pid where it
+  runs: inside the distro), `proc_write {proc, bytes}`, `proc_kill {proc}`, and `{"proc": n,
+  "out": <base64>}`, `{"proc": n, "err": <line>}`, `{"proc": n, "exit": <code or null>}`
+  interleaved like watch batches, in order per process, none before the `spawn` answer. A write
+  is one call, answered once the server has written the bytes, so writes from one thread arrive
+  in order. The server forgets a process at its exit. When its stdin ends it stops taking
+  processes, waits for every `spawn` still starting one (which kills what it started instead of
+  keeping it), and kills every process it runs, also one a `proc_write` is blocked on (the kill
+  ends that write), so a language server never outlives the client. A running process counts as
+  in use for the idle close (§5.1).
+- **What is bounded.** In the server, a process's lines waiting for the writer thread count
+  against 1 MiB of its own, given back as each line is written: with that spent the process's
+  sink waits, its 64-entry queue fills, and the process waits on its own pipe, so a process
+  printing faster than the client reads costs the server a bounded amount of memory and every
+  other answer waits behind at most that much of its output. The server writes to the client's
+  pipe, so this holds when the client stops reading. The client reads the server's output as
+  it comes and queues each remote process's events for its sink without a bound: a sink must
+  keep up (hand events to a channel), as a watch's must.
+- **A lost connection.** A process belongs to the server that started it: when the connection
+  is lost (§5.2) each remote process's sink hears `Exit(None)` and its writes fail, and nothing
+  starts it again by itself; its owner starts another once the connection is back (§18.5). A
+  server killed outright (`SIGKILL` in the distro) can't kill its groups; a language server
+  reading its stdin then sees it end.
 
 ### 18.4 Languages
 
@@ -2237,9 +2306,11 @@ for hovering, clicking and dragging; they are recorded only while a capture is a
   machine.
 - Resolver tests run on fixture trees with the npm, pnpm and bun layouts (symlinks, `.bun/`), on
   Windows and in WSL.
-- `spawn_stdio` is tested over the loopback (in-process and as a child process): output, stdin,
-  kill, exit, and the idle-close accounting. The real-WSL tests spawn a process in the sandboxed
-  home.
+- `spawn_stdio` is tested by the conformance suite (§14.2) against `LocalBackend` and over the
+  loopback, in-process and as a child process: output, stdin, kill, exit, what a process started
+  dying with it, the server's stdin ending, and the idle-close accounting; `backend_loopback`
+  runs one through the built `dv backend --stdio`. The real-WSL tests spawn processes in the
+  sandboxed home (`/usr/bin/cat`, `ls`, `env`, `sleep`: the distro's own programs).
 - **A real TypeScript check**, opt-in: with `DV_TEST_TSC` naming a TypeScript 7 native `tsc`, a
   fixture project gets hover, definition and references from the real server. It is read-only
   and local, so `script/check` runs it whenever the variable is set; it is not an owner-only live

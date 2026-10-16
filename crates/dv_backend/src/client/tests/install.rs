@@ -14,11 +14,16 @@ const WITHIN: Duration = Duration::from_secs(10);
 /// A server that answers every request with `hello`'s answer, `build_ok` in it, until its
 /// input ends.
 fn answering(build_ok: Value) -> io::Result<Transport> {
+    answering_as(PROTO, build_ok)
+}
+
+/// [`answering`] as a server of protocol `proto`.
+fn answering_as(proto: u32, build_ok: Value) -> io::Result<Transport> {
     fake(move |mut input, mut output| {
         while let Some(request) = next_request(&mut input) {
             answer(
                 &mut output,
-                hello_reply(&request["id"], PROTO, build_ok.clone()),
+                hello_reply(&request["id"], proto, build_ok.clone()),
             );
         }
     })
@@ -86,6 +91,29 @@ fn a_server_of_another_build_is_installed_again_once_with_the_progress_in_the_st
         1,
         "{diagnostics}"
     );
+}
+
+/// A distro holding an older build: the launch runs this app's build by its hash, so a server
+/// of an older protocol is a build that doesn't match, installed again like any other, never
+/// refused for its protocol.
+#[test]
+fn an_older_build_speaking_an_older_protocol_is_installed_again() {
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let launcher = installer({
+        let asked = Arc::clone(&asked);
+        move |options| {
+            asked.lock().push(options.reinstall.map(str::to_string));
+            Ok(match options.reinstall {
+                None => answering_as(PROTO - 1, json!(false))?,
+                Some(_) => answering(json!(true))?,
+            })
+        }
+    });
+    let connection = Connection::new("Ubuntu", launcher);
+    connection.connect().unwrap();
+    assert_eq!(connection.state(), ConnectionState::Connected);
+    assert_eq!(*asked.lock(), [None, Some("x86_64".to_string())]);
+    assert_eq!(connection.server().unwrap().proto, PROTO);
 }
 
 #[test]

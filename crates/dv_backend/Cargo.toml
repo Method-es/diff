@@ -11,6 +11,15 @@ description = "The stdio protocol, the dv backend --stdio server loop, RemoteBac
 path = "src/lib.rs"
 doctest = false
 
+# A test helper, never shipped (only `dv` is): the process the conformance suite's process cases
+# spawn, and their child-process loopback server (`tests/conformance/process.rs`, which finds it
+# as `CARGO_BIN_EXE_dv_test_child`).
+[[bin]]
+name = "dv_test_child"
+path = "src/bin/dv_test_child.rs"
+test = false
+doc = false
+
 [dependencies]
 base64.workspace = true
 dv_core.workspace = true
@@ -22,15 +31,6 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 sha2.workspace = true
 thiserror.workspace = true
-
-# Children that die with this process (`job`).
-[target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = [
-    "Win32_Foundation",
-    "Win32_Security",
-    "Win32_System_JobObjects",
-    "Win32_System_Threading",
-] }
 
 [dev-dependencies]
 dv_test_support.workspace = true

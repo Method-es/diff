@@ -11,8 +11,8 @@
 use std::sync::{Arc, Weak};
 
 use dv_core::backend::{
-    Backend, BackendError, GitOpts, GitOutput, RepoInfo, TextStats, WatchHandle, WatchSink,
-    WatchSpec,
+    Backend, BackendError, GitOpts, GitOutput, ProcessHandle, ProcessSink, ProcessSpec, RepoInfo,
+    TextStats, WatchHandle, WatchSink, WatchSpec,
 };
 use parking_lot::Mutex;
 use serde::de::DeserializeOwned;
@@ -215,6 +215,14 @@ impl Backend for RemoteBackend {
     fn watch(&self, spec: WatchSpec, sink: WatchSink) -> Result<WatchHandle, BackendError> {
         self.connection
             .watch(&self.worktree, &self.info.toplevel, spec, sink)
+    }
+
+    fn spawn_stdio(
+        &self,
+        spec: &ProcessSpec,
+        sink: ProcessSink,
+    ) -> Result<ProcessHandle, BackendError> {
+        self.connection.spawn(&self.worktree, spec, sink)
     }
 }
 

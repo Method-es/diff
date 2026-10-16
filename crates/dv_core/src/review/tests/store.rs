@@ -514,6 +514,14 @@ impl Backend for DeletesOnRead {
     fn watch(&self, spec: WatchSpec, sink: WatchSink) -> Result<WatchHandle, BackendError> {
         self.inner.watch(spec, sink)
     }
+
+    fn spawn_stdio(
+        &self,
+        spec: &crate::backend::ProcessSpec,
+        sink: crate::backend::ProcessSink,
+    ) -> Result<crate::backend::ProcessHandle, BackendError> {
+        self.inner.spawn_stdio(spec, sink)
+    }
 }
 
 fn log_rel(id: &ReviewId) -> String {

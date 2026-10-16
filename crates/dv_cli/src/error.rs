@@ -212,10 +212,12 @@ impl From<BackendError> for CliError {
             | BackendError::Git { .. }
             | BackendError::Timeout { .. }
             | BackendError::UnexpectedOutput { .. } => (Exit::Failure, code::GIT),
-            BackendError::Io { .. } | BackendError::Watch { .. } => (Exit::Failure, code::IO),
-            BackendError::InvalidPath { .. } | BackendError::InvalidLine { .. } => {
-                (Exit::Failure, code::INTERNAL)
-            }
+            BackendError::Io { .. }
+            | BackendError::Watch { .. }
+            | BackendError::StartProcess { .. } => (Exit::Failure, code::IO),
+            BackendError::InvalidPath { .. }
+            | BackendError::InvalidLine { .. }
+            | BackendError::InvalidProcess { .. } => (Exit::Failure, code::INTERNAL),
         };
         Self::new(exit, code, message).with_detail(detail)
     }

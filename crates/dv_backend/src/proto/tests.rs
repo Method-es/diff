@@ -48,7 +48,7 @@ fn a_request_is_its_op_flattened_into_the_envelope() {
     });
     assert_eq!(
         value,
-        json!({"id": 1, "op": "hello", "proto": 1, "build": null})
+        json!({"id": 1, "op": "hello", "proto": 2, "build": null})
     );
 
     let value = round_trip(&Request {
@@ -299,6 +299,14 @@ fn every_error() -> Vec<BackendError> {
             path: "/srv/x".into(),
             message: "inotify watch limit reached".into(),
         },
+        BackendError::InvalidProcess {
+            program: "tsc".into(),
+            reason: "the program must be an absolute path".into(),
+        },
+        BackendError::StartProcess {
+            program: "/srv/x/node_modules/.bin/tsc".into(),
+            source: io::Error::from_raw_os_error(2),
+        },
     ]
 }
 
@@ -396,10 +404,94 @@ fn response_lines() {
     assert_eq!(incoming.ok.unwrap().get(), r#"{"repo":1}"#);
     let incoming: Incoming =
         serde_json::from_slice(&err_line(6, &WireError::protocol("x"))).unwrap();
-    assert_eq!(incoming.err, Some(WireError::protocol("x")));
+    let error: WireError = serde_json::from_str(incoming.err.unwrap().get()).unwrap();
+    assert_eq!(error, WireError::protocol("x"));
     let incoming: Incoming = serde_json::from_slice(&line).unwrap();
     assert_eq!((incoming.id, incoming.watch), (None, Some(2)));
     assert_eq!(incoming.event, Some(event));
+}
+
+#[test]
+fn a_processs_lines_carry_its_id_and_read_back() {
+    let out = proc_out_line(4, b"Content-Length: 2\r\n\r\n{}\x00\xff");
+    assert_eq!(
+        String::from_utf8(out.clone()).unwrap(),
+        "{\"proc\":4,\"out\":\"Q29udGVudC1MZW5ndGg6IDINCg0Ke30A/w==\"}\n"
+    );
+    let err = proc_err_line(4, "warn: \"x\"\nnext");
+    assert_eq!(err.iter().filter(|&&b| b == b'\n').count(), 1);
+    assert_eq!(
+        String::from_utf8(proc_exit_line(4, Some(3))).unwrap(),
+        "{\"proc\":4,\"exit\":3}\n"
+    );
+    assert_eq!(
+        String::from_utf8(proc_exit_line(4, None)).unwrap(),
+        "{\"proc\":4,\"exit\":null}\n"
+    );
+
+    // As the client reads them: `exit` null and absent differ.
+    let incoming: Incoming = serde_json::from_slice(&out).unwrap();
+    assert_eq!(incoming.process, Some(4));
+    assert_eq!(
+        incoming.out.as_deref(),
+        Some(&b"Content-Length: 2\r\n\r\n{}\x00\xff"[..])
+    );
+    assert_eq!(incoming.exit, None);
+    let incoming: Incoming = serde_json::from_slice(&err).unwrap();
+    let line: String = serde_json::from_str(incoming.err.unwrap().get()).unwrap();
+    assert_eq!(line, "warn: \"x\"\nnext");
+    let incoming: Incoming = serde_json::from_slice(&proc_exit_line(4, None)).unwrap();
+    assert_eq!(incoming.exit, Some(None));
+    let incoming: Incoming = serde_json::from_slice(&proc_exit_line(4, Some(0))).unwrap();
+    assert_eq!(incoming.exit, Some(Some(0)));
+}
+
+#[test]
+fn the_process_ops_read_as_sent() {
+    let spec = ProcessSpec::new("/usr/bin/tsc")
+        .args(["--lsp", "--stdio"])
+        .cwd("packages/app")
+        .env("NODE_OPTIONS", None);
+    let request = Request {
+        id: 9,
+        op: Op::Spawn { repo: 1, spec },
+    };
+    let line = serde_json::to_string(&request).unwrap();
+    assert_eq!(
+        line,
+        r#"{"id":9,"op":"spawn","repo":1,"spec":{"program":"/usr/bin/tsc","args":["--lsp","--stdio"],"cwd":"packages/app","env":[["NODE_OPTIONS",null]]}}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&line).unwrap(), request);
+    let write: Request =
+        serde_json::from_str(r#"{"id":10,"op":"proc_write","proc":2,"bytes":"aGk="}"#).unwrap();
+    assert_eq!(
+        write.op,
+        Op::ProcWrite {
+            process: 2,
+            bytes: b"hi".to_vec()
+        }
+    );
+    let kill: Request = serde_json::from_str(r#"{"id":11,"op":"proc_kill","proc":2}"#).unwrap();
+    assert_eq!(kill.op, Op::ProcKill { process: 2 });
+    // A spec needs only its program.
+    let bare: Request =
+        serde_json::from_str(r#"{"id":12,"op":"spawn","repo":1,"spec":{"program":"/bin/cat"}}"#)
+            .unwrap();
+    assert_eq!(
+        bare.op,
+        Op::Spawn {
+            repo: 1,
+            spec: ProcessSpec::new("/bin/cat")
+        }
+    );
+    assert_eq!(
+        serde_json::to_string(&SpawnReply {
+            process: 2,
+            pid: 77
+        })
+        .unwrap(),
+        r#"{"proc":2,"pid":77}"#
+    );
 }
 
 #[derive(serde::Serialize)]

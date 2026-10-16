@@ -14,7 +14,9 @@
 //! - [`wsl`]: the distros, the scripts dv runs inside one, and the start of its server;
 //!   [`install`]: this app's Linux builds and their install in a distro (PLAN §5.2, §13.2).
 //! - [`build`]: build hashes, which `hello` compares (PLAN §5.2).
-//! - [`job`]: children (servers, `wsl.exe`) that die with this process, however it ends.
+//!
+//! Every child it starts (servers, `wsl.exe`) dies with this process, however it ends
+//! (`dv_core::job`).
 //!
 //! gpui: **never**. The Linux build of this crate is the WSL backend, a static musl binary
 //! without a window system; `script/check` fails when gpui appears in its dependency tree
@@ -23,7 +25,6 @@
 pub mod build;
 pub mod client;
 pub mod install;
-pub mod job;
 pub mod launch;
 pub mod proto;
 pub mod server;

@@ -137,7 +137,7 @@ fn the_server_starts_on_the_first_call_and_says_hello() {
         "launcher: dv's server on a thread of this process\n",
         "state: connected\n",
         "servers started: 1\n",
-        "(protocol 1)",
+        "(protocol 2)",
         "history:\n",
         " s connecting\n",
         " s connected\n",
@@ -333,10 +333,19 @@ fn a_server_of_another_protocol_or_build_is_refused() {
     let error = connection.connect().unwrap_err();
     assert_eq!(
         error.to_string(),
-        "Ubuntu can't be opened: the connection to dv failed: dv in Ubuntu speaks protocol 2; \
-         this app speaks 1"
+        "Ubuntu can't be opened: the connection to dv failed: dv in Ubuntu speaks protocol 3; \
+         this app speaks 2"
     );
     assert!(matches!(connection.state(), ConnectionState::Failed { .. }));
+    // An older one, asked for no build (a loopback), alike.
+    let connection = Connection::new("loopback", launcher(PROTO - 1, Value::Null));
+    let error = connection.connect().unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .ends_with("dv in loopback speaks protocol 1; this app speaks 2"),
+        "{error}"
+    );
 
     let connection = Connection::new("Ubuntu", launcher(PROTO, json!(false)));
     let error = connection.connect().unwrap_err();

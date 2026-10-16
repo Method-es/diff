@@ -15,7 +15,17 @@
 //!   (`dv_cli`'s `backend` command), which is how a server dies with its client.
 //!
 //! A watch's batches never overtake its `watch` answer: its sink holds them back until the
-//! answer is queued ([`Gate`]), so the client knows the watch id before its first batch.
+//! answer is queued ([`Gate`]), so the client knows the watch id before its first batch. A
+//! process's output waits for its `spawn` answer the same way.
+//!
+//! **Processes** (PLAN §18.3, [`process`]). A `spawn` starts one through the repository's
+//! `LocalBackend`, in a process group of its own; its output goes out as `proc` lines, its exit
+//! last, after which the server forgets it, and what waits for the writer is bounded per
+//! process. `proc_kill` kills it (its exit line follows). At the end of the input every process
+//! still running is killed with its group, a `spawn` still starting one included, so none
+//! outlives the client.
+
+mod process;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -30,6 +40,7 @@ use dv_core::backend::{
 use parking_lot::Mutex;
 use serde::Serialize;
 
+use self::process::{Credit, Procs};
 use crate::proto::{
     self, Bytes, HelloReply, Op, OpenReply, PROTO, Request, WatchReply, WireError, WireGitOutput,
 };
@@ -57,8 +68,9 @@ pub fn serve(input: impl Read, output: impl Write + Send + 'static) -> io::Resul
 
 /// What the writer thread is sent.
 enum Out {
-    /// A whole `\n`-terminated line.
-    Line(Vec<u8>),
+    /// A whole `\n`-terminated line, and for a process's line the bytes it counts against the
+    /// process's budget until written ([`process`]).
+    Line(Vec<u8>, Option<Credit>),
     /// Flush, acknowledge and stop.
     Stop(Sender<()>),
 }
@@ -69,11 +81,13 @@ fn write_lines(mut output: impl Write, rx: Receiver<Out>) {
     let mut next = rx.recv().ok();
     while let Some(out) = next.take() {
         match out {
-            Out::Line(line) => {
+            Out::Line(line, credit) => {
                 if let Err(error) = output.write_all(&line) {
                     log::debug!("the backend's output broke: {error}");
                     return;
                 }
+                // Written: its bytes no longer wait.
+                drop(credit);
             }
             Out::Stop(ack) => {
                 let _ = output.flush();
@@ -142,13 +156,15 @@ fn request_id(text: &[u8]) -> u64 {
         .unwrap_or(0)
 }
 
-/// The open repositories and watches, shared by every request thread.
+/// The open repositories, watches and processes, shared by every request thread.
 struct State {
     out: Sender<Out>,
     repos: Mutex<HashMap<u32, Arc<LocalBackend>>>,
     watches: Mutex<HashMap<u32, WatchHandle>>,
+    procs: Procs,
     next_repo: AtomicU32,
     next_watch: AtomicU32,
+    next_proc: AtomicU32,
 }
 
 impl State {
@@ -157,14 +173,16 @@ impl State {
             out,
             repos: Mutex::default(),
             watches: Mutex::default(),
+            procs: Procs::default(),
             next_repo: AtomicU32::new(1),
             next_watch: AtomicU32::new(1),
+            next_proc: AtomicU32::new(1),
         }
     }
 
     /// Queues a line for the writer; dropped when the writer has stopped.
     fn send(&self, line: Vec<u8>) {
-        let _ = self.out.send(Out::Line(line));
+        let _ = self.out.send(Out::Line(line, None));
     }
 
     /// Runs `request` on a thread of its own, which sends its answer.
@@ -185,10 +203,14 @@ impl State {
     }
 
     /// Runs one request and sends its answer.
-    fn respond(&self, id: u64, op: Op) {
+    fn respond(self: &Arc<Self>, id: u64, op: Op) {
         let line = match op {
+            // The answer and the gate are the watch's and the process's own business ([`Gate`]).
             Op::Watch { repo, spec } => match self.watch(id, repo, spec) {
-                // The answer and the gate are the watch's own business ([`Gate`]).
+                Ok(()) => return,
+                Err(error) => Err(error),
+            },
+            Op::Spawn { repo, spec } => match self.spawn(id, repo, &spec) {
                 Ok(()) => return,
                 Err(error) => Err(error),
             },
@@ -268,7 +290,18 @@ impl State {
                 drop(handle);
                 ok(id, &())
             }
-            Op::Watch { .. } => Err(WireError::protocol("watch is answered by its own path")),
+            Op::ProcWrite { process, bytes } => {
+                self.write(process, &bytes)?;
+                ok(id, &())
+            }
+            Op::ProcKill { process } => {
+                self.kill(process);
+                ok(id, &())
+            }
+            Op::Watch { .. } | Op::Spawn { .. } => Err(WireError::protocol(format!(
+                "{} is answered by its own path",
+                op.name()
+            ))),
         }
     }
 
@@ -285,7 +318,9 @@ impl State {
         let gate = Arc::new(Gate::default());
         let sink = {
             let (gate, out) = (Arc::clone(&gate), self.out.clone());
-            Box::new(move |event: WatchEvent| gate.deliver(watch, &event, &out))
+            Box::new(move |event: WatchEvent| {
+                gate.deliver(proto::watch_line(watch, &event), None, &out);
+            })
         };
         let handle = backend
             .watch(spec, sink)
@@ -296,7 +331,7 @@ impl State {
         };
         self.watches.lock().insert(watch, handle);
         self.send(proto::ok_line(id, &reply));
-        gate.open(watch, &self.out);
+        gate.open(&self.out);
         Ok(())
     }
 
@@ -308,10 +343,11 @@ impl State {
             .ok_or_else(|| WireError::protocol(format!("no repository is open as handle {repo}")))
     }
 
-    /// Stops every watch and forgets every repository: the input ended.
+    /// Stops every watch, kills every process and forgets every repository: the input ended.
     fn shutdown(&self) {
         let watches: Vec<WatchHandle> = self.watches.lock().drain().map(|(_, h)| h).collect();
         drop(watches);
+        self.procs.close();
         self.repos.lock().clear();
     }
 }
@@ -336,12 +372,16 @@ fn hello(build: Option<String>) -> HelloReply {
     }
 }
 
-/// Holds a new watch's batches back until its answer is queued (module docs): closed, it
-/// buffers them; [`Gate::open`] sends the buffer and lets later batches straight through.
+/// Holds a new watch's batches, or a new process's output, back until its answer is queued
+/// (module docs): closed, it buffers the lines; [`Gate::open`] sends the buffer and lets later
+/// lines straight through.
 struct Gate {
     /// `None` once open.
-    held: Mutex<Option<Vec<WatchEvent>>>,
+    held: Mutex<Option<Vec<Held>>>,
 }
+
+/// A line the gate holds back, and its credit (`Out::Line`).
+type Held = (Vec<u8>, Option<Credit>);
 
 impl Default for Gate {
     fn default() -> Self {
@@ -352,20 +392,20 @@ impl Default for Gate {
 }
 
 impl Gate {
-    fn deliver(&self, watch: u32, event: &WatchEvent, out: &Sender<Out>) {
+    fn deliver(&self, line: Vec<u8>, credit: Option<Credit>, out: &Sender<Out>) {
         let mut held = self.held.lock();
         match held.as_mut() {
-            Some(buffer) => buffer.push(event.clone()),
+            Some(buffer) => buffer.push((line, credit)),
             None => {
-                let _ = out.send(Out::Line(proto::watch_line(watch, event)));
+                let _ = out.send(Out::Line(line, credit));
             }
         }
     }
 
-    fn open(&self, watch: u32, out: &Sender<Out>) {
+    fn open(&self, out: &Sender<Out>) {
         let mut held = self.held.lock();
-        for event in held.take().unwrap_or_default() {
-            let _ = out.send(Out::Line(proto::watch_line(watch, &event)));
+        for (line, credit) in held.take().unwrap_or_default() {
+            let _ = out.send(Out::Line(line, credit));
         }
     }
 }

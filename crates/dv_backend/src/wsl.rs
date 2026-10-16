@@ -17,7 +17,7 @@
 //! **No console window.** Every `wsl.exe` dv starts is made by one builder ([`wsl_exe`]),
 //! which creates it without a console window: the app runs detached, and a console child of
 //! it would flash one. The CLI's run inside a distro alone shares its caller's console
-//! ([`Shell::console_command`]). Each also dies with this process (`crate::job`).
+//! ([`Shell::console_command`]). Each also dies with this process (`dv_core::job`).
 //!
 //! **The launch** ([`LAUNCH`], args: this app's x86_64 and aarch64 build hashes, `-` for a
 //! build it lacks) picks the hash for `uname -m` and, when `$HOME/.local/share/dv/bin/dv-<hash>`
@@ -545,7 +545,7 @@ pub(crate) fn run(
     let mut child = command
         .spawn()
         .map_err(|error| spawn_error(&program, &error))?;
-    crate::job::tie_to_this_process(&child);
+    dv_core::job::tie_to_this_process(&child);
     let stdout = child.stdout.take().map(collect);
     let stderr = child.stderr.take().map(collect);
     let stdin = child.stdin.take();
@@ -720,7 +720,7 @@ pub fn launch(
         let mut child = command
             .spawn()
             .map_err(|error| spawn_error(&program, &error))?;
-        crate::job::tie_to_this_process(&child);
+        dv_core::job::tie_to_this_process(&child);
         let (Some(stdin), Some(stdout), Some(stderr)) =
             (child.stdin.take(), child.stdout.take(), child.stderr.take())
         else {

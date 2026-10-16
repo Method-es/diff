@@ -51,12 +51,15 @@
 //! that can't start the first time, or answers `hello` as another protocol or build, fails the
 //! connection at once.
 //!
-//! **Idle close.** A server with no live watch and no call in flight for [`IDLE`] is closed
-//! (the state goes back to [`ConnectionState::Idle`]), so a connection made for a listing
-//! keeps no process in the distro, and WSL can shut an unused distro down. The period counts
-//! from when the server last became unused: the end of its last call, or of its last watch.
-//! Its `RemoteBackend`s stay valid: the next call starts a server again, automatically. An
-//! open review holds a watch, so its server never idles out.
+//! **Idle close.** A server with no live watch, no running process and no call in flight for
+//! [`IDLE`] is closed (the state goes back to [`ConnectionState::Idle`]), so a connection made
+//! for a listing keeps no process in the distro, and WSL can shut an unused distro down. The
+//! period counts from when the server last became unused: the end of its last call, of its
+//! last watch or of its last process. Its `RemoteBackend`s stay valid: the next call starts a
+//! server again, automatically. An open review holds a watch, so its server never idles out.
+//!
+//! **Processes** ([`process`], PLAN §18.3) run on the server that started them and end with
+//! it: a death ends each with an exit (`None`), and nothing starts them again by itself.
 //!
 //! Dropping the last `Arc<Connection>` (every `RemoteBackend` and remote watch handle holds
 //! one) closes the server's stdin, which ends it, and reaps its process.
@@ -64,6 +67,7 @@
 mod connections;
 mod link;
 mod observe;
+mod process;
 mod remote;
 mod watch;
 
@@ -180,6 +184,8 @@ struct Inner {
     reconnecting: bool,
     /// The calls in flight ([`Busy`]).
     busy: usize,
+    /// The processes running on the live server whose delivery hasn't ended ([`process`]).
+    procs: usize,
     /// When the server last became unused (its last call ended, its last watch went) or the
     /// live server answered: what the idle close times.
     last_used: Instant,
@@ -278,6 +284,7 @@ impl Connection {
                 reconnect: None,
                 reconnecting: false,
                 busy: 0,
+                procs: 0,
                 last_used: Instant::now(),
                 idle_watch: None,
             }),
@@ -715,14 +722,8 @@ impl Connection {
                 ),
             );
         }
-        if hello.proto != PROTO {
-            let reason = format!(
-                "dv in {} speaks protocol {}; this app speaks {PROTO}",
-                self.name, hello.proto
-            );
-            link.die(reason.clone());
-            return Err(StartError::Refused(reason));
-        }
+        // Another build first: an older one speaks an older protocol too, and installing this
+        // app's build is what fixes both (PLAN §5.2).
         if hello.build_ok == Some(false) {
             let reason = format!("the dv in {} doesn't match this app", self.name);
             link.die(reason.clone());
@@ -730,6 +731,14 @@ impl Connection {
                 arch: hello.arch,
                 reason,
             });
+        }
+        if hello.proto != PROTO {
+            let reason = format!(
+                "dv in {} speaks protocol {}; this app speaks {PROTO}",
+                self.name, hello.proto
+            );
+            link.die(reason.clone());
+            return Err(StartError::Refused(reason));
         }
         let mut inner = self.inner.lock();
         // A server that died since it answered never became the live link, so the death
@@ -789,7 +798,7 @@ impl Connection {
             if !live {
                 return None;
             }
-            if watched || inner.busy > 0 {
+            if watched || inner.busy > 0 || inner.procs > 0 {
                 return Some(idle);
             }
             let quiet = inner.last_used.elapsed();
@@ -987,14 +996,17 @@ impl Connection {
     }
 
     /// Sends `op` over the link of `generation` without waiting, when that link is still live
-    /// (`close`, `unwatch`: never worth starting a server for).
+    /// (`close`, `unwatch`, `proc_kill`: never worth starting a server for).
     pub(crate) fn notify(&self, generation: u64, op: Op) {
-        let link = self.inner.lock().link.clone();
-        if let Some(link) = link
-            && link.generation() == generation
-        {
+        if let Some(link) = self.live_link(generation) {
             link.notify(op);
         }
+    }
+
+    /// The link of `generation`, while it is the live one; never starts a server.
+    fn live_link(&self, generation: u64) -> Option<Arc<Link>> {
+        let link = self.inner.lock().link.clone()?;
+        (link.generation() == generation).then_some(link)
     }
 
     pub(crate) fn error(&self, error: CallError) -> BackendError {

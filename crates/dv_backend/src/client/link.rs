@@ -1,8 +1,10 @@
-//! One live session with one server process: the requests in flight, the watches routed to
-//! their channels, the reader thread and the stderr drain (docs/PLAN.md §5.1, §5.2).
+//! One live session with one server process: the requests in flight, the watches and the
+//! processes routed to their channels, the reader thread and the stderr drain (docs/PLAN.md
+//! §5.1, §5.2, §18.3).
 //!
-//! The reader thread routes each reply by id to the call waiting for it (a channel per call)
-//! and each watch batch to its watch's channel. Before the server's first reply arrives, lines
+//! The reader thread routes each reply by id to the call waiting for it (a channel per call),
+//! each watch batch to its watch's channel and each process's output to its process's channel
+//! (whose route goes with the process's exit). Before the server's first reply arrives, lines
 //! that aren't part of the protocol are kept in the diagnostics and otherwise ignored
 //! (`wsl.exe` can print warnings on stdout before dv starts); after it, such a line is a
 //! protocol failure, handled as the link's death.
@@ -10,7 +12,8 @@
 //! **Death** (the output ends, a read or a write fails, a protocol failure, the server's
 //! process exits, [`Link::die`]): the server's process is killed and reaped, the connection
 //! hears of it (and reconnects), every call in flight fails at once with the reason, later
-//! calls fail before they are sent, the watches' routes go and the server's stdin closes. A
+//! calls fail before they are sent, the watches' and the processes' routes go (a process's
+//! channel closing is its exit) and the server's stdin closes. A
 //! call registers under the same lock the death takes, so none can slip in after the death and
 //! wait forever.
 //!
@@ -26,14 +29,14 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
-use dv_core::backend::WatchEvent;
+use dv_core::backend::{ProcessEvent, WatchEvent};
 use parking_lot::Mutex;
 use serde::de::DeserializeOwned;
 use serde_json::value::RawValue;
 
 use super::Connection;
 use crate::launch::Transport;
-use crate::proto::{Incoming, Op, Request, WatchReply, WireError};
+use crate::proto::{Incoming, Op, Request, SpawnReply, WatchReply, WireError};
 use crate::server::trim_line;
 
 /// How many lines of the server's stderr (and of stray output before the handshake) the
@@ -71,6 +74,11 @@ enum Waiter {
         reply: Sender<Reply>,
         events: Sender<WatchEvent>,
     },
+    /// A `spawn`: the reader routes the process's output to `events` from the reply on.
+    Spawn {
+        reply: Sender<Reply>,
+        events: Sender<ProcessEvent>,
+    },
     /// Nobody (`close`, `unwatch`): the reply is read and dropped.
     Discard,
 }
@@ -87,6 +95,8 @@ pub(crate) struct LinkShared {
     generation: u64,
     pending: Mutex<Pending>,
     routes: Mutex<HashMap<u32, Sender<WatchEvent>>>,
+    /// The running processes' channels, by the server's process id.
+    procs: Mutex<HashMap<u32, Sender<ProcessEvent>>>,
     /// The server's stdin; `None` once closed.
     writer: Mutex<Option<Box<dyn Write + Send>>>,
     child: Mutex<Option<Child>>,
@@ -126,6 +136,7 @@ impl Link {
             generation,
             pending: Mutex::default(),
             routes: Mutex::default(),
+            procs: Mutex::default(),
             writer: Mutex::new(Some(writer)),
             child: Mutex::new(child),
             diagnostics,
@@ -198,6 +209,23 @@ impl Link {
         let name = op.name();
         self.send(op, Waiter::Watch { reply: tx, events })?;
         self.wait(name, &rx, None)
+    }
+
+    /// Starts a process: `events` receives its output from the answer on.
+    pub(crate) fn call_spawn(
+        &self,
+        op: Op,
+        events: Sender<ProcessEvent>,
+    ) -> Result<SpawnReply, CallError> {
+        let (tx, rx) = mpsc::channel();
+        let name = op.name();
+        self.send(op, Waiter::Spawn { reply: tx, events })?;
+        self.wait(name, &rx, None)
+    }
+
+    /// Stops routing the output of server process `process`: its channel closes.
+    pub(crate) fn unroute_process(&self, process: u32) {
+        self.shared.procs.lock().remove(&process);
     }
 
     /// Sends `op` without waiting for its answer (best effort: nothing is sent on a dead link).
@@ -332,15 +360,16 @@ impl LinkShared {
         }
         for (_, waiter) in calls {
             match waiter {
-                Waiter::Call(reply) | Waiter::Watch { reply, .. } => {
+                Waiter::Call(reply) | Waiter::Watch { reply, .. } | Waiter::Spawn { reply, .. } => {
                     let _ = reply.send(Reply::Dead(reason.clone()));
                 }
                 Waiter::Discard => {}
             }
         }
-        // A watch's delivery ends once every sender of its channel is gone; a dead link keeps
-        // none.
+        // A watch's delivery ends once every sender of its channel is gone, and a process's
+        // delivery then hears its exit; a dead link keeps none.
         self.routes.lock().clear();
+        self.procs.lock().clear();
         drop(self.writer.lock().take());
     }
 
@@ -360,6 +389,9 @@ impl LinkShared {
                 ));
             }
         };
+        if let Some(process) = incoming.process {
+            return self.route_process(process, incoming, text, *answered);
+        }
         match (incoming.id, incoming.watch, incoming.event) {
             (Some(id), _, _) => {
                 let waiter = self.pending.lock().calls.remove(&id);
@@ -372,7 +404,15 @@ impl LinkShared {
                 };
                 *answered = true;
                 let reply = match incoming.err {
-                    Some(error) => Reply::Err(error),
+                    Some(raw) => match serde_json::from_str::<WireError>(raw.get()) {
+                        Ok(error) => Reply::Err(error),
+                        Err(error) => {
+                            return Err(format!(
+                                "dv answered with an error that isn't one ({error}): {}",
+                                excerpt(text)
+                            ));
+                        }
+                    },
                     None => Reply::Ok(incoming.ok),
                 };
                 match waiter {
@@ -388,6 +428,18 @@ impl LinkShared {
                             let pending = self.pending.lock();
                             if pending.dead.is_none() {
                                 self.routes.lock().insert(head.watch, events);
+                            }
+                        }
+                        let _ = tx.send(reply);
+                    }
+                    Waiter::Spawn { reply: tx, events } => {
+                        if let Reply::Ok(Some(raw)) = &reply
+                            && let Ok(head) = serde_json::from_str::<SpawnReply>(raw.get())
+                        {
+                            // As for a watch: a dead link never keeps a route.
+                            let pending = self.pending.lock();
+                            if pending.dead.is_none() {
+                                self.procs.lock().insert(head.process, events);
                             }
                         }
                         let _ = tx.send(reply);
@@ -412,6 +464,45 @@ impl LinkShared {
                 excerpt(text)
             )),
         }
+    }
+
+    /// Routes a line of process `process`'s output to its channel; its exit closes the
+    /// channel. Output of a process no longer routed (its handle dropped) is dropped.
+    fn route_process(
+        &self,
+        process: u32,
+        incoming: Incoming,
+        text: &[u8],
+        answered: bool,
+    ) -> Result<(), String> {
+        let stderr = incoming
+            .err
+            .map(|raw| serde_json::from_str::<String>(raw.get()));
+        let event = match (incoming.id, incoming.out, stderr, incoming.exit) {
+            (None, Some(bytes), None, None) => Some(ProcessEvent::Stdout(bytes)),
+            (None, None, Some(Ok(line)), None) => Some(ProcessEvent::Stderr(line)),
+            (None, None, None, Some(code)) => Some(ProcessEvent::Exit(code)),
+            _ => None,
+        };
+        let Some(event) = event else {
+            if !answered {
+                self.note(format!("stdout: {}", diagnostic_text(text)));
+                return Ok(());
+            }
+            return Err(format!(
+                "dv printed a process line that isn't one: {}",
+                excerpt(text)
+            ));
+        };
+        let exited = matches!(event, ProcessEvent::Exit(_));
+        let mut procs = self.procs.lock();
+        if let Some(events) = procs.get(&process) {
+            let _ = events.send(event);
+        }
+        if exited {
+            procs.remove(&process);
+        }
+        Ok(())
     }
 
     fn note(&self, line: String) {

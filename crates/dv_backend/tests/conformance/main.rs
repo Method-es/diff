@@ -2,11 +2,15 @@
 //! `LocalBackend` and against `RemoteBackend` over a server on in-memory pipes
 //! (`Launcher::InProcess`), so everything above the trait can't tell them apart. Each case is
 //! a function taking a [`Subject`]; [`conformance!`] makes a `local::<case>` and a
-//! `remote::<case>` test of it.
+//! `remote::<case>` test of it, and with `child:` also a `child::<case>` test against a server
+//! that is a process of its own (the `dv_test_child serve` loopback), where processes it
+//! spawns are grandchildren of the test.
 
 mod errors;
 mod files;
 mod git;
+mod process;
+mod server;
 mod watch;
 
 use std::path::Path;
@@ -22,6 +26,8 @@ use parking_lot::Mutex;
 pub enum Side {
     Local,
     Remote,
+    /// `RemoteBackend` over a child process's pipes.
+    Child,
 }
 
 /// What a case opens its backends through: one connection per case on the remote side.
@@ -56,16 +62,38 @@ impl Subject {
                 path,
                 LocalBackendOptions { env },
             )?)),
-            Side::Remote => {
-                let connection = self
-                    .connection
-                    .lock()
-                    .get_or_insert_with(|| Connection::new("in-process", Launcher::InProcess))
-                    .clone();
+            Side::Remote | Side::Child => {
+                let connection = self.connection();
                 let path = path.to_str().expect("fixture paths are Unicode");
                 Ok(Arc::new(connection.open(path, env)?))
             }
         }
+    }
+
+    /// The case's connection, made on first use (remote sides only).
+    pub fn connection(&self) -> Arc<Connection> {
+        self.connection
+            .lock()
+            .get_or_insert_with(|| match self.side {
+                Side::Child => Connection::new("child", child_server()),
+                _ => Connection::new("in-process", Launcher::InProcess),
+            })
+            .clone()
+    }
+}
+
+/// The helper program (`src/bin/dv_test_child.rs`).
+pub fn helper() -> String {
+    env!("CARGO_BIN_EXE_dv_test_child").to_string()
+}
+
+/// A loopback server that is a process of its own: the helper's `serve`.
+pub fn child_server() -> Launcher {
+    Launcher::Command {
+        program: helper().into(),
+        args: vec!["serve".into()],
+        env: vec![("RUST_LOG".into(), None)],
+        build: None,
     }
 }
 
@@ -86,6 +114,17 @@ macro_rules! conformance {
                 #[test]
                 fn $case() {
                     super::$case(&$crate::Subject::new($crate::Side::Remote));
+                }
+            )*
+        }
+    };
+    (child: $($case:ident),* $(,)?) => {
+        $crate::conformance!($($case),*);
+        mod child {
+            $(
+                #[test]
+                fn $case() {
+                    super::$case(&$crate::Subject::new($crate::Side::Child));
                 }
             )*
         }

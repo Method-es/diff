@@ -9,12 +9,16 @@
 //!   runs calls concurrently and answers in whatever order they finish; the client matches ids.
 //! - A watch batch is `{"watch": <u32>, "event": <WatchEvent>}`, for the watch the `watch` op
 //!   started, interleaved with the responses.
+//! - A process's output is `{"proc": <u32>, "out": <base64>}` (a chunk of its stdout),
+//!   `{"proc": n, "err": <line>}` (a line of its stderr) and, last, `{"proc": n, "exit": <code
+//!   or null>}`, for the process the `spawn` op started (PLAN §18.3), interleaved the same way
+//!   and in order per process.
 //!
 //! Every byte field (git's stdin, stdout and stderr, file contents, store lines and bytes) is
 //! base64 (the standard alphabet) in the dedicated wire types here ([`base64_bytes`],
 //! [`base64_opt`], [`Bytes`]): `dv_core`'s `GitOpts` and `GitOutput` would serialise their
 //! bytes as JSON number arrays, so they never cross as they are. The `dv_core` types without
-//! bytes (`RepoInfo`, `WatchSpec`, `WatchEvent`, `TextStats`) do.
+//! bytes (`RepoInfo`, `WatchSpec`, `WatchEvent`, `TextStats`, `ProcessSpec`) do.
 //!
 //! Errors cross as [`WireError`], which carries every `BackendError` variant with its fields,
 //! so the client rebuilds the same variant and its `Display` and `detail()` read the same on
@@ -24,13 +28,16 @@
 use std::borrow::Cow;
 use std::io;
 
-use dv_core::backend::{BackendError, GitOpts, GitOutput, RepoInfo, WatchEvent, WatchSpec};
+use dv_core::backend::{
+    BackendError, GitOpts, GitOutput, ProcessSpec, RepoInfo, WatchEvent, WatchSpec,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
 /// The protocol's version, which `hello` exchanges. Both ends come from one build (PLAN §5.2),
-/// so a mismatch means a stale binary, never something to negotiate.
-pub const PROTO: u32 = 1;
+/// so a mismatch means a stale binary, never something to negotiate. 2 added processes
+/// (`spawn`, PLAN §18.3).
+pub const PROTO: u32 = 2;
 
 /// One request line: the id the response carries, and the operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,7 +48,8 @@ pub struct Request {
 }
 
 /// The operations: `hello`, `open` and `close`, one per `Backend` method on an open repository
-/// (`repo` is the handle `open` returned), and `unwatch` for a watch `watch` started.
+/// (`repo` is the handle `open` returned), `unwatch` for a watch `watch` started, and
+/// `proc_write` and `proc_kill` for a process `spawn` started.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {
@@ -101,6 +109,22 @@ pub enum Op {
     Watch { repo: u32, spec: WatchSpec },
     /// Stops a watch: `null`, also for a watch that already stopped.
     Unwatch { watch: u32 },
+    /// `Backend::spawn_stdio`: a [`SpawnReply`], then `{"proc", "out" | "err" | "exit"}` lines
+    /// until its exit.
+    Spawn { repo: u32, spec: ProcessSpec },
+    /// Writes to a process's stdin: `null` once written; an `io` error once it has ended.
+    ProcWrite {
+        #[serde(rename = "proc")]
+        process: u32,
+        #[serde(with = "base64_bytes")]
+        bytes: Vec<u8>,
+    },
+    /// Kills a process and everything it started: `null`, also for one that already ended. Its
+    /// exit line follows.
+    ProcKill {
+        #[serde(rename = "proc")]
+        process: u32,
+    },
 }
 
 impl Op {
@@ -122,6 +146,9 @@ impl Op {
             Op::CopyIndexToStore { .. } => "copy_index_to_store",
             Op::Watch { .. } => "watch",
             Op::Unwatch { .. } => "unwatch",
+            Op::Spawn { .. } => "spawn",
+            Op::ProcWrite { .. } => "proc_write",
+            Op::ProcKill { .. } => "proc_kill",
         }
     }
 }
@@ -157,6 +184,14 @@ pub struct OpenReply {
 pub struct WatchReply {
     pub watch: u32,
     pub worktree_error: Option<String>,
+}
+
+/// `spawn`'s answer: the id its output lines carry, and the process's id where it runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpawnReply {
+    #[serde(rename = "proc")]
+    pub process: u32,
+    pub pid: u32,
 }
 
 /// `GitOpts` on the wire: its stdin base64.
@@ -302,6 +337,14 @@ pub enum WireError {
         path: String,
         message: String,
     },
+    InvalidProcess {
+        program: String,
+        reason: String,
+    },
+    StartProcess {
+        program: String,
+        source: WireIoError,
+    },
     /// The server couldn't read or run the request as sent (a malformed line, an unknown op, a
     /// repository or watch handle it doesn't have): a bug or a version skew, never the repo.
     Protocol {
@@ -361,6 +404,14 @@ impl WireError {
                 source: source.into(),
             },
             WireError::Watch { path, message } => BackendError::Watch { path, message },
+            WireError::InvalidProcess { program, reason } => BackendError::InvalidProcess {
+                program,
+                reason: Cow::Owned(reason),
+            },
+            WireError::StartProcess { program, source } => BackendError::StartProcess {
+                program,
+                source: source.into(),
+            },
             WireError::Protocol { message } => BackendError::Unavailable {
                 location: location.to_string(),
                 reason: format!("dv there couldn't run the request: {message}"),
@@ -423,6 +474,14 @@ impl From<&BackendError> for WireError {
             BackendError::Watch { path, message } => WireError::Watch {
                 path: path.clone(),
                 message: message.clone(),
+            },
+            BackendError::InvalidProcess { program, reason } => WireError::InvalidProcess {
+                program: program.clone(),
+                reason: reason.to_string(),
+            },
+            BackendError::StartProcess { program, source } => WireError::StartProcess {
+                program: program.clone(),
+                source: source.into(),
             },
         }
     }
@@ -497,9 +556,11 @@ fn error_kind(name: &str) -> io::ErrorKind {
         .unwrap_or(Other)
 }
 
-/// A response line as the client reads it: a reply (`id` with `ok` or `err`) or a watch batch
-/// (`watch` and `event`). `ok` stays unparsed until the waiting call parses it into the type
-/// it expects; `null` and an absent `ok` are both `None`.
+/// A response line as the client reads it: a reply (`id` with `ok` or `err`), a watch batch
+/// (`watch` and `event`) or a process's output (`proc` with `out`, `err` or `exit`). `ok`
+/// stays unparsed until the waiting call parses it into the type it expects; `null` and an
+/// absent `ok` are both `None`. `err` is a [`WireError`] in a reply and a stderr line in a
+/// process's output, so it is parsed once the line's kind is known.
 #[derive(Debug, Deserialize)]
 pub struct Incoming {
     #[serde(default)]
@@ -507,11 +568,29 @@ pub struct Incoming {
     #[serde(default)]
     pub ok: Option<Box<RawValue>>,
     #[serde(default)]
-    pub err: Option<WireError>,
+    pub err: Option<Box<RawValue>>,
     #[serde(default)]
     pub watch: Option<u32>,
     #[serde(default)]
     pub event: Option<WatchEvent>,
+    #[serde(default, rename = "proc")]
+    pub process: Option<u32>,
+    #[serde(default, with = "base64_opt")]
+    pub out: Option<Vec<u8>>,
+    /// `Some(None)` for `"exit": null` (a signal killed it, or it ended with its server),
+    /// `None` when the line has no `exit`.
+    #[serde(default, deserialize_with = "present")]
+    pub exit: Option<Option<i32>>,
+}
+
+/// A field that is there, `null` included, as `Some` of its value; with `#[serde(default)]` an
+/// absent one is `None`.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 /// The line answering request `id` with `value` (`\n`-terminated).
@@ -542,6 +621,53 @@ pub fn watch_line(watch: u32, event: &WatchEvent) -> Vec<u8> {
         event: &'a WatchEvent,
     }
     to_line(&Line { watch, event }, 0)
+}
+
+/// The line carrying a chunk of process `process`'s stdout (`\n`-terminated).
+pub fn proc_out_line(process: u32, bytes: &[u8]) -> Vec<u8> {
+    #[derive(Serialize)]
+    struct Line<'a> {
+        #[serde(rename = "proc")]
+        process: u32,
+        #[serde(with = "base64_bytes")]
+        out: &'a [u8],
+    }
+    to_line(
+        &Line {
+            process,
+            out: bytes,
+        },
+        0,
+    )
+}
+
+/// The line carrying a line of process `process`'s stderr (`\n`-terminated).
+pub fn proc_err_line(process: u32, line: &str) -> Vec<u8> {
+    #[derive(Serialize)]
+    struct Line<'a> {
+        #[serde(rename = "proc")]
+        process: u32,
+        err: &'a str,
+    }
+    to_line(&Line { process, err: line }, 0)
+}
+
+/// The line saying process `process` exited with `code`, `null` when a signal killed it
+/// (`\n`-terminated).
+pub fn proc_exit_line(process: u32, code: Option<i32>) -> Vec<u8> {
+    #[derive(Serialize)]
+    struct Line {
+        #[serde(rename = "proc")]
+        process: u32,
+        exit: Option<i32>,
+    }
+    to_line(
+        &Line {
+            process,
+            exit: code,
+        },
+        0,
+    )
 }
 
 /// `value` as one `\n`-terminated JSON line. JSON escapes every newline inside strings, so the

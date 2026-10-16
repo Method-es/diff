@@ -666,6 +666,14 @@ impl Backend for Probe {
             None => handle,
         })
     }
+
+    fn spawn_stdio(
+        &self,
+        spec: &dv_core::backend::ProcessSpec,
+        sink: dv_core::backend::ProcessSink,
+    ) -> Result<dv_core::backend::ProcessHandle, BackendError> {
+        self.inner.spawn_stdio(spec, sink)
+    }
 }
 
 /// A session over `target`'s review through `backend`, opened as the reviewer.

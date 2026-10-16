@@ -237,15 +237,15 @@ fn a_watch_holds_its_batches_until_its_answer_is_queued() {
         worktree_paths: vec![path.into()],
         ..WatchEvent::default()
     };
-    gate.deliver(3, &event("early"), &tx);
+    gate.deliver(proto::watch_line(3, &event("early")), None, &tx);
     assert!(rx.try_recv().is_err(), "held while closed");
-    tx.send(Out::Line(b"the answer\n".to_vec())).unwrap();
-    gate.open(3, &tx);
-    gate.deliver(3, &event("late"), &tx);
+    tx.send(Out::Line(b"the answer\n".to_vec(), None)).unwrap();
+    gate.open(&tx);
+    gate.deliver(proto::watch_line(3, &event("late")), None, &tx);
     let lines: Vec<String> = rx
         .try_iter()
         .map(|out| match out {
-            Out::Line(line) => String::from_utf8(line).unwrap(),
+            Out::Line(line, _) => String::from_utf8(line).unwrap(),
             Out::Stop(_) => panic!("no stop"),
         })
         .collect();
@@ -278,4 +278,40 @@ fn committed() -> (FixtureRepo, Vec<(String, Option<String>)>) {
         .map(|(name, value)| (text(name), value.map(text)))
         .collect();
     (repo, env)
+}
+
+#[test]
+fn a_processs_lines_wait_within_its_budget_until_written() {
+    use self::process::{BUDGET, Budget};
+
+    let budget = Arc::new(Budget::default());
+    // A line bigger than the budget still goes when nothing waits.
+    let big = budget.take(BUDGET * 2).expect("open");
+    assert_eq!(budget.queued(), BUDGET * 2);
+    let (tx, rx) = mpsc::channel();
+    let waiter = std::thread::spawn({
+        let budget = Arc::clone(&budget);
+        move || {
+            let credit = budget.take(10);
+            tx.send(credit.is_some()).unwrap();
+            credit
+        }
+    });
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "waits while the budget is spent"
+    );
+    drop(big);
+    assert_eq!(rx.recv_timeout(ANSWER_WITHIN), Ok(true));
+    let small = waiter.join().unwrap();
+    assert_eq!(budget.queued(), 10);
+
+    // The writer gives the bytes back once it has written the line.
+    let (out, lines) = mpsc::channel();
+    out.send(Out::Line(b"x\n".to_vec(), small)).unwrap();
+    out.send(Out::Stop(mpsc::channel().0)).unwrap();
+    let mut written = Vec::new();
+    write_lines(&mut written, lines);
+    assert_eq!(written, b"x\n");
+    assert_eq!(budget.queued(), 0);
 }

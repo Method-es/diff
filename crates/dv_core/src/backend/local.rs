@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 
 use super::paths::{self, STORE_TEMP_PREFIX};
 use super::{
-    Backend, BackendError, GitOpts, GitOutput, GitVersion, RepoInfo, TextStats, TextStatsCounter,
-    WatchHandle, WatchSink, WatchSpec,
+    Backend, BackendError, GitOpts, GitOutput, GitVersion, ProcessHandle, ProcessSink, ProcessSpec,
+    RepoInfo, TextStats, TextStatsCounter, WatchHandle, WatchSink, WatchSpec,
 };
 use crate::git::{ObjectFormat, command};
 use crate::location::Location;
@@ -363,6 +363,14 @@ impl Backend for LocalBackend {
             spec,
             sink,
         )
+    }
+
+    fn spawn_stdio(
+        &self,
+        spec: &ProcessSpec,
+        sink: ProcessSink,
+    ) -> Result<ProcessHandle, BackendError> {
+        super::process::spawn(&self.toplevel, spec, sink)
     }
 }
 

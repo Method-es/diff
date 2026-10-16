@@ -75,6 +75,9 @@ env_logger = "0.11"
 futures = "0.3"
 ignore = "0.4"
 imara-diff = "0.2"
+# The process group a backend's child process runs in, and its exit read without reaping it
+# (`dv_core::backend::process`, PLAN §18.3).
+libc = "0.2"
 log = "0.4"
 # The Markdown parser gpui-component's `TextView` uses; `dv_ui::markdown` sanitises comment bodies
 # with the same AST before they reach it (PLAN §15).

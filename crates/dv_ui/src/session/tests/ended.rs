@@ -103,6 +103,14 @@ impl Backend for Ending {
             handle
         })
     }
+
+    fn spawn_stdio(
+        &self,
+        spec: &dv_core::backend::ProcessSpec,
+        sink: dv_core::backend::ProcessSink,
+    ) -> Result<dv_core::backend::ProcessHandle, BackendError> {
+        self.inner.spawn_stdio(spec, sink)
+    }
 }
 
 #[gpui::test]

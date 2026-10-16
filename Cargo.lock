@@ -1650,7 +1650,6 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1675,6 +1674,7 @@ dependencies = [
  "dv_test_support",
  "ignore",
  "imara-diff",
+ "libc",
  "log",
  "notify 8.2.0",
  "serde",
@@ -1682,6 +1682,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "ulid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

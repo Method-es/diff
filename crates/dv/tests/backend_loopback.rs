@@ -1,9 +1,9 @@
 //! `dv backend --stdio` as the app meets it (docs/PLAN.md §5.1, §5.2, §14.2): the built `dv`
 //! started as a loopback server through `Launcher::Command`, and a `Connection` over its real
 //! pipes — the handshake with and without a build, a repository with git and a watch, a kill
-//! mid-call and the reconnect, respawns that fail and `retry`, and the server's end when the
-//! last connection goes. These run in every shape of `dv`; the headless one is what WSL
-//! distros run.
+//! mid-call and the reconnect, respawns that fail and `retry`, a process it runs (PLAN
+//! §18.3), and the server's end when the last connection goes. These run in every shape of
+//! `dv`; the headless one is what WSL distros run.
 //!
 //! Every server is a child of this test process and none may outlive its test: each test
 //! checks that every server it met (by the pid its `hello` answered with) is gone at the end.
@@ -17,7 +17,10 @@ use std::time::{Duration, Instant};
 
 use dv_backend::build::sha256_file;
 use dv_backend::{Connection, ConnectionState, Launcher, RemoteBackend, Subscription};
-use dv_core::backend::{Backend, BackendError, GitOpts, WatchEvent, WatchHandle, WatchSpec};
+use dv_core::backend::{
+    Backend, BackendError, GitOpts, ProcessEvent, ProcessHandle, ProcessSpec, WatchEvent,
+    WatchHandle, WatchSpec,
+};
 use dv_core::location::Location;
 use dv_test_support::FixtureRepo;
 use pretty_assertions::assert_eq;
@@ -390,6 +393,89 @@ fn respawns_that_fail_leave_the_connection_failed_until_retry() {
     for pid in pids.lock().unwrap().iter() {
         assert_gone(*pid);
     }
+}
+
+/// A process `backend` runs, its events on a channel.
+fn spawn(backend: &dyn Backend, spec: &ProcessSpec) -> (ProcessHandle, Receiver<ProcessEvent>) {
+    let (tx, rx) = mpsc::channel();
+    let handle = backend
+        .spawn_stdio(
+            spec,
+            Box::new(move |event| {
+                let _ = tx.send(event);
+            }),
+        )
+        .unwrap();
+    (handle, rx)
+}
+
+/// What a process printed on stdout and stderr until `done` held for its stdout, and its exit
+/// when that came.
+fn printed(
+    rx: &Receiver<ProcessEvent>,
+    done: impl Fn(&str, Option<Option<i32>>) -> bool,
+) -> (String, Vec<String>, Option<Option<i32>>) {
+    let (mut stdout, mut stderr, mut exit) = (Vec::new(), Vec::new(), None);
+    let deadline = Instant::now() + WITHIN;
+    while !done(&String::from_utf8_lossy(&stdout), exit) {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(ProcessEvent::Stdout(bytes)) => stdout.extend(bytes),
+            Ok(ProcessEvent::Stderr(line)) => stderr.push(line),
+            Ok(ProcessEvent::Exit(code)) => exit = Some(code),
+            Err(error) => panic!("not within {WITHIN:?} ({error:?})"),
+        }
+    }
+    (String::from_utf8_lossy(&stdout).into_owned(), stderr, exit)
+}
+
+#[test]
+fn a_process_runs_through_the_server_and_ends_with_its_connection() {
+    let repo = fixture();
+    let connection = Connection::new("loopback", launcher(None));
+    let backend = open(&connection, &repo);
+    let server = server_pid(&connection);
+    // `dv` itself is the process, headless subcommands only, as no one in particular.
+    let dv = |args: &[&str]| {
+        ["CLAUDECODE", "DV_AUTHOR", "DV_REVIEW", "RUST_LOG"]
+            .into_iter()
+            .fold(
+                ProcessSpec::new(env!("CARGO_BIN_EXE_dv")).args(args.iter().copied()),
+                |spec, name| spec.env(name, None),
+            )
+    };
+
+    // A usage error: its stderr, and its exit code.
+    let (_handle, events) = spawn(&backend, &dv(&["backend"]));
+    let (_, stderr, exit) = printed(&events, |_, exit| exit.is_some());
+    assert_eq!(exit, Some(Some(2)));
+    assert!(
+        stderr
+            .iter()
+            .any(|line| line.contains("dv backend --stdio")),
+        "{stderr:?}"
+    );
+
+    // Another `dv backend --stdio`: a request written to its stdin, its answer on stdout.
+    let (handle, events) = spawn(&backend, &dv(&["backend", "--stdio"]));
+    let hello = format!(
+        "{{\"id\":1,\"op\":\"hello\",\"proto\":{}}}\n",
+        dv_backend::proto::PROTO
+    );
+    handle.write(hello.as_bytes()).unwrap();
+    let (stdout, _, _) = printed(&events, |stdout, _| stdout.ends_with('\n'));
+    let reply: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let inner = handle.pid();
+    assert_eq!(reply["ok"]["pid"], inner);
+    assert_ne!(inner, server);
+
+    // Its server lost: the process ends with an exit, and doesn't outlive it.
+    connection.kill();
+    let (_, _, exit) = printed(&events, |_, exit| exit.is_some());
+    assert_eq!(exit, Some(None));
+    assert_gone(server);
+    assert_gone(inner);
+    drop(handle);
 }
 
 #[test]

@@ -16,10 +16,15 @@
 
 mod wsl_common;
 
+use std::sync::mpsc::Receiver;
+use std::time::{Duration, Instant};
+
 use dv_backend::install::{self, BuildState, LinkState};
 use dv_backend::wsl::{self, Arch, LAUNCH, Shell, WslError};
 use dv_backend::{Connection, ConnectionState, Launcher};
-use dv_core::backend::{Backend, BackendError, GitOpts, WatchSpec};
+use dv_core::backend::{
+    Backend, BackendError, GitOpts, ProcessEvent, ProcessHandle, ProcessSpec, WatchSpec,
+};
 use dv_core::location::Location;
 use pretty_assertions::assert_eq;
 
@@ -325,6 +330,120 @@ fn a_repository_in_the_distro_opens_and_its_git_store_and_watch_work() {
         "{missing:?}"
     );
     assert_eq!(connection.state(), ConnectionState::Connected);
+}
+
+/// A process `backend` runs, its events on a channel.
+fn spawn(backend: &dyn Backend, spec: &ProcessSpec) -> (ProcessHandle, Receiver<ProcessEvent>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = backend
+        .spawn_stdio(
+            spec,
+            Box::new(move |event| {
+                let _ = tx.send(event);
+            }),
+        )
+        .unwrap_or_else(|error| panic!("{spec:?}: {error:?}"));
+    (handle, rx)
+}
+
+/// What a process printed on stdout and stderr until `done` held, and its exit when it came.
+fn printed(
+    rx: &Receiver<ProcessEvent>,
+    done: impl Fn(&str, Option<Option<i32>>) -> bool,
+) -> (String, Vec<String>, Option<Option<i32>>) {
+    let (mut stdout, mut stderr, mut exit) = (Vec::new(), Vec::new(), None);
+    let deadline = Instant::now() + WITHIN;
+    while !done(&String::from_utf8_lossy(&stdout), exit) {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(ProcessEvent::Stdout(bytes)) => stdout.extend(bytes),
+            Ok(ProcessEvent::Stderr(line)) => stderr.push(line),
+            Ok(ProcessEvent::Exit(code)) => exit = Some(code),
+            Err(error) => panic!("not within {WITHIN:?} ({error:?})"),
+        }
+    }
+    (String::from_utf8_lossy(&stdout).into_owned(), stderr, exit)
+}
+
+/// Waits until the process `pid` is gone from the distro.
+fn assert_gone_in(shell: &Shell, pid: u32) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let alive = shell
+            .run(r#"kill -0 "$1" 2>/dev/null"#, &[&pid.to_string()], WITHIN)
+            .unwrap()
+            .status
+            .success();
+        if !alive {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "pid {pid} still runs in the distro"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[test]
+fn a_process_runs_inside_the_distro_and_ends_with_its_connection() {
+    let sandbox = sandbox!();
+    let (home, shell) = sandbox.home("process");
+    let repo = home.join("repo");
+    scratch_repo(&shell, &repo);
+    sh(&shell, r#"mkdir -p "$1/sub""#, &[&repo]);
+    let connection = Connection::new(&sandbox.distro, sandbox.launcher(&home));
+    connection.retry().unwrap();
+    let backend = connection.open(&repo, Vec::new()).unwrap();
+
+    // Its stdin and stdout, through the distro's own program.
+    let (handle, events) = spawn(&backend, &ProcessSpec::new("/usr/bin/cat"));
+    handle.write(b"hello from Windows\n").unwrap();
+    let (stdout, _, _) = printed(&events, |stdout, _| stdout.ends_with('\n'));
+    assert_eq!(stdout, "hello from Windows\n");
+    // Its pid is the distro's.
+    sh(&shell, r#"kill -0 "$1""#, &[&handle.pid().to_string()]);
+    handle.kill();
+    let (_, _, exit) = printed(&events, |_, exit| exit.is_some());
+    assert_eq!(exit, Some(None), "killed by a signal");
+    assert_gone_in(&shell, handle.pid());
+
+    // Its stderr and exit code; its directory and environment.
+    let (_handle, events) = spawn(
+        &backend,
+        &ProcessSpec::new("/usr/bin/ls").args(["/dv-no-such-path"]),
+    );
+    let (_, stderr, exit) = printed(&events, |_, exit| exit.is_some());
+    assert_eq!(exit, Some(Some(2)));
+    assert!(
+        stderr.iter().any(|line| line.contains("/dv-no-such-path")),
+        "{stderr:?}"
+    );
+    let (_handle, events) = spawn(
+        &backend,
+        &ProcessSpec::new("/usr/bin/env").env("DV_TEST_VALUE", Some("from the spec")),
+    );
+    let (stdout, _, exit) = printed(&events, |_, exit| exit.is_some());
+    assert_eq!(exit, Some(Some(0)));
+    assert!(stdout.contains("DV_TEST_VALUE=from the spec\n"), "{stdout}");
+    // The working directory as the process sees it (`getcwd`; `$PWD` is the launch's).
+    let (_handle, events) = spawn(
+        &backend,
+        &ProcessSpec::new("/usr/bin/pwd").args(["-P"]).cwd("sub"),
+    );
+    let (stdout, _, exit) = printed(&events, |_, exit| exit.is_some());
+    assert_eq!(exit, Some(Some(0)));
+    assert_eq!(stdout, format!("{repo}/sub\n"));
+
+    // A process outlives neither its handle nor its connection.
+    let (handle, events) = spawn(&backend, &ProcessSpec::new("/usr/bin/sleep").args(["600"]));
+    let pid = handle.pid();
+    sh(&shell, r#"kill -0 "$1""#, &[&pid.to_string()]);
+    connection.kill();
+    let (_, _, exit) = printed(&events, |_, exit| exit.is_some());
+    assert_eq!(exit, Some(None));
+    assert_gone_in(&shell, pid);
+    drop(handle);
 }
 
 #[test]

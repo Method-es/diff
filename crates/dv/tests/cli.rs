@@ -344,9 +344,10 @@ fn backend_stdio_serves_until_its_stdin_ends_whatever_still_runs() {
         serde_json::from_str(&line).unwrap_or_else(|error| panic!("{error}: {line:?}"))
     };
 
-    let hello = call(serde_json::json!({"id": 1, "op": "hello", "proto": 1}));
+    let proto = dv_backend::proto::PROTO;
+    let hello = call(serde_json::json!({"id": 1, "op": "hello", "proto": proto}));
     assert_eq!(hello["id"], 1);
-    assert_eq!(hello["ok"]["proto"], 1);
+    assert_eq!(hello["ok"]["proto"], proto);
     assert_eq!(hello["ok"]["pid"], child.id());
     assert_eq!(hello["ok"]["build_ok"], Value::Null);
     let env: Vec<(String, Option<String>)> = repo

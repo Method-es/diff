@@ -23,7 +23,7 @@
 //! ([`Asked::Listing`]). This machine is always up; a [`Launcher::Custom`] may stand in for a
 //! distro with a check of its own ([`Launcher::with_host_check`]).
 //!
-//! Every process a launcher starts dies with this one (`crate::job`), also when this one is
+//! Every process a launcher starts dies with this one (`dv_core::job`), also when this one is
 //! killed rather than closing the server's stdin.
 
 use std::ffi::{OsStr, OsString};
@@ -397,7 +397,7 @@ fn spawn(
     let mut child = command
         .spawn()
         .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", program.display())))?;
-    crate::job::tie_to_this_process(&child);
+    dv_core::job::tie_to_this_process(&child);
     let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
         let _ = child.kill();
         let _ = child.wait();

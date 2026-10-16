@@ -13,7 +13,7 @@
 //!   runs `~/.local/share/dv/bin/dv-<hash>`, this build exactly (never whatever `~/.local/bin/dv`
 //!   is), in `<folder>`: the working directory when it is in that distro, else the
 //!   repository's ([`workdir`]). Its exit code is the command's. It dies with this process
-//!   (`dv_backend::job`), so a `dv` that is killed leaves no `wsl.exe` behind, nor the distro's
+//!   (`dv_core::job`), so a `dv` that is killed leaves no `wsl.exe` behind, nor the distro's
 //!   `dv review wait`. The distro is named as given (`wsl.exe` takes names without case): no
 //!   `wsl.exe --list` runs first.
 //! - **Its output** ([`shares_console`]): when stdout and stderr are both terminals the child
@@ -334,7 +334,7 @@ fn run_once(
             shell.name()
         ))
     })?;
-    dv_backend::job::tie_to_this_process(&child);
+    dv_core::job::tie_to_this_process(&child);
     let (stdin, stdout, stderr) = (child.stdin.take(), child.stdout.take(), child.stderr.take());
     let err = &mut ctx.stderr;
     let (status, stdout) = std::thread::scope(|scope| {

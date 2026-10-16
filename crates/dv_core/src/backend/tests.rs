@@ -585,6 +585,13 @@ fn worktree_text_stats_stream_the_file() {
         fn watch(&self, spec: WatchSpec, sink: WatchSink) -> Result<WatchHandle, BackendError> {
             self.0.watch(spec, sink)
         }
+        fn spawn_stdio(
+            &self,
+            spec: &crate::backend::ProcessSpec,
+            sink: crate::backend::ProcessSink,
+        ) -> Result<crate::backend::ProcessHandle, BackendError> {
+            self.0.spawn_stdio(spec, sink)
+        }
     }
     let default = ReadOnly(&backend);
     for path in ["big.txt", "blob.bin", "a.txt", "missing.txt"] {

@@ -2,13 +2,15 @@
 //!
 //! Everything dv does to a repo — run git, read worktree files, read and write the review store
 //! (`<git-common-dir>/dv/`), watch for changes — goes through this one trait, so the layers above
-//! (diff pipeline, review store, UI, CLI) never know where the repo lives. [`LocalBackend`]
-//! implements it in-process; the same trait is what `dv backend --stdio` serves from inside a WSL
-//! distro (PLAN D6), which is why every method is blocking and takes and returns plain data that
-//! serialises 1:1.
+//! (diff pipeline, review store, UI, CLI) never know where the repo lives. It also runs processes
+//! where the repo lives ([`process`]): a WSL repository's language servers run in its distro.
+//! [`LocalBackend`] implements it in-process; the same trait is what `dv backend --stdio` serves
+//! from inside a WSL distro (PLAN D6), which is why every method is blocking and takes and
+//! returns plain data that serialises 1:1.
 
 mod local;
 mod paths;
+pub mod process;
 mod watch;
 
 use std::borrow::Cow;
@@ -22,6 +24,9 @@ use crate::location::Location;
 
 pub use local::{LocalBackend, LocalBackendOptions};
 pub(crate) use paths::check_relative;
+pub use process::{
+    ProcessControl, ProcessEvent, ProcessHandle, ProcessSink, ProcessSpec, STDERR_LINE_MAX,
+};
 
 /// One repository worktree's operations (PLAN §5.1). An instance is bound to the worktree it was
 /// opened on: git runs in its root, worktree paths are relative to that root, and store paths
@@ -91,6 +96,17 @@ pub trait Backend: Send + Sync {
     /// the returned handle is dropped. A watch that includes the store, whose worktree or git
     /// half the OS refuses, still watches the store; [`WatchHandle::worktree_error`] says so.
     fn watch(&self, spec: WatchSpec, sink: WatchSink) -> Result<WatchHandle, BackendError>;
+
+    /// Starts `spec` where the repository lives, with piped stdio and never through a shell
+    /// (PLAN §18.3): what it prints reaches `sink` on a thread of the process's own until the
+    /// returned handle, which writes its stdin and kills it, is dropped ([`process`]). A
+    /// program that isn't an absolute path, or a working directory that isn't a directory in
+    /// the worktree, is refused before anything starts.
+    fn spawn_stdio(
+        &self,
+        spec: &ProcessSpec,
+        sink: ProcessSink,
+    ) -> Result<ProcessHandle, BackendError>;
 }
 
 /// What a backend knows about its repository, resolved once when it opens.
@@ -475,6 +491,20 @@ pub enum BackendError {
     },
     #[error("watching {path} failed: {message}")]
     Watch { path: String, message: String },
+    /// A [`ProcessSpec`] the backend won't run: a program that isn't an absolute path, a batch
+    /// file on Windows, NUL in an argument (PLAN §18.3).
+    #[error("can't run {program}: {reason}")]
+    InvalidProcess {
+        program: String,
+        reason: Cow<'static, str>,
+    },
+    /// [`Backend::spawn_stdio`] couldn't start the program (no such file, not executable).
+    #[error("couldn't start {program}: {source}")]
+    StartProcess {
+        program: String,
+        #[source]
+        source: io::Error,
+    },
 }
 
 impl BackendError {
