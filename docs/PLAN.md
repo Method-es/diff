@@ -30,9 +30,13 @@ labels, "used to…") belongs in commit messages, never in comments.
    install agent skills and check `gh` — per environment (§12).
 6. A per-user installer with delta auto-updates (Velopack); Linux builds; macOS kept compiling (§13).
 7. Hermetic automated testing: fixture repos, a fake `gh`, GUI e2e scenarios (§14).
+8. Read the code around a change as an editor would: select and find text, view whole files, and
+   hover, go to definition and find references through the project's own language servers, run
+   where the repo lives (§18).
 
-**Non-goals (v1):** LSP / go-to-definition, AI features inside dv, editing files, committing or any
-other mutation of the user's repo (§2.4), cross-machine review sync, GitHub Enterprise-specific work
+**Non-goals (v1):** AI features inside dv, editing files (and so a language server's diagnostics,
+completion, rename and code actions, §18.1), committing or any other mutation of the user's repo
+(§2.4), cross-machine review sync, GitHub Enterprise-specific work
 beyond what `gh` gives for free, merge-conflict badges.
 
 ---
@@ -109,13 +113,13 @@ material the platform can't show always resolves to Opaque (`dv_ui::platform`).
 - **Packages:** `vpk pack` produces a one-click per-user `Setup.exe` on Windows (no wizard, no
   admin, installs under `%LOCALAPPDATA%\dv\`), a `.pkg` on macOS and an AppImage on Linux, plus the
   full and delta update packages and a release feed, all from a build without the automation feature.
-  `vpk` is a .NET tool: the build machine needs the .NET SDK (not installed yet; only Phase 8 needs it).
+  `vpk` is a .NET tool: the build machine needs the .NET SDK (not installed yet; only Phase 7 needs it).
 - **In the app:** the `velopack` crate. `VelopackApp::build().run()` is the first call in `main` of
   both Windows binaries; its install/uninstall hooks run `dv setup path --yes` / remove the PATH entry,
   so PATH stays app-owned (§12) and the installer has no logic of its own.
 - **Updates:** `UpdateManager` checks a release feed, downloads the delta in the background and
   applies it on the next restart ("Restart to update" in the status bar). Until there is a release
-  workflow (§16 phase 9) the feed is a local folder of `vpk pack` output, so a locally built release is
+  workflow (§16 phase 10) the feed is a local folder of `vpk pack` output, so a locally built release is
   picked up by the installed copy; later the same code points at GitHub Releases.
 - Chosen over cargo-packager (the sibling app's tool; a classic NSIS wizard and an updater that re-downloads the
   whole installer and needs manifest signing keys) for delta updates and the simpler install flow.
@@ -123,6 +127,14 @@ material the platform can't show always resolves to Opaque (`dv_ui::platform`).
 ### D10. Code signing: none
 The owner builds and installs locally, which SmartScreen doesn't challenge (it checks files carrying a
 downloaded-from-the-internet mark). Revisit only if dv is ever distributed as a download.
+
+### D11. Code intelligence through the project's own language servers
+Hover, go to definition and find references come from standard language servers (LSP) that dv starts
+where the repo lives, through its backend (a WSL repo's run inside the distro), found in the project
+first (TypeScript 7's native server ships in the `typescript` package) and never installed by dv
+(§18). Each language is a spec in `dv_lsp`, so adding one doesn't touch the rest. Chosen over
+tree-sitter navigation (quick, but by name only: no types, wrong across files) and over an embedded
+editor (dv reads, it never edits).
 
 ---
 
@@ -979,7 +991,7 @@ dv review wait [<id>] [--timeout <s>]      block until the reviewer finishes a r
 dv review done [<id>] [--note <t> | --note-file <f|->] [--round <n>]
                                            agent: round addressed, ready for re-review
 dv review submit [<id>] --verdict approve|request-changes [--body <t> | --body-file <f|->]
-                                           reviewer (`comment`: PR reviews, phase 5)
+                                           reviewer (`comment`: PR reviews, phase 8)
 dv review close | delete <id>              reviewer
 
 dv comment list [--status open|addressed|resolved|outdated]… [--file <p>] [--oneline]
@@ -1068,7 +1080,7 @@ Global flags: `--repo <path>` (also `\\wsl.localhost\<distro>\<path>`), `--wsl <
   - `review submit` is the reviewer's `ops::finish_round` with the verdict and the summary
     (`--body`, `--body-file`), snapshotting the review's home worktree (§2.2) whichever worktree
     it runs in; `--verdict comment` on a local review is exit 2 ("a local round approves or requests
-    changes"), a PR review exit 2 (`unsupported`, phase 5). `review close <id>` sets `closed`;
+    changes"), a PR review exit 2 (`unsupported`, phase 8). `review close <id>` sets `closed`;
     `review delete <id>` is the store's delete (log, snapshot cache, round refs), reviewer only
     (an agent is exit 1, `not_allowed`), and deleting again finishes an interrupted delete, then
     says the review isn't there (exit 1).
@@ -1539,6 +1551,11 @@ Keyboard map and states: DESIGN §5.
 - One list of **checks**, each with `detect()` (read-only, fast) and `apply()` (idempotent), per
   environment (Windows / each WSL distro / macOS / Linux). The same list backs the first-run screen,
   Settings › Setup, `dv setup` and `dv doctor`.
+- **Setup** stays reachable after the first run (Settings › Setup, and the palette's "Set up dv"):
+  the same screen with every environment's checks, each row its state and its fix, and **Check
+  again**. A skill installed by an older dv, or edited since, shows as out of date with **Update**;
+  when any environment has one, the status bar says so once ("dv-review skill out of date in
+  Ubuntu · Update"), since an agent working from an old skill misuses the CLI.
 - Never blocks local use: a local repo opens immediately. Only opening a WSL repo whose distro isn't
   set up shows the onboarding for that distro (the VS Code/Zed remote pattern, scoped to where it's
   needed).
@@ -1551,12 +1568,16 @@ Keyboard map and states: DESIGN §5.
    shell-rc line if `~/.local/bin` isn't on its PATH), macOS (`/usr/local/bin/dv` symlink, admin prompt
    or `~/.local/bin`), Linux (`~/.local/bin`).
 4. **Agent integrations:** per environment, detect Claude Code / Codex / Cursor and offer the skill;
-   optional Claude Code `Stop` hook (§3 D).
+   optional Claude Code `Stop` hook (§3 D). In a distro the check runs as that distro's Linux `dv`
+   (`dv setup agents --json`, through the distro's backend), so it reads and writes the distro
+   user's own `~/.claude`, `~/.agents` and `$CODEX_HOME`, and a sandboxed `DV_WSL_HOME` covers it
+   in tests like every other distro write.
 5. **git identity** per environment (comment author).
 6. **GitHub:** `gh` present and `gh auth status` per environment — WSL's `gh` is a separate login.
    dv never runs `gh auth login` itself; it shows the command to run.
-7. **Optional:** default editor for "Open in editor" (VS Code / Cursor / Zed, with WSL remote URIs),
-   `dv://` URL handler, Explorer/Finder "Review in dv" entry, update channel.
+7. **Later:** default editor for "Open in editor" (VS Code / Cursor / Zed, with WSL remote URIs),
+   `dv://` URL handler and Explorer/Finder "Review in dv" entry come with polish (phase 9); the
+   update channel with packaging (phase 7).
 
 ### 12.3 Failure surface
 Every failed check renders as one row: what failed, the exact error, a primary fix action, and "Copy
@@ -1580,7 +1601,7 @@ diagnostics". The repo banner for a dead WSL backend uses the same row.
   once, not when the window closes. The detached GUI has no console, so a fatal startup error is
   a message box (`fatal.rs`): one before the app starts (the data dir) and one inside it (the
   window can't open, the fonts don't load) alike.
-  `dv-gui.exe` comes with packaging (phase 8, for shortcuts and the installer); until then a
+  `dv-gui.exe` comes with packaging (phase 7, for shortcuts and the installer); until then a
   double-clicked `dv.exe` flashes a console window while it detaches the GUI.
 - **macOS:** `dv.app` containing one `dv` binary; the CLI is a symlink to it.
 - **Linux:** one `dv` binary (GUI + CLI + backend), plus the static musl build used inside WSL.
@@ -1598,7 +1619,7 @@ step 2:
 The unit tests in `dv` that need gpui are gated on `gui`; `crates/dv/tests/*` run in every shape.
 
 ### 13.2 Builds: local only
-**No GitHub Actions runs until phase 9** (owner's rule, 2026-10-04: a Windows gpui build is slow and
+**No GitHub Actions runs until phase 10** (owner's rule, 2026-10-04: a Windows gpui build is slow and
 burns paid minutes). Phase 0 deletes `.github/workflows/`; nothing is pushed expecting CI to check it.
 Every gate runs locally through one script, `script/check` (bash; also used by agents):
 
@@ -1624,7 +1645,7 @@ Every gate runs locally through one script, `script/check` (bash; also used by a
    build run right there and the real-WSL step, which needs Windows, is skipped with a message;
    `script/build-linux` likewise builds where it runs on Linux and hops through `wsl.exe` only
    from Windows. The Linux GUI build needs X11/Wayland/fontconfig development packages,
-   which take `sudo` to install in the distro, so it comes with phase 8's AppImage
+   which take `sudo` to install in the distro, so it comes with phase 9's Linux GUI build and AppImage
 
 **The Linux build** WSL distros run (§5.2) is `script/build-linux [--aarch64]` (bash, like
 `script/check`): inside WSL Ubuntu, `rustup target add x86_64-unknown-linux-musl`, then `cargo
@@ -1637,11 +1658,11 @@ here, checked 2026-10-10; when it can't, the script says so and the x86_64 build
 dependency of the headless shape needs a C toolchain beyond what the musl target ships. **The
 Linux builds ship beside `dv.exe`, not embedded in it**: an embedded build would force a WSL
 build into every Windows build. The app looks in `DV_LINUX_DIR` when set, else its own folder;
-packaging (phase 8) puts them beside the installed `dv.exe`.
+packaging (phase 7) puts them beside the installed `dv.exe`.
 
 macOS has no local machine: macOS-only code is kept compiling by `cargo check --target
 aarch64-apple-darwin` where that works without the SDK, and is otherwise unverified until a Mac or
-phase 9's CI is available.
+phase 10's CI is available.
 
 
 ### 13.3 Install layout
@@ -1811,8 +1832,8 @@ Reviewed 2026-10-04 (live automation runs + four code reviews). Keep (port, then
 - The four themes' colour values (DESIGN §1).
 
 Do not carry over: the `Workspace`/`AppShell` god objects, the epoch/generation machinery, the
-optional-host WSL routing and its fallbacks, the review lock, the hand-rolled arg parsing, LSP and
-node/vtsls provisioning, conflict badges, the PR diff cache and workspace LRU, comment archaeology.
+optional-host WSL routing and its fallbacks, the review lock, the hand-rolled arg parsing, the LSP
+client and its node/vtsls provisioning (§18 is a new design), conflict badges, the PR diff cache and workspace LRU, comment archaeology.
 
 Known bugs in the first implementation that v1 must not repeat (each gets a test): CRLF diffs (§6),
 visited-only totals (§6.1), Histogram-based PR line validation (§9.3), one bad review file failing
@@ -1833,11 +1854,12 @@ Each phase ends with its e2e scenarios green and a screenshot review against DES
 | 2 | Review screen: switcher, file list (viewed, totals), diff stream (split/unified, gaps, highlight), threads + composer, comments list | Workflow A steps 1–3 by keyboard, e2e |
 | 3 | CLI (§10) + skill + rounds/interdiff + relocation (§8) | Workflow A end to end with a scripted "agent" in an e2e scenario |
 | 4 | `dv backend`, `RemoteBackend`, WSL install + routing + watch (§5), CLI re-exec (§10.4) | loopback tests pass on Windows and in WSL, and the real WSL ones (the app's connection, `dv setup wsl`, the CLI run inside the distro) in a sandboxed home (`script/check --linux`); the owner's live WSL check (§14.3) is ready for the owner to run |
-| 5 | GitHub: open PR, pull threads, submit sheet with validation and file-comment fallback (§9) | Workflow C against `mock_gh`; owner's live check |
-| 6 | Onboarding/setup/doctor (§12) | first run on a fresh data dir → onboarding → review, on Windows with a WSL distro |
-| 7 | Polish: settings, palette, light themes, empty states, performance pass on a 2,000-file PR | DESIGN review of every screen; perf budget (§17) met |
-| 8 | Packaging + updates with Velopack (D9), local feed; the Linux GUI build and its AppImage, built in WSL (§13.2) | install from `Setup.exe` → PATH set → a second local release updates the installed copy |
-| 9 | *(last, optional)* GitHub Actions: CI matrix incl. macOS, release workflow publishing to GitHub Releases, update feed switched over | owner asks for it |
+| 5 | Code intelligence (§18): text selection and `Ctrl F`, the file view and its history, language servers where the repo lives (`spawn_stdio`, `dv_lsp`, `mock_lsp`), TypeScript 7, then Tailwind CSS and CSS: hover, go to definition, find references | a scenario against `mock_lsp` hovers, goes to a definition in the stream and in a file view, steps back and lists references; the real TypeScript check passes on a fixture project; the owner reviews a WSL TypeScript branch with it |
+| 6 | Onboarding, setup and doctor (§12): the first-run screen and Settings › Setup over one list of checks per environment (Windows and each distro): dv in the distro, the CLI on PATH, the agent skills (Claude Code, Codex, Cursor) and the out-of-date notice, git identity, `gh`; `dv setup` and `dv doctor` | first run on a fresh data dir → onboarding → review, on Windows with a WSL distro (sandboxed home); an out-of-date skill in the distro is noticed and updated from Settings › Setup |
+| 7 | Packaging + updates on Windows with Velopack (D9), local feed: `Setup.exe`, `dv-gui.exe`, dv's icon on the executables, the window and the shortcuts, the install hooks running `dv setup path` (§12), the Linux builds beside the installed `dv.exe` (§13.2); a development build never replaces the installed copy's `dv` in a distro | install from `Setup.exe` → PATH set, icon in the taskbar and Start → a WSL repo opens from the installed copy → a second local release updates it |
+| 8 | GitHub: open PR, pull threads, submit sheet with validation and file-comment fallback (§9) | Workflow C against `mock_gh`; owner's live check |
+| 9 | Polish: settings, palette, light themes, empty states, performance pass on a 2,000-file PR; the Linux GUI build and its AppImage, built in WSL (§13.2) | DESIGN review of every screen; perf budget (§17) met; the AppImage starts on a Linux desktop |
+| 10 | *(last, optional)* GitHub Actions: CI matrix incl. macOS, release workflow publishing to GitHub Releases, update feed switched over | owner asks for it |
 
 ---
 
@@ -1855,7 +1877,212 @@ Each phase ends with its e2e scenarios green and a screenshot review against DES
 - **A second GUI on the same data dir** is allowed for now: `dv open` always starts a new app.
   Handing the request to a running one (single instance) comes later; until then two apps share
   `settings.json` and `known_repos.json`, each written atomically, the last write winning.
-- **macOS is unverified** until a Mac or phase 9's CI exists (§13.2); keep platform code behind small
+- **macOS is unverified** until a Mac or phase 10's CI exists (§13.2); keep platform code behind small
   modules so the gap is contained.
 - Window material (D8) is available: `gpui-pre` 0.3.6 has `WindowBackgroundAppearance::{Blurred,
   MicaBackdrop, MicaAltBackdrop}` (`gpui-pre-windows/src/window.rs`), checked 2026-10-04.
+
+---
+
+## 18. Code intelligence
+
+Goal 8, D11, phase 5. Reviewing a change means reading the code around it: what a changed call
+returns, where a renamed function is still used, what a type holds. dv answers those questions in
+the review itself, with the project's own language servers, so the reviewer never opens an editor
+to check one.
+
+### 18.1 What the reviewer gets
+
+- **Text.** The stream and the file view (below) select text with the mouse: a drag, a
+  double-click for a word, a triple-click for a line. `Ctrl C` copies it through
+  `dv_ui::system::write_clipboard`. A click in a line's code puts the cursor on that line (as a
+  click on its number does) and a **caret** at the character, which `F12`, `Shift F12` and `Ctrl
+  I` act on. A drag from a line's `+` still selects lines for a comment (DESIGN §4.1); a drag in
+  the code selects text.
+- **Find.** `Ctrl F` opens a find bar over the main area. In a file view it searches that file. In
+  the stream it searches what the review shows, both sides, the text inside gaps included (loaded
+  on demand); a match inside a gap opens the gap around it. Case-insensitive unless the query has
+  a capital; `Enter` / `Shift Enter` go to the next / previous match; the bar counts them ("3 of
+  17").
+- **The file view.** Any file of the repo, whole, at the review's new side (or its old side, for
+  a file the review deletes), drawn like the stream: highlighted, numbered, the review's changed
+  lines marked with the diff's colours and its threads inline. Any new-side line takes a comment
+  (its `+`, `C`); an anchor on a line the review didn't change is an ordinary anchor (§8). It opens
+  from a file header's menu (**View file**), from `F` on the current file, from `Ctrl P` (every
+  tracked file, filtered as the file list filters), and from go to definition and references.
+  One file view shows at a time, over the stream; `Esc` returns to the stream. The stream and the
+  file view share one **history** of positions: `Alt ←` / `Alt →` (and the mouse's back and
+  forward buttons) step through it, so a jump and back returns to the line it left.
+- **Hover.** The pointer resting 350 ms on an identifier, or `Ctrl I` at the caret, asks the
+  file's servers. The card under the token shows the signature as highlighted code and the docs
+  as Markdown (`dv_ui::markdown`, sanitised; a link to a file opens the file view, a web link goes
+  through `system::open_url`). It stays while the pointer is over the token or the card, so its
+  text can be selected, and offers **Go to definition** and **Find references**.
+- **Go to definition.** `Ctrl`+click, or `F12` at the caret. A location the stream shows (a
+  changed region of a listed file) scrolls the stream there; any other opens the file view there.
+  Several locations list in the references panel.
+- **Find references.** `Shift F12` at the caret, or the hover card's button. The panel's
+  **References** tab (beside Files and Comments) lists them grouped by file in path order, each
+  row its line's text, highlighted, with the symbol marked. Rows on lines the review changed carry
+  the changed marker, and **In this review** keeps only those: "who else calls the function this
+  change rewrote, and did the agent update them?" A row goes there as go to definition does.
+- **Not included:** diagnostics (the agent's own checks report errors), completion, rename,
+  code actions and formatting. dv never edits (§2.4).
+
+### 18.2 Which text a server reads
+
+A language server reads the project from disk, the working tree, and takes any open document's
+text from its client instead. Mapped onto a review's sides:
+
+- **The working tree.** A `working` review's new side, and a `branch` review's whose branch is
+  checked out in its home worktree (§2.2), the usual case, are the files on disk. dv opens the
+  document as it stands, and every answer is exact.
+- **Any other text** (an old side, an interdiff's snapshot column, a `staged` review's index, a
+  branch that isn't checked out, a file deleted since): dv opens that side's text as the document
+  at the file's path (`didOpen`, which overrides the disk for that file only), so hover and
+  definition read the text under the pointer. Other files are still read from the working tree,
+  so a location in another file opens that file as it stands now. A hover card or references list
+  answered this way says "read against the working tree".
+- One version of a path is open at a time. Hovering the other side of the same file closes the
+  document and opens that side's text.
+
+### 18.3 Where servers run
+
+A server runs where its repo lives, beside the repo's backend. `LocalBackend` spawns it on this
+machine. For a WSL repo, the distro's `dv backend --stdio` spawns it inside the distro, so it
+reads the distro's files natively; no file crosses 9P.
+
+The `Backend` trait (§5.1) gains one generic capability rather than an LSP one:
+
+```rust
+fn spawn_stdio(&self, spec: &ProcessSpec, sink: ProcessSink) -> Result<ProcessHandle, BackendError>;
+// ProcessSpec: the executable (an absolute path a resolver found, §18.4), args, a cwd relative to
+// the worktree root, an env overlay. ProcessHandle: write stdin bytes, kill; dropping it kills.
+// ProcessSink: stdout chunks, stderr lines (kept as diagnostics), the exit status.
+```
+
+On the wire (`PROTO = 2`): `spawn {repo, spec}` → `{proc}`, `proc_write {proc, bytes}`,
+`proc_kill {proc}`, and `{"proc": n, "out": <base64>}` / `{"proc": n, "exit": <code>}`
+interleaved like watch batches. A running process counts as in use for the idle close (§5.1).
+Locally it joins the job object (`dv_backend::job`); in a distro the server puts it in a process
+group of its own and kills that group when it is killed or when the backend's stdin ends, so a
+language server never outlives dv. Nothing runs through a shell: the executable is one a resolver
+found, and its arguments come from the language's spec.
+
+### 18.4 Languages
+
+A new crate, **`dv_lsp`** (never gpui), holds:
+
+- **The client.** Content-Length framing; requests with ids and cancellation (`$/cancelRequest`
+  when a hover is abandoned); answers to the server's own requests (`workspace/configuration`
+  from the spec's settings, `client/registerCapability` recorded, `window/workDoneProgress/create`
+  turned into the status bar's progress). It uses `lsp-types` 0.97, already in the tree through
+  gpui-component. Positions are UTF-8 (`general.positionEncodings`); the client converts from
+  UTF-16 for a server that offers only that.
+- **The languages.** A language server is data, `LanguageServerSpec`: its id and name, the
+  documents it serves (language ids and extensions), when it applies to a project (root markers,
+  a dependency), how its executable is found (resolvers, in order), its arguments, initialization
+  options and settings. Each spec is one module in `dv_lsp::languages`, registered in one list.
+  Adding a language is one module and its tests. Several servers can serve one file (a `.tsx`:
+  TypeScript and Tailwind CSS). Hover cards stack their answers in the list's order; definition
+  and references take the first server that answers with anything.
+
+**Resolvers** run in order, each a function of the repo's files read through the backend, so the
+answer is the same wherever the repo lives:
+
+1. **Project.** The project's own copy, at the version its lockfile pins. For TypeScript this is
+   Node's resolution of `typescript` from the file's package directory, following symlinks (the
+   npm, pnpm and bun layouts). TypeScript 7 or later gives its native executable, from
+   `@typescript/typescript-<platform>-<arch>`'s `lib/`, run as `tsc --lsp --stdio`. No Node is
+   needed. Checked 2026-10-13 on the owner's bun monorepo, with TypeScript 7.0.2 in WSL:
+   initialize took 0.09 s, the first hover 0.9 s (the project loading), definition was immediate,
+   references took 0.05 s across the workspace, and the server offers UTF-8 positions.
+2. **Settings.** A command configured for that server (`settings.json`, `lsp.<id>.command`): an
+   argument list, never a shell string.
+3. **PATH.** The executable on `PATH`. In a distro this is the login shell's `PATH`, read once
+   per connection (`$SHELL -lc 'printf %s "$PATH"'`): the backend runs under `wsl.exe --exec`
+   without the user's profile, and that profile is where bun, nvm and the like add their tools.
+4. **None.** The status bar names the missing server and how to get it (§18.5); so does the
+   doctor (§12).
+
+**JavaScript servers.** A server written in JavaScript (a spec marks it `runtime: js`) resolves
+to its package's entry script, the file its `bin` names, not to the `bin` shim, whose `#!/usr/bin/env
+node` line would pick the runtime. dv runs that script with a runtime of its own choosing: **bun**
+first, then **node**, each found through settings (`lsp.runtime`), then `PATH` as above, then bun's
+default install (`~/.bun/bin/bun`). A package installed with `bun add -g` is found in bun's global
+folder (`~/.bun/install/global/node_modules`) as well as through `PATH`. A spec whose server is
+known to break under bun can name node only.
+
+dv installs neither language servers nor runtimes. The first implementation's Node and vtsls
+provisioning stays behind (§15).
+
+The first languages:
+
+| Spec | Files | Server | Resolvers |
+|---|---|---|---|
+| `typescript` | `.ts .tsx .mts .cts .js .jsx .mjs .cjs` | TypeScript 7+'s native `tsc --lsp --stdio` | project, settings |
+| `tailwindcss` | `.tsx .jsx .html .css` in a project whose CSS imports `tailwindcss` (v4) or with a `tailwind.config.*` (v3) | `tailwindcss-language-server --stdio` (`@tailwindcss/language-server`, JavaScript) | project, settings, PATH, bun global |
+| `css` | `.css .scss .less` | `vscode-css-language-server --stdio` (`vscode-langservers-extracted`, JavaScript) | settings, PATH, bun global |
+
+A project on TypeScript 6 or older needs `typescript-language-server` (JavaScript), found through
+settings, `PATH` or bun's global folder. It is a spec like the others; its tests come when a project needs it.
+
+### 18.5 Lifecycle
+
+- One server per worktree and spec. When a review opens, after its file list shows, dv starts in
+  the background the servers whose specs apply to the review's files, so the first hover doesn't
+  wait for a project load. A worktree's servers stop 5 minutes after its last review closes.
+- A file changed on disk is announced to servers that registered for it
+  (`workspace/didChangeWatchedFiles`), from the backend's watch (§5.3).
+- A server that exits restarts after 1, 2 and 5 s, then shows as failed until **Retry**, like a
+  connection (§5.2). Requests in flight fail quietly: a hover just doesn't show.
+- A hover times out after 5 s, a definition after 10 s, references after 30 s.
+- The status bar names each server and its state: loading (with its progress), ready, failed (a
+  click shows the command line, the last stderr lines and **Retry**), or missing (how to get it).
+
+### 18.6 In the app
+
+`dv_ui::intel` holds a `CodeIntel` entity per open review: its servers (through the review's
+backend), the open documents, requests and their cancellation, and the last hover. The views are
+`file_view`, the `references` panel tab, the hover card and the find bar. The stream and the file
+view map the pointer to a line and a UTF-8 column with the same shaped lines they paint. Under
+automation, `state` shows the open hover's text, the file view (path, side, top line), the
+references rows, the find bar (query, current match, count) and the selected text. A token is a
+target, `code/<path>/<old|new>/<line>/<column>`, for hovering and clicking.
+
+### 18.7 Testing
+
+- `dv_lsp`'s own tests use an in-process fake server: framing, cancellation, the encoding
+  conversion, server requests, restart.
+- **`mock_lsp`** (a bin, like `mock_gh`): a scripted server, a JSON scenario of the requests it
+  expects and its answers. An override (`DV_LSP_<ID>`, like `DV_GH`) points a spec at it, so e2e
+  scenarios cover hover, definition into the stream and into a file view, back, references, a
+  server that crashes and restarts, and one that is missing, with no bun, Node or TypeScript on the
+  machine.
+- Resolver tests run on fixture trees with the npm, pnpm and bun layouts (symlinks, `.bun/`), on
+  Windows and in WSL.
+- `spawn_stdio` is tested over the loopback (in-process and as a child process): output, stdin,
+  kill, exit, and the idle-close accounting. The real-WSL tests spawn a process in the sandboxed
+  home.
+- **A real TypeScript check**, opt-in: with `DV_TEST_TSC` naming a TypeScript 7 native `tsc`, a
+  fixture project gets hover, definition and references from the real server. It is read-only
+  and local, so `script/check` runs it whenever the variable is set; it is not an owner-only live
+  check.
+
+### 18.8 Order within phase 5
+
+Each step is its own commit with its own scenarios:
+
+1. Text selection and copy, and `Ctrl F` in the stream.
+2. The file view, the history, `Ctrl P`, `Ctrl F` in a file view, and comments on any line.
+3. `spawn_stdio` in both backends, `dv_lsp`, `mock_lsp` and the `typescript` spec: hover, go to
+   definition, references, the status bar.
+4. The JavaScript runtime (bun, then node), the `tailwindcss` and `css` specs, and stacked
+   hover cards. Both run under bun (checked 2026-10-13 with bun 1.4.2 on the owner's Tailwind v4
+   project): Tailwind's hover shows a class's CSS, its first answer after 9 s while it scans the
+   project, so it starts with the review (§18.5); the CSS server's hover documents properties, but
+   its go to definition found no custom property in a Tailwind v4 stylesheet, even one defined in
+   the same file, so `css` comes last and may stay hover-only.
+
+**Budgets:** a hover shows within 150 ms of the delay ending, once its server is ready; a file
+view opens within 100 ms for a local repo and 300 ms for a WSL one.

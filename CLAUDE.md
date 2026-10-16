@@ -69,7 +69,7 @@ components = `gpui-component =0.6.6` (PLAN D1). Don't guess APIs: grep the sourc
 - **GitHub only through `gh`** (PLAN D7), with `GH_PROMPT_DISABLED=1` and the `DV_GH` override.
   Tests and scenarios point `DV_GH` at `mock_gh`; nothing automated talks to GitHub. If `gh auth
   status` fails, ask the owner to run `gh auth login`.
-- **No CI.** There are deliberately no GitHub Actions workflows until PLAN §16 phase 9 (a Windows
+- **No CI.** There are deliberately no GitHub Actions workflows until PLAN §16 phase 10 (a Windows
   gpui build burns paid minutes). Don't add `.github/workflows/` and don't push expecting anything
   to check the change; verify locally with `script/check`.
 - **Windows and the OS go through seams.** Every window opens through
