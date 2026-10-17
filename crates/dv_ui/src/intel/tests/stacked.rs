@@ -473,6 +473,7 @@ fn the_card_spans_the_servers_range() {
         range: start + 7..start + 10,
         name: "500".into(),
         offset: start + 7,
+        worktree: false,
     };
     let range = |line: u32, from: usize, to: usize| dv_lsp::TextRange {
         start: dv_lsp::TextPosition::new(line, from as u32),
@@ -493,6 +494,7 @@ fn the_card_spans_the_servers_range() {
         token: Default::default(),
         sections: Vec::new(),
         span: at.range.clone(),
+        note: None,
         against_worktree: false,
         id: 1,
     };

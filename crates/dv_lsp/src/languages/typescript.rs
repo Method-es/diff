@@ -68,8 +68,8 @@ pub static SPEC: LanguageServerSpec = LanguageServerSpec {
     initialization_options: no_options,
     settings: no_settings,
     missing: "TypeScript 7 isn't installed in this project",
-    install_hint: "Add typescript@7 to the project (npm, pnpm or bun install), or set \
-                   lsp.typescript.command in settings.json",
+    install_hint: "Add typescript@7 to the project (`npm install -D typescript@7`, or pnpm's or \
+                   bun's), or set `lsp.typescript.command` in settings.json",
 };
 
 fn no_options() -> Value {

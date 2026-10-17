@@ -344,7 +344,11 @@ impl Backend for Denies {
     fn worktree_len(&self, rel: &str) -> Result<Option<u64>, BackendError> {
         self.inner.worktree_len(rel)
     }
-    fn probe_path(&self, path: &str) -> Result<dv_core::backend::PathProbe, BackendError> {
+    fn probe_path(
+        &self,
+        path: &str,
+        read: u64,
+    ) -> Result<dv_core::backend::PathProbe, BackendError> {
         if path.starts_with(&self.denied) {
             return Err(BackendError::Io {
                 op: "probing".into(),
@@ -355,7 +359,7 @@ impl Backend for Denies {
                 ),
             });
         }
-        self.inner.probe_path(path)
+        self.inner.probe_path(path, read)
     }
     fn store_append(&self, rel: &str, line: &[u8]) -> Result<(), BackendError> {
         self.inner.store_append(rel, line)

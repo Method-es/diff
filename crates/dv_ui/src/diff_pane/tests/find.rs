@@ -99,9 +99,10 @@ fn ctrl_f_searches_every_file_both_sides_and_enter_goes_through_the_matches(
     assert!(find(&pane, cx).open);
     type_query(&shell, "needle", cx);
     let found = find(&pane, cx);
-    // a.txt: the gap's line in both columns, the changed line's new side (smart case: the
-    // query has no capital, so `Needle` matches); z.txt's addition. bin.dat can't be searched.
-    assert_eq!(found.count, 4, "{found:?}");
+    // a.txt: the gap's line (once, on the new column: a context line matches once in split
+    // view too), the changed line's new side (smart case: the query has no capital, so
+    // `Needle` matches); z.txt's addition. bin.dat can't be searched.
+    assert_eq!(found.count, 3, "{found:?}");
     assert!(found.complete);
     assert_eq!(found.skipped, 1);
     assert_eq!(state(&shell, "z.txt", cx), "loaded");
@@ -112,22 +113,17 @@ fn ctrl_f_searches_every_file_both_sides_and_enter_goes_through_the_matches(
     assert_eq!(summary(&pane, "a.txt", cx).gaps.len(), 1);
     press(cx, &shell, "enter");
     assert_eq!(find(&pane, cx).current, Some(2));
-    assert_eq!(
-        cursor(&pane, cx),
-        Some(("a.txt".to_string(), AnchorSide::Old, 20))
-    );
+    assert_eq!(cursor(&pane, cx), new_line("a.txt", 20));
     let gaps = summary(&pane, "a.txt", cx).gaps;
     assert_eq!(gaps, [11, 17], "line 20 and 3 lines either side shown");
     press(cx, &shell, "enter");
     assert_eq!(find(&pane, cx).current, Some(3));
-    assert_eq!(cursor(&pane, cx), new_line("a.txt", 20));
-    press(cx, &shell, "enter");
     assert_eq!(cursor(&pane, cx), new_line("z.txt", 2));
     // Wrapping both ways.
     press(cx, &shell, "enter");
     assert_eq!(find(&pane, cx).current, Some(1));
     press(cx, &shell, "shift-enter");
-    assert_eq!(find(&pane, cx).current, Some(4));
+    assert_eq!(find(&pane, cx).current, Some(3));
     assert_eq!(cursor(&pane, cx), new_line("z.txt", 2));
     // The caret sits at the match's start, for what language features do there.
     let caret = pane.read_with(cx, |pane, _| pane.caret()).unwrap();
@@ -235,8 +231,6 @@ fn the_first_match_is_the_next_one_in_the_rows_order_and_enter_searches_typing_f
     assert_eq!(found.query, "end");
     assert_eq!(found.current, Some(1));
     settle_drawn(cx, &shell, "the search", |_, _| true);
-    assert_eq!(
-        cursor(&pane, cx),
-        Some(("a.txt".to_string(), AnchorSide::Old, 4))
-    );
+    // A context line: its new column's.
+    assert_eq!(cursor(&pane, cx), new_line("a.txt", 4));
 }

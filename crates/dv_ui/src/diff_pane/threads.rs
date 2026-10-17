@@ -238,9 +238,9 @@ impl DiffPane {
     }
 
     pub(super) fn read_only(&self, cx: &gpui::App) -> bool {
-        // The working tree read in a file view isn't the review's text: no comment anchors
-        // on it (`file_view`).
-        self.file_view_worktree()
+        // The working tree or a file outside the repository read in a file view isn't the
+        // review's text: no comment anchors on it (`file_view`).
+        self.file_view_on_disk()
             || self
                 .session
                 .as_ref()
@@ -801,9 +801,14 @@ impl DiffPane {
         cx.notify();
     }
 
-    /// Drops the composer without touching the keyboard (`Esc` in the stream). `false` when
-    /// there was none.
+    /// Drops an empty composer without touching the keyboard (`Esc` in the stream). A composer
+    /// holding a draft stays: only `Esc` in the composer itself discards one (DESIGN §5), so a
+    /// press in the code to quote it, `Ctrl C` and `Esc` never lose it. `false` when nothing
+    /// was dropped.
     pub(super) fn drop_composer(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.has_draft(cx) {
+            return false;
+        }
         self.close_composer(cx).is_some()
     }
 

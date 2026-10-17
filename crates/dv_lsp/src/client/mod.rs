@@ -186,9 +186,13 @@ pub(crate) struct State {
     pub(crate) pending: HashMap<i64, mpsc::Sender<Reply>>,
     pub(crate) encoding: PositionEncoding,
     capabilities: Value,
+    /// `initialize`'s `serverInfo` version, when the server gave one.
+    version: Option<String>,
     /// Open documents by worktree path.
     documents: HashMap<String, Document>,
     next_version: i32,
+    /// Counts opens, for [`Document::used`].
+    next_use: u64,
     watchers: Vec<Watcher>,
     /// Every registration's id and method.
     registrations: Vec<(String, String)>,
@@ -199,7 +203,19 @@ pub(crate) struct State {
 struct Document {
     language_id: String,
     text: Arc<str>,
+    /// When it was last opened or asked to be (a count): the least recent closes first once
+    /// more than [`DOCUMENTS_OPEN`] are open.
+    used: u64,
 }
+
+/// How many worktree files a UTF-16 server's answer reads at once to convert its columns
+/// (`Shared::convert_ranges`).
+pub const FILE_READERS: usize = 8;
+
+/// How many documents a client keeps open: past it, the one asked about least recently is
+/// closed (the server reads it from the disk again), so a long session doesn't keep every file
+/// it ever hovered open in the server.
+pub const DOCUMENTS_OPEN: usize = 64;
 
 impl LspClient {
     /// Starts `command` through `backend` and initializes it; blocks until the server is ready
@@ -244,8 +260,10 @@ impl LspClient {
                 pending: HashMap::new(),
                 encoding: PositionEncoding::Utf16,
                 capabilities: Value::Null,
+                version: None,
                 documents: HashMap::new(),
                 next_version: 1,
+                next_use: 0,
                 watchers: Vec::new(),
                 registrations: Vec::new(),
                 progress: Vec::new(),
@@ -345,10 +363,15 @@ impl LspClient {
         let encoding = PositionEncoding::from_capability(
             capabilities.get("positionEncoding").and_then(Value::as_str),
         );
+        let version = result
+            .pointer("/serverInfo/version")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         {
             let mut state = shared.state.lock();
             state.encoding = encoding;
             state.capabilities = capabilities;
+            state.version = version;
         }
         shared.notify("initialized", json!({}));
         if !shared.config.settings.is_null() {
@@ -396,6 +419,11 @@ impl LspClient {
         self.shared.state.lock().encoding
     }
 
+    /// The server's version, from `initialize`'s `serverInfo`, when it gave one.
+    pub fn version(&self) -> Option<String> {
+        self.shared.state.lock().version.clone()
+    }
+
     /// The server's `capabilities` from `initialize`.
     pub fn capabilities(&self) -> Value {
         self.shared.state.lock().capabilities.clone()
@@ -426,13 +454,16 @@ impl LspClient {
         text: impl Into<Arc<str>>,
     ) -> Result<(), RequestError> {
         let text = text.into();
-        let (close, version) = {
+        let (close, version, evicted) = {
             let mut state = self.shared.state.lock();
             if state.status.has_ended() {
                 return Err(RequestError::Exited);
             }
-            let close = match state.documents.get(rel) {
+            state.next_use += 1;
+            let used = state.next_use;
+            let close = match state.documents.get_mut(rel) {
                 Some(open) if open.text == text && open.language_id == language_id => {
+                    open.used = used;
                     return Ok(());
                 }
                 Some(_) => true,
@@ -445,10 +476,30 @@ impl LspClient {
                 Document {
                     language_id: language_id.to_string(),
                     text: text.clone(),
+                    used,
                 },
             );
-            (close, version)
+            // Past the bound, the document asked about least recently goes.
+            let evicted = (state.documents.len() > DOCUMENTS_OPEN)
+                .then(|| {
+                    state
+                        .documents
+                        .iter()
+                        .min_by_key(|(_, document)| document.used)
+                        .map(|(path, _)| path.clone())
+                })
+                .flatten();
+            if let Some(path) = &evicted {
+                state.documents.remove(path);
+            }
+            (close, version, evicted)
         };
+        if let Some(path) = evicted {
+            self.shared.notify(
+                "textDocument/didClose",
+                json!({"textDocument": {"uri": self.shared.paths.uri_text(&path)}}),
+            );
+        }
         let uri = self.shared.paths.uri_text(rel);
         if close {
             self.shared.notify(
@@ -476,6 +527,11 @@ impl LspClient {
                 json!({"textDocument": {"uri": self.shared.paths.uri_text(rel)}}),
             );
         }
+    }
+
+    /// The paths of the documents open now.
+    pub fn open_documents(&self) -> Vec<String> {
+        self.shared.state.lock().documents.keys().cloned().collect()
     }
 
     /// The text `rel` is open with.
@@ -790,29 +846,37 @@ impl Shared {
     }
 
     /// Ranges in the server's encoding as UTF-8 ranges, reading each worktree file's lines
-    /// once (an open document's text, else the file through the backend). A file outside the
-    /// worktree, or one that can't be read, keeps the server's columns.
+    /// once (an open document's text, else the file through the backend, [`FILE_READERS`] files
+    /// at a time: a references answer over a hundred files is a hundred reads, each a round
+    /// trip to a WSL distro). A file outside the worktree, or one that can't be read, keeps
+    /// the server's columns.
     pub(crate) fn convert_ranges(
         &self,
         ranges: Vec<(UriTarget, lsp_types::Range)>,
     ) -> Vec<SymbolLocation> {
         let encoding = self.state.lock().encoding;
         // Each file's text and its line index, built once however many ranges it has.
-        let mut texts: HashMap<String, Option<(Arc<str>, LineIndex)>> = HashMap::new();
+        let texts: HashMap<String, Option<(Arc<str>, LineIndex)>> = match encoding {
+            PositionEncoding::Utf16 => {
+                let mut rels: Vec<&str> = ranges
+                    .iter()
+                    .filter_map(|(target, _)| match target {
+                        UriTarget::Worktree(rel) => Some(rel.as_str()),
+                        UriTarget::Outside { .. } => None,
+                    })
+                    .collect();
+                rels.sort_unstable();
+                rels.dedup();
+                self.texts_of(&rels)
+            }
+            PositionEncoding::Utf8 => HashMap::new(),
+        };
         ranges
             .into_iter()
             .map(|(target, range)| {
-                let text = match (&target, encoding) {
-                    (UriTarget::Worktree(rel), PositionEncoding::Utf16) => texts
-                        .entry(rel.clone())
-                        .or_insert_with(|| {
-                            self.text_of(rel).map(|text| {
-                                let index = LineIndex::new(&text);
-                                (text, index)
-                            })
-                        })
-                        .as_ref(),
-                    _ => None,
+                let text = match &target {
+                    UriTarget::Worktree(rel) => texts.get(rel).and_then(Option::as_ref),
+                    UriTarget::Outside { .. } => None,
                 };
                 let convert = |position: lsp_types::Position| {
                     let column = match text {
@@ -833,6 +897,28 @@ impl Shared {
                 }
             })
             .collect()
+    }
+
+    /// `rels`' texts and line indexes ([`Shared::text_of`]), read [`FILE_READERS`] at a time.
+    fn texts_of(&self, rels: &[&str]) -> HashMap<String, Option<(Arc<str>, LineIndex)>> {
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let found = Mutex::new(HashMap::new());
+        std::thread::scope(|scope| {
+            for _ in 0..FILE_READERS.min(rels.len()) {
+                scope.spawn(|| {
+                    while let Some(rel) =
+                        rels.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                    {
+                        let text = self.text_of(rel).map(|text| {
+                            let index = LineIndex::new(&text);
+                            (text, index)
+                        });
+                        found.lock().insert(rel.to_string(), text);
+                    }
+                });
+            }
+        });
+        found.into_inner()
     }
 
     /// A worktree file's text: its open document's, else the file read through the backend.

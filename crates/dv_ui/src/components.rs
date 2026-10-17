@@ -370,7 +370,7 @@ pub fn menu_panel(id: impl Into<gpui::ElementId>, theme: &DvTheme) -> Stateful<D
         .rounded(px(8.))
         .border_1()
         .border_color(c.overlay_line)
-        .bg(c.overlay)
+        .bg(c.popover)
         .shadow(theme.shadows.overlay.clone())
 }
 
@@ -401,4 +401,87 @@ pub fn menu_item(
             this.cursor_pointer().hover(move |style| style.bg(hover))
         })
         .when(!enabled, |this| this.opacity(0.5))
+}
+
+/// How wide `text` draws in `spec`'s font, as `window` shapes it.
+pub fn text_width(window: &gpui::Window, text: &str, spec: &crate::theme::TextSpec) -> Pixels {
+    if text.is_empty() {
+        return px(0.);
+    }
+    let font = gpui::Font {
+        weight: spec.weight,
+        ..gpui::font(spec.family.clone())
+    };
+    let run = gpui::TextRun {
+        len: text.len(),
+        font,
+        color: gpui::black(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window
+        .text_system()
+        .shape_line(
+            SharedString::from(text.to_string()),
+            spec.size,
+            &[run],
+            None,
+        )
+        .width
+}
+
+/// `path` as it fits where `fits` says: whole, else its first segment, "…" and as many whole
+/// trailing segments as fit ("/home/…/react/index.d.ts:12"), so its start and its file stay in
+/// view; the name alone after "…" when nothing more fits. Either separator.
+pub fn elide_path_middle(path: &str, fits: impl Fn(&str) -> bool) -> String {
+    if fits(path) {
+        return path.to_string();
+    }
+    let sep = if path.contains('\\') && !path.contains('/') {
+        '\\'
+    } else {
+        '/'
+    };
+    let parts: Vec<&str> = path.split(sep).collect();
+    let n = parts.len();
+    // The root and the first name (`/home`, `C:\Users`), or the first name alone.
+    let head_len = if parts
+        .first()
+        .is_some_and(|first| first.is_empty() || first.ends_with(':'))
+    {
+        2
+    } else {
+        1
+    };
+    let tail = |keep: usize| parts[n - keep..].join(&sep.to_string());
+    if n > head_len + 1 {
+        let head = parts[..head_len].join(&sep.to_string());
+        for keep in (1..n - head_len).rev() {
+            let shown = format!("{head}{sep}…{sep}{}", tail(keep));
+            if fits(&shown) {
+                return shown;
+            }
+        }
+    }
+    format!("…{sep}{}", tail(1))
+}
+
+/// `path` as it fits where `fits` says: whole, else with as few whole leading segments as it
+/// takes given way to "…/" ("…/feedback/feedback-badge.tsx"), never cut inside a segment;
+/// the file's name alone (after "…/") when nothing more fits, which then truncates as it
+/// draws.
+pub fn elide_path_start(path: &str, fits: impl Fn(&str) -> bool) -> String {
+    if fits(path) {
+        return path.to_string();
+    }
+    // Either separator: a file outside the repository may be a Windows path.
+    let separators = ['/', '\\'];
+    let Some(name_at) = path.rfind(separators) else {
+        return path.to_string();
+    };
+    path.match_indices(separators)
+        .map(|(at, _)| format!("…{}", &path[at..]))
+        .find(|shown| fits(shown))
+        .unwrap_or_else(|| format!("…{}", &path[name_at..]))
 }

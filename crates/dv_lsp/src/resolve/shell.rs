@@ -195,7 +195,9 @@ fn passwd_shell(backend: &dyn Backend, user: &str) -> Option<String> {
     let PathProbe::File {
         contents: Some(bytes),
         ..
-    } = backend.probe_path("/etc/passwd").ok()?
+    } = backend
+        .probe_path("/etc/passwd", dv_core::backend::PROBE_READ_SMALL)
+        .ok()?
     else {
         return None;
     };

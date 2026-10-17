@@ -117,9 +117,11 @@ pub struct SolidTokens {
     pub sel: Rgba,
     /// Selected text in code (a mouse selection, DESIGN §4.1).
     pub text_sel: Rgba,
-    /// A find match in code; the current one is `find_current`, outlined in `yellow` (DESIGN §4.1).
+    /// A find match in code; the current one is `find_current`, outlined in `yellow`, the others
+    /// in `find_line`, so a match on an intraline word fill still reads as one (DESIGN §4.1).
     pub find_match: Rgba,
     pub find_current: Rgba,
+    pub find_line: Rgba,
     /// Progress tracks.
     pub track: Rgba,
     /// Inline code fill.
@@ -238,6 +240,7 @@ pub const DARK: TokenSet = TokenSet {
         text_sel: rgba(162, 119, 255, 0.42),
         find_match: rgba(255, 202, 133, 0.22),
         find_current: rgba(255, 202, 133, 0.32),
+        find_line: rgba(255, 202, 133, 0.62),
         track: rgba(255, 255, 255, 0.10),
         icode_bg: rgba(255, 255, 255, 0.08),
         hunk: rgba(130, 226, 255, 0.06),
@@ -343,6 +346,7 @@ pub const LIGHT: TokenSet = TokenSet {
         text_sel: rgba(109, 67, 224, 0.28),
         find_match: rgba(196, 128, 0, 0.18),
         find_current: rgba(196, 128, 0, 0.30),
+        find_line: rgba(135, 86, 0, 0.58),
         track: rgba(28, 24, 56, 0.10),
         icode_bg: rgba(28, 24, 56, 0.07),
         hunk: rgba(11, 102, 135, 0.06),

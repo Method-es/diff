@@ -302,7 +302,7 @@ fn lsp_runtime_comes_before_bun_and_node() {
         missing.reason,
         "lsp.runtime names deno, which isn't on PATH"
     );
-    assert_eq!(missing.hint, "Fix lsp.runtime in settings.json");
+    assert_eq!(missing.hint, "Fix `lsp.runtime` in settings.json");
 }
 
 /// A spec whose server breaks under bun.
@@ -394,22 +394,23 @@ fn a_missing_server_says_how_to_get_it_on_this_machine() {
     );
     assert_eq!(
         missing.hint,
-        "Install bun (bun.sh) or Node.js, then bun add -g @tailwindcss/language-server (or npm \
-         install -g @tailwindcss/language-server), or set lsp.tailwindcss.command in settings.json"
+        "Install bun (bun.sh) or Node.js, then `bun add -g @tailwindcss/language-server` (or \
+         `npm install -g @tailwindcss/language-server`), or set `lsp.tailwindcss.command` in \
+         settings.json"
     );
     // Node only: npm's way.
     let node = runtime(&tools, "node");
     assert_eq!(
         why_missing(&resolver(), &tailwindcss::SPEC, "src/App.tsx").hint,
-        "Install it with npm install -g @tailwindcss/language-server, or set \
-         lsp.tailwindcss.command in settings.json"
+        "Install it with `npm install -g @tailwindcss/language-server`, or set \
+         `lsp.tailwindcss.command` in settings.json"
     );
     // bun too: bun's way first.
     runtime(&home.join(".bun/bin"), "bun");
     assert_eq!(
         why_missing(&resolver(), &tailwindcss::SPEC, "src/App.tsx").hint,
-        "Install it with bun add -g @tailwindcss/language-server (or npm install -g \
-         @tailwindcss/language-server), or set lsp.tailwindcss.command in settings.json"
+        "Install it with `bun add -g @tailwindcss/language-server` (or `npm install -g \
+         @tailwindcss/language-server`), or set `lsp.tailwindcss.command` in settings.json"
     );
     // The server without a runtime is missing too, saying so.
     std::fs::remove_file(&node).unwrap();

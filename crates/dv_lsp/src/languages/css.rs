@@ -50,8 +50,8 @@ pub static SPEC: LanguageServerSpec = LanguageServerSpec {
     initialization_options: options,
     settings,
     missing: "The CSS language server isn't installed",
-    install_hint: "Install it with bun add -g vscode-langservers-extracted (or npm install -g \
-                   vscode-langservers-extracted), or set lsp.css.command in settings.json",
+    install_hint: "Install it with `bun add -g vscode-langservers-extracted` (or `npm install -g \
+                   vscode-langservers-extracted`), or set `lsp.css.command` in settings.json",
 };
 
 fn options() -> Value {

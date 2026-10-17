@@ -18,6 +18,21 @@
 //! and references go in a review whose new side isn't the working tree, since a language server
 //! reads the working tree (PLAN §18.2). Read the same way, kept apart from the sides' reads.
 //!
+//! **The disk's reads** (the working tree as it stands, a file outside the repository) are
+//! never covered by the watch of a review whose new side isn't the working tree, so the file
+//! view's is read again each time it opens and when the window comes back to the front
+//! ([`ReviewSession::read_disk_view_again`]), a file outside the repository only once a look
+//! (no bytes) finds its length changed; one the file view leaves is dropped, and a read
+//! at a side loses its highlights once the file view leaves it (placement keeps its text). A
+//! file over the size caps (`DiffLimits`), which the file view shows only after "Load anyway",
+//! isn't highlighted.
+//!
+//! **Outside the repository.** Go to definition into a file outside the repository (a
+//! library's declarations) shows it read-only ([`ReviewSession::outside_file`]): read through
+//! `Backend::probe_path` (up to `PROBE_READ_MAX`; links on the way followed, as a language
+//! server reports a file by its real path anyway), every line a context line, highlighted. A
+//! larger file shows the too-large notice; one that isn't there, a read that failed.
+//!
 //! **Paths.** The side's paths are read once per review open and round, when `Ctrl P` first
 //! asks ([`ReviewSession::ensure_side_paths`]), and kept; the finder adds the review's own
 //! files to them, so a file the agent created since shows too.
@@ -25,9 +40,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use dv_core::Side;
-use dv_core::diff::{DiffError, DiffLimits, FileDiff, side_file, side_paths};
+use dv_core::backend::{PROBE_READ_MAX, PathProbe};
+use dv_core::diff::{
+    DiffError, DiffLimits, DiffLine, FileDiff, LineKind, TextDiff, side_file, side_paths,
+};
 use dv_core::review::{AnchorSide, SideText, ThreadFile, unlisted_path};
+use dv_core::{Backend, BackendError, Side};
 use gpui::{AppContext as _, Context, Task};
 
 use super::load::Batch;
@@ -36,11 +54,25 @@ use super::{ReviewSession, SessionEvent, Shown};
 use crate::failure::Failure;
 use crate::syntax::{FileHighlights, highlight_diff, language_for_path};
 
-/// Where a read reads a file: one of the review's sides, or the working tree as it stands.
+/// Where a read reads a file: one of the review's sides, the working tree as it stands, or
+/// (an absolute path) outside the repository.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ReadAt {
     Side(AnchorSide),
     Worktree,
+    Outside,
+}
+
+/// Where the file view reads its file (PLAN §18.1 "The file view", "Go to definition").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ViewFrom {
+    /// At the review's side: the stream's diff of a listed file, else read at the side.
+    #[default]
+    Review,
+    /// As the working tree holds it now, read-only (module docs, "The working tree").
+    Worktree,
+    /// A file outside the repository, by its absolute path, read-only (module docs).
+    Outside,
 }
 
 /// One file read at one of the review's sides.
@@ -57,6 +89,11 @@ pub(super) struct SideRead {
     /// A read under way, which a newer one replaces.
     loading: Option<(u64, Task<()>)>,
     highlighting: Option<Task<()>>,
+    /// A file outside the repository: its length when it was read, which a look first
+    /// compares before it is read again (module docs, "The disk's reads").
+    len: Option<u64>,
+    /// That look, under way.
+    looking: Option<Task<()>>,
 }
 
 /// Where a file at the new side stands, as the file view shows it.
@@ -96,7 +133,8 @@ impl ReviewSession {
     fn read_side(&self, at: ReadAt) -> Option<Side> {
         match at {
             ReadAt::Side(which) => self.review_side(which).cloned(),
-            ReadAt::Worktree => Some(Side::Worktree),
+            // A file outside the repository doesn't depend on the review's sides.
+            ReadAt::Worktree | ReadAt::Outside => Some(Side::Worktree),
         }
     }
 
@@ -110,6 +148,103 @@ impl ReviewSession {
     /// reads it (module docs, "The working tree").
     pub fn worktree_file(&self, path: &str) -> SideFileState {
         self.read_state(ReadAt::Worktree, path)
+    }
+
+    /// Where the file outside the repository at `path` (absolute) stands, as
+    /// [`ReviewSession::ensure_outside_file`] reads it (module docs, "Outside the repository").
+    pub fn outside_file(&self, path: &str) -> SideFileState {
+        self.read_state(ReadAt::Outside, path)
+    }
+
+    /// Reads the file outside the repository at `path` (absolute) unless it is read, or being
+    /// read, and highlights it.
+    pub fn ensure_outside_file(&mut self, path: &str, cx: &mut Context<Self>) {
+        self.ensure_read(ReadAt::Outside, path, true, cx);
+    }
+
+    /// Reads `path` where `at` (the working tree, outside) says, highlighted: at once when it
+    /// wasn't read, again when it was (the read before shows until this one lands). A file
+    /// outside the repository is only looked at first, and read again only when its length
+    /// changed (it is read whole, up to 4 MiB, across the distro's connection).
+    fn read_from_disk(&mut self, at: ReadAt, path: &str, cx: &mut Context<Self>) {
+        let key = (at, path.to_string());
+        let Some(side) = self.read_side(at) else {
+            return;
+        };
+        let (busy, len) = match self.side_reads.get(&key) {
+            Some(read) => (
+                read.loading.is_some() || read.looking.is_some(),
+                read.len.filter(|_| read.read.is_some()),
+            ),
+            None => (false, None),
+        };
+        if busy {
+            return;
+        }
+        let Some(was) = len.filter(|_| at == ReadAt::Outside) else {
+            self.start_side_read(key, side, true, cx);
+            return;
+        };
+        let (backend, read_path) = (self.backend.clone(), key.1.clone());
+        let job = cx.background_spawn(async move { outside_len(backend.as_ref(), &read_path) });
+        let task = cx.spawn({
+            let key = key.clone();
+            async move |this, cx| {
+                let now = job.await;
+                this.update(cx, |this, cx| {
+                    let Some(read) = this.side_reads.get_mut(&key) else {
+                        return;
+                    };
+                    read.looking = None;
+                    if now != Some(was) {
+                        this.start_side_read(key, side, true, cx);
+                    }
+                })
+                .ok();
+            }
+        });
+        if let Some(read) = self.side_reads.get_mut(&key) {
+            read.looking = Some(task);
+        }
+    }
+
+    /// The file view's file read from the disk is read again (module docs, "The disk's
+    /// reads"): the window came back to the front.
+    pub(super) fn read_disk_view_again(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.file_view.clone() else {
+            return;
+        };
+        match self.file_view_from {
+            ViewFrom::Worktree => self.read_from_disk(ReadAt::Worktree, &path, cx),
+            ViewFrom::Outside => self.read_from_disk(ReadAt::Outside, &path, cx),
+            ViewFrom::Review => {}
+        }
+    }
+
+    /// The file view left `path` (read `from`): a read of the disk is dropped, a read at a
+    /// side loses its highlights (module docs, "The disk's reads").
+    pub(super) fn left_file_view(&mut self, path: &str, from: ViewFrom) {
+        match from {
+            ViewFrom::Worktree => {
+                self.side_reads
+                    .remove(&(ReadAt::Worktree, path.to_string()));
+            }
+            ViewFrom::Outside => {
+                self.side_reads.remove(&(ReadAt::Outside, path.to_string()));
+            }
+            ViewFrom::Review => {
+                for side in [AnchorSide::Old, AnchorSide::New] {
+                    if let Some(read) = self
+                        .side_reads
+                        .get_mut(&(ReadAt::Side(side), path.to_string()))
+                    {
+                        read.highlight = false;
+                        read.highlights = None;
+                        read.highlighting = None;
+                    }
+                }
+            }
+        }
     }
 
     fn read_state(&self, at: ReadAt, path: &str) -> SideFileState {
@@ -139,10 +274,10 @@ impl ReviewSession {
         self.ensure_read(ReadAt::Side(which), path, highlight, cx);
     }
 
-    /// Reads `path` as the working tree holds it unless it is read, or being read; `highlight`
-    /// highlights it too (module docs, "The working tree").
-    pub fn ensure_worktree_file(&mut self, path: &str, highlight: bool, cx: &mut Context<Self>) {
-        self.ensure_read(ReadAt::Worktree, path, highlight, cx);
+    /// Reads `path` as the working tree holds it unless it is read, or being read, and
+    /// highlights it (module docs, "The working tree").
+    pub fn ensure_worktree_file(&mut self, path: &str, cx: &mut Context<Self>) {
+        self.ensure_read(ReadAt::Worktree, path, true, cx);
     }
 
     fn ensure_read(&mut self, at: ReadAt, path: &str, highlight: bool, cx: &mut Context<Self>) {
@@ -255,16 +390,34 @@ impl ReviewSession {
         self.next_token += 1;
         let token = self.next_token;
         let (repo, read_side, read_path) = (self.repo.clone(), side.clone(), key.1.clone());
+        let (outside, backend) = (key.0 == ReadAt::Outside, self.backend.clone());
         // Whole, as the CLI reads it: the file view applies the caps to what it shows.
         let job = cx.background_spawn(async move {
-            side_file(&repo, &read_side, &read_path, &DiffLimits::UNLIMITED)
+            if outside {
+                match read_outside(backend.as_ref(), &read_path) {
+                    Ok((diff, len)) => (Ok(diff), len),
+                    Err(error) => (Err(DiffError::from(error)), None),
+                }
+            } else {
+                (
+                    side_file(&repo, &read_side, &read_path, &DiffLimits::UNLIMITED),
+                    None,
+                )
+            }
         });
         let task = cx.spawn({
             let key = key.clone();
             async move |this, cx| {
-                let read = job.await;
-                this.update(cx, |this, cx| this.finish_side_read(&key, token, read, cx))
-                    .ok();
+                let (read, len) = job.await;
+                this.update(cx, |this, cx| {
+                    if let Some(state) = this.side_reads.get_mut(&key)
+                        && state.loading.as_ref().is_some_and(|(at, _)| *at == token)
+                    {
+                        state.len = len;
+                    }
+                    this.finish_side_read(&key, token, read, cx)
+                })
+                .ok();
             }
         });
         let read = self.side_reads.entry(key).or_insert_with(|| SideRead {
@@ -275,6 +428,8 @@ impl ReviewSession {
             highlight,
             loading: None,
             highlighting: None,
+            len: None,
+            looking: None,
         });
         // A read at another side doesn't show meanwhile.
         if read.side != side {
@@ -350,7 +505,7 @@ impl ReviewSession {
         else {
             return;
         };
-        if language_for_path(path).is_none() || diff.as_text().is_none() {
+        if language_for_path(path).is_none() || diff.as_text().is_none_or(over_caps) {
             return;
         }
         let job = cx.background_spawn({
@@ -390,13 +545,12 @@ impl ReviewSession {
     /// Whether a read or a highlight of a file at the new side is under way (automation's
     /// `settled`).
     pub(super) fn side_reads_loading(&self) -> bool {
-        self.side_reads
-            .values()
-            .any(|read| read.loading.is_some() || read.highlighting.is_some())
-            || self
-                .side_paths
-                .as_ref()
-                .is_some_and(|paths| paths.paths.is_none())
+        self.side_reads.values().any(|read| {
+            read.loading.is_some() || read.highlighting.is_some() || read.looking.is_some()
+        }) || self
+            .side_paths
+            .as_ref()
+            .is_some_and(|paths| paths.paths.is_none())
     }
 
     /// The paths the new side holds, once read ([`ReviewSession::ensure_side_paths`]).
@@ -449,3 +603,106 @@ impl ReviewSession {
 
 /// The reads kept per side and path.
 pub(super) type SideReads = HashMap<(ReadAt, String), SideRead>;
+
+/// Whether `text` is over the size caps the file view shows a file under (`DiffLimits`): it
+/// isn't highlighted (module docs, "The disk's reads").
+fn over_caps(text: &TextDiff) -> bool {
+    let limits = DiffLimits::default();
+    let bytes: u64 = text
+        .lines
+        .iter()
+        .map(|line| line.text.len() as u64 + 1)
+        .sum();
+    text.lines.len() > limits.max_lines || bytes > limits.max_bytes
+}
+
+/// The file outside the repository at `path` (absolute on the backend's machine), as the file
+/// view shows it (module docs, "Outside the repository"), and its length: its text, every line
+/// a context line; too large past what `probe_path` reads; binary with a NUL early on; `None`
+/// when nothing is there (or a directory, or a link dv can't follow). The links on the way are
+/// only looked at; the file itself is read once. Blocking.
+pub fn read_outside(
+    backend: &dyn Backend,
+    path: &str,
+) -> Result<(Option<FileDiff>, Option<u64>), BackendError> {
+    let Some(real) = outside_real(backend, path)? else {
+        return Ok((None, None));
+    };
+    Ok(match backend.probe_path(&real, PROBE_READ_MAX)? {
+        PathProbe::File {
+            len,
+            contents: Some(bytes),
+        } => (Some(text_file(&bytes)), Some(len)),
+        PathProbe::File {
+            len,
+            contents: None,
+        } => (
+            Some(FileDiff::TooLarge {
+                old_len: None,
+                new_len: Some(len),
+            }),
+            Some(len),
+        ),
+        PathProbe::Missing | PathProbe::Dir | PathProbe::Link { .. } => (None, None),
+    })
+}
+
+/// The length of the file outside the repository at `path` now, only looked at (the links on
+/// the way followed); `None` when there is none. Blocking.
+fn outside_len(backend: &dyn Backend, path: &str) -> Option<u64> {
+    let real = outside_real(backend, path).ok()??;
+    match backend.probe_path(&real, 0).ok()? {
+        PathProbe::File { len, .. } => Some(len),
+        _ => None,
+    }
+}
+
+/// Where the file at `path` (absolute) really is, every link on the way followed, looked at
+/// only; `None` when there is no file there.
+fn outside_real(backend: &dyn Backend, path: &str) -> Result<Option<String>, BackendError> {
+    use dv_lsp::resolve::host::real_file;
+    use dv_lsp::resolve::node::{AbsPath, Reader};
+    let style = dv_lsp::WorkspacePaths::new(&backend.repo().toplevel).style();
+    let Some(asked) = AbsPath::parse(path, style) else {
+        return Ok(None);
+    };
+    let reader = Reader::new(backend, style);
+    Ok(real_file(&reader, &asked)?.map(|real| real.to_string()))
+}
+
+/// `bytes` as a file whose every line is unchanged (both sides the same text), as
+/// `dv_core::diff::side_file` gives a side back: binary when a NUL shows in its first 8,000
+/// bytes (git's own test), else its lines decoded leniently, `\r\n` endings noted.
+fn text_file(bytes: &[u8]) -> FileDiff {
+    let len = bytes.len() as u64;
+    if bytes.iter().take(8000).any(|&byte| byte == 0) {
+        return FileDiff::Binary {
+            old_len: Some(len),
+            new_len: Some(len),
+        };
+    }
+    let text = String::from_utf8_lossy(bytes);
+    let eof_newline = text.ends_with('\n');
+    let body = text.strip_suffix('\n').unwrap_or(&text);
+    let crlf = body.contains("\r\n") || text.ends_with("\r\n");
+    let lines: Vec<DiffLine> = if text.is_empty() {
+        Vec::new()
+    } else {
+        body.split('\n')
+            .enumerate()
+            .map(|(at, line)| DiffLine {
+                kind: LineKind::Context,
+                old_no: Some(at as u32 + 1),
+                new_no: Some(at as u32 + 1),
+                text: line.strip_suffix('\r').unwrap_or(line).to_string(),
+                words: Vec::new(),
+            })
+            .collect()
+    };
+    FileDiff::Text(TextDiff {
+        lines,
+        old_eof_newline: eof_newline,
+        new_eof_newline: eof_newline,
+        crlf,
+    })
+}

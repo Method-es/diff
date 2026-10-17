@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Barrier};
 
-use dv_core::backend::{BackendError, PROBE_READ_MAX, PathProbe, TextStats};
+use dv_core::backend::{BackendError, PROBE_READ_MAX, PROBE_READ_SMALL, PathProbe, TextStats};
 use dv_test_support::FixtureRepo;
 use pretty_assertions::assert_eq;
 
@@ -202,34 +202,49 @@ fn absolute_paths_probe_outside_the_worktree(subject: &Subject) {
     let backend = subject.open(&repo);
     let at = |name: &str| outside.join(name).to_str().unwrap().to_string();
     assert_eq!(
-        backend.probe_path(outside.to_str().unwrap()).unwrap(),
+        backend
+            .probe_path(outside.to_str().unwrap(), PROBE_READ_MAX)
+            .unwrap(),
         PathProbe::Dir
     );
     assert_eq!(
-        backend.probe_path(&at("package.json")).unwrap(),
+        backend
+            .probe_path(&at("package.json"), PROBE_READ_SMALL)
+            .unwrap(),
         PathProbe::File {
             len: 20,
             contents: Some(br#"{"version": "7.0.2"}"#.to_vec())
         }
     );
+    // Only looking: no bytes; and none past what was asked for.
+    for read in [0, 19] {
+        assert_eq!(
+            backend.probe_path(&at("package.json"), read).unwrap(),
+            PathProbe::File {
+                len: 20,
+                contents: None
+            },
+            "{read}"
+        );
+    }
     assert_eq!(
-        backend.probe_path(&at("big.bin")).unwrap(),
+        backend.probe_path(&at("big.bin"), u64::MAX).unwrap(),
         PathProbe::File {
             len: big.len() as u64,
             contents: None
         }
     );
     assert_eq!(
-        backend.probe_path(&at("missing")).unwrap(),
+        backend.probe_path(&at("missing"), 0).unwrap(),
         PathProbe::Missing
     );
     assert_eq!(
-        backend.probe_path(&at("package.json/below")).unwrap(),
+        backend.probe_path(&at("package.json/below"), 0).unwrap(),
         PathProbe::Missing
     );
     // The worktree itself is a path like any other.
     assert_eq!(
-        backend.probe_path(&backend.repo().toplevel).unwrap(),
+        backend.probe_path(&backend.repo().toplevel, 0).unwrap(),
         PathProbe::Dir
     );
     let separator = std::path::MAIN_SEPARATOR;
@@ -241,7 +256,7 @@ fn absolute_paths_probe_outside_the_worktree(subject: &Subject) {
     ] {
         assert!(
             matches!(
-                backend.probe_path(&bad),
+                backend.probe_path(&bad, 0),
                 Err(BackendError::InvalidPath { .. })
             ),
             "{bad:?} should be refused"
@@ -254,7 +269,7 @@ fn absolute_paths_probe_outside_the_worktree(subject: &Subject) {
     let made = std::os::windows::fs::symlink_dir("sub", &link);
     match made {
         Ok(()) => assert_eq!(
-            backend.probe_path(link.to_str().unwrap()).unwrap(),
+            backend.probe_path(link.to_str().unwrap(), 0).unwrap(),
             PathProbe::Link {
                 target: "sub".into()
             }

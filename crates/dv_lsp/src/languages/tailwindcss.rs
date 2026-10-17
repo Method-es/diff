@@ -120,8 +120,9 @@ pub static SPEC: LanguageServerSpec = LanguageServerSpec {
     initialization_options: options,
     settings,
     missing: "Tailwind CSS's language server isn't installed",
-    install_hint: "Install it with bun add -g @tailwindcss/language-server (or npm install -g \
-                   @tailwindcss/language-server), or set lsp.tailwindcss.command in settings.json",
+    install_hint: "Install it with `bun add -g @tailwindcss/language-server` (or `npm install -g \
+                   @tailwindcss/language-server`), or set `lsp.tailwindcss.command` in \
+                   settings.json",
 };
 
 fn options() -> Value {

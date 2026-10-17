@@ -308,6 +308,8 @@ pub fn session(shell: &Shell, cx: &App) -> Value {
         "total": session.files().len(),
         "current_file": shell.diff_pane().read(cx).current_file(),
         "view_mode": shell.diff_pane().read(cx).view_mode().key(),
+        // Which pane `cursor`, `selection`, `composer` and `focused_thread` describe.
+        "pane": shown_pane(shell),
         "cursor": shell.main_pane().read(cx).cursor().map(|cursor| json!({
             "path": cursor.path,
             "side": side(cursor.side),
@@ -485,6 +487,8 @@ pub fn stream(shell: &Shell, window: &Window, cx: &App) -> Value {
         "focused": shell.focus_handle(cx).is_focused(window),
         "files": files,
         "not_in_diff": section,
+        // Which pane `text_selection` and `caret` describe; the rest is the stream's.
+        "text_pane": shown_pane(shell),
         "text_selection": text_selection,
         "caret": caret,
     })
@@ -510,6 +514,7 @@ pub fn file_view(shell: &Shell, cx: &App) -> Value {
         "loading": view.loading,
         "notice": view.notice,
         "worktree": view.worktree,
+        "outside": view.outside,
     })
 }
 
@@ -546,7 +551,6 @@ pub fn intel(shell: &Shell, cx: &App) -> Value {
         return Value::Null;
     };
     let intel = intel.read(cx);
-    let session = intel.session().read(cx);
     let servers: Vec<Value> = intel
         .servers(cx)
         .into_iter()
@@ -560,6 +564,7 @@ pub fn intel(shell: &Shell, cx: &App) -> Value {
                     _ => Value::Null,
                 },
                 "root": server.root,
+                "version": server.version,
                 "command": server.command_line,
                 "source": server.source,
                 "starts": server.starts,
@@ -595,6 +600,7 @@ pub fn intel(shell: &Shell, cx: &App) -> Value {
                 "text": section.text(),
             })).collect::<Vec<_>>(),
             "against_worktree": card.against_worktree,
+            "note": card.note,
         }),
         None => match intel.hovering() {
             Some((at, on)) => json!({
@@ -609,7 +615,7 @@ pub fn intel(shell: &Shell, cx: &App) -> Value {
         },
     };
     let references = intel.references().map(|list| {
-        let shown = list.shown(session);
+        let shown = list.shown();
         let rows: Vec<Value> = shown
             .iter()
             .flat_map(|(file, rows)| {
@@ -617,6 +623,7 @@ pub fn intel(shell: &Shell, cx: &App) -> Value {
                     json!({
                         "path": file.label(),
                         "in_repo": file.worktree_path().is_some(),
+                        "side": file.side.map(side),
                         "line": row.line,
                         "column": row.location.range.start.column + 1,
                         "text": row.text,
@@ -629,6 +636,7 @@ pub fn intel(shell: &Shell, cx: &App) -> Value {
             "kind": list.kind.key(),
             "symbol": list.from.name,
             "loading": list.is_loading(),
+            "reading": list.is_reading(),
             "error": list.error,
             "count": list.count(),
             "in_review": list.in_review,
@@ -652,6 +660,15 @@ pub fn intel(shell: &Shell, cx: &App) -> Value {
     })
 }
 
+/// The pane the main area shows: `"file_view"` while the file view is open, else `"stream"`.
+fn shown_pane(shell: &Shell) -> &'static str {
+    if shell.is_file_view_open() {
+        "file_view"
+    } else {
+        "stream"
+    }
+}
+
 fn pane(pane: dv_ui::intel::Pane) -> &'static str {
     match pane {
         dv_ui::intel::Pane::Stream => "stream",
@@ -669,6 +686,7 @@ pub fn find(shell: &Shell, window: &Window, cx: &App) -> Value {
         return Value::Null;
     };
     json!({
+        "pane": shown_pane(shell),
         "open": find.open,
         "query": find.query,
         "current": find.current,

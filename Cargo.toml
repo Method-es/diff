@@ -103,6 +103,9 @@ serde_json = "1.0"
 sha2 = "0.11"
 tempfile = "3"
 thiserror = "2"
+# The edit `dv_ui::syntax::LineHighlighter` hands gpui-component's highlighter so it reparses a
+# new line from scratch (`InputEdit`); already in the tree through gpui-component.
+tree-sitter = "0.26"
 ulid = "3"
 windows-sys = "0.61"
 x11rb = "0.13"

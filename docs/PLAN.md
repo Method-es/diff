@@ -396,7 +396,7 @@ pub trait Backend: Send + Sync {
     fn worktree_read(&self, rel: &str) -> Result<Option<Vec<u8>>, BackendError>;
     fn worktree_len(&self, rel: &str) -> Result<Option<u64>, BackendError>;
     fn worktree_text_stats(&self, rel: &str) -> Result<Option<TextStats>, BackendError>; // size, lines, binary sniff (§6)
-    fn probe_path(&self, path: &str) -> Result<PathProbe, BackendError>; // an absolute path, read-only (§18.4)
+    fn probe_path(&self, path: &str, read: u64) -> Result<PathProbe, BackendError>; // an absolute path, read-only (§18.4)
     fn store_append(&self, rel: &str, line: &[u8]) -> Result<(), BackendError>;   // one write, O_APPEND (D5)
     fn store_read(&self, rel: &str) -> Result<Option<Vec<u8>>, BackendError>;
     fn store_list(&self, dir: &str) -> Result<Vec<String>, BackendError>;
@@ -421,10 +421,13 @@ of the index this way (§2.3), so the user's index is never written.
   the backend's machine (no `.`, `..` or empty components; on Windows a drive or UNC path, no
   verbatim or device prefix, no `:` past the drive) and says what is there: `Missing`, `Dir`,
   `Link {target}` (never followed, the target as the OS reads it) or `File {len, contents}`, the
-  bytes only for a file of at most 1 MiB (`PROBE_READ_MAX`: a `package.json`, never an
-  executable). Only the language servers' resolvers use it (§18.4): Node resolves packages above
-  the worktree and through links that leave it. Nothing in dv writes outside the worktree's own
-  paths and `.git/dv` (§2.4).
+  bytes only when the file is at most `read` bytes, which is itself at most 4 MiB
+  (`PROBE_READ_MAX`); `read` 0 only looks. The language servers' resolvers use it (§18.4): Node
+  resolves packages above the worktree and through links that leave it, every probe only
+  looking but the reads of a small file (`PROBE_READ_SMALL`, 1 MiB: a `package.json`, a shim,
+  never an executable); so do the references list and the file view for a file outside the
+  repository (up to 4 MiB, §18.1). Nothing in dv writes outside the worktree's own paths and
+  `.git/dv` (§2.4).
 - **Git invocation policy** (`dv_core::git::command`, the only place a git process is built):
   `LC_ALL=C`, `--no-pager` and `GIT_PAGER=cat`, `GIT_TERMINAL_PROMPT=0`, `GIT_OPTIONAL_LOCKS=0`,
   `-c core.quotepath=off -c color.ui=never -c color.diff=never -c diff.algorithm=myers
@@ -466,7 +469,7 @@ serialise as JSON number arrays, never cross as they are; `RepoInfo`, `WatchSpec
   handle `repo` (`env` is the overlay: the loopback tests send the fixture's, the app none);
   `close {repo}` forgets it.
 - One op per `Backend` method, naming its `repo`: `git {args, opts}`, `worktree_read`,
-  `worktree_len`, `worktree_text_stats`, `probe_path {repo, path}` (→ `{kind: missing | dir |
+  `worktree_len`, `worktree_text_stats`, `probe_path {repo, path, read}` (→ `{kind: missing | dir |
   link {target} | file {len, contents}}`, the contents base64), `store_append`, `store_read`, `store_list`,
   `store_write_atomic`, `store_remove`, `copy_index_to_store`; `watch {repo, spec}` →
   `{watch, worktree_error}`, whose batches the server holds back until that answer is out;
@@ -1582,11 +1585,16 @@ first time a listing or an open resolves it; repos compare with the distro folde
 (`Location::same_place`), so a spelling WSL couldn't confirm never makes a second row; so the switcher shows each target beside its open
 review by the rule `open_review` resumes by (`review::ops::is_review_of`); it watches nothing
 itself), `ReviewUi` (what the reviewer chose per review: split or unified), `GitHub` (gh calls, PR
-cache), `Settings` (material, mode, panel width). The **system seam**
+cache), `Settings` (material, mode, panel width, and the language servers' `lsp`, which the
+reviewer writes by hand and which is read again on **Check again** and when the window comes
+back to the front, §18.5), `LanguageServers` (every worktree's language servers, shared by the
+reviews open on it, §18.5). The **system seam**
 (open URL, reveal, folder picker, clipboard writes — recorded instead of performed under automation)
 is its own global, `dv_ui::system`, because automation swaps the whole thing for a recorder.
 
-**Data files** (the data dir, §13.3): `settings.json` (`material`, `mode`, `panel_width`),
+**Data files** (the data dir, §13.3): `settings.json` (`material`, `mode`, `panel_width`, and
+`lsp` as the reviewer writes it, §18.4; every write reads the file again first and keeps its
+`lsp` and the keys dv doesn't know as they are on disk, writing only the keys dv owns),
 `known_repos.json` (`{"v": 1, "repos": [{"location", "added_at", "opened_at"}]}`, ms; deliberately
 not the first implementation's `repos.json`, which sits in the same default dir with another shape)
 and `review_ui.json` (`{"v": 1, "reviews": {"<review id>": {"view_mode": "split" | "unified"}}}`).
@@ -1594,9 +1602,12 @@ Each is read leniently (unknown keys kept and written back), written atomically 
 and never written over when it exists but couldn't be read (`dv_ui::services::persist`).
 
 **Views** (each its own entity and directory): `shell` (title bar, status bar, layout, window
-material), `switcher` (repos + reviews, `Ctrl O`), `palette` (`Ctrl K`: files, reviews, PRs, commands —
-the single fuzzy surface), `file_list`, `comments_list`, `diff_pane`, `thread` + `composer`, `submit`
-(sheet), `onboarding`, `settings`, `banner` (errors and backend state, inline, never over content).
+material), `switcher` (repos + reviews, `Ctrl O`), `palette` (`Ctrl K`: reviews, PRs, commands),
+`file_finder` (`Ctrl P`: the files of the review's new side, §18.1), `file_list`,
+`comments_list`, `diff_pane` (the stream, and the file view in a one-file scope), `thread` +
+`composer`, `intel` (code intelligence: the hover card, the `references` panel tab, §18.6),
+`submit` (sheet), `onboarding`, `settings`, `banner` (errors and backend state, inline, never
+over content).
 
 **Review session:** `ReviewSession` entity (`dv_ui::session`) = one review, its target fixed for
 life: the repo and its store, the folded review, the comparison (§2.3: the interdiff since a
@@ -1843,7 +1854,7 @@ owner's live check (§14.3).
   against `LocalBackend` and against `RemoteBackend` over a server on in-memory pipes
   (`Launcher::InProcess`): repo info, git (failures, timeouts, ok codes, stdin, an index file),
   worktree reads (missing, links, binary, a 5 MB file), `probe_path` outside the worktree (a file
-with and without its bytes, a directory, a link, nothing, and the paths it refuses), the store (concurrent appends, atomic
+with and without its bytes, only looked at, read past what was asked, a directory, a link, nothing, and the paths it refuses), the store (concurrent appends, atomic
   writes, the index copy), invalid paths, every error's `Display` and `detail()`, watches
   (worktree, store, git state; dropping the handle, the sink gone when `drop` returns and a sink
   in progress finishing first; from inside the sink too), and processes (§18.3), also against a
@@ -2062,7 +2073,9 @@ to check one.
   glyphs are. Copying takes the source text, the lines a gap inside the selection hides
   included; switching split / unified or the comparison clears the selection, whose ends name
   one column or both. Every text field's own copy and cut (the find field, the composer, the
-  filters) go through `write_clipboard` too.
+  filters) go through `write_clipboard` too. A press in code takes the keyboard from the
+  composer, so `Esc` there never discards a composer holding a draft: only `Esc` in the
+  composer itself does (DESIGN §5); an empty one still closes.
 - **Find.** `Ctrl F` opens a find bar over the main area. In a file view it searches that file. In
   the stream it searches what the review shows, both sides, the text inside gaps included (loaded
   on demand); a match inside a gap opens the gap around it. Case-insensitive unless the query has
@@ -2088,7 +2101,7 @@ to check one.
   doesn't change"). It opens from a file header's menu (**View file**), from `F` on the current
   file (both at the cursor's line when it is in the file), from `Ctrl P` (every file of the new
   side, filtered as the file list filters), from a "Not in the diff" card's **View file**, and
-  (step 3) from go to definition and references. It is the stream's pane in a one-file scope
+  from go to definition and references. It is the stream's pane in a one-file scope
   (`dv_ui::diff_pane::file_view`), so the cursor, selection, text, copy and find work as in the
   stream; `S`, `V`, `I` and the gap keys do nothing there. Its side, status and whether the review
   changes it come from the review's own list (all changes) whichever comparison shows: a file the
@@ -2111,8 +2124,11 @@ to check one.
   blobs and links, the index's entries, or the working tree's tracked files still on disk plus the
   untracked ones git doesn't ignore), read once per review open and round, joined with the
   review's own files (a file the agent added since, a deleted one); a file passes when every word
-  is in its path, ignoring case, names matching before directories, the review's changed files
-  first among equal matches, the rest by path. Filtering runs in memory on each keystroke (20,000
+  is in its path, ignoring case; by the last word typed, a name that is that word (or is it but
+  for its extension: "listing-feed" finds `listing-feed.tsx` before `listing-feed-filters.tsx`)
+  comes first, then a name starting with it, then a name holding every word, then a match
+  through the directories only; the review's changed files first among equals, the rest by
+  path; the words' matches show in each row. Filtering runs in memory on each keystroke (20,000
   paths take a few milliseconds). Not over the "Finish round" sheet.
 - **Hover.** The pointer resting 350 ms on any character of code but whitespace and quotes, or
   `Ctrl I` at the caret's identifier, asks the file's servers, at the pointer's own character
@@ -2123,14 +2139,19 @@ to check one.
   range the servers answered for (the union of their ranges on that line that hold the asked
   character: Tailwind's is the whole class), and the pointer anywhere in it keeps the card
   without asking again. Go to definition, references and `Ctrl I` keep the identifier rule (a
-  number is no symbol). The card under the token shows the
+  number is no symbol). The card hangs under that range (above it when it doesn't fit below,
+  always within the main area, DESIGN §4.1) and shows the
   signature as highlighted code and the docs as Markdown (`dv_ui::markdown`, sanitised; a link to
   a file of the repository opens it as go to definition does, `#L12` naming its line; any other
   link goes through `system::open_url`). It stays while the pointer is over the token or the
   card, closing 300 ms after the pointer left both (and at once on a scroll, a press in the code
   or `Esc`), so its text can be selected (copied through the clipboard seam), and offers **Go to
-  definition** and **Find references**. Nothing shows while the answer is empty or the server
-  isn't there; the hover asked for before is cancelled when the pointer rests on another token.
+  definition** and **Find references**. Nothing shows while the server isn't there, or the
+  answer is empty for the working tree's text; when every server answered with nothing for
+  another side's text (a removed line's symbol, which they read against the working tree), a
+  one-line card says so ("No information: read against the working tree"). The hover asked for
+  before is cancelled when the pointer rests on another token; one in the pane the file view
+  hides (or replaces) goes as the view changes.
 - **Go to definition.** `Ctrl`+click, or `F12` at the caret. Where a location shows
   (`dv_ui::shell::intel`):
   - in the file it was asked from, answered against that side's text (an old side, a round's
@@ -2146,23 +2167,51 @@ to check one.
   - in any other review (`staged`, a commit, a branch not checked out): the file view of the
     file as the working tree holds it now, the text the server read ("as it stands now", §18.2;
     the file view's working-tree mode, labelled "working tree", read-only: no comments, no
-    threads), ignored files included;
-  - outside the worktree: it can't be shown, and the main area's notice says where it is
-    ("Defined outside the repository: /usr/lib/…/lib.d.ts:10").
+    threads), ignored files included. In that file view the pane shows the working tree, so a
+    server reads its text from the disk: hover, a definition in the same file, its references
+    and a hover card's file links all stay on the working tree, never labelled "read against
+    the working tree";
+  - outside the worktree, a file: the file view of it, read-only, by its absolute path (read
+    through `Backend::probe_path`, up to its 4 MiB, links on the way followed; over the
+    display caps the too-large notice with **Load anyway**, past 4 MiB with none), highlighted, labelled "Outside the repository ·
+    read-only" with the path and line; hover and go to definition work in it, asked of the
+    spec's first running server (no directory of the worktree routes it), which reads it from
+    the disk;
+  - anything else (a URI that isn't a file): it can't be shown, and the main area's quiet
+    notice says where it is ("Defined outside the repository: untitled:Untitled-1:10"), until
+    **Dismiss**, `Esc`, or another place.
 
-  The caret goes to the symbol, and it is a jump the history keeps. An answer that lands after
-  the reviewer moved on (the view, the file or the line isn't where it was asked) is dropped.
-  Several locations list in the References tab ("Definitions"); none does nothing. A references
-  row and a hover card's file link go the same way.
+  The cursor and the caret go to the symbol, and it is a jump the history keeps; asked with the
+  mouse (`Ctrl`+click, the hover card's buttons), the cursor and the caret move to the clicked
+  symbol first, so `Alt ←` comes back to it. An answer that lands after the reviewer moved on
+  (the view, the file or the line isn't where it was asked) is dropped; so is a place that
+  waits for its listed file's diff (§ above) once another place is asked for, the history steps
+  or the file view opens or closes, or when that diff fails to load, and a definition's that
+  fires after the reviewer moved on. Several locations list in the References tab
+  ("Definitions"); none does nothing. A references row and a hover card's file link go the
+  same way.
 - **Find references.** `Shift F12` at the caret, or the hover card's button. The panel's
-  **References** tab lists them grouped by file in path order, each row its line's text (read from
-  the working tree as the server read it), highlighted, with the symbol marked. While a list is
-  open the panel heads its column with two tabs, **Review** (the file list and the comments) and
-  **References**; closing the list takes them away. Rows on lines the review changed (an added
-  line of its new side with that text) carry the changed marker, and **In this review** keeps
-  only those: "who else calls the function this change rewrote, and did the agent update them?"
-  A row goes there as go to definition does. The review's diffs of the files the rows are in load
-  for it (`ReviewSession::load_for_references`).
+  **References** tab lists them grouped by file, the files the review changes first, then the
+  rest, each group in path order; the count and the rows (their line numbers) show as soon as
+  the server answers, each row's line text landing as its file is read (eight files at a time,
+  in the background) as the server read it: from the working tree, or for the asking file, when
+  the server read the text dv opened for another side (an old side, the index), from that text,
+  so its rows are that side's lines and a click goes to that side. Once every file is read the
+  rows' lines alone are highlighted, each on its own (nothing one opens colours another), and
+  the symbol is marked; a row whose symbol starts past
+  its room gives way at its start ("…{formatQuantity(rep.count)}") so the symbol shows, and a
+  path that doesn't fit drops whole leading segments ("…/feedback/feedback-badge.tsx"). The
+  list is virtualised, so 700 places in 100 files show at once (their lines read and
+  highlighted in about 0.1 s locally in a debug build: `references` module's ignored timing
+  test). While a list is open the panel heads its column with two tabs, **Review** (the file
+  list and the comments) and **References**; closing the list takes them away. Rows on lines
+  the review changed (an added line of its new side with that text; for rows read on the old
+  side, a removed line of it) carry the changed marker, and **In this review** keeps only
+  those: "who else calls the function this change rewrote, and did the agent update them?" In
+  an interdiff the marker means changed since the round (the comparison shown). Which rows are
+  marked is worked out when a file's text or its diff lands, not per frame. A row goes there as
+  go to definition does. The review's diffs of the files the rows are in load for it
+  (`ReviewSession::load_for_references`).
 - **Not included:** diagnostics (the agent's own checks report errors), completion, rename,
   code actions and formatting. dv never edits (§2.4).
 
@@ -2179,14 +2228,17 @@ text from its client instead. Mapped onto a review's sides:
   at the file's path (`didOpen`, which overrides the disk for that file only), so hover and
   definition read the text under the pointer. Other files are still read from the working tree,
   so a location in another file opens that file as it stands now. A hover card or references list
-  answered this way says "read against the working tree".
+  answered this way says "read against the working tree"; one asked in a file view that shows
+  the working tree as it stands (or a file outside the repository) reads the disk's text and
+  doesn't. The texts a review's requests opened are kept for the last 32 files asked about.
 - One version of a path is open at a time. Hovering the other side of the same file closes the
   document and opens that side's text.
 - A document that isn't the working tree's is closed once its request answers, so every other
   request (another file's definition, a references search) reads that file from the working
   tree again. One opened from the working tree's text stays open, and is closed when the review's
   watch reports its path changed (an agent's edit; a server prefers an open document to the
-  disk and ignores `didChangeWatchedFiles` for it), so the next request opens it afresh.
+  disk and ignores `didChangeWatchedFiles` for it), so the next request opens it afresh; a
+  rescan (anything may have changed) closes every open document on every server.
 
 ### 18.3 Where servers run
 
@@ -2270,7 +2322,10 @@ A new crate, **`dv_lsp`** (never gpui), holds:
   from the spec's settings, `client/registerCapability` recorded, `window/workDoneProgress/create`
   turned into the status bar's progress). It uses `lsp-types` 0.97, already in the tree through
   gpui-component. Positions are UTF-8 (`general.positionEncodings`); the client converts from
-  UTF-16 for a server that offers only that.
+  UTF-16 for a server that offers only that, reading the files an answer names eight at a time
+  (an open document's text, else the file through the backend). It keeps at most 64 documents
+  open, closing the one asked about least recently past that (the server reads it from the
+  disk again).
 
   `dv_lsp::LspClient::start` spawns the server through the review's backend, says `initialize`
   and `initialized` (and `workspace/didChangeConfiguration` with the spec's settings), and
@@ -2453,10 +2508,11 @@ bun or Node.js, or set `lsp.runtime`), and an `lsp.runtime` dv can't use says so
 A missing JavaScript server says where it looked ("Tailwind CSS's language server isn't
 installed (no node_modules/@tailwindcss/language-server in /a or /; not on PATH; not in
 ~/.bun/install/global/node_modules)") and how to get it on this machine: with bun there,
-"Install it with bun add -g @tailwindcss/language-server (or npm install -g …), or set
-lsp.tailwindcss.command in settings.json"; with node only, npm's command alone; with neither,
+"Install it with `bun add -g @tailwindcss/language-server` (or `npm install -g …`), or set
+`lsp.tailwindcss.command` in settings.json"; with node only, npm's command alone; with neither,
 "Install bun (bun.sh) or Node.js, then …". In an automated run the hint is the spec's own,
-naming both.
+naming both. A hint's commands and settings keys are in backticks: the server's details show
+each as inline code with a copy button (DESIGN §4.1 "Status bar").
 
 dv installs neither language servers nor runtimes. The first implementation's Node and vtsls
 provisioning stays behind (§15).
@@ -2503,7 +2559,16 @@ the project resolves), which comes when a project needs it.
   the background the servers whose specs apply to the review's files, so the first hover doesn't
   wait for a project load. A worktree's servers stop 5 minutes after its last review closes.
 - A file changed on disk is announced to servers that registered for it
-  (`workspace/didChangeWatchedFiles`), from the backend's watch (§5.3).
+  (`workspace/didChangeWatchedFiles`), from the backend's watch (§5.3): each path a watcher asks
+  about is looked at once per batch, whatever servers ask, and each server told in one call, the
+  batches one at a time in the watch's order: a
+  deletion when it is gone, a creation when it was last seen missing, a change when it was last
+  seen there, and a creation and a change for a path never looked at before (it may be new,
+  which a server only takes up as a creation). A rescan closes every open document and
+  announces those paths (`dv_ui::intel::servers::changes`).
+- `settings.json`'s `lsp` is read again on **Check again** and when the window comes back to
+  the front; when it changed, every worktree's resolver is made again with it and every
+  directory resolved again (a server whose command changed is replaced).
 - A server that exits restarts after 1, 2 and 5 s, then shows as failed until **Retry**, like a
   connection (§5.2); one that ran a minute or more before it ended counts afresh
   (`dv_lsp::Restarts`). Only `Exited` restarts; `Stopped` is a stop dv asked for (§18.4).
@@ -2607,7 +2672,9 @@ for hovering, clicking and dragging; they are recorded only while a capture is a
   `RequestCancelled`. `crash` exits on the n-th request without answering it, at most `times`
   times over the log, so a restarted server works. Every message it reads, each start and each
   crash are appended to the log (`--log` or `DV_MOCK_LSP_LOG`) as JSON lines. `${root}` in an
-  answer stands for `initialize`'s `rootUri`, so a scenario names the fixture's files;
+  answer stands for `initialize`'s `rootUri`, so a scenario names the fixture's files, and
+  `${parent}` for the folder holding it (another seeded repository's files: outside this one);
+  its `initialize` answer names it with a version (`serverInfo`);
   `initialize_delay_ms` slows `initialize`; `crash.after_requests: 0` dies at start. Like `tsc`
   it refuses `shutdown` with params (even `null`) and ignores an `exit` that has any, so a client
   that sends them fails its tests. Its own tests drive it with `dv_lsp`'s client through
@@ -2628,7 +2695,15 @@ for hovering, clicking and dragging; they are recorded only while a capture is a
   `definitionProvider` never asked, a request abandoned while one server still answers
   cancelling that one only, a hover's token at the pointer's character and the card's span
   from the servers' ranges, **Check again** and the focus recheck finding a server installed
-  meanwhile, and a Tailwind project without its server showing it missing.
+  meanwhile, and a Tailwind project without its server showing it missing; `tests/nav.rs`:
+  another side's references rows read from the text the server read, the review's files first,
+  the working tree's file view keeping a definition there, a place waiting for its file's diff
+  dropped once the reviewer moved on, `Ctrl`+click's line kept for `Alt ←`, and a rescan
+  closing every open document; and (`tests/mod.rs`) a definition outside the repository opening
+  its read-only file view, a non-file place's quiet notice going with `Esc`. The references
+  list's pure parts (`references/tests.rs`): a row's symbol and highlight runs on character
+  boundaries whatever the server's columns, a line giving way at its start so its symbol shows,
+  paths dropping whole leading segments, and a timing test reading and highlighting 700 places.
 - Resolver tests run on fixture trees with the npm, pnpm and bun layouts (symlinks, `.bun/`), on
   Windows and in WSL, through `LocalBackend` and through `RemoteBackend` over an in-process
   server, with packages above the worktree root, a link into a store outside it, a link dv can't

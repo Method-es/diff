@@ -233,7 +233,7 @@ impl Backend for LocalBackend {
         Ok(Some(counter.finish()))
     }
 
-    fn probe_path(&self, path: &str) -> Result<PathProbe, BackendError> {
+    fn probe_path(&self, path: &str, read: u64) -> Result<PathProbe, BackendError> {
         let path = paths::absolute_path(path)?;
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
@@ -251,7 +251,7 @@ impl Backend for LocalBackend {
             return Ok(PathProbe::Dir);
         }
         let len = metadata.len();
-        let contents = if len <= PROBE_READ_MAX {
+        let contents = if read > 0 && len <= read.min(PROBE_READ_MAX) {
             match fs::read(&path) {
                 Ok(bytes) => Some(bytes),
                 Err(err) if is_missing(&err) => return Ok(PathProbe::Missing),

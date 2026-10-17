@@ -11,6 +11,7 @@ use gpui::{
 use dv_core::review::ReviewStatus;
 
 use super::{EmptyState, ReadyNote, Shell};
+use crate::actions::composer;
 use crate::actions::diff_pane::ClearSelection;
 use crate::automation::AutomationTargetExt as _;
 use crate::banner::{Banner, BannerAction};
@@ -71,12 +72,13 @@ impl Render for Shell {
             // `Esc` closes the comments list's row menu before the stream hears it (DESIGN §5:
             // the top overlay first).
             .capture_action(cx.listener(|this, _: &ClearSelection, _, cx| {
-                if this.comments_list.read(cx).menu_thread().is_some() {
-                    this.close_comments_menu(cx);
+                if this.close_popover(cx) {
                     cx.stop_propagation();
-                } else if this.server_details.take().is_some() {
-                    // A language server's details from the status bar (DESIGN §5).
-                    cx.notify();
+                }
+            }))
+            // The same in the composer: a popover over it closes first, and the draft stays.
+            .capture_action(cx.listener(|this, _: &composer::Cancel, _, cx| {
+                if this.close_popover(cx) {
                     cx.stop_propagation();
                 }
             }))
@@ -113,6 +115,21 @@ impl Render for Shell {
 }
 
 impl Shell {
+    /// Closes the popover `Esc` reaches before the main area's chain or the composer (DESIGN
+    /// §5): the comments list's row menu, else a language server's details from the status
+    /// bar. `false` when neither was open.
+    fn close_popover(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.comments_list.read(cx).menu_thread().is_some() {
+            self.close_comments_menu(cx);
+            true
+        } else if self.server_details.take().is_some() {
+            cx.notify();
+            true
+        } else {
+            false
+        }
+    }
+
     /// The panel (DESIGN §2, §4.1): the file list, and the handle on its right edge.
     fn render_panel(&self, theme: &DvTheme, cx: &mut Context<Self>) -> AnyElement {
         let c = &theme.colors;
@@ -360,7 +377,7 @@ impl Shell {
             .children(session_banner)
             .children(viewed_banner)
             .children(comparison_banner)
-            .children(self.intel_banner(cx))
+            .children(self.intel_notice(theme, cx))
             .children(finished)
             .children(ready)
             .child(content)

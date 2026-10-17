@@ -13,21 +13,21 @@
 // Ctrl F opens the bar with its field focused; typing searches once it pauses.
 {"cmd": "key", "keystroke": "ctrl-f", "expect": [{"pointer": "/find/open", "equals": true}, {"pointer": "/find/focused", "equals": true}, {"pointer": "/find/query", "equals": ""}]}
 {"cmd": "type", "text": "needle"}
-// Four: the gap's line in each column, and zeta.ts's `NEEDLE` and `needle` (no capital: case
-// is ignored). The logo can't be searched. The first goes to the gap, which opens around it.
-{"cmd": "settle", "expect": [{"pointer": "/find/query", "equals": "needle"}, {"pointer": "/find/count", "equals": 4}, {"pointer": "/find/current", "equals": 1}, {"pointer": "/find/complete", "equals": true}, {"pointer": "/find/skipped", "equals": 1}, {"pointer": "/session/files/8/state", "equals": "loaded"}, {"pointer": "/session/cursor", "equals": {"path": "src/app.ts", "side": "old", "line": 30}}, {"pointer": "/stream/files/1/gaps", "equals": [18, 18, 2]}, {"pointer": "/find/focused", "equals": true}]}
+// Three: the gap's line (once: a context line matches on the new column only, in split view
+// too), and zeta.ts's `NEEDLE` and `needle` (no capital: case is ignored). The logo can't be
+// searched. The first goes to the gap, which opens around it.
+{"cmd": "settle", "expect": [{"pointer": "/find/query", "equals": "needle"}, {"pointer": "/find/count", "equals": 3}, {"pointer": "/find/current", "equals": 1}, {"pointer": "/find/complete", "equals": true}, {"pointer": "/find/skipped", "equals": 1}, {"pointer": "/session/files/8/state", "equals": "loaded"}, {"pointer": "/session/cursor", "equals": {"path": "src/app.ts", "side": "new", "line": 30}}, {"pointer": "/stream/files/1/gaps", "equals": [18, 18, 2]}, {"pointer": "/find/focused", "equals": true}]}
 {"cmd": "bounds", "target": "find", "expect_result": [{"pointer": "/w", "equals": 400}, {"pointer": "/visible", "exists": true}]}
 {"cmd": "screenshot", "name": "find-gap"}
 
 // Enter goes on (the keyboard stays in the field), wrapping; Shift Enter goes back.
-{"cmd": "key", "keystroke": "enter", "expect": [{"pointer": "/find/current", "equals": 2}, {"pointer": "/session/cursor", "equals": {"path": "src/app.ts", "side": "new", "line": 30}}]}
-{"cmd": "key", "keystroke": "enter", "expect": [{"pointer": "/find/current", "equals": 3}, {"pointer": "/session/cursor", "equals": {"path": "src/zeta.ts", "side": "new", "line": 2}}, {"pointer": "/stream/caret/column", "equals": 14}]}
+{"cmd": "key", "keystroke": "enter", "expect": [{"pointer": "/find/current", "equals": 2}, {"pointer": "/session/cursor", "equals": {"path": "src/zeta.ts", "side": "new", "line": 2}}, {"pointer": "/stream/caret/column", "equals": 14}]}
 {"cmd": "settle"}
 {"cmd": "screenshot", "name": "find-far-file"}
-{"cmd": "key", "keystroke": "enter", "expect": [{"pointer": "/find/current", "equals": 4}, {"pointer": "/stream/caret/column", "equals": 26}]}
+{"cmd": "key", "keystroke": "enter", "expect": [{"pointer": "/find/current", "equals": 3}, {"pointer": "/stream/caret/column", "equals": 26}]}
 {"cmd": "key", "keystroke": "enter", "expect": [{"pointer": "/find/current", "equals": 1}, {"pointer": "/session/cursor/line", "equals": 30}]}
-{"cmd": "key", "keystroke": "shift-enter", "expect": [{"pointer": "/find/current", "equals": 4}, {"pointer": "/session/cursor/path", "equals": "src/zeta.ts"}]}
-{"cmd": "click", "target": "find/prev", "expect": [{"pointer": "/find/current", "equals": 3}, {"pointer": "/find/focused", "equals": true}]}
+{"cmd": "key", "keystroke": "shift-enter", "expect": [{"pointer": "/find/current", "equals": 3}, {"pointer": "/session/cursor/path", "equals": "src/zeta.ts"}]}
+{"cmd": "click", "target": "find/prev", "expect": [{"pointer": "/find/current", "equals": 2}, {"pointer": "/find/focused", "equals": true}]}
 
 // A capital makes it case-sensitive.
 {"cmd": "key", "keystroke": "ctrl-a"}
@@ -51,7 +51,7 @@
 // Ctrl F again keeps the query, its text selected; the close button closes it too.
 {"cmd": "key", "keystroke": "ctrl-f", "expect": [{"pointer": "/find/open", "equals": true}, {"pointer": "/find/query", "equals": "haystack"}, {"pointer": "/find/focused", "equals": true}]}
 {"cmd": "type", "text": "needle"}
-{"cmd": "settle", "expect": [{"pointer": "/find/count", "equals": 4}]}
+{"cmd": "settle", "expect": [{"pointer": "/find/count", "equals": 3}]}
 {"cmd": "set_setting", "key": "mode", "value": "light"}
 {"cmd": "settle"}
 {"cmd": "screenshot", "name": "find-light"}

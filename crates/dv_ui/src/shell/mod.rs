@@ -257,8 +257,8 @@ pub struct Shell {
     server_details: Option<intel::ServerDetails>,
     /// Where the reviewer was when the last go to definition was asked for (`intel`).
     definition_from: Option<Option<crate::history::Position>>,
-    /// A go to definition waiting for its listed file's diff (`intel`).
-    pending_goto: Option<(dv_lsp::SymbolLocation, Option<crate::intel::Asked>)>,
+    /// A place waiting for its listed file's diff (`intel`).
+    pending_goto: Option<intel::PendingGoTo>,
     _intel_subscriptions: Vec<Subscription>,
     /// The file finder (`Ctrl P`), a menu like the switcher.
     file_finder: Option<Overlay<FileFinder>>,
@@ -331,6 +331,8 @@ impl Shell {
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
                     crate::appearance::refresh_support(cx);
+                    // `settings.json`'s `lsp` edited by hand meanwhile, a review open or not.
+                    crate::intel::reload_lsp_settings(cx);
                     if let Some(session) = &this.session {
                         session.update(cx, |session, cx| session.window_activated(cx));
                     }

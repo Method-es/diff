@@ -5,10 +5,11 @@
 //! the stream shows — a line of a file the review lists, within the changes' context
 //! ([`stream_shows`]) — scrolls the stream there (the gap around it opened); any other place in
 //! the repository opens the file view there, a file git ignores included (a library's `.d.ts`
-//! under `node_modules`, read as an untracked file reads); a place outside the repository can't
-//! be shown, and the main area's notice says where it is. Each is a jump the history keeps
-//! (`Alt ←` comes back). A draft in the file view's composer keeps the file view: it takes the
-//! keyboard instead, as for every jump.
+//! under `node_modules`, read as an untracked file reads); a file outside the repository opens
+//! read-only in the file view by its absolute path; a place that isn't a file (a URI of another
+//! kind) can't be shown, and the main area's quiet notice says where it is (`Esc` or Dismiss
+//! takes it away). Each is a jump the history keeps (`Alt ←` comes back). A draft in the file
+//! view's composer keeps the file view: it takes the keyboard instead, as for every jump.
 //!
 //! **The panel's tabs.** While a references list (or several definitions) is open the panel
 //! heads its column with two tabs, **Review** (the file list and the comments) and
@@ -37,19 +38,28 @@ use crate::diff_pane::rows::CONTEXT_LINES;
 use crate::failure::Failure;
 use crate::icons::DvIcon;
 use crate::intel::{Asked, CodeIntel, IntelEvent, Pane, ServerInfo, ServerState};
-use crate::session::ReviewSession;
+use crate::session::{ReviewSession, ViewFrom};
 use crate::theme::{DvTheme, StyledText as _};
 
 /// Where a place shows (`Shell::go_to_location`).
 enum Place {
     /// The stream, on this side.
     Stream(AnchorSide),
-    /// The file view, reading the working tree as it stands (`worktree`), at this side (else
-    /// the side the file view shows the file at).
+    /// The file view, reading the file where `from` says, at this side (else the side the file
+    /// view shows the file at).
     FileView {
-        worktree: bool,
+        from: ViewFrom,
         side: Option<AnchorSide>,
     },
+}
+
+/// A place waiting for its listed file's diff before the shell decides where it shows
+/// (`Shell::go_to_location`): what it was asked from, and for a go to definition where the
+/// reviewer was then, so an answer that lands after they moved on is dropped when it fires.
+pub struct PendingGoTo {
+    location: SymbolLocation,
+    asked: Option<Asked>,
+    from: Option<Option<crate::history::Position>>,
 }
 
 /// Which of the panel's tabs shows (module docs).
@@ -175,18 +185,21 @@ impl Shell {
         match event {
             IntelEvent::GoTo { location, asked } => {
                 // A definition that answers after the reviewer moved on is dropped.
-                if asked.as_ref().is_some_and(|asked| asked.definition) {
+                let from = if asked.as_ref().is_some_and(|asked| asked.definition) {
                     let from = self.definition_from.take();
-                    if from.is_some_and(|from| from != self.position(cx)) {
+                    if self.moved_on(&from, cx) {
                         log::info!("go to definition answered after the reviewer moved on");
                         return;
                     }
-                }
-                self.go_to_location(location.clone(), asked.clone(), window, cx)
+                    from
+                } else {
+                    None
+                };
+                self.go_to_place(location.clone(), asked.clone(), from, window, cx)
             }
             IntelEvent::DefinitionAsked => {
                 self.definition_from = Some(self.position(cx));
-                self.pending_goto = None;
+                self.forget_pending_goto(cx);
             }
             IntelEvent::ShowReferences => {
                 self.panel_tab = PanelTab::References;
@@ -196,25 +209,61 @@ impl Shell {
         }
     }
 
-    /// A file of the review landed: a go to definition that waited for it goes on.
-    pub(super) fn file_loaded(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let waiting = self
-            .pending_goto
-            .as_ref()
-            .is_some_and(|(location, _)| location.target == UriTarget::Worktree(path.to_string()));
-        let loaded = self
-            .session
-            .as_ref()
-            .is_some_and(|session| session.read(cx).shown_diff(path).is_some());
-        if waiting
-            && loaded
-            && let Some((location, asked)) = self.pending_goto.take()
+    /// Whether the reviewer moved on from `from` (where a go to definition was asked): the
+    /// view, the file or the line isn't where it was.
+    fn moved_on(&self, from: &Option<Option<crate::history::Position>>, cx: &gpui::App) -> bool {
+        from.as_ref().is_some_and(|from| *from != self.position(cx))
+    }
+
+    /// Forgets a place waiting for its file's diff (another place asked for, a step through
+    /// the history, the file view opened or closed): it never fires later.
+    pub(super) fn forget_pending_goto(&mut self, cx: &mut Context<Self>) {
+        if self.pending_goto.take().is_some()
+            && let Some(session) = &self.session
         {
-            if let Some(session) = &self.session {
-                session.update(cx, |session, cx| session.load_for_definition(None, cx));
-            }
-            self.go_to_location(location, asked, window, cx);
+            session.update(cx, |session, cx| session.load_for_definition(None, cx));
         }
+    }
+
+    /// A file of the review landed: a place that waited for its diff goes on, unless the
+    /// reviewer moved on meanwhile (a go to definition's); a load that failed drops it.
+    pub(super) fn file_loaded(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let waiting = self.pending_goto.as_ref().is_some_and(|pending| {
+            pending.location.target == UriTarget::Worktree(path.to_string())
+        });
+        if !waiting {
+            return;
+        }
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        let (loaded, failed) = {
+            let session = session.read(cx);
+            (
+                session.shown_diff(path).is_some(),
+                matches!(
+                    session.file_state(path),
+                    Some(crate::session::FileState::Failed(_))
+                ),
+            )
+        };
+        if failed {
+            log::info!("the place asked for waited for {path}, whose diff failed to load");
+            self.forget_pending_goto(cx);
+            return;
+        }
+        if !loaded {
+            return;
+        }
+        let Some(pending) = self.pending_goto.take() else {
+            return;
+        };
+        session.update(cx, |session, cx| session.load_for_definition(None, cx));
+        if self.moved_on(&pending.from, cx) {
+            log::info!("go to definition's file loaded after the reviewer moved on");
+            return;
+        }
+        self.go_to_place(pending.location, pending.asked, pending.from, window, cx);
     }
 
     /// Shows `location`, asked from `asked` when that is known (module docs, "Going to a
@@ -226,22 +275,38 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.go_to_place(location, asked, None, window, cx);
+    }
+
+    /// [`Shell::go_to_location`], for a go to definition asked where the reviewer was `from`.
+    fn go_to_place(
+        &mut self,
+        location: SymbolLocation,
+        asked: Option<Asked>,
+        from: Option<Option<crate::history::Position>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // A place asked for before, still waiting for its file, is superseded.
+        self.forget_pending_goto(cx);
         let (Some(session), Some(intel)) = (self.session.clone(), self.intel.clone()) else {
             return;
         };
         let start = location.range.start;
         let (line, offset) = (start.line + 1, start.column as usize);
-        let path = match &location.target {
-            UriTarget::Worktree(path) => path.clone(),
-            UriTarget::Outside { uri, path } => {
-                let place = path.clone().unwrap_or_else(|| uri.clone());
+        let (path, outside) = match &location.target {
+            UriTarget::Worktree(path) => (path.clone(), false),
+            UriTarget::Outside {
+                path: Some(path), ..
+            } => (path.clone(), true),
+            UriTarget::Outside { uri, path: None } => {
                 intel.update(cx, |intel, cx| {
                     intel.set_notice(
                         Failure::with_detail(
-                            format!("Defined outside the repository: {place}:{line}"),
+                            format!("Defined outside the repository: {uri}:{line}"),
                             format!(
-                                "dv shows the repository's own files. The language server \
-                                 answered with {uri}, line {line}."
+                                "The language server answered with {uri}, line {line}, which \
+                                 isn't a file dv can show."
                             ),
                         ),
                         cx,
@@ -252,14 +317,19 @@ impl Shell {
         };
         intel.update(cx, |intel, cx| intel.dismiss_notice(cx));
         let reads_worktree = session.read(cx).new_side() == Some(&Side::Worktree);
-        let listed = session.read(cx).file(&path).is_some();
+        let listed = !outside && session.read(cx).file(&path).is_some();
         let place = match asked {
+            // A file outside the repository: read-only, as the disk holds it.
+            _ if outside => Place::FileView {
+                from: ViewFrom::Outside,
+                side: None,
+            },
             // The same file, answered against the text dv opened for it (another side): that
             // side's line, where it was asked.
             Some(asked) if asked.at.path == path && !asked.worktree => {
                 if asked.pane == Pane::FileView || !listed {
                     Place::FileView {
-                        worktree: false,
+                        from: ViewFrom::Review,
                         side: Some(asked.at.side),
                     }
                 } else {
@@ -269,13 +339,17 @@ impl Shell {
             // Read from the working tree, and the review's new side isn't it: the file as it
             // stands now (PLAN §18.2).
             _ if !reads_worktree => Place::FileView {
-                worktree: true,
+                from: ViewFrom::Worktree,
                 side: None,
             },
             _ if listed => {
                 if session.read(cx).shown_diff(&path).is_none() {
                     // Listed but not loaded yet: decided once its diff lands.
-                    self.pending_goto = Some((location, asked));
+                    self.pending_goto = Some(PendingGoTo {
+                        location,
+                        asked,
+                        from,
+                    });
                     session.update(cx, |session, cx| {
                         session.load_for_definition(Some(path.clone()), cx)
                     });
@@ -285,13 +359,13 @@ impl Shell {
                     Place::Stream(AnchorSide::New)
                 } else {
                     Place::FileView {
-                        worktree: false,
+                        from: ViewFrom::Review,
                         side: None,
                     }
                 }
             }
             _ => Place::FileView {
-                worktree: false,
+                from: ViewFrom::Review,
                 side: None,
             },
         };
@@ -311,17 +385,17 @@ impl Shell {
                 });
                 self.diff_pane.read(cx).focus_handle(cx).focus(window, cx);
             }
-            Place::FileView { worktree, side } => {
+            Place::FileView { from: read, side } => {
                 let shown = self.file_view_open && {
                     let view = self.file_view.read(cx);
                     view.file_view_path() == Some(path.as_str())
-                        && view.file_view_worktree() == worktree
+                        && view.file_view_from() == Some(read)
                 };
                 if shown && let Some(from) = self.position(cx) {
                     // Within the file shown: still a jump.
                     self.history.jump(from);
                 }
-                self.open_file_view_at(&path, Some(line), worktree, !shown, window, cx);
+                self.open_file_view_at(&path, Some(line), read, !shown, window, cx);
                 if self.file_view_open
                     && self.file_view.read(cx).file_view_path() == Some(path.as_str())
                 {
@@ -453,13 +527,18 @@ impl Shell {
         items
     }
 
-    fn toggle_details(&mut self, details: &ServerDetails, cx: &mut Context<Self>) {
+    pub(crate) fn toggle_details(&mut self, details: &ServerDetails, cx: &mut Context<Self>) {
         self.server_details = if self.server_details.as_ref() == Some(details) {
             None
         } else {
             Some(details.clone())
         };
         cx.notify();
+    }
+
+    /// The status bar item whose details are open, if any.
+    pub fn server_details(&self) -> Option<&ServerDetails> {
+        self.server_details.as_ref()
     }
 
     /// The details of the status bar item clicked: over the status bar at its right.
@@ -528,6 +607,12 @@ impl Shell {
                                     .text_spec(&theme.text.title)
                                     .child(server.name.to_string()),
                             )
+                            .children(
+                                server
+                                    .version
+                                    .clone()
+                                    .map(|version| div().text_color(c.fg3).child(version)),
+                            )
                             .child(div().text_color(c.fg2).child(state))
                             .child(div().flex_1())
                             .children(retry),
@@ -541,6 +626,8 @@ impl Shell {
                             .text_color(c.fg3)
                             .child(format!("From {}", server.source)),
                     )
+                    .child(label("Serves"))
+                    .child(mono(server.root.clone()))
                     .when(!server.stderr.is_empty(), |this| {
                         this.child(label("Last output")).child(mono(
                             server
@@ -585,7 +672,7 @@ impl Shell {
                             }))
                     })
                     .child(label("How to get it"))
-                    .child(div().text_color(c.fg2).child(missing.hint.clone()))
+                    .child(hint_view(&missing.hint, spec_id, theme))
                     .child(
                         div().mt(theme.spacing.sm).flex().child(
                             small_button("server-check-again", "Check again", theme)
@@ -616,16 +703,122 @@ impl Shell {
         )
     }
 
-    /// The main area's notice for a place that can't be shown (module docs).
-    pub(super) fn intel_banner(&self, cx: &mut Context<Self>) -> Option<crate::banner::Banner> {
+    /// The main area's quiet notice for a place that can't be shown (module docs, DESIGN
+    /// §4.1 "Code notice"): one line on `layer`, its glyph and text quiet, and **Dismiss**.
+    pub(super) fn intel_notice(
+        &self,
+        theme: &DvTheme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let intel = self.intel.clone()?;
-        let failure = intel.read(cx).notice()?.clone();
-        Some(crate::banner::Banner::new("banner/intel", failure).action(
-            crate::banner::BannerAction::new("dismiss", "Dismiss", move |_, cx| {
-                intel.update(cx, |intel, cx| intel.dismiss_notice(cx))
-            }),
-        ))
+        let notice = intel.read(cx).notice()?.clone();
+        let c = &theme.colors;
+        Some(
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(theme.spacing.md)
+                .mx(theme.spacing.lg)
+                .mt(theme.spacing.lg)
+                .px(theme.spacing.lg)
+                .py(theme.spacing.sm)
+                .rounded(theme.radii.control)
+                .bg(c.layer)
+                .border_1()
+                .border_color(c.line)
+                .text_spec(&theme.text.body)
+                .child(icon(DvIcon::Package, px(14.), c.fg3))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(c.fg2)
+                        .child(notice.message.clone()),
+                )
+                .children(notice.detail.clone().map(|detail| {
+                    div()
+                        .flex_shrink(1.)
+                        .min_w_0()
+                        .truncate()
+                        .text_spec(&theme.text.secondary)
+                        .text_color(c.fg3)
+                        .child(detail)
+                }))
+                .child(
+                    small_button("intel-notice-dismiss", "Dismiss", theme)
+                        .on_click(move |_, _, cx| {
+                            intel.update(cx, |intel, cx| intel.dismiss_notice(cx))
+                        })
+                        .automation_target("notice/intel/dismiss"),
+                )
+                .automation_target("notice/intel"),
+        )
     }
+}
+
+/// A missing server's hint (DESIGN §4.1 "Status bar"): its prose in `fg2`, wrapping by words,
+/// and each command or settings key it puts in backticks as inline code with a copy button,
+/// which goes through the clipboard seam (`statusbar/lsp/<id>/copy/<n>`, n from 1).
+fn hint_view(hint: &str, spec_id: &str, theme: &DvTheme) -> AnyElement {
+    let c = &theme.colors;
+    let mut parts: Vec<AnyElement> = Vec::new();
+    let mut copies = 0;
+    for (index, piece) in hint.split('`').enumerate() {
+        if index % 2 == 1 && !piece.is_empty() {
+            copies += 1;
+            let text = piece.to_string();
+            parts.push(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .mr(theme.spacing.xs)
+                    .child(crate::components::inline_code(text.clone(), theme))
+                    .child(
+                        div()
+                            .id(gpui::ElementId::Name(
+                                format!("hint-copy-{spec_id}-{copies}").into(),
+                            ))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .size(px(20.))
+                            .rounded(theme.radii.small)
+                            .cursor_pointer()
+                            .hover(|style| style.bg(c.control_hover))
+                            .child(icon(DvIcon::Copy, px(12.), c.fg3))
+                            .tooltip(crate::components::tooltip("Copy"))
+                            .on_click(move |_, _, cx| {
+                                crate::system::write_clipboard(text.clone(), cx)
+                            })
+                            .automation_target(format!("statusbar/lsp/{spec_id}/copy/{copies}")),
+                    )
+                    .into_any_element(),
+            );
+        } else {
+            // The prose, a word at a time, so it wraps between words.
+            for word in piece.split_inclusive(' ') {
+                parts.push(
+                    div()
+                        .flex_none()
+                        .whitespace_nowrap()
+                        .child(word.replace(' ', "\u{a0}"))
+                        .into_any_element(),
+                );
+            }
+        }
+    }
+    div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap_y_1()
+        .text_color(c.fg2)
+        .children(parts)
+        .into_any_element()
 }
 
 /// A server's dot and how its state reads ("ready", "loading 40%", "restarting…", "failed").

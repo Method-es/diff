@@ -367,3 +367,32 @@ fn jsx_in_a_javascript_file_has_its_tags() {
         );
     }
 }
+
+#[test]
+fn lines_highlighted_on_their_own_keep_to_themselves() {
+    let mut highlighter = LineHighlighter::new();
+    // A line opening a block comment or a template literal colours nothing after it.
+    let whole = highlighter.highlight("a.ts", "/* a comment */");
+    assert_eq!(
+        whole.first().map(|token| token.kind),
+        Some(TokenKind::Comment)
+    );
+    highlighter.highlight("a.ts", "/* opens a comment");
+    let next = highlighter.highlight("a.ts", "const y = `x");
+    assert_eq!(
+        next.first().map(|token| (token.range.clone(), token.kind)),
+        Some((0..5, TokenKind::Keyword))
+    );
+    let after = highlighter.highlight("b.ts", "export const z = 1;");
+    assert!(
+        after.iter().any(|token| token.kind == TokenKind::Keyword),
+        "{after:?}"
+    );
+    assert!(
+        after.iter().all(|token| token.kind != TokenKind::String),
+        "{after:?}"
+    );
+    // The same line twice, and no grammar.
+    assert_eq!(highlighter.highlight("b.ts", "export const z = 1;"), after);
+    assert!(highlighter.highlight("notes.unknown", "const x").is_empty());
+}

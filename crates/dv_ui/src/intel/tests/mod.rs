@@ -14,7 +14,7 @@ use dv_core::{Location, Target};
 use dv_lsp::framing::{Decoder, encode};
 use dv_lsp::{LspClient, Timeouts, WorkspacePaths};
 use dv_test_support::FixtureRepo;
-use gpui::{Entity, TestAppContext, VisualTestContext};
+use gpui::{Entity, Focusable as _, TestAppContext, VisualTestContext};
 use parking_lot::Mutex;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
@@ -25,6 +25,7 @@ use crate::services::reviews::OpenRequest;
 use crate::shell::Shell;
 use crate::test_support::{add_repo, open_shell, settle};
 
+mod nav;
 mod stacked;
 
 /// What the fake server answers: a message in, `Some(result)` to answer a request with.
@@ -307,6 +308,7 @@ fn symbol(
                 range: start..start + name.len(),
                 name: name.to_string(),
                 offset: start,
+                worktree: false,
             },
             diff,
         )
@@ -495,11 +497,18 @@ fn go_to_definition_opens_the_file_view_on_an_unchanged_file_and_back_returns(
 }
 
 #[gpui::test]
-fn a_definition_the_stream_shows_scrolls_the_stream_and_one_outside_says_so(
+fn a_definition_the_stream_shows_scrolls_the_stream_and_one_outside_opens_read_only(
     cx: &mut TestAppContext,
 ) {
     let repo = project();
     let root = WorkspacePaths::new(&repo.path().display().to_string()).uri_text("");
+    // A library's declarations outside the repository.
+    let outside = repo.outside_dir("lib");
+    let lib: String = (1..=12)
+        .map(|n| format!("declare const x{n}: number;\n"))
+        .collect();
+    std::fs::write(outside.join("lib.d.ts"), &lib).unwrap();
+    let lib_uri = WorkspacePaths::new(&outside.display().to_string()).uri_text("lib.d.ts");
     let calls = Arc::new(Mutex::new(0));
     let answer: Answer = Arc::new(move |message| {
         if message["method"] != "textDocument/definition" {
@@ -507,11 +516,12 @@ fn a_definition_the_stream_shows_scrolls_the_stream_and_one_outside_says_so(
         }
         let mut calls = calls.lock();
         *calls += 1;
-        Some(if *calls == 1 {
-            at(&root, json!([location("src/a.ts", 1, 13)]))
-        } else {
-            json!([{"uri": "file:///usr/lib/node/lib.d.ts", "range": {
-                "start": {"line": 9, "character": 0}, "end": {"line": 9, "character": 4}}}])
+        let range =
+            json!({"start": {"line": 9, "character": 14}, "end": {"line": 9, "character": 17}});
+        Some(match *calls {
+            1 => at(&root, json!([location("src/a.ts", 1, 13)])),
+            2 => json!([{"uri": lib_uri, "range": range}]),
+            _ => json!([{"uri": "untitled:Untitled-1", "range": range}]),
         })
     });
     let (_dir, shell, cx, _fakes) = open_review(&repo, Some(answer), cx);
@@ -532,25 +542,65 @@ fn a_definition_the_stream_shows_scrolls_the_stream_and_one_outside_says_so(
         caret.map(|(path, place)| (path, place.line, place.column)),
         Some(("src/a.ts".into(), 2, 14))
     );
-    // Outside the repository: the notice says where, nothing moves.
+    // A file outside the repository: the file view shows it read-only, at the place.
     intel.update(cx, |intel, cx| {
-        intel.definition(at, Pane::Stream, &diff, cx)
+        intel.definition(at.clone(), Pane::Stream, &diff, cx)
+    });
+    let view = shell.read_with(cx, |shell, _| shell.file_view().clone());
+    let shown = view.clone();
+    wait(cx, &shell, "the outside file", move |cx| {
+        shown
+            .read(cx)
+            .file_view_summary(cx)
+            .is_some_and(|summary| !summary.loading)
+    });
+    let summary = view
+        .read_with(cx, |view, cx| view.file_view_summary(cx))
+        .unwrap();
+    assert!(summary.outside && !summary.worktree, "{summary:?}");
+    assert!(summary.path.ends_with("lib.d.ts"), "{summary:?}");
+    assert_eq!(summary.line_count, 12);
+    assert_eq!(
+        view.read_with(cx, |view, _| view.caret())
+            .map(|(_, place)| (place.line, place.column)),
+        Some((10, 15))
+    );
+    assert!(intel.read_with(cx, |intel, _| intel.notice().is_none()));
+    // Read-only: no comment there.
+    view.update_in(cx, |view, window, cx| {
+        view.focus_handle(cx).focus(window, cx)
+    });
+    cx.simulate_keystrokes("c");
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |view, _| view.composer().is_none()));
+    // A place that isn't a file: the quiet notice says where, and `Esc` takes it away.
+    let (at_view, view_diff) = view.read_with(cx, |view, _| {
+        view.symbol_at_caret_for_tests()
+            .expect("the caret's symbol")
+    });
+    assert_eq!(at_view.path, summary.path);
+    assert!(
+        at_view.worktree,
+        "a server reads an outside file from the disk"
+    );
+    intel.update(cx, |intel, cx| {
+        intel.definition(at_view, Pane::FileView, &view_diff, cx)
     });
     let noticed = intel.clone();
     wait(cx, &shell, "the notice", move |cx| {
         noticed.read(cx).notice().is_some()
     });
     let notice = intel.read_with(cx, |intel, _| intel.notice().cloned().unwrap());
-    // The place as the backend's machine spells it (`\usr\lib\…` for a local repository on
-    // Windows).
-    assert!(
-        notice
-            .message
-            .starts_with("Defined outside the repository: ")
-            && notice.message.ends_with("lib.d.ts:10"),
-        "{notice:?}"
+    assert_eq!(
+        notice.message,
+        "Defined outside the repository: untitled:Untitled-1:10"
     );
-    assert!(!shell.read_with(cx, |shell, _| shell.is_file_view_open()));
+    view.update_in(cx, |view, window, cx| {
+        view.focus_handle(cx).focus(window, cx)
+    });
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(intel.read_with(cx, |intel, _| intel.notice().is_none()));
 }
 
 #[gpui::test]
@@ -585,13 +635,12 @@ fn references_list_by_file_with_the_rows_the_review_changed(cx: &mut TestAppCont
         listed
             .read(cx)
             .references()
-            .is_some_and(|list| !list.is_loading())
+            .is_some_and(|list| !list.is_loading() && !list.is_reading())
     });
     let rows = |intel: &Entity<CodeIntel>, cx: &mut VisualTestContext| {
-        intel.read_with(cx, |intel, cx| {
-            let session = intel.session().read(cx);
+        intel.read_with(cx, |intel, _| {
             let list = intel.references().unwrap();
-            list.shown(session)
+            list.shown()
                 .into_iter()
                 .flat_map(|(file, rows)| {
                     rows.into_iter().map(move |(row, changed)| {
@@ -903,7 +952,7 @@ fn a_staged_reviews_definition_opens_the_working_trees_file(cx: &mut TestAppCont
     // From the stream's new side (the index): another text than the disk's, so the server
     // read it as opened; a place in the same file is on that side.
     let (at, diff) = symbol(&shell, "src/a.ts", 2, "helper", cx);
-    assert!(!intel.read_with(cx, |intel, cx| intel.reads_worktree(AnchorSide::New, cx)));
+    assert!(!intel.read_with(cx, |intel, cx| intel.reads_worktree(&at, cx)));
     intel.update(cx, |intel, cx| {
         intel.definition(at, Pane::Stream, &diff, cx)
     });

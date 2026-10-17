@@ -38,7 +38,9 @@ Opaque value; on Acrylic and Mica it also depends on the desktop behind the wind
 `scrim rgba(6,5,10,.56)`, `sel rgba(162,119,255,.22)` (rows: the cursor's line, a line
 selection); `textSel rgba(162,119,255,.42)` (text selected in code); `findMatch
 rgba(255,202,133,.22)` and `findCurrent rgba(255,202,133,.32)` (find matches in code, the
-current one outlined in `yellow`).
+current one outlined in `yellow`, the others in `findLine rgba(255,202,133,.62)`, so a match on
+an intraline word's fill still reads as a match); `popover` = `overlay`'s Opaque value on every
+material (popovers with no scrim under them, §3).
 
 Diff: `addBg rgba(97,255,202,.085)`, `addGut .15`, `addWord .30`; `delBg rgba(255,103,103,.09)`,
 `delGut .16`, `delWord .34`; `hunk rgba(130,226,255,.06)`. Added and removed rows differ in lightness
@@ -55,7 +57,7 @@ Same token names. Key values: `fg #1d1b26`, `fg2 #46434f`, `fg3 #5e5a6f`; `accen
 `blue #0b6687`; `chrome` Acrylic `rgba(247,246,251,.58)` / Mica `rgba(239,238,244,.85)` / Opaque
 `#efeef4`; `code` `rgba(255,255,255,.93)` / `rgba(254,254,255,.975)` / `#fdfdfe`; `scrim
 rgba(36,32,58,.30)`; `sel rgba(109,67,224,.13)`, `textSel rgba(109,67,224,.28)`, `findMatch
-rgba(196,128,0,.18)`, `findCurrent rgba(196,128,0,.30)`; diff `addBg rgba(18,170,115,.10)`, `delBg rgba(225,45,70,.075)`. Syntax: `kw
+rgba(196,128,0,.18)`, `findCurrent rgba(196,128,0,.30)`, `findLine rgba(135,86,0,.58)`; diff `addBg rgba(18,170,115,.10)`, `delBg rgba(225,45,70,.075)`. Syntax: `kw
 #6236d6`, `fn #8a4f00`, `str #0d7553`, `cst #0b6687`, `prop #9a2694`, `punc #3d3a48`, `plain #1d1b26`,
 `comment` = `fg3` (`#5e5a6f`).
 Full set: the board's `tokens()`.
@@ -122,7 +124,8 @@ geometry, bundled as SVG paths). No emoji anywhere.
 | Title bar, status bar, PR strip | `chrome` translucent | solid |
 | Panel | `panel` translucent | solid |
 | Diff surface, thread cards | near-opaque (`code` ≥ 94%, `thread` ≥ 98%) | solid |
-| Sheets, palette, menus, popovers | `overlay` ≥ 96.5% over `scrim`; no blur | solid over `scrim` |
+| Sheets, palette, switcher, file finder | `overlay` ≥ 96.5% over `scrim`; no blur | solid over `scrim` |
+| Popovers with no scrim (hover card, menus, find bar, a server's details) | `popover`: solid, so the code under them never shows through | solid |
 
 GPUI blurs only what is behind the window, so in-app overlays never "frost" app content (PLAN D8).
 Opaque is chosen automatically on Windows 10, with system transparency off, on Linux, and for
@@ -137,9 +140,12 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
 - **Title bar:** dv mark; switcher button "`api-server` · working tree vs main" (the repo's name at
   600, the target label with its "vs" in `fg3`) with the location chip (`Ubuntu`, WSL repos only) and
   its `Ctrl O` keycap; source picker (`⇄ ▾`); centred command field (`Ctrl K`); `PRs Ctrl G`;
-  overflow; caption buttons (Windows) / traffic lights (macOS, left). The left group never runs under
-  the centred field: at narrow widths the target label truncates at its end, and once it has no room
-  left the repo's name does. With no review open the
+  overflow; caption buttons (Windows) / traffic lights (macOS, left). The field is centred on the
+  window unless the left group needs more than the half that leaves it: then the field moves
+  right as far as the group needs (12 between them), never closer than 12 to the caption
+  buttons. The left group never runs under the field: once the field can't move further the
+  target label truncates at its end, and once it has no room left the repo's name does. With no
+  review open the
   button reads "No review open"; while one opens, "`repo` · opening…", then the full label at once
   (the labels are read as the review opens, not after its files are listed).
 - **Switcher** (`Ctrl O`, or a click on its button): an overlay 560 wide hung 8px under the button,
@@ -315,7 +321,8 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   lines for a comment, never text.
 - **Find** (`Ctrl F`, PLAN §18.1): a bar over the stream's top right, 8 below the file header's
   44px bar (the pinned header's controls stay in reach) and 16 in from the right edge, 400 wide:
-  the `overlay` surface with its outline and shadow (as menus), radius `card` (10), 6 padding.
+  the `popover` surface with the `overlayLine` outline and the overlay shadow (as menus), radius
+  `card` (10), 6 padding.
   One line holds the field (a control high, `inputBg`, `ctrlLine` outline, the search glyph, "Find
   in review"), the count in `fg2` at 12 ("3 of 17"; "3 of 17+" while files still load;
   "Searching…" before a first match while they do, "No results" in `fg3`, nothing for an empty
@@ -328,9 +335,9 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   diffs in an interdiff); a file not loaded yet loads for it (after the viewport's), and a file
   without text to search (binary, too large to show, a submodule, unmerged, a failed load) is
   counted as not searched; one whose content didn't change shows a notice, not lines, and isn't
-  searched. Plain text, case-insensitive unless the query has a capital (smart case). In
-  unified view a context line matches once; in split view once per column, rows top to bottom
-  and the old column before the new. The search goes to the first match at or after the cursor's
+  searched. Plain text, case-insensitive unless the query has a capital (smart case). A context
+  line matches once, on its new side (in split view its new column, so the count is the same
+  in either view); rows top to bottom and the old column before the new. The search goes to the first match at or after the cursor's
   row (else the current file's top) in that order; while later files are still loading it waits
   for a match after the cursor rather than going back behind it, and wraps to the first match
   once every file has been searched. Going to a match opens its file if it is viewed, opens the
@@ -339,8 +346,9 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   the caret at its start; the keyboard stays in the field. `Enter` before typing has paused
   searches the new query and goes to its first match. A file loaded only for the search isn't
   highlighted until the stream shows it. While the bar is open every match in view
-  paints on `findMatch` and the current one on `findCurrent` with a 1px `yellow` outline, radius
-  2. `Esc` (in the field or the stream) or × closes it: the matches go and the keyboard returns
+  paints on `findMatch` with a 1px `findLine` outline and the current one on `findCurrent` with
+  a 1px `yellow` outline, radius 2: on an intraline word's `addWord`/`delWord` fill a match
+  still reads as one by its outline. `Esc` (in the field or the stream) or × closes it: the matches go and the keyboard returns
   to the stream, the cursor on the current match's line. A press on the bar leaves the stream's
   selection alone.
 - **File view** (PLAN §18.1): one file whole over the main area in place of the stream, which
@@ -372,14 +380,25 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   side isn't the working tree, a definition or reference elsewhere opens the file view of the
   file as the working tree holds it now. Its header's side chip reads "working tree" and, in
   place of the status pill, "As it stands now, not this review's side · read-only" in `fg3`; its
-  lines carry no changed marks, no threads and no comment `+` (`C` does nothing).
+  lines carry no changed marks, no threads and no comment `+` (`C` does nothing). A definition,
+  a hover card's link or a reference into the same file from there stays in this view.
+- **File view outside the repository** (PLAN §18.1 "Go to definition"): a definition in a file
+  outside the repository (a library's declarations) opens it read-only: the header shows its
+  absolute path and the line asked for (`/home/kyle/…/@types/react/index.d.ts:120`; mono 13,
+  cut in its middle by whole segments when it doesn't fit, its first segment and its file kept),
+  no side chip, and "Outside the repository · read-only" in `fg3`; no changed marks, threads or
+  comment `+`. Hover and go to definition work in it. Over the display caps (2 MB or 20,000
+  lines: a library's 40,000-line declarations) it shows the too-large notice with **Load
+  anyway**, as any file read at its side; past the 4 MB dv reads of such a file, the notice
+  says so ("… over the 4 MB dv reads of a file outside the repository") without **Load
+  anyway**.
 - **File finder** (`Ctrl P`, PLAN §18.1): the switcher's look — an `overlay` panel 560 wide,
   radius 12, over the scrim, hung 8 under the title bar's command field and centred on it. A
   46-high filter field with the search glyph ("Go to file") has the keyboard; the list (up to 14
   rows, then it scrolls) holds 30-high rows radius 6: a file glyph (`fg` when selected, else
   `fg3`), the review's status letter in its colour for a file it changes (a blank column
-  otherwise), and the path, directory in `fg3`, name at 500, truncating at its start; the selected
-  row on `sel`. A 40-high footer: the count in `fg3` ("2 files") and the keys (`↑` `↓` move, `Enter`
+  otherwise), and the path, directory in `fg3`, name at 500, truncating at its start, what the
+  typed words match in `accentText` at 600; the selected row on `sel`. A 40-high footer: the count in `fg3` ("2 files") and the keys (`↑` `↓` move, `Enter`
   open, `Esc` close). No match: "No files match “x”" with "Every word must be in the file's path."
   in `fg3`. A click on a row or `Enter` opens it in the file view; `Esc`, a click on the scrim or
   `Ctrl P` again closes it.
@@ -447,8 +466,11 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   file leaving the review (the agent reverted it) drops it.
 - **Hover card** (PLAN §18.1 "Hover"): the pointer resting 350 ms on code (the stream or the
   file view; any character but whitespace and quotes), or `Ctrl I` at the caret, hangs a card 2
-  below what it is about, the servers' range (a whole class name) or else the token, starting
-  at its left edge (moved in to stay 8 inside the window): the `overlay` surface
+  below what it is about, the servers' range (a whole class name, as this frame draws it) or
+  else the token, starting at its left edge; where it doesn't fit below, it hangs 2 above the
+  token's top instead (never over the token), and it stays 8 inside the main area (the pane's
+  rows: never over the title bar, the status bar or the panel), on the roomier side when it
+  fits neither way: the `popover` surface
   with its `overlayLine` outline and the overlay shadow, radius `card` (10), 280 to 560 wide. Its
   body (12/8 padding, scrolling past 360 high) is the server's answer as Markdown, its fenced
   signature highlighted as code, inline code on `icodeBg`, links in `accentText` (a file link opens
@@ -465,8 +487,10 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   at once on a scroll, a press in the code, `Esc` (first in the stream's chain) or its file's
   diff changing. A hover asked for and not answered yet is cancelled as soon as the pointer
   leaves its token. Text selected in the card takes the keyboard; when the card goes, the
-  keyboard returns where it was before the press in it. Nothing shows for an empty answer, or
-  without a server.
+  keyboard returns where it was before the press in it. Nothing shows without a server, or for
+  an empty answer about the working tree's text; when every server answered with nothing about
+  another side's text (a removed line's symbol), a one-line card, 12/8 padding, says "No
+  information: read against the working tree" in `fg3` at 12, no buttons.
 - **References tab** (PLAN §18.1 "Find references"): while a references list (or several
   definitions) is open, the panel heads its column with a segmented pair 8 below its top, 16 in
   from its sides (the `ctrl` fill and `ctrlLine` outline of the Split | Unified control, radius 7,
@@ -476,14 +500,20 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   Its body: a header — "References" (or "Definitions") at 600, the symbol in mono `accentText`,
   the count in `fg3`, a 22-square × at the right ("Close the references") — then **In this review**
   (the panel's checkbox and its label in `fg2` at 12) and, when it is so, "Read against the working
-  tree" in `fg3`, over a hairline. Then each file in path order: a 26-high row with the file glyph,
-  its path (directory `fg3`, name `fg` at 600; "outside the repository" in `fg3` after a path
-  outside it) and its row count in `fg3`; under it a 24-high row per place: a 3-wide changed marker
-  (`green`, on rows the review changed, else empty), the line number in mono 11 `fg3`
-  right-aligned in 36, then the line's text in mono 11.5 without its indentation, highlighted, the
-  symbol on `findCurrent` at 600; `controlHover` under the pointer. Loading, four skeleton bars;
-  none, "No references found" (or with **In this review**, "None on lines this review changed") in
-  `fg3`. A click on a row goes there as go to definition does.
+  tree" in `fg3`, over a hairline. Then each file, the review's files first, then the rest, each
+  group in path order: a 26-high row with the file glyph, its path (directory `fg3`, name `fg` at
+  600; when it doesn't fit, whole leading segments give way to "…/", never a cut inside a name;
+  "outside the repository" in `fg3` after a path outside it) and its row count in `fg3`; under
+  it a 24-high row per place: a 3-wide changed marker (`green`, on rows the review changed — in an
+  interdiff, changed since the round —, else empty), the line number in mono 11 `fg3` right-aligned in 36, then the line's text in mono
+  11.5 without its indentation, highlighted, the symbol on `findCurrent` at 600 — when the
+  symbol starts past what the row has room for, the line's start gives way to "…" so the symbol
+  shows with a little of what precedes it; `controlHover` under the pointer. The count and the
+  rows' numbers show as soon as the server answers, each row's text as its file is read, the
+  colours once all are; the list is virtualised (only the rows in view are drawn). While the
+  server is asked, four skeleton bars; none, "No references found" (or with **In this
+  review**, "None on lines this review changed") in `fg3`. A click on a row goes there as go to
+  definition does (a row read on another side, to that side).
 - **Next-file footer:** "Next: `src/routes/users.test.ts`" + "Mark viewed and go next `V` `J`"
   ("Go to next file `J`" once viewed; the last file says "Last file" with "Mark viewed `V`").
 - **Status bar:** a dot and the location with the backend's state — green "Local · watching for
@@ -502,15 +532,23 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   progress), "TypeScript restarting…" and "TypeScript waiting for the connection", `fg3` "TypeScript starting…", red
   "failed", and `fg3` "TypeScript missing" for a server the project lacks — then `Ctrl Enter
   finish review` while the review can still be finished. A click on a server opens its details
-  over the status bar's right end (a menu panel 420 wide, 16 padding): the dot, the name at 600 and
-  its state, **Retry** (a small button) on a failed one with why it failed in `red`, then "Command"
-  and the command line in mono on `icodeBg`, "From DV_LSP_TYPESCRIPT" (or "the project's own
-  (7.0.2)", "settings.json") in `fg3`, and "Last output" with its last stderr lines in mono; a
-  missing one's say "TypeScript isn't available", why (where it looked in `fg3` under it), "How
-  to get it", and a small **Check again** button (the ↻ glyph) 6 below. A click on the item again, or `Esc`, closes them.
-- **Code notice** (PLAN §18.1 "Go to definition"): a place that can't be shown (outside the
-  repository) heads the main area as a one-line banner (§4.4), "Defined outside the repository:
-  `<path>:<line>`", with its detail and **Dismiss**; going to another place takes it away.
+  over the status bar's right end (a menu panel 420 wide, 16 padding, the `popover` surface): the
+  dot, the name at 600, its version in `fg3` when the server gives one (`initialize`'s
+  `serverInfo`) and its state, **Retry** (a small button) on a failed one with why it failed in
+  `red`, then "Command" and the command line in mono on `icodeBg`, "From DV_LSP_TYPESCRIPT" (or
+  "the project's own (7.0.2)", "settings.json") in `fg3`, "Serves" and the directory it serves
+  (its absolute path) in mono, and "Last output" with its last stderr lines in mono; a missing
+  one's say "TypeScript isn't available", why (where it looked in `fg3` under it), "How to get
+  it" — its prose in `fg2`, each command and settings key as inline code with a 20-square copy
+  button (the copy glyph, through the clipboard seam) — and a small **Check again** button (the
+  ↻ glyph) 6 below. A click on the item again, or `Esc`, closes them; `Esc` in the composer
+  closes them first, the draft staying.
+- **Code notice** (PLAN §18.1 "Go to definition"): a place that can't be shown (a URI that
+  isn't a file; a file outside the repository opens in the file view instead) heads the main
+  area as a quiet one-line notice, not an error: on `layer` with a `line` outline, radius 6, 12
+  in from the main area's edges, a package glyph in `fg3`, "Defined outside the repository:
+  `<uri>:<line>`" in `fg2`, why in `fg3` at 12, and **Dismiss**; `Esc` (once nothing else in the
+  main area takes it) or going to another place takes it away.
 
 ### 4.2 Finish review / Submit (`GlassSubmit`)
 - Sheet, 980 wide, centred, over `scrim`. Header: "Finish review", `PR #482`, checks state, close.
@@ -644,12 +682,12 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
 | `E` / `Shift E` | expand the gap nearest the cursor by one step towards it / fully |
 | `S` | toggle split / unified (remembered per review) |
 | `Ctrl Enter` | finish review / submit: the "Finish round" sheet, while no text field has the keyboard (in the composer: post comment) |
-| `Ctrl K` | palette: files, reviews, PRs, commands |
+| `Ctrl K` | palette: reviews, PRs, commands (files are `Ctrl P`'s) |
 | `Ctrl O` | switch repo / review (the switcher; again, or `Esc`, closes it) |
 | `Ctrl G` | open a PR |
 | `Ctrl B` | toggle panel |
 | `Ctrl ,` | settings |
-| `Esc` | close the top overlay, else a comments row's menu, else the language server's details, else the hover card, else the file menu, else cancel the composer, else close the find bar, else clear the selection (the lines and the text both), else, in the file view, close it (back to the stream where it was); in the find field it closes the bar first (the field has the keyboard, so the stream's chain doesn't run) |
+| `Esc` | close the top overlay, else a comments row's menu, else the language server's details, else the hover card, else the file menu, else close an empty composer (one holding a draft is passed over: only `Esc` in the composer discards a draft, so a press in the code to select text to quote, `Ctrl C` and `Esc` never lose it), else close the find bar, else clear the selection (the lines and the text both), else the code notice (a place that can't be shown), else, in the file view, close it (back to the stream where it was); in the find field it closes the bar first, and in the composer it discards the draft once a comments row's menu or a language server's details over it have closed (the field has the keyboard, so the stream's chain doesn't run) |
 | `F` | the current file whole in the file view, at the cursor's line when the cursor is in it (a line on the other side only, a removed one, maps to the next line of the side shown) (the header menu's View file); nothing in the file view itself; with a draft in the file view's composer, the draft takes the keyboard instead |
 | `Ctrl P` | the file finder: every file of the review's new side (again, or `Esc`, closes it) |
 | `Alt ←` / `Alt →` | back / forward through the history of jumps between the stream and the file view, restoring the view, the file and the line; the mouse's back and forward buttons too. A step that would replace or close a file view holding a draft gives the draft the keyboard instead, the history left as it was |

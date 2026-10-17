@@ -83,8 +83,8 @@ pub enum Op {
     WorktreeLen { repo: u32, rel: String },
     /// `Backend::worktree_text_stats`: `Option<TextStats>`.
     WorktreeTextStats { repo: u32, rel: String },
-    /// `Backend::probe_path`: a [`WirePathProbe`].
-    ProbePath { repo: u32, path: String },
+    /// `Backend::probe_path`: a [`WirePathProbe`], the file's bytes when at most `read`.
+    ProbePath { repo: u32, path: String, read: u64 },
     /// `Backend::store_append`: `null`.
     StoreAppend {
         repo: u32,

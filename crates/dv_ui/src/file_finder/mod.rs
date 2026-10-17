@@ -10,9 +10,12 @@
 //! [`filter`]). While the side's paths are read, the review's files list alone.
 //!
 //! **Order.** A file passes when every word typed is in its path, ignoring case (the file
-//! list's filter, `crate::file_list::matches_filter`). Files whose name holds every word come
-//! before those that match only through their directories; among equal matches the review's
-//! changed files (marked with their status letter) come first, then the rest by path.
+//! list's filter, `crate::file_list::matches_filter`). Then, by the last word typed: a file
+//! whose name is that word, or is it but for its extension ("listing-feed" finds
+//! `listing-feed.tsx` first), then one whose name starts with it, then one whose name holds
+//! every word, then one that matches only through its directories; among equals the review's
+//! changed files (marked with their status letter) come first, then the rest by path. The
+//! words' matches show in each row's path ([`matched`]).
 //!
 //! `↑`/`↓` move the selection (wrapping), `Enter` opens, `Esc` closes. The finder only reports
 //! what was picked ([`FileFinderEvent`]); the shell opens it.
@@ -92,19 +95,62 @@ pub fn candidates(side: &[String], changed: &[(String, FileStatus)]) -> Vec<Cand
 /// "Order").
 pub fn filter(candidates: &[Candidate], query: &str) -> Vec<usize> {
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    let last = words.last().map(String::as_str).unwrap_or("");
     let mut found: Vec<(u8, bool, usize)> = candidates
         .iter()
         .enumerate()
         .filter(|(_, candidate)| words.iter().all(|word| candidate.lower.contains(word)))
         .map(|(index, candidate)| {
             let name = &candidate.lower[candidate.name_at..];
-            let in_name = words.iter().all(|word| name.contains(word));
-            (u8::from(!in_name), candidate.status.is_none(), index)
+            let stem = |name: &str| {
+                name.split('.').next() == Some(last)
+                    || name.rsplit_once('.').is_some_and(|(stem, _)| stem == last)
+            };
+            let tier = if last.is_empty() || name == last || stem(name) {
+                0
+            } else if name.starts_with(last) {
+                1
+            } else if words.iter().all(|word| name.contains(word)) {
+                2
+            } else {
+                3
+            };
+            (tier, candidate.status.is_none(), index)
         })
         .collect();
     // Candidates are sorted by path already, so the index orders the rest.
     found.sort_unstable();
     found.into_iter().map(|(_, _, index)| index).collect()
+}
+
+/// Where `query`'s words match in `path` (byte ranges, sorted, apart), ignoring case: what a
+/// row shows as matched. Nothing for a path whose lowercase changes its byte lengths.
+pub fn matched(path: &str, query: &str) -> Vec<std::ops::Range<usize>> {
+    let lower = path.to_lowercase();
+    if lower.len() != path.len() {
+        return Vec::new();
+    }
+    let mut ranges: Vec<std::ops::Range<usize>> = query
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .filter(|word| !word.is_empty())
+        .flat_map(|word| {
+            lower
+                .match_indices(word.as_str())
+                .map(|(at, hit)| at..at + hit.len())
+                .collect::<Vec<_>>()
+        })
+        .filter(|range| path.is_char_boundary(range.start) && path.is_char_boundary(range.end))
+        .collect();
+    ranges.sort_by_key(|range| range.start);
+    let mut merged: Vec<std::ops::Range<usize>> = Vec::new();
+    for range in ranges {
+        match merged.last_mut() {
+            Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+            _ => merged.push(range),
+        }
+    }
+    merged
 }
 
 /// What the candidates are built from: the new side's paths (the session's own list) and the

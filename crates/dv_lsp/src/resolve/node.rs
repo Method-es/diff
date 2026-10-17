@@ -15,7 +15,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 
-use dv_core::backend::{Backend, BackendError, PathProbe};
+use dv_core::backend::{Backend, BackendError, PROBE_READ_SMALL, PathProbe};
 use serde_json::Value;
 
 use crate::paths::PathStyle;
@@ -139,7 +139,12 @@ pub struct Reader<'a> {
     backend: &'a dyn Backend,
     style: PathStyle,
     seen: RefCell<HashMap<String, PathProbe>>,
+    /// The files read, by path and cap.
+    read: RefCell<HashMap<(String, u64), FileBytes>>,
 }
+
+/// A file's bytes as [`Reader::read`] found them (`None`: not a file, or over the cap).
+type FileBytes = Option<Vec<u8>>;
 
 impl<'a> Reader<'a> {
     pub fn new(backend: &'a dyn Backend, style: PathStyle) -> Self {
@@ -147,6 +152,7 @@ impl<'a> Reader<'a> {
             backend,
             style,
             seen: RefCell::new(HashMap::new()),
+            read: RefCell::new(HashMap::new()),
         }
     }
 
@@ -159,14 +165,32 @@ impl<'a> Reader<'a> {
         self.backend
     }
 
+    /// What is at `path`, looked at only (no bytes read: `contents` is `None`), once per
+    /// resolution.
     pub fn probe(&self, path: &AbsPath) -> Result<PathProbe, BackendError> {
         let native = path.native();
         if let Some(known) = self.seen.borrow().get(&native) {
             return Ok(known.clone());
         }
-        let probe = self.backend.probe_path(&native)?;
+        let probe = self.backend.probe_path(&native, 0)?;
         self.seen.borrow_mut().insert(native, probe.clone());
         Ok(probe)
+    }
+
+    /// The bytes of the file at `path` (no links followed) when it is one of at most `cap`
+    /// bytes (at most `PROBE_READ_SMALL`: a `package.json`, a shim), once per resolution.
+    pub fn read(&self, path: &AbsPath, cap: u64) -> Result<Option<Vec<u8>>, BackendError> {
+        let native = path.native();
+        let key = (native.clone(), cap);
+        if let Some(known) = self.read.borrow().get(&key) {
+            return Ok(known.clone());
+        }
+        let bytes = match self.backend.probe_path(&native, cap)? {
+            PathProbe::File { contents, .. } => contents,
+            _ => None,
+        };
+        self.read.borrow_mut().insert(key, bytes.clone());
+        Ok(bytes)
     }
 
     /// Whether `path` exists (a file, a directory or a link).
@@ -179,10 +203,7 @@ impl<'a> Reader<'a> {
         let RealPath::Found(real) = real_path(self, path)? else {
             return Ok(None);
         };
-        Ok(match self.probe(&real)? {
-            PathProbe::File { contents, .. } => contents,
-            _ => None,
-        })
+        self.read(&real, PROBE_READ_SMALL)
     }
 }
 

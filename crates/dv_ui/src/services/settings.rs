@@ -12,6 +12,15 @@
 //! leaves half a file; writes are ordered by generation, so the last change always wins, and
 //! whatever is still unwritten when the app quits is written synchronously then
 //! ([`super::persist`]).
+//!
+//! **Edits by hand while dv runs.** The reviewer edits `lsp` (and keeps other programs' keys)
+//! in the file while dv runs, so every write reads the file again first and takes `lsp` and the
+//! keys dv doesn't know from it, writing only the keys dv owns (`material`, `mode`,
+//! `panel_width`) from memory ([`write_merged`]); a file that isn't a JSON object at that
+//! moment (an edit saved half-way) is left alone and the write fails, saying why. `lsp` is also
+//! read again on its own ([`Settings::reload_lsp`]: **Check again** on a missing server, and
+//! the window coming back to the front), so an edit reaches the language servers without a
+//! restart.
 
 use std::path::{Path, PathBuf};
 
@@ -388,16 +397,20 @@ impl Settings {
             cx.notify();
             return;
         }
-        let (writer, generation, json) =
-            (self.writer.clone(), self.generation, self.file.to_json());
-        let write = cx.background_spawn(async move { writer.write(generation, &json) });
+        let (writer, generation, file) = (self.writer.clone(), self.generation, self.file.clone());
+        let write = cx.background_spawn(async move { write_merged(&writer, generation, file) });
         self.saving = Some(cx.spawn(async move |this, cx| {
             let result = write.await;
             this.update(cx, |this, cx| {
                 this.saving = None;
                 this.attempted = generation;
                 match result {
-                    Ok(_) => this.last_error = None,
+                    Ok(merged) => {
+                        this.last_error = None;
+                        // What the file holds besides dv's own keys, as it was written.
+                        this.file.lsp = merged.lsp;
+                        this.file.extra = merged.extra;
+                    }
                     Err(error) => {
                         log::warn!(
                             "couldn't save the settings to {}: {error}",
@@ -420,13 +433,64 @@ impl Settings {
         if self.unsaveable.is_some() || self.writer.written() >= self.generation {
             return;
         }
-        if let Err(error) = self.writer.write(self.generation, &self.file.to_json()) {
+        if let Err(error) = write_merged(&self.writer, self.generation, self.file.clone()) {
             log::warn!(
                 "couldn't save the settings to {}: {error}",
                 self.writer.path().display()
             );
         }
     }
+
+    /// Reads `lsp` (and the keys dv doesn't know) from the file again (module docs, "Edits by
+    /// hand while dv runs"): the language servers' settings as the file has them now, `None`
+    /// when it can't be read as settings just now. Always the file's, not only when they
+    /// differ from memory: a write by dv takes the file's `lsp` into memory too, and the
+    /// servers (`LanguageServers::set_settings`, which does nothing for the same settings)
+    /// still need to hear of it.
+    pub fn reload_lsp(&mut self) -> Option<dv_lsp::LspSettings> {
+        let text = match std::fs::read_to_string(self.writer.path()) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::from("{}"),
+            Err(error) => {
+                log::info!("reading {} again: {error}", self.writer.path().display());
+                return None;
+            }
+        };
+        if !matches!(serde_json::from_str::<Value>(&text), Ok(Value::Object(_))) {
+            return None;
+        }
+        let (disk, _) = SettingsFile::parse(&text);
+        self.file.extra = disk.extra;
+        self.file.lsp = disk.lsp;
+        Some(self.file.lsp_settings())
+    }
+}
+
+/// Writes `file` as generation `generation`, its `lsp` and the keys dv doesn't know taken
+/// from the file on disk first, so dv writes only the keys it owns (module docs, "Edits by hand
+/// while dv runs"): what was written. A file there that isn't a JSON object is left alone.
+fn write_merged(
+    writer: &Writer,
+    generation: u64,
+    mut file: SettingsFile,
+) -> std::io::Result<SettingsFile> {
+    match std::fs::read_to_string(writer.path()) {
+        Ok(text) => {
+            if !matches!(serde_json::from_str::<Value>(&text), Ok(Value::Object(_))) {
+                return Err(std::io::Error::other(
+                    "the file on disk isn't a JSON object just now (an edit saved half-way?), \
+                     so it's left as it is",
+                ));
+            }
+            let (disk, _) = SettingsFile::parse(&text);
+            file.lsp = disk.lsp;
+            file.extra = disk.extra;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    writer.write(generation, &file.to_json())?;
+    Ok(file)
 }
 
 #[cfg(test)]
@@ -654,6 +718,66 @@ mod tests {
         cx.update(|cx| cx.quit());
         cx.run_until_parked();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[gpui::test]
+    fn hand_edits_while_dv_runs_survive_its_writes_and_lsp_reloads(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SETTINGS_FILE);
+        std::fs::write(&path, r#"{"mode": "dark"}"#).unwrap();
+        let settings = cx.new(|cx| Settings::load(path.clone(), cx));
+        // The reviewer writes `lsp` and another program's key by hand while dv runs.
+        std::fs::write(
+            &path,
+            r#"{"mode": "dark", "lsp": {"typescript": {"command": ["/x/tsc", "--lsp"]}},
+                "theirs": 1}"#,
+        )
+        .unwrap();
+        // dv's own change keeps both, and its memory takes them up.
+        settings.update(cx, |settings, cx| settings.set_mode(Mode::Light, cx));
+        cx.run_until_parked();
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            saved,
+            serde_json::json!({
+                "v": 1,
+                "material": Material::platform_default().key(),
+                "mode": "light",
+                "lsp": {"typescript": {"command": ["/x/tsc", "--lsp"]}},
+                "theirs": 1
+            })
+        );
+        // Taken into memory by the write, it is still what reading it again gives: the servers
+        // must hear of it (they started with the file as it was).
+        assert_eq!(
+            settings.update(cx, |settings, _| settings.reload_lsp()),
+            Some(dv_lsp::LspSettings::from_json(
+                &serde_json::json!({"typescript": {"command": ["/x/tsc", "--lsp"]}})
+            ))
+        );
+        // Another edit by hand: read again, it is the servers' new settings.
+        std::fs::write(
+            &path,
+            r#"{"mode": "light", "lsp": {"typescript": {"command": ["/y/tsc"]}}}"#,
+        )
+        .unwrap();
+        let lsp = settings.update(cx, |settings, _| settings.reload_lsp());
+        assert_eq!(
+            lsp,
+            Some(dv_lsp::LspSettings::from_json(
+                &serde_json::json!({"typescript": {"command": ["/y/tsc"]}})
+            ))
+        );
+        // Half-saved: left alone, nothing read.
+        std::fs::write(&path, r#"{"mode": "#).unwrap();
+        assert_eq!(
+            settings.update(cx, |settings, _| settings.reload_lsp()),
+            None
+        );
+        settings.update(cx, |settings, cx| settings.set_panel_width(300., cx));
+        cx.run_until_parked();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), r#"{"mode": "#);
+        assert!(settings.read_with(cx, |settings, _| settings.last_error().is_some()));
     }
 
     #[test]

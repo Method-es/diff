@@ -24,15 +24,15 @@ use std::time::Duration;
 use dv_core::diff::FileDiff;
 use dv_core::review::AnchorSide;
 use gpui::{
-    AnyElement, Bounds, Context, Entity, IntoElement as _, MouseDownEvent, ParentElement as _,
-    Pixels, Point, anchored, deferred, point, px,
+    AnyElement, Bounds, Context, Entity, IntoElement as _, MouseDownEvent, Pixels, Point, deferred,
+    point, px,
 };
 
 use super::DiffPane;
 use super::rows::side_number;
 use super::select::line_index;
 use super::text::unit_at;
-use crate::intel::hover::{CardActions, render_card};
+use crate::intel::hover::{CardActions, hang, render_card};
 use crate::intel::{
     CodeIntel, HOVER_DELAY, HoverCard, Pane, SymbolAt, hover_token_at, identifier_at,
 };
@@ -199,31 +199,12 @@ impl DiffPane {
         self.pointed(&path, side, line, range, offset, token)
     }
 
-    /// The bounds the card shown hangs under: its span as this frame drew it, else the token's
-    /// when it was asked for.
+    /// The bounds the card shown hangs under: its span as the last frame drew it, else the
+    /// token's when it was asked for.
     fn card_bounds(&self, card: &HoverCard) -> Bounds<Pixels> {
-        let Some(lines) = self.lines(&card.at.path) else {
-            return card.token;
-        };
-        let Some(line) = line_index(lines, card.at.side, card.at.line) else {
-            return card.token;
-        };
-        let text = &lines[line].text;
-        let clamp = |at: usize| {
-            let mut at = at.min(text.len());
-            while !text.is_char_boundary(at) {
-                at -= 1;
-            }
-            at
-        };
-        let geometry = self.geometry.borrow();
-        let Some(drawn) = geometry.get(&(card.at.path.clone(), card.at.side, line)) else {
-            return card.token;
-        };
-        Bounds::from_corners(
-            point(drawn.x_of(clamp(card.span.start)), drawn.bounds.top()),
-            point(drawn.x_of(clamp(card.span.end)), drawn.bounds.bottom()),
-        )
+        self.lines(&card.at.path)
+            .and_then(|lines| span_bounds(card, lines, &self.geometry))
+            .unwrap_or(card.token)
     }
 
     /// The token at `range` of `path`'s line `line` (an index) on `side`, asked about at byte
@@ -248,6 +229,7 @@ impl DiffPane {
                 name: diff_line.text.get(range.clone())?.to_string(),
                 range,
                 offset,
+                worktree: self.file_view_on_disk(),
             },
             token,
             diff,
@@ -277,6 +259,30 @@ impl DiffPane {
             });
         let offset = range.start;
         self.pointed(&caret.path.clone(), caret.side, line, range, offset, token)
+    }
+
+    /// Where the middle of the character at byte `offset` of `path`'s line `number` on `side`
+    /// drew in the last frame (window coordinates), when it did.
+    #[cfg(test)]
+    pub fn char_point_for_tests(
+        &self,
+        path: &str,
+        side: AnchorSide,
+        number: u32,
+        offset: usize,
+    ) -> Option<Point<Pixels>> {
+        let line = line_index(self.lines(path)?, side, number)?;
+        let geometry = self.geometry.borrow();
+        let drawn = geometry.get(&(path.to_string(), side, line))?;
+        let (left, right) = (drawn.x_of(offset), drawn.x_of(offset + 1));
+        Some(point((left + right) / 2., drawn.bounds.center().y))
+    }
+
+    /// The symbol at the caret as a request asks about it, and the diff it is read from.
+    #[cfg(test)]
+    pub fn symbol_at_caret_for_tests(&self) -> Option<(SymbolAt, Arc<FileDiff>)> {
+        self.symbol_at_caret()
+            .map(|pointed| (pointed.at, pointed.diff))
     }
 
     /// The pointer moved over the pane without a button held (module docs, "Hover").
@@ -339,7 +345,8 @@ impl DiffPane {
                 }
             }
         }
-        cx.notify();
+        // Nothing drawn depends on the wait: the card comes and goes with `CodeIntel`, whose
+        // own notify redraws, so a pointer moving over code redraws nothing by itself.
     }
 
     /// The pointer left the pane: a hover waiting for it to rest, or asked for and not
@@ -386,8 +393,9 @@ impl DiffPane {
         }));
     }
 
-    /// Closes this pane's hover card (and a hover still waiting); `false` when there was none.
-    pub(super) fn close_hover(&mut self, cx: &mut Context<Self>) -> bool {
+    /// Closes this pane's hover card (and a hover still waiting, or asked for); `false` when
+    /// there was none. The shell closes the hidden pane's as the file view opens or closes.
+    pub fn close_hover(&mut self, cx: &mut Context<Self>) -> bool {
         self.hover_ui.waiting = None;
         self.hover_ui.closing = None;
         self.hover_ui.over_card = false;
@@ -447,18 +455,42 @@ impl DiffPane {
             return false;
         };
         self.close_hover(cx);
-        self.caret = Some(super::select::TextPoint {
-            path: pointed.at.path.clone(),
-            side: pointed.at.side,
-            line: pointed.at.line,
-            offset: pointed.at.range.start,
-        });
+        self.put_cursor_at(&pointed.at);
         let pane = self.intel_pane();
         intel.update(cx, |intel, cx| {
             intel.definition(pointed.at, pane, &pointed.diff, cx)
         });
         cx.notify();
         true
+    }
+
+    /// Puts the cursor on `at`'s line (as a click on its number does) and the caret at its
+    /// token, as a click in its code does: what the history keeps for a go to definition asked
+    /// with the mouse (`Ctrl`+click, the hover card's buttons), so `Alt ←` comes back here.
+    fn put_cursor_at(&mut self, at: &SymbolAt) {
+        let Some(line) = self
+            .lines(&at.path)
+            .and_then(|lines| line_index(lines, at.side, at.line))
+        else {
+            return;
+        };
+        self.cursor = Some(super::Cursor {
+            path: at.path.clone(),
+            pos: super::rows::LinePos {
+                line,
+                side: at.side,
+            },
+        });
+        if self.mode == crate::services::ViewMode::Split {
+            self.chosen_side = at.side;
+        }
+        self.selection = None;
+        self.caret = Some(super::select::TextPoint {
+            path: at.path.clone(),
+            side: at.side,
+            line: at.line,
+            offset: at.range.start,
+        });
     }
 
     /// Shows line `line` of `side` of `path` (go to definition, a references row) with the
@@ -539,7 +571,9 @@ impl DiffPane {
         self.hover_ui.waiting = None;
         self.hover_ui.closing = None;
         self.hover_ui.over_card = false;
+        self.put_cursor_at(&at);
         intel.update(cx, |intel, cx| ask(intel, at, &diff, cx));
+        cx.notify();
     }
 
     /// Before a frame: a card on a file whose diff was replaced goes, and once the card has
@@ -610,17 +644,54 @@ impl DiffPane {
                 })
             }),
         };
-        let token = self.card_bounds(&card);
         let element = render_card(&card, &intel, actions, theme, cx);
+        // Where it hangs is worked out once this frame's lines are laid out (`hang`): under
+        // the servers' range as drawn now, within the main area.
+        let (geometry, lines, area) = (
+            self.geometry.clone(),
+            self.files.get(&card.at.path).and_then(|ui| ui.diff.clone()),
+            self.view_bounds,
+        );
+        let place = move || {
+            let target = lines
+                .as_ref()
+                .and_then(|diff| diff.as_text())
+                .and_then(|text| span_bounds(&card, &text.lines, &geometry))
+                .unwrap_or(card.token);
+            let area = if area.size.width > px(0.) {
+                area
+            } else {
+                target
+            };
+            (target, area)
+        };
         Some(
-            deferred(
-                anchored()
-                    .position(point(token.left(), token.bottom() + px(2.)))
-                    .snap_to_window_with_margin(px(8.))
-                    .child(element),
-            )
-            .with_priority(CARD_PRIORITY)
-            .into_any_element(),
+            deferred(hang(element, place))
+                .with_priority(CARD_PRIORITY)
+                .into_any_element(),
         )
     }
+}
+
+/// `card`'s span as `geometry` has its line drawn (`lines` its file's), when it is drawn.
+fn span_bounds(
+    card: &HoverCard,
+    lines: &[dv_core::diff::DiffLine],
+    geometry: &super::select::Geometry,
+) -> Option<Bounds<Pixels>> {
+    let line = line_index(lines, card.at.side, card.at.line)?;
+    let text = &lines[line].text;
+    let clamp = |at: usize| {
+        let mut at = at.min(text.len());
+        while !text.is_char_boundary(at) {
+            at -= 1;
+        }
+        at
+    };
+    let geometry = geometry.borrow();
+    let drawn = geometry.get(&(card.at.path.clone(), card.at.side, line))?;
+    Some(Bounds::from_corners(
+        point(drawn.x_of(clamp(card.span.start)), drawn.bounds.top()),
+        point(drawn.x_of(clamp(card.span.end)), drawn.bounds.bottom()),
+    ))
 }

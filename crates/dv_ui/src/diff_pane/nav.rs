@@ -40,9 +40,10 @@ impl DiffPane {
         let clear = {
             let pane = pane.clone();
             move |_: &ClearSelection, _: &mut Window, cx: &mut App| {
-                // The end of `Esc`'s chain: the file view closes (DESIGN §5).
+                // The end of `Esc`'s chain: the code notice goes, else the file view closes
+                // (DESIGN §5).
                 let handled = pane.update(cx, |this, cx| {
-                    this.clear_selection(cx) || {
+                    this.clear_selection(cx) || this.dismiss_notice(cx) || {
                         this.ask_close(cx);
                         this.is_file_view()
                     }
@@ -671,9 +672,10 @@ impl DiffPane {
         }
     }
 
-    /// Closes the hover card, else the file menu, else drops the composer, else closes the
-    /// find bar, else clears the selection, the lines and the text both (DESIGN §5's `Esc`);
-    /// `false` when there was none of them.
+    /// Closes the hover card, else the file menu, else drops an empty composer (one holding a
+    /// draft is passed over: only `Esc` in it discards it), else closes the find bar, else
+    /// clears the selection, the lines and the text both (DESIGN §5's `Esc`); `false` when
+    /// there was none of them.
     fn clear_selection(&mut self, cx: &mut Context<Self>) -> bool {
         // A reply waiting for its card (the comments list's Reply) is forgotten too.
         self.reply_when_shown = None;
@@ -687,6 +689,19 @@ impl DiffPane {
             return true;
         }
         false
+    }
+
+    /// Takes the main area's code notice away (a place that can't be shown); `false` when
+    /// there was none.
+    fn dismiss_notice(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(intel) = self.intel.clone() else {
+            return false;
+        };
+        if intel.read(cx).notice().is_none() {
+            return false;
+        }
+        intel.update(cx, |intel, cx| intel.dismiss_notice(cx));
+        true
     }
 
     fn find_next(&mut self, cx: &mut Context<Self>) {

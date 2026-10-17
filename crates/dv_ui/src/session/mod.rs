@@ -87,7 +87,7 @@ pub use load::Batch;
 use load::ReviewText;
 pub use placement::ThreadPlacement;
 use placement::{FileIndex, FuzzyTables};
-pub use side::SideFileState;
+pub use side::{SideFileState, ViewFrom};
 use watch::WatchState;
 use writes::ViewedIntent;
 
@@ -247,8 +247,9 @@ pub struct ReviewSession {
     /// The file the file view shows: it loads (a listed file's diff, else its read at the new
     /// side) and is highlighted whatever the stream's viewport (`side`).
     file_view: Option<String>,
-    /// The file view reads its file from the working tree as it stands (`side`).
-    file_view_worktree: bool,
+    /// Where the file view reads its file: the review, the working tree as it stands, or a
+    /// file outside the repository (`side`).
+    file_view_from: side::ViewFrom,
     /// How many placements were worked out (tests: what keeping them saves).
     #[cfg(test)]
     worked_out: std::cell::Cell<usize>,
@@ -345,7 +346,7 @@ impl ReviewSession {
             side_reads: HashMap::new(),
             side_paths: None,
             file_view: None,
-            file_view_worktree: false,
+            file_view_from: side::ViewFrom::Review,
             #[cfg(test)]
             worked_out: std::cell::Cell::new(0),
             #[cfg(test)]
@@ -657,7 +658,8 @@ impl ReviewSession {
         let wanted_landed = self.spec.is_none()
             || self.link.down
             || (self.wanted.iter().all(landed)
-                && (self.file_view_worktree || self.file_view.iter().all(landed))
+                && (self.file_view_from != side::ViewFrom::Review
+                    || self.file_view.iter().all(landed))
                 && self.extra_paths().all(landed)
                 && self.thread_files().iter().all(landed)
                 && (!self.searching || self.list.files.iter().all(|entry| landed(&entry.path))));

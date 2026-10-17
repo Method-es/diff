@@ -6,8 +6,13 @@
 //! The switcher and the source picker hang under their buttons while open, and the file
 //! finder (`Ctrl P`) under the command field
 //! (`deferred(anchored())` in a zero-size box at the button's bottom-left corner, so they follow
-//! the layout), above everything else, an open sheet included. The left group never runs under the centred command field: at narrow widths the
-//! switcher's label truncates.
+//! the layout), above everything else, an open sheet included.
+//!
+//! **Room.** The command field is centred on the window unless the left group needs more than
+//! the half that leaves it: then the field moves right as far as the group needs, short of the
+//! caption buttons ([`field_left`], the group's width measured from its texts). The left group
+//! never runs under the field: once the field can't move further, the switcher's label
+//! truncates (the target, then the repository's name).
 //!
 //! The caption buttons are gpui `WindowControlArea`s, so Windows itself handles their clicks,
 //! hover and Snap Layouts on Maximize (the pattern of Zed's `platform_title_bar`). macOS draws
@@ -68,8 +73,6 @@ impl Shell {
         } else {
             px(14.)
         };
-        // The left group stops short of the centred command field.
-        let room = (window.viewport_size().width - theme.sizes.command_field_width) / 2. - px(12.);
         let label = match (&self.session, &self.opening) {
             (_, Some(opening)) => SwitcherLabel::Opening {
                 name: opening.location.short_name(),
@@ -87,6 +90,20 @@ impl Shell {
             (None, None) => SwitcherLabel::Nothing,
         };
         let has_review = self.session.is_some();
+        // The left group stops short of the command field, which moves right when the group
+        // needs it to (module docs, "Room").
+        let needed = left_group_width(&label, left_inset, has_review, window, theme);
+        let field = field_left(
+            window.viewport_size().width,
+            theme.sizes.command_field_width,
+            needed,
+            if cfg!(target_os = "windows") && !window.is_fullscreen() {
+                theme.sizes.caption_button_width * 3.
+            } else {
+                px(0.)
+            },
+        );
+        let room = field - FIELD_GAP;
         div()
             .id("titlebar")
             .relative()
@@ -121,15 +138,17 @@ impl Shell {
             )
             .child(div().flex_1())
             .child(WindowControls::new(theme))
-            // Centred on the window, not between its neighbours. The wrapper has no hitbox, so
-            // the drag region still reaches everywhere but the field.
+            // Centred on the window (or as far right as the left group needs), not between its
+            // neighbours. The wrapper has no hitbox, so the drag region still reaches everywhere
+            // but the field.
             .child(
                 div()
                     .absolute()
-                    .inset_0()
+                    .top_0()
+                    .bottom_0()
+                    .left(field)
                     .flex()
                     .items_center()
-                    .justify_center()
                     .child(div().relative().child(command_field(theme)).children(
                         self.file_finder.as_ref().map(|overlay| {
                             hang_centred(
@@ -275,6 +294,88 @@ impl Shell {
             .children(open.map(|view| hang(view.into_any_element())))
             .into_any_element()
     }
+}
+
+/// The room kept between the left group and the command field, and between the field and the
+/// caption buttons.
+const FIELD_GAP: Pixels = px(12.);
+
+/// Where the command field's left edge goes (module docs, "Room"): centred in a window
+/// `width` wide, or as far right as a left group `needed` wide needs, but never closer than
+/// [`FIELD_GAP`] to the `right` reserved at the window's right edge (the caption buttons).
+pub fn field_left(width: Pixels, field: Pixels, needed: Pixels, right: Pixels) -> Pixels {
+    let centred = (width - field) / 2.;
+    let furthest = width - right - FIELD_GAP - field;
+    centred.max((needed + FIELD_GAP).min(furthest))
+}
+
+/// How wide the left group draws when nothing truncates: the mark, the switcher button with
+/// its label, its keycap and the source picker's button (their paddings, gaps and glyphs as
+/// they are laid out, the texts measured).
+fn left_group_width(
+    label: &SwitcherLabel,
+    left_inset: Pixels,
+    has_review: bool,
+    window: &Window,
+    theme: &DvTheme,
+) -> Pixels {
+    use crate::components::text_width;
+    let control = &theme.text.control;
+    let semibold = crate::theme::TextSpec {
+        weight: FontWeight::SEMIBOLD,
+        ..control.clone()
+    };
+    let chip = |text: &str| {
+        let medium = crate::theme::TextSpec {
+            weight: FontWeight::MEDIUM,
+            ..theme.text.secondary.clone()
+        };
+        theme.spacing.sm * 2. + px(12.) + theme.spacing.xs + text_width(window, text, &medium)
+    };
+    let (gap, dot) = (px(6.), text_width(window, "·", control));
+    let text = match label {
+        SwitcherLabel::Nothing => text_width(window, "No review open", control),
+        SwitcherLabel::Opening { name, distro } => {
+            text_width(window, name, &semibold)
+                + distro
+                    .as_deref()
+                    .map_or(px(0.), |distro| gap + chip(distro))
+                + gap * 2.
+                + dot
+                + text_width(window, "opening…", control)
+        }
+        SwitcherLabel::Review {
+            name,
+            target,
+            distro,
+        } => {
+            text_width(window, name, &semibold)
+                + distro
+                    .as_deref()
+                    .map_or(px(0.), |distro| gap + chip(distro))
+                + gap * 2.
+                + dot
+                + text_width(window, target, control)
+        }
+    };
+    let mark = left_inset
+        + px(18.)
+        + theme.spacing.md
+        + text_width(window, "dv", &theme.text.wordmark)
+        + theme.spacing.lg;
+    let switcher =
+        theme.spacing.sm + theme.spacing.md * 2. + px(15.) + px(7.) * 2. + px(12.) + text;
+    let keycap = px(2.)
+        + (theme.spacing.xs + px(1.)) * 2.
+        + px(2.)
+        + text_width(window, &keymap::label("secondary-o"), &theme.text.kbd);
+    let source = if has_review {
+        theme.spacing.sm + theme.spacing.md * 2. + px(15.) + px(5.) + px(12.)
+    } else {
+        px(0.)
+    };
+    // A little over, so rounding never truncates a label that fits.
+    mark + px(1.) + switcher + keycap + source + px(4.)
 }
 
 /// Hangs an overlay `width` wide centred under a control `under` wide (the file finder under the
@@ -552,5 +653,23 @@ impl CaptionButton {
             Self::Maximize | Self::Restore => WindowControlArea::Max,
             Self::Close => WindowControlArea::Close,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_command_field_moves_right_only_as_far_as_the_left_group_needs() {
+        let (width, field, caption) = (px(1440.), px(300.), px(138.));
+        // Room enough: centred.
+        assert_eq!(field_left(width, field, px(400.), caption), px(570.));
+        // A wider group: the field moves right just enough.
+        assert_eq!(field_left(width, field, px(600.), caption), px(612.));
+        // Never into the caption buttons: the label truncates instead.
+        assert_eq!(field_left(width, field, px(1100.), caption), px(990.));
+        // A narrow window whose half is too little already: centred.
+        assert_eq!(field_left(px(500.), field, px(400.), caption), px(100.));
     }
 }

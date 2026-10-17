@@ -16,6 +16,7 @@
 //! for is plain text. Two of gpui-component's grammars are corrected first
 //! ([`register_languages`]).
 
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Once;
 
@@ -371,6 +372,54 @@ pub fn highlight_side<S: AsRef<str>>(path: &str, lines: &[S]) -> Option<SideHigh
     highlighter.update(None, &Rope::from_str(&text), None);
     let styles = highlighter.styles(&(0..text.len()), &KindResolver);
     Some(bucket(&text, &starts, &styles))
+}
+
+/// Highlights lines one at a time, each on its own, as if it were the whole file, so nothing a
+/// line opens (a block comment, a template literal) colours another: a references list's rows
+/// (`crate::intel::references`), from many files. It keeps one highlighter per language, its
+/// grammar's queries compiled once, and has it parse each line afresh (an edit replacing all
+/// of the line before). Blocking: runs on a background thread.
+#[derive(Default)]
+pub struct LineHighlighter {
+    highlighters: HashMap<&'static str, (SyntaxHighlighter, usize)>,
+}
+
+impl LineHighlighter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `line`'s tokens, highlighted in the language `path` names; none without a grammar, or
+    /// for a line over [`MAX_LINE_BYTES`].
+    pub fn highlight(&mut self, path: &str, line: &str) -> Vec<Token> {
+        let Some(language) = language_for_path(path) else {
+            return Vec::new();
+        };
+        if line.len() > MAX_LINE_BYTES {
+            return Vec::new();
+        }
+        register_languages();
+        let (highlighter, before) = self
+            .highlighters
+            .entry(language)
+            .or_insert_with(|| (SyntaxHighlighter::new(language), 0));
+        // All of the line before replaced by this one: nothing of its parse is kept.
+        let edit = tree_sitter::InputEdit {
+            start_byte: 0,
+            old_end_byte: *before,
+            new_end_byte: line.len(),
+            start_position: tree_sitter::Point::new(0, 0),
+            old_end_position: tree_sitter::Point::new(0, *before),
+            new_end_position: tree_sitter::Point::new(0, line.len()),
+        };
+        highlighter.update(Some(edit), &Rope::from_str(line), None);
+        *before = line.len();
+        let styles = highlighter.styles(&(0..line.len()), &KindResolver);
+        let mut text = String::with_capacity(line.len() + 1);
+        text.push_str(line);
+        text.push('\n');
+        bucket(&text, &[0], &styles).line(1).to_vec()
+    }
 }
 
 /// Splits whole-text runs into line-relative tokens: plain runs and the newline between lines

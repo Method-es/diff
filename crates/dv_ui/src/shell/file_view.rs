@@ -21,6 +21,7 @@ use crate::actions::shell::FindFile;
 use crate::diff_pane::{DiffPane, DiffPaneEvent};
 use crate::file_finder::{FileFinder, FileFinderEvent};
 use crate::history::{History, Position, View};
+use crate::session::ViewFrom;
 
 impl Shell {
     /// The pane the main area shows: the file view's while it is open, else the stream's.
@@ -68,13 +69,17 @@ impl Shell {
         } else {
             (View::Stream, self.diff_pane.read(cx).position()?)
         };
-        let worktree = self.file_view_open && self.file_view.read(cx).file_view_worktree();
+        let from = if self.file_view_open {
+            self.file_view.read(cx).file_view_from().unwrap_or_default()
+        } else {
+            ViewFrom::Review
+        };
         Some(Position {
             view,
             path,
             side,
             line,
-            worktree,
+            from,
         })
     }
 
@@ -88,16 +93,16 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_file_view_at(path, line, false, jump, window, cx);
+        self.open_file_view_at(path, line, ViewFrom::Review, jump, window, cx);
     }
 
-    /// [`Shell::open_file_view`], the file read from the working tree as it stands when
-    /// `worktree` (`intel`).
+    /// [`Shell::open_file_view`], the file read where `from` says: from the working tree as it
+    /// stands, or outside the repository (`intel`).
     pub fn open_file_view_at(
         &mut self,
         path: &str,
         line: Option<u32>,
-        worktree: bool,
+        from: ViewFrom,
         jump: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -105,12 +110,18 @@ impl Shell {
         if self.session.is_none() || self.keeps_draft(Some(path), window, cx) {
             return;
         }
+        // Another view: a place still waiting for its file's diff never fires, and the hover
+        // of the pane it hides (or of the file it replaces) goes.
+        self.forget_pending_goto(cx);
+        for pane in [&self.diff_pane, &self.file_view] {
+            pane.update(cx, |pane, cx| pane.close_hover(cx));
+        }
         if jump && let Some(from) = self.position(cx) {
             self.history.jump(from);
         }
         self.file_view_open = true;
         self.file_view
-            .update(cx, |pane, cx| pane.open_file_at(path, line, worktree, cx));
+            .update(cx, |pane, cx| pane.open_file_at(path, line, from, cx));
         self.file_view.read(cx).focus_handle(cx).focus(window, cx);
         cx.notify();
     }
@@ -121,6 +132,8 @@ impl Shell {
         if !self.file_view_open || self.keeps_draft(None, window, cx) {
             return;
         }
+        self.forget_pending_goto(cx);
+        self.file_view.update(cx, |pane, cx| pane.close_hover(cx));
         if jump && let Some(from) = self.position(cx) {
             self.history.jump(from);
         }
@@ -184,9 +197,10 @@ impl Shell {
 
     /// Restores `to`: its view, file and line.
     fn go_to(&mut self, to: Position, window: &mut Window, cx: &mut Context<Self>) {
+        self.forget_pending_goto(cx);
         match to.view {
             View::FileView => {
-                self.open_file_view_at(&to.path, Some(to.line), to.worktree, false, window, cx)
+                self.open_file_view_at(&to.path, Some(to.line), to.from, false, window, cx)
             }
             View::Stream => {
                 self.close_file_view(false, window, cx);

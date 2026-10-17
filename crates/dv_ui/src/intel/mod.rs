@@ -81,6 +81,10 @@ pub struct SymbolAt {
     /// The byte a server is asked at: the pointer's character for a hover, else the token's
     /// first.
     pub offset: usize,
+    /// The pane shows the file as the working tree holds it now (the file view at the working
+    /// tree, PLAN §18.1 "Go to definition"), whatever the review's sides are: a server reads
+    /// that text from the disk (PLAN §18.2).
+    pub worktree: bool,
 }
 
 impl SymbolAt {
@@ -103,8 +107,12 @@ pub struct HoverCard {
     pub pane: Pane,
     /// The token's bounds in the window when it was asked for; the card hangs under it.
     pub token: Bounds<Pixels>,
-    /// Never empty.
+    /// Empty only for a card that says there is nothing ([`HoverCard::note`]).
     pub sections: Vec<HoverSection>,
+    /// What a card without sections says: every server answered with nothing for text that
+    /// wasn't the working tree's (a removed line's symbol), which they read against the
+    /// working tree, so the reviewer knows why (PLAN §18.1 "Hover").
+    pub note: Option<&'static str>,
     /// The bytes of the line the card is about: the union of the ranges the servers answered
     /// for (Tailwind's is the whole class, `bg-red-500`), else the token asked about. The
     /// card hangs under it, and the pointer anywhere in it keeps the card without asking again.
@@ -117,8 +125,12 @@ pub struct HoverCard {
 }
 
 impl HoverCard {
-    /// Its text as automation reads it: the sections' texts joined by blank lines.
+    /// Its text as automation reads it: the sections' texts joined by blank lines (its note,
+    /// for a card without sections).
     pub fn text(&self) -> String {
+        if self.sections.is_empty() {
+            return self.note.unwrap_or_default().to_string();
+        }
         self.sections
             .iter()
             .map(HoverSection::text)
@@ -189,7 +201,21 @@ struct Hovering {
     at: SymbolAt,
     pane: Pane,
     requests: Vec<(usize, InFlight)>,
+    /// Every server that answered so far answered, with nothing (none failed or was missing).
+    all_empty: bool,
 }
+
+/// One server's answer to a hover, as the card takes it.
+enum Answered {
+    Something(HoverSection),
+    /// It answered, with nothing.
+    Empty,
+    /// No server, or a request that failed quietly.
+    Nothing,
+}
+
+/// What a card says when every server answered with nothing for another side's text.
+pub const NO_INFORMATION: &str = "No information: read against the working tree";
 
 /// Where a place was asked from: the symbol, the pane, and whether the server read that
 /// file's text from the working tree (`worktree`) or from the text dv opened for it. A place in
@@ -219,12 +245,17 @@ pub enum IntelEvent {
     ShowReferences,
 }
 
+/// How many files' texts [`CodeIntel`] keeps for its requests: the ones asked about last.
+pub const DOCUMENTS_KEPT: usize = 32;
+
 /// The text a pane shows of one file at one side, as a server reads it (module docs).
 #[derive(Clone)]
 struct Document {
     /// The diff it was cut from, by identity.
     diff: Arc<FileDiff>,
     text: Arc<str>,
+    /// When it was last asked about (a count of requests): the least recent goes first.
+    used: u64,
 }
 
 /// A review's code intelligence (module docs).
@@ -245,9 +276,13 @@ pub struct CodeIntel {
     last_definitions: Option<usize>,
     references: Option<References>,
     references_request: Option<InFlight>,
+    /// Tells each references list from the one before.
+    next_list: u64,
     /// Why the last navigation couldn't show its place (a definition outside the repository).
     notice: Option<Failure>,
+    /// The texts requests were asked about, at most [`DOCUMENTS_KEPT`].
     documents: HashMap<(String, AnchorSide), Document>,
+    documents_used: u64,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -257,6 +292,8 @@ impl CodeIntel {
     /// The code intelligence of `session`'s review: its worktree's servers are in use until
     /// this is dropped.
     pub fn new(session: Entity<ReviewSession>, cx: &mut Context<Self>) -> Self {
+        // A review opening: `settings.json`'s `lsp` as it is now, before its servers are found.
+        reload_lsp_settings(cx);
         let servers = cx.services().language_servers.clone();
         let (backend, connection) = {
             let session = session.read(cx);
@@ -289,8 +326,10 @@ impl CodeIntel {
             last_definitions: None,
             references: None,
             references_request: None,
+            next_list: 0,
             notice: None,
             documents: HashMap::new(),
+            documents_used: 0,
             _subscriptions: subscriptions,
         };
         intel.serve(cx);
@@ -323,18 +362,26 @@ impl CodeIntel {
             .update(cx, |servers, cx| servers.retry(&worktree, server, cx));
     }
 
-    /// **Check again** on a missing server (PLAN §18.5).
+    /// **Check again** on a missing server (PLAN §18.5): `settings.json`'s `lsp` is read
+    /// again first, so a command written there meanwhile is used.
     pub fn check_again(&mut self, cx: &mut Context<Self>) {
+        self.reload_lsp_settings(cx);
         let worktree = self.worktree.clone();
         self.servers
             .update(cx, |servers, cx| servers.check_again(&worktree, cx));
     }
 
-    /// The window came back to the front: a missing server is looked for again (throttled).
+    /// The window came back to the front: a missing server is looked for again (throttled;
+    /// the shell has read `settings.json`'s `lsp` again first).
     pub fn window_activated(&mut self, cx: &mut Context<Self>) {
         let worktree = self.worktree.clone();
         self.servers
             .update(cx, |servers, cx| servers.recheck_missing(&worktree, cx));
+    }
+
+    /// Reads `settings.json`'s `lsp` again and hands it to the servers ([`reload_lsp_settings`]).
+    fn reload_lsp_settings(&mut self, cx: &mut Context<Self>) {
+        reload_lsp_settings(cx);
     }
 
     /// How many times the worktree's servers were looked for again.
@@ -408,13 +455,17 @@ impl CodeIntel {
             && self
                 .references
                 .as_ref()
-                .is_none_or(|references| !references.is_loading())
+                .is_none_or(|references| !references.is_loading() && !references.is_reading())
             && self.servers.read(cx).is_settled()
     }
 
     fn on_session_event(&mut self, event: &SessionEvent, cx: &mut Context<Self>) {
         match event {
-            SessionEvent::FilesChanged => self.serve(cx),
+            SessionEvent::FilesChanged => {
+                self.serve(cx);
+                self.refresh_changed(None, cx);
+            }
+            SessionEvent::FileLoaded(path) => self.refresh_changed(Some(path), cx),
             SessionEvent::WorktreeChanged { paths, rescan } => {
                 let worktree = self.worktree.clone();
                 let (paths, rescan) = (paths.clone(), *rescan);
@@ -424,6 +475,22 @@ impl CodeIntel {
                 cx.notify();
             }
             _ => {}
+        }
+    }
+
+    /// The references rows of `path` (every file's, `None`) work out again whether the review
+    /// changed their lines: the session's diff of it landed, or its list changed.
+    fn refresh_changed(&mut self, path: Option<&str>, cx: &mut Context<Self>) {
+        let Some(list) = self.references.as_mut() else {
+            return;
+        };
+        if path.is_some_and(|path| !list.has_file(path)) {
+            return;
+        }
+        let shape = list.shape;
+        list.refresh_changed(path, self.session.read(cx));
+        if list.shape != shape {
+            cx.notify();
         }
     }
 
@@ -444,20 +511,35 @@ impl CodeIntel {
             .update(cx, |servers, cx| servers.serve(&worktree, paths, cx));
     }
 
-    /// Whether a server reads `side`'s text as the disk holds it: the new side of a review
-    /// whose new side is the working tree (module docs).
-    pub fn reads_worktree(&self, side: AnchorSide, cx: &App) -> bool {
-        side == AnchorSide::New && self.session.read(cx).new_side() == Some(&Side::Worktree)
+    /// Whether a server reads `at`'s text as the disk holds it: a pane showing the working
+    /// tree, or the new side of a review whose new side is the working tree (module docs).
+    pub fn reads_worktree(&self, at: &SymbolAt, cx: &App) -> bool {
+        at.worktree
+            || (at.side == AnchorSide::New
+                && self.session.read(cx).new_side() == Some(&Side::Worktree))
     }
 
     /// `at`'s file's text on its side, from `diff` (the diff the pane shows the file from),
     /// built once per diff.
     fn document(&mut self, at: &SymbolAt, diff: &Arc<FileDiff>) -> Option<Arc<str>> {
         let key = (at.path.clone(), at.side);
-        if let Some(known) = self.documents.get(&key)
+        self.documents_used += 1;
+        if let Some(known) = self.documents.get_mut(&key)
             && Arc::ptr_eq(&known.diff, diff)
         {
+            known.used = self.documents_used;
             return Some(known.text.clone());
+        }
+        // Room for one more: the least recently asked about goes.
+        if self.documents.len() >= DOCUMENTS_KEPT
+            && !self.documents.contains_key(&key)
+            && let Some(oldest) = self
+                .documents
+                .iter()
+                .min_by_key(|(_, document)| document.used)
+                .map(|(key, _)| key.clone())
+        {
+            self.documents.remove(&oldest);
         }
         let text_diff = diff.as_text()?;
         let mut text = side_lines(text_diff, at.side).join("\n");
@@ -474,6 +556,7 @@ impl CodeIntel {
             Document {
                 diff: diff.clone(),
                 text: text.clone(),
+                used: self.documents_used,
             },
         );
         Some(text)
@@ -510,7 +593,7 @@ impl CodeIntel {
         let Some(text) = self.document(&at, diff) else {
             return;
         };
-        let against_worktree = !self.reads_worktree(at.side, cx);
+        let against_worktree = !self.reads_worktree(&at, cx);
         let mut requests = Vec::new();
         for (order, spec) in dv_lsp::languages::ALL.iter().copied().enumerate() {
             if spec.language_id(&at.path).is_none() {
@@ -527,23 +610,25 @@ impl CodeIntel {
                 |client, path, position| client.hover(path, position),
                 |_| true,
                 move |this, answer, cx| {
-                    let info = match answer {
-                        Some(Ok(Some(info))) if !info.parts.is_empty() => Some(info),
-                        // Nothing to show: no answer, no server, or a request that failed
-                        // quietly (PLAN §18.5).
+                    let answered = match answer {
+                        Some(Ok(Some(info))) if !info.parts.is_empty() => {
+                            Answered::Something(HoverSection {
+                                order,
+                                spec_id: spec.id,
+                                server: spec.name,
+                                info,
+                            })
+                        }
+                        Some(Ok(_)) => Answered::Empty,
+                        // Nothing to show: no server, or a request that failed quietly (PLAN
+                        // §18.5).
                         Some(Err(error)) => {
                             log::info!("hover ({}): {error}", spec.id);
-                            None
+                            Answered::Nothing
                         }
-                        _ => None,
+                        None => Answered::Nothing,
                     };
-                    let section = info.map(|info| HoverSection {
-                        order,
-                        spec_id: spec.id,
-                        server: spec.name,
-                        info,
-                    });
-                    this.hover_answered(order, asked, pane, token, against_worktree, section, cx);
+                    this.hover_answered(order, asked, pane, token, against_worktree, answered, cx);
                 },
                 cx,
             );
@@ -552,12 +637,18 @@ impl CodeIntel {
         if requests.is_empty() {
             return;
         }
-        self.hovering = Some(Hovering { at, pane, requests });
+        self.hovering = Some(Hovering {
+            at,
+            pane,
+            requests,
+            all_empty: true,
+        });
         cx.notify();
     }
 
     /// One server's answer to the hover asked for `at` in `pane`: the first that says anything
-    /// opens the card, a later one joins it in its place.
+    /// opens the card, a later one joins it in its place; when every server answered with
+    /// nothing for another side's text, a card says so ([`NO_INFORMATION`]).
     #[allow(clippy::too_many_arguments)]
     fn hover_answered(
         &mut self,
@@ -566,7 +657,7 @@ impl CodeIntel {
         pane: Pane,
         token: Bounds<Pixels>,
         against_worktree: bool,
-        section: Option<HoverSection>,
+        answered: Answered,
         cx: &mut Context<Self>,
     ) {
         if let Some(asking) = self
@@ -575,8 +666,9 @@ impl CodeIntel {
             .filter(|asking| asking.at == at && asking.pane == pane)
         {
             asking.requests.retain(|(known, _)| *known != order);
-            match section {
-                Some(section) => {
+            asking.all_empty &= matches!(answered, Answered::Empty);
+            match answered {
+                Answered::Something(section) => {
                     let rest = self
                         .hovering
                         .take()
@@ -590,13 +682,30 @@ impl CodeIntel {
                         pane,
                         token,
                         sections,
+                        note: None,
                         against_worktree,
                         id: self.next_hover,
                     });
                     self.hover_more = rest;
                 }
-                None if asking.requests.is_empty() => self.hovering = None,
-                None => {}
+                _ if asking.requests.is_empty() => {
+                    let note = against_worktree && asking.all_empty;
+                    self.hovering = None;
+                    if note {
+                        self.next_hover += 1;
+                        self.hover = Some(HoverCard {
+                            span: at.range.clone(),
+                            at,
+                            pane,
+                            token,
+                            sections: Vec::new(),
+                            note: Some(NO_INFORMATION),
+                            against_worktree,
+                            id: self.next_hover,
+                        });
+                    }
+                }
+                _ => {}
             }
         } else if let Some(card) = self
             .hover
@@ -604,7 +713,7 @@ impl CodeIntel {
             .filter(|card| card.at == at && card.pane == pane)
         {
             self.hover_more.retain(|(known, _)| *known != order);
-            if let Some(section) = section {
+            if let Answered::Something(section) = answered {
                 card.add(section);
             }
         }
@@ -641,7 +750,9 @@ impl CodeIntel {
         };
         self.close_hover(cx);
         cx.emit(IntelEvent::DefinitionAsked);
-        let against_worktree = !self.reads_worktree(at.side, cx);
+        let against_worktree = !self.reads_worktree(&at, cx);
+        // The text the server reads in place of the disk's, kept for a list's rows of it.
+        let own = against_worktree.then(|| text.clone());
         let from = at.clone();
         let request = self.request(
             &at,
@@ -680,7 +791,7 @@ impl CodeIntel {
                             ReferencesKind::Definitions,
                             from,
                             pane,
-                            against_worktree,
+                            own,
                             Ok(locations),
                             cx,
                         );
@@ -708,16 +819,19 @@ impl CodeIntel {
             return;
         };
         self.close_hover(cx);
-        let against_worktree = !self.reads_worktree(at.side, cx);
+        let against_worktree = !self.reads_worktree(&at, cx);
+        self.next_list += 1;
         self.references = Some(References::loading(
             ReferencesKind::References,
             at.clone(),
             pane,
             against_worktree,
             self.references.as_ref().is_some_and(|r| r.in_review),
+            self.next_list,
         ));
         cx.emit(IntelEvent::ShowReferences);
         let from = at.clone();
+        let own = against_worktree.then(|| text.clone());
         let request = self.request(
             &at,
             text,
@@ -734,14 +848,7 @@ impl CodeIntel {
                     Some(Err(error)) => Err(error.to_string()),
                     None => Err("no language server serves this file".to_string()),
                 };
-                this.show_list(
-                    ReferencesKind::References,
-                    from,
-                    pane,
-                    against_worktree,
-                    found,
-                    cx,
-                );
+                this.show_list(ReferencesKind::References, from, pane, own, found, cx);
             },
             cx,
         );
@@ -749,32 +856,63 @@ impl CodeIntel {
         cx.notify();
     }
 
-    /// The References tab's list: `found`'s places, their lines read in the background.
+    /// The References tab's list: `found`'s places, shown at once, their lines read in the
+    /// background ([`references::read_lines`]); the asking file's from `own`, the text the
+    /// server read in place of the disk's when it was another side's (PLAN §18.2), as it was
+    /// sent with the request (whatever the documents kept since).
     fn show_list(
         &mut self,
         kind: ReferencesKind,
         from: SymbolAt,
         pane: Pane,
-        against_worktree: bool,
+        own: Option<Arc<str>>,
         found: Result<Vec<SymbolLocation>, String>,
         cx: &mut Context<Self>,
     ) {
         let in_review = self.references.as_ref().is_some_and(|r| r.in_review);
-        let mut list = References::loading(kind, from, pane, against_worktree, in_review);
+        self.next_list += 1;
+        let id = self.next_list;
+        let against_worktree = own.is_some();
+        let own = own.map(|text| (from.side, text));
+        let mut list = References::loading(kind, from, pane, against_worktree, in_review, id);
         match found {
             Ok(locations) => {
+                let files = references::group(locations, &list.from, own, self.session.read(cx));
+                let jobs = references::ReadJob::for_files(&files);
+                list.files = Some(files);
                 let backend = self.session.read(cx).backend().clone();
+                let (send, mut landed) = futures::channel::mpsc::unbounded();
                 let job = cx.background_spawn(async move {
-                    references::read_rows(backend.as_ref(), locations)
+                    references::read_lines(backend.as_ref(), jobs, send)
                 });
                 list.reading = Some(cx.spawn(async move |this, cx| {
-                    let files = job.await;
-                    this.update(cx, |this, cx| {
-                        if let Some(list) = this.references.as_mut() {
-                            list.reading = None;
-                            list.files = Some(files);
+                    use futures::StreamExt as _;
+                    while let Some(landed) = landed.next().await {
+                        let applied = this.update(cx, |this, cx| {
+                            let session = this.session.clone();
+                            let Some(list) = this.references.as_mut().filter(|l| l.id == id) else {
+                                return false;
+                            };
+                            match landed {
+                                references::Landed::Text { index, texts } => {
+                                    list.text_landed(index, texts, session.read(cx))
+                                }
+                                references::Landed::Tokens { index, tokens } => {
+                                    list.tokens_landed(index, tokens)
+                                }
+                            }
+                            cx.notify();
+                            true
+                        });
+                        if !matches!(applied, Ok(true)) {
+                            return;
                         }
-                        this.load_referenced(cx);
+                    }
+                    job.await;
+                    this.update(cx, |this, cx| {
+                        if let Some(list) = this.references.as_mut().filter(|l| l.id == id) {
+                            list.reading = None;
+                        }
                         cx.notify();
                     })
                     .ok();
@@ -783,6 +921,7 @@ impl CodeIntel {
             Err(error) => list.error = Some(error),
         }
         self.references = Some(list);
+        self.load_referenced(cx);
         cx.emit(IntelEvent::ShowReferences);
         cx.notify();
     }
@@ -959,6 +1098,17 @@ impl CodeIntel {
                 }
             })
         })
+    }
+}
+
+/// Reads `settings.json`'s `lsp` again (`Settings::reload_lsp`) and hands it to the language
+/// servers, which change nothing when it is what they have (PLAN §18.5): on **Check again**, a
+/// review opening and the window coming back to the front, a review open or not.
+pub fn reload_lsp_settings(cx: &mut App) {
+    let settings = cx.services().settings.clone();
+    if let Some(lsp) = settings.update(cx, |settings, _| settings.reload_lsp()) {
+        let servers = cx.services().language_servers.clone();
+        servers.update(cx, |servers, cx| servers.set_settings(lsp, cx));
     }
 }
 

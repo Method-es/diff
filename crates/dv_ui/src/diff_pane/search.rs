@@ -9,8 +9,9 @@
 //!
 //! **Order and sides.** In unified view a line is one row: a context line matches once, on the
 //! new side, a removed line on the old side, an added one on the new. In split view a context
-//! line shows in both columns and matches in each; rows go top to bottom and, within a row, the
-//! old column before the new, as `dv_core::diff::split_rows` pairs the lines.
+//! line shows in both columns but matches once too, on the new column (the count is the
+//! review's matches, whichever view shows it); rows go top to bottom and, within a row, the old
+//! column before the new, as `dv_core::diff::split_rows` pairs the lines.
 
 use std::borrow::Cow;
 use std::ops::Range;
@@ -117,8 +118,8 @@ fn fold_into(text: &str, out: &mut String) {
 }
 
 /// Every match of `query` in `lines` (a file's text diff), in the order the stream shows them
-/// in `mode` (module docs). Each line is matched once, a context line's matches serving both
-/// of split view's columns.
+/// in `mode` (module docs). Each line is matched once; in split view a context line's matches
+/// are its new column's.
 pub fn file_hits(lines: &[DiffLine], query: &Query, mode: ViewMode) -> Vec<Hit> {
     let mut found: Vec<(usize, Range<usize>)> = Vec::new();
     let mut starts = Vec::with_capacity(lines.len() + 1);
@@ -151,7 +152,8 @@ pub fn file_hits(lines: &[DiffLine], query: &Query, mode: ViewMode) -> Vec<Hit> 
         }
         ViewMode::Split if !found.is_empty() => {
             for (row, pair) in split_rows(lines, 0..lines.len()).into_iter().enumerate() {
-                if let Some(old) = pair.old {
+                // A context line is in both columns: its matches are the new column's.
+                if let Some(old) = pair.old.filter(|old| pair.new != Some(*old)) {
                     hits.extend(on(row, old, AnchorSide::Old));
                 }
                 if let Some(new) = pair.new {
@@ -235,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn unified_matches_a_context_line_once_and_split_once_per_column() {
+    fn a_context_line_matches_once_in_either_view() {
         let lines = vec![
             line(LineKind::Context, Some(1), Some(1), "let x"),
             line(LineKind::Removed, Some(2), None, "let a"),
@@ -255,22 +257,22 @@ mod tests {
                 (3, AnchorSide::New),
             ]
         );
-        // Split view pairs `let a` with `let c` on one row: old column, then new, then the
-        // next row's `let b`.
+        // Split view: the context line on its new column only; then `let a` paired with
+        // `let c` on one row, old column first, then the next row's `let b`.
         let split = file_hits(&lines, &query("let"), ViewMode::Split);
         assert_eq!(
             order(&split),
             [
-                (0, AnchorSide::Old),
                 (0, AnchorSide::New),
                 (1, AnchorSide::Old),
                 (3, AnchorSide::New),
                 (2, AnchorSide::Old),
             ]
         );
+        assert_eq!(split.len(), unified.len());
         // Each hit knows its row; the cursor's row is found the same way.
         let rows: Vec<usize> = split.iter().map(|hit| hit.row).collect();
-        assert_eq!(rows, [0, 0, 1, 1, 2]);
+        assert_eq!(rows, [0, 1, 1, 2]);
         assert_eq!(row_of(&lines, ViewMode::Split, 3, AnchorSide::New), Some(1));
         assert_eq!(row_of(&lines, ViewMode::Split, 2, AnchorSide::Old), Some(2));
         assert_eq!(row_of(&lines, ViewMode::Split, 3, AnchorSide::Old), None);

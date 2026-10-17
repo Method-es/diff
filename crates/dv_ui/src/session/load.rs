@@ -14,7 +14,7 @@ use gpui::{AppContext as _, Context, Task};
 use super::placement::FileIndex;
 use super::{
     Comparison, FileState, MAX_LOADS_IN_FLIGHT, Previous, ReviewSession, SessionEvent, Shown,
-    default_comparison,
+    ViewFrom, default_comparison,
 };
 use crate::failure::Failure;
 use crate::syntax::{FileHighlights, highlight_diff, language_for_path};
@@ -426,22 +426,28 @@ impl ReviewSession {
     /// highlighted whatever the stream's viewport; any other is read at the new side
     /// (`side`), highlighted.
     pub fn set_file_view(&mut self, path: Option<String>, cx: &mut Context<Self>) {
-        self.set_file_view_at(path, false, cx);
+        self.set_file_view_at(path, ViewFrom::Review, cx);
     }
 
-    /// [`ReviewSession::set_file_view`], the file read as the working tree holds it now when
-    /// `worktree` (go to definition in a review whose new side isn't the working tree, `side`).
+    /// [`ReviewSession::set_file_view`], the file read where `from` says: as the working tree
+    /// holds it now (go to definition in a review whose new side isn't the working tree), or a
+    /// file outside the repository (its absolute path, read-only; `side`).
     pub fn set_file_view_at(
         &mut self,
         path: Option<String>,
-        worktree: bool,
+        from: ViewFrom,
         cx: &mut Context<Self>,
     ) {
-        if self.file_view == path && self.file_view_worktree == worktree {
+        if self.file_view == path && self.file_view_from == from {
+            // The same file again: read from the disk, it is read again.
+            self.read_disk_view_again(cx);
             return;
         }
+        if let Some(left) = self.file_view.take() {
+            self.left_file_view(&left, self.file_view_from);
+        }
         self.file_view = path;
-        self.file_view_worktree = worktree;
+        self.file_view_from = from;
         self.load_file_view(cx);
         cx.notify();
     }
@@ -456,8 +462,10 @@ impl ReviewSession {
         let Some(path) = self.file_view.clone() else {
             return;
         };
-        if self.file_view_worktree {
-            self.ensure_worktree_file(&path, true, cx);
+        if self.file_view_from == ViewFrom::Outside {
+            self.ensure_outside_file(&path, cx);
+        } else if self.file_view_from == ViewFrom::Worktree {
+            self.ensure_worktree_file(&path, cx);
         } else if self.view_from_stream(&path) {
             self.requeue_wanted();
             self.highlight_shown(cx);

@@ -99,6 +99,7 @@ fn every_op_round_trips_and_names_itself() {
         Op::ProbePath {
             repo: 1,
             path: "/home/kyle/node_modules/typescript".into(),
+            read: 0,
         },
         Op::StoreAppend {
             repo: 1,

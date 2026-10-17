@@ -113,11 +113,12 @@
 // Dismiss takes the banner away.
 {"cmd": "click", "target": "banner/main/dismiss", "expect": {"pointer": "/shell/banner", "equals": null}}
 
-// At the minimum size the title bar's left group stops short of the centred command field.
+// At the minimum size the left group needs more than half the bar: the command field moves
+// right as far as it needs (no longer centred at 400), and the label shows whole.
 {"cmd": "set_setting", "key": "mode", "value": "dark"}
 {"cmd": "resize", "w": 1100, "h": 700}
-{"cmd": "bounds", "target": "titlebar/command", "expect_result": [{"pointer": "/x", "equals": 400}]}
-{"cmd": "bounds", "target": "titlebar/source", "expect_result": {"pointer": "/x", "lte": 360}}
+{"cmd": "bounds", "target": "titlebar/command", "expect_result": [{"pointer": "/x", "gte": 440}, {"pointer": "/x", "lte": 500}]}
+{"cmd": "bounds", "target": "titlebar/source", "expect_result": [{"pointer": "/x", "gte": 380}, {"pointer": "/x", "lte": 440}]}
 {"cmd": "screenshot", "name": "review-1100x700"}
 
 // A long repository name: the target label gives way first, then the name truncates; the
@@ -125,7 +126,10 @@
 {"cmd": "seed_repo", "name": "customer-portal-frontend-service", "steps": [{"write": "a.txt", "text": "a\n"}, {"commit": "base"}, {"write": "a.txt", "text": "b\n"}], "save": {"long": "/path"}}
 {"cmd": "open_review", "path": "${long}"}
 {"cmd": "settle", "timeout_ms": 20000}
-{"cmd": "bounds", "target": "titlebar/source", "expect_result": {"pointer": "/x", "lte": 360}}
+// The field moves right as far as the long label needs (at most 650, 12 short of the caption
+// buttons), the source picker staying clear of it.
+{"cmd": "bounds", "target": "titlebar/command", "expect_result": [{"pointer": "/x", "gte": 560}, {"pointer": "/x", "lte": 650}]}
+{"cmd": "bounds", "target": "titlebar/source", "expect_result": {"pointer": "/x", "lte": 584}}
 {"cmd": "screenshot", "name": "long-name-1100x700"}
 
 // A repository whose .git goes away while its review is open: the switcher says why and

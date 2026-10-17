@@ -334,10 +334,13 @@ impl ReviewSession {
     }
 
     /// The window was activated: a session whose watch can't cover the worktree refreshes
-    /// everything instead (PLAN §5.3).
+    /// everything instead (PLAN §5.3), and the file view's file read from the disk (the working
+    /// tree as it stands, a file outside the repository), which no watch of a review whose new
+    /// side isn't the working tree covers, is read again (`side`).
     pub fn window_activated(&mut self, cx: &mut Context<Self>) {
         if self.watch.notice.is_some() {
             self.rescan(cx);
         }
+        self.read_disk_view_again(cx);
     }
 }

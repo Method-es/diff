@@ -13,7 +13,7 @@
 //! else bun's default install (`~/.bun/bin/bun`, or under `BUN_INSTALL`), else node on `PATH`.
 //! A spec whose server breaks under bun takes node only.
 
-use dv_core::backend::{BackendError, PathProbe};
+use dv_core::backend::BackendError;
 use serde_json::Value;
 
 use super::host::{HostEnv, PathHit, real_file};
@@ -320,13 +320,8 @@ fn trace_posix(
     if let Some(package) = package_above(reader, &hit.real, js.package)? {
         return entry_script(reader, &package, bin);
     }
-    let head = match reader.probe(&hit.real)? {
-        PathProbe::File {
-            contents: Some(bytes),
-            ..
-        } => bytes.into_iter().take(64 * 1024).collect::<Vec<u8>>(),
-        _ => Vec::new(),
-    };
+    // A shim is a few lines; an executable is far larger than this and isn't read.
+    let head = reader.read(&hit.real, 64 * 1024)?.unwrap_or_default();
     let text = String::from_utf8_lossy(&head).into_owned();
     let first_line = text.lines().next().unwrap_or("").to_string();
     // A package manager's POSIX shim (pnpm's, npm's `cmd-shim`): `exec node "$basedir/…"`,
@@ -391,13 +386,10 @@ fn trace_cmd_shim(
     let Some(dir) = hit.at.parent() else {
         return Ok(Found::Unusable(format!("{} has no folder", hit.at)));
     };
-    let text = match reader.probe(&hit.real)? {
-        PathProbe::File {
-            contents: Some(bytes),
-            ..
-        } => String::from_utf8_lossy(&bytes).into_owned(),
-        _ => String::new(),
-    };
+    let text = reader
+        .read(&hit.real, dv_core::backend::PROBE_READ_SMALL)?
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default();
     if let Some(relative) = shim_script(&text) {
         let script = dir.join(&relative.replace('\\', "/"));
         if let Some(real) = real_file(reader, &script)? {

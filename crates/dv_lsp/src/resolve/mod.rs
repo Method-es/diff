@@ -579,7 +579,7 @@ impl Resolver {
                     spec.name,
                     host.path_label()
                 ),
-                "Install Node.js, or set lsp.runtime in settings.json",
+                "Install Node.js, or set `lsp.runtime` in settings.json",
             ),
             Ok(None) => {
                 let places = match host.bun_dir() {
@@ -591,10 +591,10 @@ impl Resolver {
                         "{} runs with bun or node, and neither is on {places}",
                         spec.name
                     ),
-                    "Install bun (bun.sh) or Node.js, or set lsp.runtime in settings.json",
+                    "Install bun (bun.sh) or Node.js, or set `lsp.runtime` in settings.json",
                 )
             }
-            Err(error) => missing(error.to_string(), "Fix lsp.runtime in settings.json"),
+            Err(error) => missing(error.to_string(), "Fix `lsp.runtime` in settings.json"),
         })
     }
 
@@ -677,18 +677,18 @@ fn js_hint(spec: &LanguageServerSpec, seen: RuntimesSeen) -> String {
         return spec.install_hint.to_string();
     };
     let package = js.package;
-    let settings = format!("or set lsp.{}.command in settings.json", spec.id);
+    let settings = format!("or set `lsp.{}.command` in settings.json", spec.id);
     match (seen.bun && !js.node_only, seen.node) {
         (true, _) => format!(
-            "Install it with bun add -g {package} (or npm install -g {package}), {settings}"
+            "Install it with `bun add -g {package}` (or `npm install -g {package}`), {settings}"
         ),
-        (false, true) => format!("Install it with npm install -g {package}, {settings}"),
+        (false, true) => format!("Install it with `npm install -g {package}`, {settings}"),
         (false, false) if js.node_only => {
-            format!("Install Node.js, then npm install -g {package}, {settings}")
+            format!("Install Node.js, then `npm install -g {package}`, {settings}")
         }
         (false, false) => format!(
-            "Install bun (bun.sh) or Node.js, then bun add -g {package} (or npm install -g \
-             {package}), {settings}"
+            "Install bun (bun.sh) or Node.js, then `bun add -g {package}` (or `npm install -g \
+             {package}`), {settings}"
         ),
     }
 }

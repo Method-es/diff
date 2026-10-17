@@ -163,6 +163,10 @@ pub struct DvColors {
     pub layer_strong: Hsla,
     pub thread: Hsla,
     pub overlay: Hsla,
+    /// A popover over content with no scrim under it (the hover card, menus, the find bar, a
+    /// server's details): `overlay`'s Opaque value whatever the material, so the code under it
+    /// never shows through (DESIGN §3).
+    pub popover: Hsla,
     pub ctrl: Hsla,
     pub input_bg: Hsla,
     // Solid tokens.
@@ -195,6 +199,7 @@ pub struct DvColors {
     pub text_sel: Hsla,
     pub find_match: Hsla,
     pub find_current: Hsla,
+    pub find_line: Hsla,
     pub track: Hsla,
     pub icode_bg: Hsla,
     // Diff.
@@ -237,6 +242,7 @@ impl DvColors {
             layer_strong: m(&s.layer_strong),
             thread: m(&s.thread),
             overlay: m(&s.overlay),
+            popover: Material::Opaque.pick(&s.overlay).into(),
             ctrl: m(&s.ctrl),
             input_bg: m(&s.input_bg),
             fg: c(t.fg),
@@ -268,6 +274,7 @@ impl DvColors {
             text_sel: c(t.text_sel),
             find_match: c(t.find_match),
             find_current: c(t.find_current),
+            find_line: c(t.find_line),
             track: c(t.track),
             icode_bg: c(t.icode_bg),
             hunk: c(t.hunk),
@@ -656,7 +663,7 @@ pub fn map_component_theme(dv: &DvTheme, theme: &mut Theme) {
     colors.accent_foreground = c.fg;
     colors.muted = c.layer;
     colors.muted_foreground = c.fg3;
-    colors.popover = c.overlay;
+    colors.popover = c.popover;
     colors.popover_foreground = c.fg;
 
     colors.primary = c.accent;

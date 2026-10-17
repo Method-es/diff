@@ -19,8 +19,9 @@ use std::rc::Rc;
 
 use dv_lsp::{HoverInfo, HoverPart, SymbolLocation, TextPosition, TextRange, WorkspacePaths};
 use gpui::{
-    AnyElement, App, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    AnyElement, App, Bounds, Display, Element, Entity, GlobalElementId, InspectorElementId,
+    InteractiveElement as _, IntoElement, LayoutId, ParentElement as _, Pixels, Position,
+    SharedString, StatefulInteractiveElement as _, Style, Styled as _, Window, div, point,
     prelude::FluentBuilder as _, px,
 };
 
@@ -29,6 +30,11 @@ use crate::automation::AutomationTargetExt as _;
 use crate::components::{kbd, small_button};
 use crate::keymap;
 use crate::theme::{DvTheme, StyledText as _};
+
+/// How far below (or above) what it is about the card hangs, and how far in from the main
+/// area's edges it stays (DESIGN §4.1 "Hover card").
+pub const CARD_GAP: f32 = 2.;
+pub const CARD_MARGIN: f32 = 8.;
 
 /// The card's width bounds and its tallest before it scrolls.
 pub const CARD_MIN_WIDTH: f32 = 280.;
@@ -107,6 +113,27 @@ pub fn render_card(
     cx: &App,
 ) -> AnyElement {
     let c = &theme.colors;
+    if let Some(note) = card.note.filter(|_| card.sections.is_empty()) {
+        // Nothing to say, and why: one quiet line.
+        let hovered = actions.hovered.clone();
+        return div()
+            .id(("hover-card", card.id as usize))
+            .occlude()
+            .max_w(px(CARD_MAX_WIDTH))
+            .px(theme.spacing.lg)
+            .py(theme.spacing.md)
+            .rounded(theme.radii.card)
+            .border_1()
+            .border_color(c.overlay_line)
+            .bg(c.popover)
+            .shadow(theme.shadows.overlay.clone())
+            .text_spec(&theme.text.secondary)
+            .text_color(c.fg3)
+            .on_hover(move |over, window, cx| hovered(*over, window, cx))
+            .child(note)
+            .automation_target("hover")
+            .into_any_element();
+    }
     let paths = intel.read(cx).paths(cx);
     let link_intel = intel.clone();
     let asked = super::Asked {
@@ -172,7 +199,7 @@ pub fn render_card(
         .rounded(theme.radii.card)
         .border_1()
         .border_color(c.overlay_line)
-        .bg(c.overlay)
+        .bg(c.popover)
         .shadow(theme.shadows.overlay.clone())
         .text_spec(&theme.text.body)
         .text_color(c.fg)
@@ -217,6 +244,120 @@ pub fn render_card(
         .into_any_element()
 }
 
+/// Where a card of `size` hangs off `target` (window coordinates) within `area` (DESIGN §4.1
+/// "Hover card"): [`CARD_GAP`] below it, else, when it doesn't fit below, as far above its top;
+/// when it fits neither way, on the side with more room, kept inside; its left edge at the
+/// target's, moved in to stay [`CARD_MARGIN`] inside the area's sides and bottom and top.
+pub fn hang_origin(
+    size: gpui::Size<Pixels>,
+    target: Bounds<Pixels>,
+    area: Bounds<Pixels>,
+) -> gpui::Point<Pixels> {
+    let (gap, margin) = (px(CARD_GAP), px(CARD_MARGIN));
+    let (top, bottom) = (area.top() + margin, area.bottom() - margin);
+    let below = target.bottom() + gap;
+    let above = target.top() - gap - size.height;
+    let y = if below + size.height <= bottom {
+        below
+    } else if above >= top {
+        above
+    } else if bottom - target.bottom() >= target.top() - top {
+        (bottom - size.height).max(top)
+    } else {
+        top
+    };
+    let right = area.right() - margin - size.width;
+    let x = target.left().min(right).max(area.left() + margin);
+    point(x, y)
+}
+
+/// Hangs its child off what `place` names (the bounds the card is about, and the area it
+/// stays in), worked out as the frame is laid out ([`hang_origin`]): after every line of the
+/// frame put its geometry back (`deferred` lays this out last), so the card hangs under the
+/// servers' range as drawn now, never under last frame's.
+pub struct Hang {
+    child: AnyElement,
+    place: Box<dyn Fn() -> (Bounds<Pixels>, Bounds<Pixels>)>,
+}
+
+/// [`Hang`] for `child`.
+pub fn hang(
+    child: impl IntoElement,
+    place: impl Fn() -> (Bounds<Pixels>, Bounds<Pixels>) + 'static,
+) -> Hang {
+    Hang {
+        child: child.into_any_element(),
+        place: Box::new(place),
+    }
+}
+
+impl IntoElement for Hang {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for Hang {
+    type RequestLayoutState = LayoutId;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, LayoutId) {
+        let child = self.child.request_layout(window, cx);
+        let style = Style {
+            position: Position::Absolute,
+            display: Display::Flex,
+            ..Style::default()
+        };
+        (window.request_layout(style, [child], cx), child)
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        child: &mut LayoutId,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let size = window.layout_bounds(*child).size;
+        let (target, area) = (self.place)();
+        let origin = hang_origin(size, target, area);
+        let offset = origin - bounds.origin;
+        let offset = point(offset.x.round(), offset.y.round());
+        window.with_element_offset(offset, |window| self.child.prepaint(window, cx));
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _child: &mut LayoutId,
+        _prepaint: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.paint(window, cx);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use dv_lsp::UriTarget;
@@ -256,6 +397,33 @@ mod tests {
     }
 
     #[test]
+    fn the_card_hangs_below_flips_above_and_stays_inside() {
+        let area = Bounds::from_corners(point(px(300.), px(40.)), point(px(1440.), px(872.)));
+        let token = |x: f32, y: f32| {
+            Bounds::from_corners(point(px(x), px(y)), point(px(x + 60.), px(y + 20.)))
+        };
+        let size = gpui::size(px(400.), px(200.));
+        // Room below: 2 under the token, at its left edge.
+        assert_eq!(
+            hang_origin(size, token(500., 100.), area),
+            point(px(500.), px(122.))
+        );
+        // At the bottom: above the token's top, never over the status bar below the area.
+        assert_eq!(
+            hang_origin(size, token(500., 800.), area),
+            point(px(500.), px(598.))
+        );
+        // At the right edge: moved in to stay 8 inside.
+        assert_eq!(hang_origin(size, token(1400., 100.), area).x, px(1032.));
+        // Too tall either way: the roomier side, inside the area.
+        let tall = gpui::size(px(400.), px(700.));
+        let origin = hang_origin(tall, token(500., 300.), area);
+        assert_eq!(origin.y, px(864.) - px(700.));
+        let origin = hang_origin(tall, token(500., 700.), area);
+        assert_eq!(origin.y, px(48.));
+    }
+
+    #[test]
     fn parts_become_one_markdown_source() {
         let card = HoverCard {
             at: super::super::SymbolAt {
@@ -265,6 +433,7 @@ mod tests {
                 range: 0..1,
                 name: "a".into(),
                 offset: 0,
+                worktree: false,
             },
             span: 0..1,
             pane: super::super::Pane::Stream,
@@ -285,6 +454,7 @@ mod tests {
                     range: None,
                 },
             }],
+            note: None,
             against_worktree: false,
             id: 1,
         };

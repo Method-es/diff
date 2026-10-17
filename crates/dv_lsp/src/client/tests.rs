@@ -601,6 +601,34 @@ fn utf16_positions_are_converted_both_ways() {
 }
 
 #[test]
+fn past_the_bound_the_document_asked_about_least_recently_closes() {
+    let (client, received, _) = start(standard(utf8(), |_, _| {}));
+    for n in 0..DOCUMENTS_OPEN {
+        client
+            .open_document(&format!("f{n}.ts"), "typescript", "x")
+            .unwrap();
+    }
+    // f0 asked about again: f1 is now the least recent.
+    client.open_document("f0.ts", "typescript", "x").unwrap();
+    client.open_document("more.ts", "typescript", "x").unwrap();
+    received.wait_for_count("textDocument/didClose", 1);
+    let closed: Vec<Value> = received
+        .all()
+        .into_iter()
+        .filter(|m| m["method"] == "textDocument/didClose")
+        .collect();
+    assert_eq!(closed.len(), 1);
+    assert!(
+        closed[0]["params"]["textDocument"]["uri"]
+            .as_str()
+            .is_some_and(|uri| uri.ends_with("/f1.ts")),
+        "{closed:?}"
+    );
+    assert_eq!(client.open_documents().len(), DOCUMENTS_OPEN);
+    assert!(client.document_text("f0.ts").is_some() && client.document_text("f1.ts").is_none());
+}
+
+#[test]
 fn one_version_of_a_path_is_open_at_a_time() {
     let (client, received, _) = start(standard(utf8(), |_, _| {}));
     client.open_document("a.ts", "typescript", "old").unwrap();

@@ -167,10 +167,11 @@ impl Backend for RemoteBackend {
         })
     }
 
-    fn probe_path(&self, path: &str) -> Result<PathProbe, BackendError> {
+    fn probe_path(&self, path: &str, read: u64) -> Result<PathProbe, BackendError> {
         let probe: WirePathProbe = self.call(|repo| Op::ProbePath {
             repo,
             path: path.to_string(),
+            read,
         })?;
         Ok(probe.into())
     }

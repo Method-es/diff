@@ -31,6 +31,7 @@ markdown.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tree-sitter.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # The window material: the native handle for DWM, the Windows build and the "Transparency

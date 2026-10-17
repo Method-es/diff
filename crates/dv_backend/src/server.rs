@@ -260,8 +260,8 @@ impl State {
                 id,
                 &self.repo(repo)?.worktree_text_stats(&rel).map_err(wire)?,
             ),
-            Op::ProbePath { repo, path } => {
-                let probe = self.repo(repo)?.probe_path(&path).map_err(wire)?;
+            Op::ProbePath { repo, path, read } => {
+                let probe = self.repo(repo)?.probe_path(&path, read).map_err(wire)?;
                 ok(id, &WirePathProbe::from(probe))
             }
             Op::StoreAppend { repo, rel, line } => {

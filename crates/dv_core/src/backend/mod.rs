@@ -63,14 +63,16 @@ pub trait Backend: Send + Sync {
     }
 
     /// What is at `path`, an absolute, normalised path on the backend's machine, which may be
-    /// outside the worktree: a file (its bytes too when it is at most [`PROBE_READ_MAX`]), a
-    /// directory, a symbolic link (never followed: its target as written), or nothing. Read-only.
+    /// outside the worktree: a file (its bytes too when it is at most `read` bytes, `read` itself
+    /// at most [`PROBE_READ_MAX`]; `0` only looks), a directory, a symbolic link (never followed:
+    /// its target as written), or nothing. Read-only.
     /// The language servers' resolvers read with it (PLAN §18.4): Node resolves packages above
     /// the worktree root (a linked worktree inside the main checkout uses the checkout's
     /// `node_modules`) and through links that leave it (pnpm's global store, `npm link`). A
     /// relative or unnormalised path is [`BackendError::InvalidPath`]. The default refuses every
     /// path; [`LocalBackend`] and the remote backend implement it.
-    fn probe_path(&self, path: &str) -> Result<PathProbe, BackendError> {
+    fn probe_path(&self, path: &str, read: u64) -> Result<PathProbe, BackendError> {
+        let _ = read;
         Err(BackendError::InvalidPath {
             path: path.to_string(),
             reason: "this backend reads only inside its worktree".into(),
@@ -184,15 +186,20 @@ impl GitVersion {
     }
 }
 
-/// The largest file whose bytes [`Backend::probe_path`] returns: a `package.json`, never an
-/// executable.
-pub const PROBE_READ_MAX: u64 = 1024 * 1024;
+/// The most bytes of a file [`Backend::probe_path`] returns, whatever it is asked for: a
+/// library's declarations the file view shows outside the repository (TypeScript's
+/// `lib.dom.d.ts` is about 2 MB).
+pub const PROBE_READ_MAX: u64 = 4 * 1024 * 1024;
+
+/// What a resolver reads of a small file with [`Backend::probe_path`]: a `package.json`, a
+/// shim, `/etc/passwd`, never an executable. Its other probes only look (`read` 0).
+pub const PROBE_READ_SMALL: u64 = 1024 * 1024;
 
 /// What [`Backend::probe_path`] found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathProbe {
     Missing,
-    /// A file of `len` bytes; `contents` when it is at most [`PROBE_READ_MAX`].
+    /// A file of `len` bytes; `contents` when it is at most what the probe asked to read.
     File {
         len: u64,
         contents: Option<Vec<u8>>,

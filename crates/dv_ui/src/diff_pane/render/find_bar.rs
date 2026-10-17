@@ -165,7 +165,7 @@ impl DiffPane {
                 .rounded(theme.radii.card)
                 .border_1()
                 .border_color(c.overlay_line)
-                .bg(c.overlay)
+                .bg(c.popover)
                 .shadow(theme.shadows.overlay.clone())
                 .child(
                     div()

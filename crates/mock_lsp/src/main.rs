@@ -207,7 +207,7 @@ fn serve(server: &Arc<Server>) -> i32 {
                 std::thread::sleep(Duration::from_millis(server.scenario.initialize_delay_ms));
                 server.write(&json!({"jsonrpc": "2.0", "id": id, "result": {
                     "capabilities": server.scenario.capabilities,
-                    "serverInfo": {"name": "mock_lsp"}
+                    "serverInfo": {"name": "mock_lsp", "version": env!("CARGO_PKG_VERSION")}
                 }}));
                 continue;
             }
@@ -294,16 +294,19 @@ fn crashes_left(server: &Server, times: Option<u32>) -> bool {
     }
 }
 
-/// `value` with `${root}` in every string (keys included) replaced by `root`.
+/// `value` with `${root}` in every string (keys included) replaced by `root`, and `${parent}`
+/// by the folder holding it (a file outside the repository, beside it).
 fn template(value: &Value, root: &str) -> Value {
+    let parent = root.rsplit_once('/').map_or(root, |(parent, _)| parent);
+    let fill = |text: &str| text.replace("${root}", root).replace("${parent}", parent);
     match value {
-        Value::String(text) => Value::String(text.replace("${root}", root)),
+        Value::String(text) => Value::String(fill(text)),
         Value::Array(items) => {
             Value::Array(items.iter().map(|item| template(item, root)).collect())
         }
         Value::Object(map) => Value::Object(
             map.iter()
-                .map(|(key, item)| (key.replace("${root}", root), template(item, root)))
+                .map(|(key, item)| (fill(key), template(item, root)))
                 .collect(),
         ),
         other => other.clone(),
@@ -374,6 +377,10 @@ mod tests {
         assert_eq!(
             template(&answer, "file:///w"),
             json!({"uri": "file:///w/src/a.ts", "n": [1, "file:///w"], "file:///w": true})
+        );
+        assert_eq!(
+            template(&json!("${parent}/lib/x.d.ts"), "file:///d/repos/web"),
+            json!("file:///d/repos/lib/x.d.ts")
         );
     }
 

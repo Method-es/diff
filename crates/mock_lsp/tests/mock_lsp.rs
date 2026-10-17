@@ -416,3 +416,45 @@ fn a_scenario_that_doesnt_parse() {
         other => panic!("expected the server to end, got {:?}", other.map(|_| ())),
     }
 }
+
+#[test]
+fn a_utf16_servers_references_convert_against_every_file_read() {
+    let setup = Setup::bare();
+    // Twelve files, each with a two-byte character before the symbol: UTF-16 column 26 is
+    // byte 27.
+    let line = "const é = 1; export const target = é;
+";
+    for n in 0..12 {
+        setup.repo.write(format!("src/u{n}.ts"), line);
+    }
+    let result: Vec<Value> = (0..12)
+        .map(|n| {
+            json!({"uri": format!("${{root}}/src/u{n}.ts"),
+                   "range": {"start": {"line": 0, "character": 26},
+                             "end": {"line": 0, "character": 32}}})
+        })
+        .collect();
+    setup.write_scenario(&json!({
+        "capabilities": {"positionEncoding": "utf-16", "referencesProvider": true},
+        "requests": [{"method": "textDocument/references", "result": result}]
+    }));
+    let (client, _) = setup.start().unwrap();
+    setup.open(&client);
+    let found = client
+        .references("src/a.ts", TextPosition::new(1, 14), true)
+        .wait()
+        .unwrap();
+    assert_eq!(found.len(), 12);
+    for location in found {
+        assert_eq!(
+            location.range,
+            TextRange {
+                start: TextPosition::new(0, 27),
+                end: TextPosition::new(0, 33)
+            },
+            "{:?}",
+            location.target
+        );
+    }
+    client.stop();
+}

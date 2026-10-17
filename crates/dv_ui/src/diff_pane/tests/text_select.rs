@@ -352,3 +352,50 @@ fn copy_and_cut_in_a_text_field_go_through_the_clipboard_seam(cx: &mut TestAppCo
     press(cx, &shell, "ctrl-a ctrl-c");
     assert_eq!(clipboard(cx), ["a draft", "a draft", "omega"]);
 }
+
+#[gpui::test]
+fn esc_in_the_code_keeps_a_draft_and_only_esc_in_the_composer_discards_it(cx: &mut TestAppContext) {
+    let repo = text_fixture();
+    let (_dir, shell, cx) = open_text(&repo, cx);
+    let pane = pane(&shell, cx);
+    let draft = |cx: &mut VisualTestContext| pane.read_with(cx, |pane, cx| pane.composer_text(cx));
+    // A comment on the cursor's line, then a press in the code to quote some of it.
+    press(cx, &shell, "c");
+    cx.simulate_input("a draft");
+    let from = char_point(&pane, "a.txt", "new", 1, 1, cx);
+    let to = char_point(&pane, "a.txt", "new", 1, 5, cx);
+    drag(cx, from, to);
+    press(cx, &shell, "ctrl-c");
+    assert_eq!(clipboard(cx), ["alph"]);
+    // Esc in the stream clears the selection, then does nothing more: the draft stays.
+    press(cx, &shell, "escape");
+    assert_eq!(selected_text(&pane, cx), None);
+    assert_eq!(draft(cx).as_deref(), Some("a draft"));
+    press(cx, &shell, "escape");
+    assert_eq!(draft(cx).as_deref(), Some("a draft"));
+    // A language server's details over the composer close first, the draft staying.
+    // (`C` with a draft open gives it the keyboard.)
+    press(cx, &shell, "c");
+    shell.update(cx, |shell, cx| {
+        shell.toggle_details(
+            &crate::shell::intel::ServerDetails::Missing("typescript"),
+            cx,
+        )
+    });
+    press(cx, &shell, "escape");
+    assert_eq!(
+        shell.read_with(cx, |shell, _| shell.server_details().cloned()),
+        None
+    );
+    assert_eq!(draft(cx).as_deref(), Some("a draft"));
+    // Esc in the composer itself discards it.
+    press(cx, &shell, "escape");
+    assert_eq!(draft(cx), None);
+    // An empty composer still closes from the stream.
+    press(cx, &shell, "c");
+    pane.update_in(cx, |pane, window, cx| {
+        pane.focus_handle(cx).focus(window, cx)
+    });
+    press(cx, &shell, "escape");
+    assert_eq!(draft(cx), None);
+}

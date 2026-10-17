@@ -42,6 +42,7 @@ impl Render for DiffPane {
                 .map(f32::from);
         }
         self.code_columns = self.columns_in_view();
+        self.view_bounds = self.list.viewport_bounds();
         self.frame_marks = self.frame_marks(window);
         // The lines this frame draws put their geometry back as they are drawn.
         self.geometry.borrow_mut().clear();

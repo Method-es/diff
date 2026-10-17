@@ -15,11 +15,12 @@ use super::super::rows::{Notice, heights};
 use super::Source;
 use crate::automation::AutomationTargetExt as _;
 use crate::banner::Banner;
-use crate::components::{chip, icon, kbd, skeleton, tooltip};
+use crate::components::{chip, elide_path_middle, icon, kbd, skeleton, tooltip};
 use crate::failure::Failure;
 use crate::file_list::{split_path, status_letter};
 use crate::icons::DvIcon;
 use crate::keymap;
+use crate::session::ViewFrom;
 use crate::theme::{DvTheme, StyledText as _};
 
 impl DiffPane {
@@ -40,6 +41,7 @@ impl DiffPane {
         };
         let (old_label, new_label) = session.target_side_labels();
         let worktree = self.file_view_worktree();
+        let outside = self.file_view_from() == Some(ViewFrom::Outside);
         let label = match side {
             _ if worktree => "working tree".to_string(),
             dv_core::review::AnchorSide::Old => old_label,
@@ -69,6 +71,7 @@ impl DiffPane {
                 .into_any_element()
         };
         let changed: AnyElement = match status {
+            _ if outside => quiet("Outside the repository · read-only".to_string()),
             _ if worktree => {
                 quiet("As it stands now, not this review's side · read-only".to_string())
             }
@@ -115,6 +118,25 @@ impl DiffPane {
         } else {
             c.code_head
         };
+        // A file outside the repository is named whole, its line too, cut in its middle when
+        // it doesn't fit (DESIGN §4.1 "File view outside the repository").
+        let shown_path = if outside {
+            let named = match self.file_view_opened_at() {
+                Some(line) => format!("{path}:{line}"),
+                None => path.to_string(),
+            };
+            let advance = {
+                let system = cx.text_system();
+                let font = system.resolve_font(&gpui::font(theme.fonts.mono.clone()));
+                system.ch_advance(font, px(13.)).unwrap_or(px(7.8))
+            };
+            // The bar less its padding, glyph and gaps, the quiet label and the close button.
+            let room = f32::from(self.view_bounds.size.width) - 12. - 15. - 40. - 210. - 110.;
+            let columns = (room / f32::from(advance).max(1.)).max(12.) as usize;
+            elide_path_middle(&named, |text| text.chars().count() <= columns)
+        } else {
+            path.to_string()
+        };
         div()
             .flex()
             .items_center()
@@ -138,9 +160,9 @@ impl DiffPane {
                     .text_size(px(13.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(c.fg)
-                    .child(path_text(path, theme)),
+                    .child(path_text(&shown_path, theme)),
             )
-            .child(
+            .children((!outside).then(|| {
                 chip(c.fg2, c.layer, theme)
                     .flex_none()
                     .child(icon(
@@ -152,8 +174,8 @@ impl DiffPane {
                         px(12.),
                         c.fg3,
                     ))
-                    .child(label),
-            )
+                    .child(label)
+            }))
             .child(changed)
             .children(since)
             .child(div().flex_1())
@@ -215,10 +237,12 @@ impl DiffPane {
                 if let Notice::TooLarge { old_len, new_len } = notice
                     && let Some(len) = new_len.or(*old_len)
                 {
-                    detail = format!(
-                        "{} — over 2 MB or 20,000 lines",
-                        super::super::render::byte_size(len)
-                    );
+                    let limit = if self.file_view_outside_unread(cx) {
+                        "over the 4 MB dv reads of a file outside the repository"
+                    } else {
+                        "over 2 MB or 20,000 lines"
+                    };
+                    detail = format!("{} — {limit}", super::super::render::byte_size(len));
                 }
                 div()
                     .flex()
@@ -243,24 +267,34 @@ impl DiffPane {
                             .text_color(c.fg3)
                             .child(detail),
                     )
-                    .children(matches!(notice, Notice::TooLarge { .. }).then(|| {
-                        crate::components::small_button(
-                            "file-view-load-anyway",
-                            "Load anyway",
-                            theme,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| this.file_view_load_anyway(cx)))
-                        .automation_target("file_view/notice/load_anyway")
-                    }))
+                    // A file outside the repository is read up to `probe_path`'s cap only:
+                    // past it, there is nothing more to load.
+                    .children(
+                        (matches!(notice, Notice::TooLarge { .. })
+                            && !self.file_view_outside_unread(cx))
+                        .then(|| {
+                            crate::components::small_button(
+                                "file-view-load-anyway",
+                                "Load anyway",
+                                theme,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| this.file_view_load_anyway(cx)))
+                            .automation_target("file_view/notice/load_anyway")
+                        }),
+                    )
                     .automation_target(name)
             }
         }
     }
 }
 
-/// The path: its directory in `fg3`, its name at 600.
+/// The path: its directory in `fg3`, its name at 600 (a file outside the repository may be
+/// spelled with `\`).
 fn path_text(path: &str, theme: &DvTheme) -> StyledText {
-    let (dir, _) = split_path(path);
+    let dir = match path.rfind(['/', '\\']) {
+        Some(at) => &path[..at + 1],
+        None => split_path(path).0,
+    };
     let dim = HighlightStyle {
         color: Some(theme.colors.fg3),
         font_weight: Some(FontWeight::MEDIUM),

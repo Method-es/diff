@@ -28,13 +28,14 @@
 //! asked for (`workspace/didChangeWatchedFiles`), each a change or, when the file is gone, a
 //! deletion, worked out in the background.
 
+mod changes;
+
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dv_backend::{Connection, ConnectionState};
 use dv_core::{Backend, Location};
-use dv_lsp::client::{CHANGE, DELETE};
 use dv_lsp::paths::PathStyle;
 use dv_lsp::resolve::HostEnv;
 use dv_lsp::{
@@ -88,8 +89,11 @@ pub struct ServerInfo {
     pub spec_id: &'static str,
     pub name: &'static str,
     pub state: ServerState,
-    /// The directory it serves, worktree-relative (`""` is the root).
+    /// The directory it serves, as the backend's machine spells it (the worktree's root, or a
+    /// package's directory in a monorepo).
     pub root: String,
+    /// Its version, from `initialize`'s `serverInfo`, once it is ready (when it says).
+    pub version: Option<String>,
     pub command_line: String,
     /// Where its command came from: `DV_LSP_TYPESCRIPT`, "the project (7.0.2)", `settings.json`.
     pub source: String,
@@ -209,8 +213,13 @@ struct Worktree {
     known: HashMap<(&'static str, String), (&'static LanguageServerSpec, String)>,
     /// Bumped by every forget: a batch resolved before one is dropped and asked again.
     resolve_generation: u64,
-    /// Telling servers about changed files, in the background.
+    /// Telling servers about changed files, in the background: the batches not told yet
+    /// (`announcing` counts them with the one being told), one at a time (`changes`).
     announcing: usize,
+    announce_queue: VecDeque<(Vec<String>, bool)>,
+    announce_running: bool,
+    /// Whether each path a server was told about existed then (`changes`).
+    existed: changes::Existed,
     /// Whether the connection was last heard down.
     down: bool,
     /// When missing servers were last looked for again, and how many times.
@@ -339,6 +348,35 @@ impl LanguageServers {
         })
     }
 
+    /// `settings.json`'s `lsp` changed (read again, `Settings::reload_lsp`): every worktree's
+    /// resolver, which holds the settings it was made with, is made again and every directory
+    /// asked for is resolved again (a server whose command changed is replaced, PLAN §18.5).
+    pub fn set_settings(&mut self, settings: dv_lsp::LspSettings, cx: &mut Context<Self>) {
+        if self.settings == settings {
+            return;
+        }
+        self.settings = settings;
+        let worktrees: Vec<Location> = self.worktrees.keys().cloned().collect();
+        for key in worktrees {
+            if let Some(entry) = self.worktrees.get_mut(&key) {
+                // A platform being found makes its resolver with the new settings anyway.
+                if entry.platform_task.is_some() {
+                    continue;
+                }
+                entry.resolver = None;
+                requeue(entry);
+            }
+            self.ensure_resolver(&key, cx);
+            self.pump(&key, cx);
+        }
+        cx.notify();
+    }
+
+    /// The `lsp` settings the resolvers are made with.
+    pub fn settings(&self) -> &LspSettings {
+        &self.settings
+    }
+
     /// Lingers `linger` instead of [`LINGER`] (tests).
     pub fn set_linger(&mut self, linger: Duration) {
         self.linger = linger;
@@ -405,6 +443,9 @@ impl LanguageServers {
                 known: HashMap::new(),
                 resolve_generation: 0,
                 announcing: 0,
+                announce_queue: VecDeque::new(),
+                announce_running: false,
+                existed: changes::Existed::default(),
                 down,
                 rechecked: None,
                 rechecks: 0,
@@ -511,6 +552,29 @@ impl LanguageServers {
         let Some(entry) = self.worktrees.get_mut(worktree) else {
             return Lookup::Unavailable;
         };
+        if outside_worktree(path) {
+            // A file outside the worktree (the file view of a library's declarations): no
+            // directory of the worktree routes it, so the spec's first server asks.
+            return match entry
+                .servers
+                .iter()
+                .find(|(_, server)| server.spec.id == spec.id)
+            {
+                Some((id, server)) => match (&server.state, server.client.as_ref()) {
+                    (ServerState::Ready, Some(slot)) => match slot.client() {
+                        Some(client) => Lookup::Ready {
+                            client: client.clone(),
+                            language_id,
+                            server: *id,
+                        },
+                        None => Lookup::Unavailable,
+                    },
+                    (ServerState::Failed(_), _) => Lookup::Unavailable,
+                    _ => Lookup::Pending,
+                },
+                None => Lookup::Unavailable,
+            };
+        }
         let key = (spec.id, parent(path).to_string());
         match entry.routes.get(&key) {
             None => {
@@ -548,6 +612,7 @@ impl LanguageServers {
         let Some(entry) = self.worktrees.get(worktree) else {
             return Vec::new();
         };
+        let paths = dv_lsp::WorkspacePaths::new(&entry.backend.repo().toplevel);
         entry
             .servers
             .iter()
@@ -556,7 +621,12 @@ impl LanguageServers {
                 spec_id: server.spec.id,
                 name: server.spec.name,
                 state: server.state.clone(),
-                root: server.command.root.clone(),
+                root: paths.absolute(&server.command.root),
+                version: server
+                    .client
+                    .as_ref()
+                    .and_then(|slot| slot.client())
+                    .and_then(|client| client.version()),
                 command_line: server.command.command_line(),
                 source: source_label(&server.command.source),
                 progress: server.progress.clone(),
@@ -599,87 +669,6 @@ impl LanguageServers {
         };
         found.restarts.retry();
         self.restart(worktree, server, cx);
-    }
-
-    /// The review's watch saw `paths` change (`rescan`: anything may have; module docs).
-    pub fn files_changed(
-        &mut self,
-        worktree: &Location,
-        paths: &[String],
-        rescan: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(entry) = self.worktrees.get_mut(worktree) else {
-            return;
-        };
-        let forgot = entry.resolver.as_ref().is_some_and(|resolver| {
-            if rescan {
-                resolver.forget();
-                true
-            } else {
-                resolver.files_changed(paths.iter().map(String::as_str))
-            }
-        });
-        if forgot {
-            requeue(entry);
-        }
-        let clients: Vec<Arc<LspClient>> = entry
-            .servers
-            .values()
-            .filter(|server| server.state == ServerState::Ready)
-            .filter_map(|server| server.client.as_ref()?.client().cloned())
-            .collect();
-        if clients.is_empty() || paths.is_empty() {
-            if forgot {
-                self.pump(worktree, cx);
-            }
-            return;
-        }
-        let backend = entry.backend.clone();
-        let paths = paths.to_vec();
-        entry.announcing += 1;
-        let job = cx.background_spawn(async move {
-            for client in clients {
-                // A server takes an open document's text from dv, not the disk, so a document
-                // opened from text the agent has since changed is closed: the next request
-                // opens it afresh.
-                for path in &paths {
-                    client.close_document(path);
-                }
-                // Only the paths its watchers ask about are looked at (a batch may be large,
-                // and each look is a call to a WSL backend).
-                let watched = client.watched(&paths);
-                if watched.is_empty() {
-                    continue;
-                }
-                let changes: Vec<(String, u8)> = watched
-                    .into_iter()
-                    .map(|path| {
-                        let kind = match backend.worktree_len(&path) {
-                            Ok(None) => DELETE,
-                            _ => CHANGE,
-                        };
-                        (path, kind)
-                    })
-                    .collect();
-                client.files_changed(&changes);
-            }
-        });
-        if forgot {
-            self.pump(worktree, cx);
-        }
-        let key = worktree.clone();
-        cx.spawn(async move |this, cx| {
-            job.await;
-            this.update(cx, |this, cx| {
-                if let Some(entry) = this.worktrees.get_mut(&key) {
-                    entry.announcing = entry.announcing.saturating_sub(1);
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
     }
 
     /// Makes the worktree's resolver once its platform is known: this machine's for a local
@@ -1287,6 +1276,13 @@ fn requeue(entry: &mut Worktree) {
         entry.routes.insert(key.clone(), Route::Pending);
         entry.queue.push_back((spec, path.clone()));
     }
+}
+
+/// Whether `path` is an absolute path (a file outside the worktree) rather than a
+/// worktree-relative one, in either spelling.
+fn outside_worktree(path: &str) -> bool {
+    dv_lsp::paths::is_absolute(path, PathStyle::Posix)
+        || dv_lsp::paths::is_absolute(path, PathStyle::Windows)
 }
 
 /// Whether servers come only from `DV_LSP_<ID>`: an automated run (the app under

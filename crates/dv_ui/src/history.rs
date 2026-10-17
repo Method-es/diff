@@ -11,6 +11,7 @@
 
 use std::collections::VecDeque;
 
+use crate::session::ViewFrom;
 use dv_core::review::AnchorSide;
 
 /// How many positions the history keeps behind (and ahead of) the current one.
@@ -30,9 +31,10 @@ pub struct Position {
     pub path: String,
     pub side: AnchorSide,
     pub line: u32,
-    /// A file view reading the working tree as it stands (go to definition in a review whose
-    /// new side isn't it, PLAN §18.1).
-    pub worktree: bool,
+    /// Where a file view read its file: the review, the working tree as it stands (go to
+    /// definition in a review whose new side isn't it, PLAN §18.1), or outside the repository
+    /// (`path` absolute).
+    pub from: ViewFrom,
 }
 
 /// The positions behind and ahead of the current one (module docs).
@@ -111,7 +113,7 @@ mod tests {
             path: path.to_string(),
             side: AnchorSide::New,
             line,
-            worktree: false,
+            from: ViewFrom::Review,
         }
     }
 

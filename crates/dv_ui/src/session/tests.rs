@@ -23,6 +23,7 @@ use crate::syntax::TokenKind;
 
 mod ended;
 mod home;
+mod outside;
 mod placement;
 mod remote;
 mod rounds;
@@ -561,6 +562,8 @@ fn what_each_target_watches() {
 struct Probe {
     inner: Arc<dyn Backend>,
     git_calls: Mutex<Vec<String>>,
+    /// `probe_path` calls that read bytes (`read` above 0).
+    reads: AtomicUsize,
     watches: AtomicUsize,
     #[allow(clippy::type_complexity)]
     on_watch: Mutex<Box<dyn FnMut(usize) -> Result<(), BackendError> + Send>>,
@@ -575,6 +578,7 @@ impl Probe {
         Arc::new(Self {
             inner: backend(repo),
             git_calls: Mutex::new(Vec::new()),
+            reads: AtomicUsize::new(0),
             watches: AtomicUsize::new(0),
             on_watch: Mutex::new(Box::new(on_watch)),
             stopped_on: Arc::new(Mutex::new(Vec::new())),
@@ -626,6 +630,17 @@ impl Backend for Probe {
 
     fn worktree_text_stats(&self, rel: &str) -> Result<Option<TextStats>, BackendError> {
         self.inner.worktree_text_stats(rel)
+    }
+
+    fn probe_path(
+        &self,
+        path: &str,
+        read: u64,
+    ) -> Result<dv_core::backend::PathProbe, BackendError> {
+        if read > 0 {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+        }
+        self.inner.probe_path(path, read)
     }
 
     fn store_append(&self, rel: &str, line: &[u8]) -> Result<(), BackendError> {

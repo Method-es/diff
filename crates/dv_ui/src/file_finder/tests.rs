@@ -55,10 +55,11 @@ fn every_word_filters_names_come_first_then_changed_files() {
         paths(&filter(&candidates, ""), &candidates)[0],
         "tests/app.test.ts"
     );
-    // `util` in the name before `util` in a directory alone.
+    // The name `util` but for its extension, then a name starting with it, then `util` in a
+    // directory alone.
     assert_eq!(
         paths(&filter(&candidates, "UTIL"), &candidates),
-        ["docs/util-notes.md", "src/util.ts", "src/util/strings.ts"]
+        ["src/util.ts", "docs/util-notes.md", "src/util/strings.ts"]
     );
     // Every word, ignoring case; the changed file first among the names that match.
     assert_eq!(
@@ -66,6 +67,30 @@ fn every_word_filters_names_come_first_then_changed_files() {
         ["tests/app.test.ts", "src/app.ts"]
     );
     assert!(filter(&candidates, "nothing").is_empty());
+}
+
+#[test]
+fn an_exact_name_comes_before_a_prefix_and_matches_show() {
+    let side = [
+        "src/components/listing-feed-filters.tsx",
+        "src/components/listing-feed.tsx",
+        "src/routes/feed/listing-feed-page.tsx",
+    ]
+    .map(String::from);
+    let candidates = candidates(&side, &[]);
+    assert_eq!(
+        paths(&filter(&candidates, "listing-feed"), &candidates),
+        [
+            "src/components/listing-feed.tsx",
+            "src/components/listing-feed-filters.tsx",
+            "src/routes/feed/listing-feed-page.tsx",
+        ]
+    );
+    assert_eq!(
+        matched("src/components/Listing-Feed.tsx", "feed list"),
+        [15..19, 23..27]
+    );
+    assert!(matched("src/a.ts", "").is_empty());
 }
 
 #[test]

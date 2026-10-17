@@ -66,8 +66,16 @@ impl WorkspacePaths {
         self.style
     }
 
-    /// `rel` (`""` is the root) as an absolute path in the backend's spelling.
+    /// `rel` (`""` is the root) as an absolute path in the backend's spelling. A path that is
+    /// absolute already (a file outside the worktree, which the app shows read-only and asks
+    /// about) is that path.
     pub fn absolute(&self, rel: &str) -> String {
+        if is_absolute(rel, self.style) {
+            return match self.style {
+                PathStyle::Posix => rel.to_string(),
+                PathStyle::Windows => rel.replace('/', "\\"),
+            };
+        }
         let joined = if rel.is_empty() {
             self.root.clone()
         } else if self.root.ends_with('/') {
@@ -250,6 +258,23 @@ fn decode(text: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Whether `path` is absolute in `style`: `/…` on POSIX; a drive (`C:\`, `C:/`) or a UNC path on
+/// Windows.
+pub fn is_absolute(path: &str, style: PathStyle) -> bool {
+    match style {
+        PathStyle::Posix => path.starts_with('/'),
+        PathStyle::Windows => {
+            let bytes = path.as_bytes();
+            (bytes.len() >= 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && matches!(bytes[2], b'/' | b'\\'))
+                || path.starts_with("\\\\")
+                || path.starts_with("//")
+        }
+    }
 }
 
 #[cfg(test)]

@@ -200,7 +200,7 @@ impl FileFinder {
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_ellipsis_start()
-                                .child(path_text(&candidate.path, theme)),
+                                .child(path_text(&candidate.path, &self.query, theme)),
                         )
                         .automation_target(format!("file_finder/row/{}", candidate.path))
                         .into_any_element(),
@@ -243,28 +243,45 @@ impl FileFinder {
     }
 }
 
-/// A path: its directory in `fg3`, its name at 500.
-fn path_text(path: &str, theme: &DvTheme) -> StyledText {
+/// A path: its directory in `fg3`, its name at 500, what the query's words match in
+/// `accentText` at 600.
+fn path_text(path: &str, query: &str, theme: &DvTheme) -> StyledText {
     let (dir, _) = split_path(path);
-    let mut highlights = vec![(
-        dir.len()..path.len(),
-        HighlightStyle {
-            font_weight: Some(FontWeight::MEDIUM),
-            ..Default::default()
-        },
-    )];
-    if !dir.is_empty() {
-        highlights.insert(
-            0,
-            (
-                0..dir.len(),
-                HighlightStyle {
-                    color: Some(theme.colors.fg3),
-                    ..Default::default()
-                },
-            ),
-        );
+    let matched = super::matched(path, query);
+    let mut cuts: Vec<usize> = vec![0, dir.len(), path.len()];
+    for range in &matched {
+        cuts.extend([range.start, range.end]);
     }
-    highlights.retain(|(range, _)| !range.is_empty());
+    cuts.sort_unstable();
+    cuts.dedup();
+    let highlights = cuts
+        .windows(2)
+        .filter(|pair| pair[1] > pair[0])
+        .map(|pair| {
+            let piece = pair[0]..pair[1];
+            let in_dir = piece.end <= dir.len();
+            let hit = matched
+                .iter()
+                .any(|range| range.start <= piece.start && piece.end <= range.end);
+            let style = HighlightStyle {
+                color: Some(if hit {
+                    theme.colors.accent_text
+                } else if in_dir {
+                    theme.colors.fg3
+                } else {
+                    theme.colors.fg
+                }),
+                font_weight: Some(if hit {
+                    FontWeight::SEMIBOLD
+                } else if in_dir {
+                    FontWeight::NORMAL
+                } else {
+                    FontWeight::MEDIUM
+                }),
+                ..Default::default()
+            };
+            (piece, style)
+        })
+        .collect::<Vec<_>>();
     StyledText::new(path.to_string()).with_highlights(highlights)
 }

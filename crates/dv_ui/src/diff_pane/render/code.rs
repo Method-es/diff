@@ -412,10 +412,12 @@ impl DiffPane {
         }
         if code.matches {
             for (range, current) in self.matches_on(code.path, line, side) {
+                // An outline on every match, so one on an intraline word's fill still reads as
+                // a match (DESIGN §4.1 "Find").
                 let (fill, outline) = if current {
                     (c.find_current, Some(c.yellow))
                 } else {
-                    (c.find_match, None)
+                    (c.find_match, Some(c.find_line))
                 };
                 marks.spans.push(Mark {
                     range,

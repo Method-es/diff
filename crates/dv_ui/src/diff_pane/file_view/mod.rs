@@ -25,6 +25,11 @@
 //! `ReviewSession::worktree_file`), labelled "working tree", read-only (no comments, no
 //! threads: its lines aren't the review's).
 //!
+//! **Outside the repository.** A place outside the repository (a library's declarations under
+//! the toolchain) shows the same way, read-only, the file by its absolute path
+//! (`ReviewSession::outside_file`), labelled "Outside the repository · read-only" with its
+//! path; hover and go to definition work in it where a server answers for it.
+//!
 //! **Threads.** Every live thread on the file's side that stands at lines of it shows inline
 //! under its last line (placed by the same placement the stream uses: in a listed file, or in
 //! a file the review doesn't change, `Placement::Unlisted`); comments on the whole file and
@@ -56,7 +61,7 @@ use super::rows::{Content, Insert, InsertItem, LinePos, RowsSpec, file_rows, sid
 use super::{Block, Cursor, DiffPane, DiffPaneEvent};
 use crate::failure::Failure;
 use crate::services::ViewMode;
-use crate::session::{FileState, ReviewSession, SideFileState};
+use crate::session::{FileState, ReviewSession, SideFileState, ViewFrom};
 use crate::thread::ComposerTarget;
 
 /// The file view's scope in its pane.
@@ -75,8 +80,11 @@ pub(super) struct OpenFile {
     pub go_to: Option<u32>,
     /// "Load anyway" on a file read at its side that is over the size caps.
     pub load_anyway: bool,
-    /// Read from the working tree as it stands, not at the review's side (module docs).
-    pub worktree: bool,
+    /// Where it is read: at the review's side, from the working tree as it stands, or outside
+    /// the repository (module docs).
+    pub from: ViewFrom,
+    /// The line it was opened at (a definition's), which an outside file's label names.
+    pub opened_at: Option<u32>,
     /// The text shown, cut to its side, the diff it was cut from and whether it was cut with
     /// "Load anyway".
     cut: Option<(Arc<FileDiff>, bool, Arc<FileDiff>)>,
@@ -111,6 +119,8 @@ pub struct FileViewSummary {
     pub loading: bool,
     /// Read from the working tree as it stands (module docs, "The working tree").
     pub worktree: bool,
+    /// A file outside the repository (module docs, "Outside the repository").
+    pub outside: bool,
     /// The notice it shows instead of lines (`rows::Notice::key`), if any.
     pub notice: Option<&'static str>,
 }
@@ -211,7 +221,27 @@ impl DiffPane {
 
     /// Whether the file view reads its file from the working tree as it stands.
     pub fn file_view_worktree(&self) -> bool {
-        self.shown_file().is_some_and(|file| file.worktree)
+        self.file_view_from() == Some(ViewFrom::Worktree)
+    }
+
+    /// Where the file view reads its file, while it shows one.
+    pub fn file_view_from(&self) -> Option<ViewFrom> {
+        self.shown_file().map(|file| file.from)
+    }
+
+    /// Whether the file view shows a file as the disk holds it, outside the review's sides:
+    /// the working tree as it stands, or a file outside the repository. Read-only, and what a
+    /// server reads for it is the disk's (PLAN §18.2).
+    pub fn file_view_on_disk(&self) -> bool {
+        matches!(
+            self.file_view_from(),
+            Some(ViewFrom::Worktree | ViewFrom::Outside)
+        )
+    }
+
+    /// The line the file view's file was opened at, if one was asked for.
+    pub(super) fn file_view_opened_at(&self) -> Option<u32> {
+        self.shown_file()?.opened_at
     }
 
     /// The side the file view shows.
@@ -247,29 +277,28 @@ impl DiffPane {
     /// Shows `path` whole (module docs), its cursor on line `line` of the side shown once the
     /// text is there (else the first line). The same file again only moves the cursor.
     pub fn open_file(&mut self, path: &str, line: Option<u32>, cx: &mut Context<Self>) {
-        self.open_file_at(path, line, false, cx);
+        self.open_file_at(path, line, ViewFrom::Review, cx);
     }
 
-    /// [`DiffPane::open_file`], reading the file from the working tree as it stands when
-    /// `worktree` (module docs, "The working tree").
+    /// [`DiffPane::open_file`], reading the file where `from` says (module docs, "The working
+    /// tree", "Outside the repository").
     pub fn open_file_at(
         &mut self,
         path: &str,
         line: Option<u32>,
-        worktree: bool,
+        from: ViewFrom,
         cx: &mut Context<Self>,
     ) {
         let Some(session) = self.session.clone() else {
             return;
         };
-        let side = if worktree {
-            AnchorSide::New
-        } else {
-            session.read(cx).view_side(path)
+        let side = match from {
+            ViewFrom::Review => session.read(cx).view_side(path),
+            ViewFrom::Worktree | ViewFrom::Outside => AnchorSide::New,
         };
-        let same = self.shown_file().is_some_and(|file| {
-            file.path == path && file.side == side && file.worktree == worktree
-        });
+        let same = self
+            .shown_file()
+            .is_some_and(|file| file.path == path && file.side == side && file.from == from);
         // A draft is never dropped (the shell doesn't ask while one would be).
         if !same && self.has_draft(cx) {
             return;
@@ -283,7 +312,8 @@ impl DiffPane {
                 side,
                 go_to: line,
                 load_anyway: false,
-                worktree,
+                from,
+                opened_at: line,
                 cut: None,
             });
             self.cursor = None;
@@ -304,18 +334,33 @@ impl DiffPane {
             self.list.scroll_to(ListOffset::default());
         } else if let Some(file) = view.file.as_mut() {
             file.go_to = line;
+            if line.is_some() {
+                file.opened_at = line;
+            }
         }
         session.update(cx, |session, cx| {
-            session.set_file_view_at(Some(path.to_string()), worktree, cx)
+            session.set_file_view_at(Some(path.to_string()), from, cx)
         });
         self.rebuild_all(cx);
         self.go_to_pending_line(cx);
     }
 
+    /// Whether the file view shows a file outside the repository that `probe_path` didn't read
+    /// at all (over the 4 MiB it reads): its too-large notice has no "Load anyway". One read
+    /// whole but over the display caps (a library's 40,000-line declarations) has it, as any
+    /// file read at a side does.
+    pub(super) fn file_view_outside_unread(&self, cx: &App) -> bool {
+        self.file_view_from() == Some(ViewFrom::Outside)
+            && matches!(
+                self.file_view_source(cx),
+                Source::Read(shown) if matches!(*shown.diff, FileDiff::TooLarge { .. })
+            )
+    }
+
     /// "Load anyway" on the file view's too-large notice: a file the stream lists loads again
-    /// without the caps, as the stream's notice does; one read at its side (read whole
-    /// already) shows its lines.
-    pub(super) fn file_view_load_anyway(&mut self, cx: &mut Context<Self>) {
+    /// without the caps, as the stream's notice does; one read at its side, from the working
+    /// tree or outside the repository (read whole already) shows its lines.
+    pub fn file_view_load_anyway(&mut self, cx: &mut Context<Self>) {
         let Some(path) = self.file_view_path().map(str::to_string) else {
             return;
         };
@@ -348,13 +393,16 @@ impl DiffPane {
             return Source::Loading;
         };
         let session = session.read(cx);
-        if file.worktree {
-            return match session.worktree_file(&file.path) {
-                SideFileState::Loaded(shown) => Source::Read(shown),
-                SideFileState::Loading => Source::Loading,
-                SideFileState::Missing => Source::Missing,
-                SideFileState::Failed(failure) => Source::Failed(failure),
-            };
+        let read = |state: SideFileState| match state {
+            SideFileState::Loaded(shown) => Source::Read(shown),
+            SideFileState::Loading => Source::Loading,
+            SideFileState::Missing => Source::Missing,
+            SideFileState::Failed(failure) => Source::Failed(failure),
+        };
+        match file.from {
+            ViewFrom::Worktree => return read(session.worktree_file(&file.path)),
+            ViewFrom::Outside => return read(session.outside_file(&file.path)),
+            ViewFrom::Review => {}
         }
         if session.view_from_stream(&file.path) {
             return match (session.shown(&file.path), session.file_state(&file.path)) {
@@ -363,12 +411,7 @@ impl DiffPane {
                 (None, _) => Source::Loading,
             };
         }
-        match session.side_file(file.side, &file.path) {
-            SideFileState::Loaded(shown) => Source::Read(shown),
-            SideFileState::Loading => Source::Loading,
-            SideFileState::Missing => Source::Missing,
-            SideFileState::Failed(failure) => Source::Failed(failure),
-        }
+        read(session.side_file(file.side, &file.path))
     }
 
     /// The diff and highlights the file view's rows paint, its text cut to its side.
@@ -433,10 +476,10 @@ impl DiffPane {
             };
         }
         let composer = self.composer.as_ref().map(|composer| &composer.target);
-        let worktree = self.file_view_worktree();
+        let on_disk = self.file_view_on_disk();
         let (inserts, heading) = match &shown {
-            // The working tree's lines aren't the review's: its threads don't stand at them.
-            Some(diff) if !worktree => self.file_view_inserts(&path, side, diff, session, composer),
+            // The disk's lines aren't the review's: its threads don't stand at them.
+            Some(diff) if !on_disk => self.file_view_inserts(&path, side, diff, session, composer),
             _ => (Vec::new(), Vec::new()),
         };
         let content = match (&shown, &source) {
@@ -645,7 +688,8 @@ impl DiffPane {
             changed_lines,
             loading: file.cut.is_none() && notice.is_none(),
             notice,
-            worktree: file.worktree,
+            worktree: file.from == ViewFrom::Worktree,
+            outside: file.from == ViewFrom::Outside,
         })
     }
 }
