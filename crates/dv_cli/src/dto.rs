@@ -19,7 +19,10 @@
 //! | `comment show`, `comment add` | [`CommentShowDoc`]: `thread` |
 //! | `comment reply` | [`ReplyDoc`]: `reply`, `thread` |
 //! | `comment address`, `resolve`, `reopen` | [`ThreadChangeDoc`]: `changed`, `thread` |
+//! | `doctor` | [`DoctorDoc`]: `ok`, `environments: [{name, kind, running, note, checks: [{id, title, state, detail, fix}]}]` ([`Environment`], [`Check`]: `state` `ok`, `missing`, `out_of_date`, `failed` or `skipped`; `fix` `{action, command}` or `null`) |
 //! | `setup agents` | [`SetupAgentsDoc`]: `agents: [{agent, path, action, reason}]` |
+//! | `setup path` | [`SetupPathDoc`]: `dir`, `action`, `link`, `rc_file` |
+//! | `setup all`, `setup` | [`SetupAllDoc`]: `steps: [{environment, check, outcome, detail, command}]` |
 //! | `setup wsl` | [`SetupWslDoc`]: `distro`, `arch`, `build`, `installed`, `linked`, `path` |
 //! | any, failing | [`ErrorDoc`]: `error: {code, message, detail?, candidates?}` |
 //!
@@ -70,6 +73,8 @@ use dv_core::review::{
 };
 use dv_core::target::Target;
 use serde::Serialize;
+
+pub use crate::checks::{Check, Environment, Fix, Kind, State};
 
 /// The version of every document's shape; `"schema"` in each.
 pub const SCHEMA: u32 = 1;
@@ -699,7 +704,7 @@ pub struct SetupAgentsDoc {
 /// One agent's skill install.
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct AgentSetupDto {
-    /// `claude-code` or `codex`.
+    /// `claude-code`, `codex` or `cursor`.
     pub agent: &'static str,
     /// Where the skill's `SKILL.md` is (or would be).
     pub path: String,
@@ -727,6 +732,52 @@ pub struct SetupWslDoc {
     /// Where it is inside the distro: `~/.local/share/dv/bin/dv-<build>`, which
     /// `~/.local/bin/dv` links to.
     pub path: String,
+}
+
+/// `dv doctor` (PLAN §12): every environment's checks (`crate::checks`).
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct DoctorDoc {
+    /// No check needs fixing (the exit code is 0).
+    pub ok: bool,
+    /// This machine's first, then (on Windows) each WSL distro's: `{name, kind, running, note,
+    /// checks: [{id, title, state, detail, fix: {action, command} | null}]}`.
+    pub environments: Vec<Environment>,
+}
+
+/// `dv setup path`.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct SetupPathDoc {
+    /// The folder on `PATH`: this dv's (Windows), `~/.local/bin` (Linux, WSL).
+    pub dir: String,
+    /// `added`, `unchanged`, `removed` (`--remove`) or `absent` (`--remove`, nothing to take
+    /// back).
+    pub action: &'static str,
+    /// Linux and WSL: `~/.local/bin/dv`, the link to this dv; `null` on Windows.
+    pub link: Option<String>,
+    /// Linux and WSL: the shell startup file a line was added to or taken out of, else `null`.
+    pub rc_file: Option<String>,
+}
+
+/// `dv setup all` (and `dv setup` alone).
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct SetupAllDoc {
+    /// One per check that needed fixing, in the order they ran.
+    pub steps: Vec<SetupStepDto>,
+}
+
+/// One fix `dv setup all` made, or left to the user.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct SetupStepDto {
+    /// The environment's name: `Windows`, `Ubuntu`.
+    pub environment: String,
+    /// The check's id: `path`, `skill-claude-code`, `dv`, `gh`.
+    pub check: String,
+    /// `applied`, `failed`, or `manual` (only its `command` fixes it: `gh auth login`).
+    pub outcome: &'static str,
+    /// What was done, or why it failed; empty for `manual`.
+    pub detail: String,
+    /// The command that fixes it by hand.
+    pub command: Option<String>,
 }
 
 /// A failure.

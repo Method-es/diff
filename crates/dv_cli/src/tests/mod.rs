@@ -6,6 +6,7 @@
 mod backend;
 mod comment;
 mod comment_write;
+mod doctor;
 mod errors;
 mod file_level;
 mod hand_back;
@@ -129,14 +130,26 @@ pub(crate) struct Fixture {
     pub repo: FixtureRepo,
     /// The variables commands see; nothing else from this process's environment. It starts
     /// with `DV_LINUX_DIR` naming a folder without a Linux build ([`no_linux_build`]), so a
-    /// command for a WSL repository stops at exit 4 before any `wsl.exe` starts; a test that
-    /// crosses into a distro names the builds itself, sandboxed (`sandbox`).
+    /// command for a WSL repository stops at exit 4 before any `wsl.exe` starts (and `dv
+    /// doctor` lists no distro); a test that crosses into a distro names the builds itself,
+    /// sandboxed (`sandbox`). `DV_USER_PATH_FILE` names a file of the fixture's standing in
+    /// for the user Path, and `DV_GH` names `mock_gh` ([`mock_gh`]), so no check reads the
+    /// registry or asks GitHub.
     pub env: BTreeMap<String, String>,
 }
 
 /// A folder without a Linux build of dv (module docs of [`Fixture::env`]).
 pub(crate) fn no_linux_build() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("no-linux-build")
+}
+
+/// `mock_gh`, the fake `gh` (PLAN §14.2), where cargo builds it beside this test executable
+/// (`target/debug/deps`'s parent): `cargo test --workspace` builds it with every crate, as
+/// `script/check` runs it.
+pub(crate) fn mock_gh() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let dir = exe.parent().unwrap().parent().unwrap();
+    dir.join(format!("mock_gh{}", std::env::consts::EXE_SUFFIX))
 }
 
 /// The committed `src/app.ts`: twenty lines of distinct code.
@@ -188,12 +201,21 @@ impl Fixture {
         repo.write("README.md", "# api\n");
         repo.commit("base");
         repo.write("src/app.ts", text_of(&edited_lines()));
+        // The checks' seams (PLAN §12): the user Path a file of the fixture's, `gh` the fake.
+        let user_path = repo.outside_dir("user-path").join("Path.txt");
         Self {
             repo,
-            env: BTreeMap::from([(
-                "DV_LINUX_DIR".to_string(),
-                no_linux_build().display().to_string(),
-            )]),
+            env: BTreeMap::from([
+                (
+                    "DV_LINUX_DIR".to_string(),
+                    no_linux_build().display().to_string(),
+                ),
+                (
+                    "DV_USER_PATH_FILE".to_string(),
+                    user_path.display().to_string(),
+                ),
+                ("DV_GH".to_string(), mock_gh().display().to_string()),
+            ]),
         }
     }
 

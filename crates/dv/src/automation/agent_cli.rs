@@ -17,18 +17,22 @@
 //! desktop, so they are refused. `cwd` defaults to the app's working directory (the data dir
 //! under the e2e runner); a relative one resolves against it. The child's environment is the
 //! app's own (under the runner its hermetic one, `DV_GH` naming `mock_gh`), then, in order:
-//! `HOME`, `USERPROFILE` and `CODEX_HOME` set to `<data dir>/home` (so `dv setup agents` never
-//! writes the owner's real home), the fixture overlay of the seeded repo `cwd` is in, or of the
+//! `HOME` and `USERPROFILE` set to `<data dir>/home` and `CODEX_HOME` to its `.codex` (so `dv
+//! setup agents` never writes the owner's real home), the fixture overlay of the seeded repo `cwd` is in, or of the
 //! seeded repo whose linked worktree it is (its git configuration, never the machine's, and its
 //! own `HOME`),
-//! `DV_DATA_DIR` set to the app's data dir, `CLAUDECODE`, `DV_AUTHOR` and `DV_REVIEW` removed
+//! `DV_DATA_DIR` set to the app's data dir, `DV_USER_PATH_FILE` to the app's stand-in for the
+//! user `Path` (`<data dir>/user-path.txt`, so `dv setup path` never writes the registry),
+//! `CLAUDECODE`, `DV_AUTHOR` and `DV_REVIEW` removed
 //! (Claude Code exports `CLAUDECODE` to what it runs, and the CLI takes it for the agent's
 //! identity, PLAN §2.5), `DV_LINUX_DIR` naming a folder without a Linux build unless the app
 //! itself runs sandboxed (`DV_WSL_HOME` naming a scratch home, as `dv_backend::wsl::sandbox`
 //! reads it), so a command for a WSL repository stops at exit 4
-//! rather than run inside a distro's real home (PLAN §10.4, CLAUDE.md), then `env`
+//! rather than run inside a distro's real home (PLAN §10.4, CLAUDE.md), `DV_ONLY_DISTROS`
+//! naming the only distro its setup checks reach (the sandbox's `DV_TEST_WSL_DISTRO`, else
+//! none), then `env`
 //! (`{"NAME": "value"}` sets, `{"NAME": null}` removes; the runner's own variables,
-//! `DV_LINUX_DIR` and `DV_WSL_HOME` can't be changed). `stdin` is written to the child's stdin,
+//! `DV_LINUX_DIR`, `DV_WSL_HOME`, `DV_ONLY_DISTROS` and `DV_USER_PATH_FILE` can't be changed). `stdin` is written to the child's stdin,
 //! which is then closed; without it stdin is empty.
 //!
 //! Children start and are waited for off the UI thread, never count against `settled`, are
@@ -63,15 +67,24 @@ const RUNNER_VARS: &[&str] = &["DV_DATA_DIR", "DV_GH", "DV_MOCK_GH", "DV_MOCK_GH
 /// The variables that decide whether a child's CLI reaches into a WSL distro, and whose home
 /// it uses there (PLAN §10.4): `env` can't change them, so a scenario's commands reach WSL
 /// only when the app itself runs sandboxed (module docs).
-const WSL_VARS: &[&str] = &["DV_LINUX_DIR", "DV_WSL_HOME"];
+const WSL_VARS: &[&str] = &["DV_LINUX_DIR", "DV_WSL_HOME", ONLY_DISTROS_VAR];
+
+/// The variable naming the only distros a child's setup checks reach (`dv_cli::checks`).
+const ONLY_DISTROS_VAR: &str = dv_cli::checks::ONLY_DISTROS_VAR;
 
 /// The variables that make the CLI an agent or pick its review (PLAN §2.5, §10.2): never
 /// inherited, set through `env` when a scenario means them.
 const AGENT_VARS: &[&str] = &["CLAUDECODE", "DV_AUTHOR", "DV_REVIEW"];
 
-/// Where a child finds its home directory, and Codex's: `<data dir>/home` for every child, so
-/// nothing a scenario runs (`dv setup agents`) ever writes the owner's real one (CLAUDE.md).
-const HOME_VARS: &[&str] = &["HOME", "USERPROFILE", "CODEX_HOME"];
+/// Where a child finds its home directory: `<data dir>/home` for every child (the app's own
+/// setup checks' home too, `crate::app::AUTOMATION_HOME`), so nothing a scenario runs (`dv
+/// setup agents`) ever writes the owner's real one (CLAUDE.md). Codex's (`CODEX_HOME`) is its
+/// `.codex`, as Codex's own default is.
+const HOME_VARS: &[&str] = &["HOME", "USERPROFILE"];
+
+/// The variable naming the file that stands in for the user `Path` (`dv setup path`, PLAN
+/// §12.2): the app's own stand-in in its data dir for every child, never the registry.
+const USER_PATH_VAR: &str = dv_cli::checks::user_path::USER_PATH_FILE_VAR;
 
 /// How long `cli` and `cli_join` wait when the line doesn't say: under the runner's own 30 s
 /// reply timeout for a line without `timeout_ms`.
@@ -161,6 +174,9 @@ fn env_change(cmd: &str, name: &str, value: &Value) -> Result<(String, Option<St
             "{cmd} can't change {name}: a command reaches WSL only as the app does (a \
              scenario header's DV_WSL_HOME)"
         );
+    }
+    if name == USER_PATH_VAR {
+        bail!("{cmd} can't change {name}: the user Path is the app's stand-in for every child");
     }
     if name.is_empty() || name.contains('=') {
         bail!("{name:?} isn't an environment variable name");
@@ -253,18 +269,37 @@ pub fn child_env(
     env: &[(String, Option<String>)],
     sandboxed: bool,
 ) -> EnvOverlay {
-    let home = data_dir.join("home");
+    let home = data_dir.join(crate::app::AUTOMATION_HOME);
     let mut changes: EnvOverlay = HOME_VARS
         .iter()
         .map(|name| (OsString::from(name), Some(home.as_os_str().to_owned())))
         .collect();
+    changes.push((
+        "CODEX_HOME".into(),
+        Some(home.join(".codex").into_os_string()),
+    ));
     changes.extend(overlay.unwrap_or_default());
     changes.push(("DV_DATA_DIR".into(), Some(data_dir.as_os_str().to_owned())));
+    changes.push((
+        USER_PATH_VAR.into(),
+        Some(
+            data_dir
+                .join(crate::app::AUTOMATION_USER_PATH)
+                .into_os_string(),
+        ),
+    ));
     changes.extend(AGENT_VARS.iter().map(|name| (OsString::from(name), None)));
     if !sandboxed {
         let nowhere = data_dir.join("no-linux-build");
         changes.push(("DV_LINUX_DIR".into(), Some(nowhere.into_os_string())));
     }
+    // The setup checks (`dv doctor`, `dv setup`) reach no distro but the sandbox's.
+    let only = if sandboxed {
+        dv_ui::services::setup::sandbox_distros().join(",")
+    } else {
+        String::new()
+    };
+    changes.push((ONLY_DISTROS_VAR.into(), Some(only.into())));
     changes.extend(
         env.iter()
             .map(|(name, value)| (name.into(), value.as_ref().map(OsString::from))),

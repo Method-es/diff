@@ -1,0 +1,3 @@
+{"calls": [
+  {"argv": ["auth", "status"], "stderr": "github.com\n  ✓ Logged in to github.com account kylekz (keyring)\n  - Active account: true\n"}
+]}

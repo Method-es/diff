@@ -7,7 +7,7 @@ use std::{cell::Cell, path::PathBuf, process::ExitCode, rc::Rc};
 use anyhow::{Result, bail};
 use dv_ui::platform::MaterialSupport;
 use dv_ui::services::reviews::OpenRequest;
-use dv_ui::services::{ServicesConfig, WslAccess};
+use dv_ui::services::{ServicesConfig, SetupConfig, WslAccess};
 use dv_ui::shell::{IfNotOpened, MainWindow};
 use dv_ui::system::SystemShell;
 use gpui::{App, QuitMode, px, size};
@@ -128,7 +128,15 @@ fn start(startup: StartOptions, cx: &mut App) -> Result<()> {
     );
     // An automation run reaches WSL only through the sandbox seam (`WslAccess::for_run`).
     let wsl = WslAccess::for_run(automation);
-    dv_ui::services::init(ServicesConfig { data_dir, wsl }, cx);
+    let setup = setup_config(&data_dir, automation);
+    dv_ui::services::init(
+        ServicesConfig {
+            data_dir,
+            wsl,
+            setup,
+        },
+        cx,
+    );
     // The settings' material and mode, before the first frame.
     dv_ui::appearance::init(MaterialSupport::probe(), cx);
 
@@ -149,6 +157,29 @@ fn start(startup: StartOptions, cx: &mut App) -> Result<()> {
     }
     Ok(())
 }
+
+/// Where the setup checks look and write (PLAN §12): the real machine for the app; for an
+/// automation run a scratch home and a stand-in user `Path` in its data dir (the `cli`
+/// children's own, `automation::agent_cli`), never the owner's (CLAUDE.md), and the first-run
+/// screen only when the run asks for it (`DV_FIRST_RUN=1`: every scenario starts on a fresh
+/// data dir).
+fn setup_config(data_dir: &std::path::Path, automation: bool) -> SetupConfig {
+    if automation {
+        SetupConfig::sandboxed(
+            data_dir.join(AUTOMATION_HOME),
+            data_dir.join(AUTOMATION_USER_PATH),
+            std::env::var("DV_FIRST_RUN").is_ok_and(|value| value.trim() == "1"),
+        )
+    } else {
+        SetupConfig::real()
+    }
+}
+
+/// An automation run's home directory, in its data dir.
+pub const AUTOMATION_HOME: &str = "home";
+
+/// The file standing in for the user `Path` in an automation run, in its data dir.
+pub const AUTOMATION_USER_PATH: &str = "user-path.txt";
 
 /// Opens what `dv` or `dv open` asked for in the main window: the working directory's or the
 /// named repository with the switcher on it, or a review (PLAN §10.1). It runs in the

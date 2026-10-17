@@ -57,7 +57,10 @@ impl Render for Shell {
         let overlay_open = self.switcher.is_some()
             || self.source_picker.is_some()
             || self.file_finder.is_some()
+            || self.settings.is_some()
             || self.sheet.is_some();
+        // The first-run screen stands in for the columns and the status bar (`setup`).
+        let first_run = self.first_run_open(cx);
         div()
             .id("shell")
             .key_context(keymap::SHELL)
@@ -69,6 +72,8 @@ impl Render for Shell {
             .on_action(cx.listener(Self::on_go_forward))
             .on_action(cx.listener(Self::copy_field))
             .on_action(cx.listener(Self::cut_field))
+            .on_action(cx.listener(Self::toggle_settings))
+            .on_action(cx.listener(Self::continue_first_run))
             // `Esc` closes the comments list's row menu before the stream hears it (DESIGN §5:
             // the top overlay first).
             .capture_action(cx.listener(|this, _: &ClearSelection, _, cx| {
@@ -94,22 +99,29 @@ impl Render for Shell {
             // First, so its capture listener runs before any other.
             .child(crate::automation::pointer_guard())
             .child(self.render_title_bar(window, &theme, cx))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_row()
-                    .when(self.panel_visible, |this| {
-                        this.child(self.render_panel(&theme, cx))
-                    })
-                    .child(self.render_main(&theme, cx)),
-            )
-            .child(self.render_status_bar(&theme, cx))
+            .map(|this| {
+                if first_run {
+                    this.child(self.render_first_run(&theme, window, cx))
+                } else {
+                    this.child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .flex()
+                            .flex_row()
+                            .when(self.panel_visible, |this| {
+                                this.child(self.render_panel(&theme, cx))
+                            })
+                            .child(self.render_main(&theme, cx)),
+                    )
+                    .child(self.render_status_bar(&theme, cx))
+                }
+            })
             .when(overlay_open, |this| {
                 this.child(self.render_scrim(&theme, cx))
             })
             .children(self.render_sheet(window, &theme))
+            .children(self.render_settings(window, &theme))
             .children(self.render_server_details(window, &theme, cx))
     }
 }
@@ -261,6 +273,11 @@ impl Shell {
                     down.action,
                     handler(cx, |this, _, cx| this.retry_backend(cx)),
                 ))
+                .action(BannerAction::new(
+                    "setup",
+                    "Open setup",
+                    handler(cx, |this, window, cx| this.open_settings(window, cx)),
+                ))
         });
         let session_banner = self.session.as_ref().and_then(|session| {
             if backend_down.is_some() {
@@ -411,8 +428,10 @@ impl Shell {
     /// everything under it (a sheet with a menu open over it too); a click on it closes that
     /// overlay.
     fn render_scrim(&self, theme: &DvTheme, cx: &mut Context<Self>) -> AnyElement {
-        let menu_open =
-            self.switcher.is_some() || self.source_picker.is_some() || self.file_finder.is_some();
+        let menu_open = self.switcher.is_some()
+            || self.source_picker.is_some()
+            || self.file_finder.is_some()
+            || self.settings.is_some();
         let priority = if menu_open && self.sheet.is_some() {
             SCRIM_OVER_SHEET_PRIORITY
         } else {

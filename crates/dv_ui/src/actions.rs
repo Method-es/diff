@@ -19,6 +19,34 @@ pub mod shell {
             FinishReview,
             /// Open the file finder, or close it (`Ctrl P`, PLAN §18.1).
             FindFile,
+            /// Open Settings, or close it (`Ctrl ,`, DESIGN §4.3).
+            ToggleSettings,
+        ]
+    );
+}
+
+/// The Settings sheet (DESIGN §4.3), dispatched in the `Settings` key context while it is open.
+pub mod settings {
+    use gpui::actions;
+
+    actions!(
+        settings,
+        [
+            /// Close Settings (`Esc`).
+            Dismiss,
+        ]
+    );
+}
+
+/// The first-run screen (DESIGN §4.3), dispatched in the `FirstRun` key context while it shows.
+pub mod first_run {
+    use gpui::actions;
+
+    actions!(
+        first_run,
+        [
+            /// Continue: the first run is over (`Enter`).
+            Continue,
         ]
     );
 }

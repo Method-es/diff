@@ -17,7 +17,8 @@
 //! (and, in a one-file scope, the file view, with the [`file_finder`] and the [`history`] of
 //! positions), and the [`submit`] sheet that finishes a round. [`syntax`] highlights its diffs into token
 //! kinds and [`markdown`] renders its comment bodies, sanitised. [`keymap`] binds the
-//! [`actions`]; [`banner`] is how a region shows a failure.
+//! [`actions`]; [`banner`] is how a region shows a failure. [`setup`] is the first-run screen
+//! and Settings › Setup over the setup checks (PLAN §12).
 
 pub mod actions;
 pub mod appearance;
@@ -38,6 +39,7 @@ pub mod markdown;
 pub mod platform;
 pub mod services;
 pub mod session;
+pub mod setup;
 pub mod shell;
 pub mod submit;
 pub mod switcher;

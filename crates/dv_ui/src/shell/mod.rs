@@ -64,6 +64,7 @@ mod file_view;
 pub mod intel;
 pub mod pending;
 mod render;
+mod setup;
 mod status_bar;
 pub mod title_bar;
 
@@ -266,6 +267,12 @@ pub struct Shell {
     source_picker: Option<Overlay<SourcePicker>>,
     /// The "Finish round" sheet (DESIGN §4.2).
     sheet: Option<Overlay<FinishSheet>>,
+    /// Settings (`Ctrl ,`, `setup`), which opens and closes like a menu.
+    settings: Option<Overlay<crate::setup::settings::SettingsView>>,
+    /// The first-run screen's keyboard (`setup`).
+    first_run_focus: FocusHandle,
+    /// Whether the first-run screen showed when the setup service last changed.
+    first_run_shown: bool,
     panel_visible: bool,
     opening: Option<Opening>,
     /// A pick that waits for its connection ([`pending`]).
@@ -302,7 +309,12 @@ impl Shell {
         let references_panel = cx.new(|_| crate::intel::references::ReferencesPanel::new());
         let settings = cx.services().settings.clone();
         let locations = cx.services().locations.clone();
+        let setup = cx.services().setup.clone();
         let subscriptions = vec![
+            // The first-run screen, the setup cards' state and the status bar's notice.
+            cx.observe_in(&setup, window, |this, _, window, cx| {
+                this.setup_changed(window, cx)
+            }),
             // A connection's state shows in the status bar while a review opens.
             cx.observe(&locations, |_, _, cx| cx.notify()),
             // A connection back runs the pick that waits for it ([`pending`]).
@@ -384,6 +396,12 @@ impl Shell {
         // The main area always renders, inside the shell's key context, so the shell's keys
         // (`Ctrl O`) work at once and the stream's as soon as a review shows.
         diff_pane.read(cx).focus_handle(cx).focus(window, cx);
+        // The first-run screen takes it while it shows (`setup`).
+        let first_run_focus = cx.focus_handle();
+        let first_run_shown = setup.read(cx).first_run();
+        if first_run_shown {
+            first_run_focus.focus(window, cx);
+        }
         Self {
             // The window opened with the theme's material ([`window_options`]).
             applied: material,
@@ -405,6 +423,9 @@ impl Shell {
             switcher: None,
             source_picker: None,
             sheet: None,
+            settings: None,
+            first_run_focus,
+            first_run_shown,
             panel_visible: true,
             opening: None,
             pending: None,
@@ -941,11 +962,13 @@ impl Shell {
             self.switcher.take(),
             self.source_picker.take(),
             self.file_finder.take(),
+            self.settings.take(),
         ) {
-            (Some(menu), _, _) => Some(menu.return_focus),
-            (None, Some(menu), _) => Some(menu.return_focus),
-            (None, None, Some(menu)) => Some(menu.return_focus),
-            (None, None, None) => None,
+            (Some(menu), _, _, _) => Some(menu.return_focus),
+            (None, Some(menu), _, _) => Some(menu.return_focus),
+            (None, None, Some(menu), _) => Some(menu.return_focus),
+            (None, None, None, Some(menu)) => Some(menu.return_focus),
+            (None, None, None, None) => None,
         }
     }
 

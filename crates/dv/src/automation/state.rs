@@ -793,3 +793,56 @@ fn thread_state(session: &ReviewSession, thread: &Thread) -> Value {
         "round": anchor.round,
     })
 }
+
+/// `state.setup` (PLAN §12): the first-run screen, Settings, the status bar's notice and every
+/// environment's checks as the setup screen shows them.
+pub fn setup(shell: &Shell, cx: &App) -> Value {
+    let setup = cx.services().setup.read(cx);
+    let environments: Vec<Value> = setup
+        .environments()
+        .iter()
+        .map(|state| {
+            let env = &state.env;
+            let checks: Vec<Value> = env
+                .checks
+                .iter()
+                .map(|check| {
+                    json!({
+                        "id": check.id,
+                        "title": check.title,
+                        "state": check.state.key(),
+                        "detail": check.detail,
+                        "fix": check.fix.as_ref().map(|fix| json!({
+                            "action": fix.action,
+                            "command": fix.command,
+                        })),
+                        "applying": setup.applying(&env.name, &check.id).is_some(),
+                        "error": setup.failure(&env.name, &check.id),
+                    })
+                })
+                .collect();
+            json!({
+                "name": env.name,
+                "kind": env.kind.key(),
+                "running": env.running,
+                "note": env.note,
+                "checking": state.checking,
+                "starting": state.starting,
+                "start_error": state.start_error,
+                "checks": checks,
+            })
+        })
+        .collect();
+    json!({
+        "open": shell.first_run_open(cx) || shell.settings().is_some(),
+        "first_run": shell.first_run_open(cx),
+        "settings_open": shell.settings().is_some(),
+        "checking": setup.is_checking(),
+        "notice": setup.notice().map(|notice| json!({
+            "environment": notice.environment,
+            "text": notice.text,
+            "action": notice.action,
+        })),
+        "environments": environments,
+    })
+}

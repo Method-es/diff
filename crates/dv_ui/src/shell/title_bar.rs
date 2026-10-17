@@ -1,6 +1,7 @@
 //! The custom title bar (DESIGN §2, §4.1): 40px of `chrome` holding dv's mark, the review
 //! switcher button (`repo · working tree vs main`, a location chip for WSL, `Ctrl O`), the
-//! source picker, the centred command field (`Ctrl K`) and, on Windows, the caption buttons.
+//! source picker, the centred command field (`Ctrl K`), the `⋯` that opens Settings (`Ctrl ,`)
+//! and, on Windows, the caption buttons.
 //! The whole bar is a window drag region; its controls occlude it so they stay clickable.
 //!
 //! The switcher and the source picker hang under their buttons while open, and the file
@@ -97,11 +98,12 @@ impl Shell {
             window.viewport_size().width,
             theme.sizes.command_field_width,
             needed,
-            if cfg!(target_os = "windows") && !window.is_fullscreen() {
-                theme.sizes.caption_button_width * 3.
-            } else {
-                px(0.)
-            },
+            SETTINGS_BUTTON_ROOM
+                + if cfg!(target_os = "windows") && !window.is_fullscreen() {
+                    theme.sizes.caption_button_width * 3.
+                } else {
+                    px(0.)
+                },
         );
         let room = field - FIELD_GAP;
         div()
@@ -137,6 +139,12 @@ impl Shell {
                     }),
             )
             .child(div().flex_1())
+            .child(
+                div()
+                    .flex_none()
+                    .mr(px(6.))
+                    .child(self.render_settings_button(theme, cx)),
+            )
             .child(WindowControls::new(theme))
             // Centred on the window (or as far right as the left group needs), not between its
             // neighbours. The wrapper has no hitbox, so the drag region still reaches everywhere
@@ -299,6 +307,9 @@ impl Shell {
 /// The room kept between the left group and the command field, and between the field and the
 /// caption buttons.
 const FIELD_GAP: Pixels = px(12.);
+
+/// The room the `⋯` (Settings, `shell::setup`) takes at the bar's right, its margin included.
+const SETTINGS_BUTTON_ROOM: Pixels = px(34.);
 
 /// Where the command field's left edge goes (module docs, "Room"): centred in a window
 /// `width` wide, or as far right as a left group `needed` wide needs, but never closer than

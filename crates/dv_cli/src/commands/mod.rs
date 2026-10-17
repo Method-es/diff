@@ -3,8 +3,9 @@
 //! - Reading: [`status`], [`review`] (`list`, `show`) and [`comment`] (`list`, `show`).
 //! - Writing: [`review_write`] (`new`, `done`, `submit`, `close`, `delete`) and
 //!   [`comment_write`] (`add`, `reply`, `address`, `resolve`, `reopen`).
-//! - Waiting for the reviewer: [`wait`]; installing the agent skill: [`setup`]; installing dv in
-//!   a WSL distro: [`setup_wsl`].
+//! - Waiting for the reviewer: [`wait`].
+//! - Setup (PLAN §12): the checks every environment lists, [`doctor`]; their fixes, [`setup`]
+//!   (`agents`, `path`, `all`); installing dv in a WSL distro, [`setup_wsl`].
 //! - Serving the app's remote backend over stdio: [`backend`].
 //!
 //! Commands of later versions are recognised and refused with what to do instead ([`later`]).
@@ -14,6 +15,7 @@
 mod backend;
 mod comment;
 pub(crate) mod comment_write;
+pub(crate) mod doctor;
 mod format;
 mod later;
 mod review;
@@ -72,14 +74,17 @@ pub(crate) fn run(
                 comment_write::set_state(global, &args.id, ThreadState::Open, None, ctx)
             }
         },
-        Command::Setup(args) => match &args.what {
-            Some(SetupCommand::Agents(agents)) => setup::agents(global, agents, ctx),
-            Some(SetupCommand::Path(_)) => Err(later::setup_path()),
-            Some(SetupCommand::Wsl(wsl)) => setup_wsl::wsl(global, wsl, ctx),
-            Some(SetupCommand::All(_)) => Err(later::setup_all()),
-            None => Err(later::setup_what()),
-        },
-        Command::Doctor => Err(later::doctor()),
+        Command::Setup(args) => {
+            let yes = args.yes.yes;
+            match &args.what {
+                Some(SetupCommand::Agents(agents)) => setup::agents(global, agents, yes, ctx),
+                Some(SetupCommand::Path(path)) => setup::path(global, path, yes, ctx),
+                Some(SetupCommand::Wsl(wsl)) => setup_wsl::wsl(global, wsl, yes, ctx),
+                Some(SetupCommand::All(all)) => setup::all(global, yes || all.yes, ctx),
+                None => setup::all(global, yes, ctx),
+            }
+        }
+        Command::Doctor => doctor::doctor(global, ctx),
         Command::Backend(args) => backend::backend(&args, ctx),
     }
 }

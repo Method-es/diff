@@ -12,6 +12,8 @@
 //! - [`dto`]: the JSON documents (PLAN §10.3); [`error`]: exit codes and error codes.
 //!
 //! - [`skill`]: the `dv-review` agent skill `dv setup agents` installs (PLAN §10.5).
+//! - [`checks`]: the setup checks of every environment (PLAN §12), which `dv doctor` lists, `dv
+//!   setup` applies, and the app's first-run screen and Settings › Setup show.
 //!
 //! Inside, `repo` finds and opens the repository, `reexec` runs a command for a repository
 //! inside a WSL distro there (on Windows, PLAN §10.4), `select` picks the review a command
@@ -21,6 +23,7 @@
 
 pub mod args;
 mod body;
+pub mod checks;
 mod commands;
 mod context;
 pub mod dto;

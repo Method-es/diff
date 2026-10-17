@@ -44,8 +44,12 @@ impl Shell {
     }
 
     /// The main area's focus handle: the shown pane's, where the keyboard rests whenever no
-    /// overlay or text field has it.
+    /// overlay or text field has it; the first-run screen's while that shows in its place
+    /// (`setup`), so a review opening behind it never takes the keyboard from it.
     pub(super) fn main_focus(&self, cx: &gpui::App) -> FocusHandle {
+        if self.first_run_open(cx) {
+            return self.first_run_focus.clone();
+        }
         self.main_pane().read(cx).focus_handle(cx)
     }
 

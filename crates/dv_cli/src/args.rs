@@ -71,11 +71,12 @@ pub enum Command {
     #[command(subcommand)]
     Comment(CommentCommand),
 
-    /// Install what dv needs: the agent skill (`dv setup agents`), dv in a WSL distro (`dv setup
-    /// wsl`); PATH comes later
+    /// Set up what `dv doctor` checks: dv on PATH, the agent skill, dv in WSL distros (`dv setup`
+    /// alone is `dv setup all`)
     Setup(SetupArgs),
 
-    /// Check dv's environment (a later version)
+    /// Check dv's setup on this machine and in each WSL distro: dv on PATH, the agent skills,
+    /// git's identity, gh (exit 1 when something needs fixing)
     Doctor,
 
     /// Serve repositories to the dv app over stdin and stdout (the app starts it)
@@ -495,27 +496,46 @@ pub struct CommentAddressArgs {
     pub note: Note,
 }
 
-/// `dv setup …`.
+/// `dv setup …`: alone, `dv setup all`.
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
 pub struct SetupArgs {
     #[command(subcommand)]
     pub what: Option<SetupCommand>,
+
+    #[command(flatten)]
+    pub yes: YesArg,
 }
 
 /// What `dv setup` sets up (PLAN §12).
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum SetupCommand {
-    /// Put dv on PATH (a later version)
-    Path(YesArg),
+    /// Put dv on PATH: this dv's folder in your user Path on Windows; ~/.local/bin/dv on Linux
+    /// and in WSL, with ~/.local/bin on your shell's PATH
+    Path(SetupPathArgs),
 
-    /// Install the dv-review skill for each agent found (Claude Code, Codex)
+    /// Install the dv-review skill for each agent found (Claude Code, Codex, Cursor)
     Agents(SetupAgentsArgs),
 
     /// Install this dv in a WSL distro and put it on the distro's PATH (Windows)
     Wsl(SetupWslArgs),
 
-    /// Everything above (a later version)
+    /// Everything `dv doctor` lists that dv can fix, here and in each running WSL distro
     All(YesArg),
+}
+
+/// `dv setup path`.
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct SetupPathArgs {
+    #[command(flatten)]
+    pub yes: YesArg,
+
+    /// Take dv off PATH again: exactly what `dv setup path` put there
+    #[arg(long)]
+    pub remove: bool,
+
+    /// The folder to put on PATH on Windows [default: this dv's] (tests, the installer)
+    #[arg(long, hide = true, value_name = "DIR")]
+    pub dir: Option<PathBuf>,
 }
 
 /// `--yes`.

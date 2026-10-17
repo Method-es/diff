@@ -368,6 +368,8 @@ pub struct Shell {
     distro: Option<String>,
     /// The home the scripts install into and run from: `DV_WSL_HOME`, else the user's own.
     home: Option<String>,
+    /// More variables the scripts run with ([`Shell::with_env`]).
+    env: Vec<(String, String)>,
 }
 
 impl Shell {
@@ -376,6 +378,7 @@ impl Shell {
         Ok(Self {
             distro: Some(distro.into()),
             home: sandbox(home)?,
+            env: Vec::new(),
         })
     }
 
@@ -385,7 +388,16 @@ impl Shell {
         Ok(Self {
             distro: None,
             home: sandbox(home)?,
+            env: Vec::new(),
         })
+    }
+
+    /// `self` running its scripts with `name=value` set too (inside a distro through
+    /// `/usr/bin/env`, as the home is): a test's stand-in for a program the distro's dv runs
+    /// (`DV_GH`).
+    pub fn with_env(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env.push((name.into(), value.into()));
+        self
     }
 
     /// The distro, `None` for this machine's shell.
@@ -438,14 +450,23 @@ impl Shell {
         match &self.distro {
             Some(distro) => {
                 command.args(["-d", distro, "--cd", "/", "--exec"]);
+                if self.home.is_some() || !self.env.is_empty() {
+                    command.arg("/usr/bin/env");
+                }
                 if let Some(home) = &self.home {
-                    command.args(["/usr/bin/env", &format!("HOME={home}")]);
+                    command.arg(format!("HOME={home}"));
+                }
+                for (name, value) in &self.env {
+                    command.arg(format!("{name}={value}"));
                 }
                 command.arg("/bin/sh");
             }
             None => {
                 if let Some(home) = &self.home {
                     command.env("HOME", home);
+                }
+                for (name, value) in &self.env {
+                    command.env(name, value);
                 }
             }
         }
@@ -459,8 +480,14 @@ impl Shell {
             Some(distro) => format!("{WSL_EXE} -d {distro} --cd / --exec "),
             None => String::new(),
         };
+        if self.home.is_some() || !self.env.is_empty() {
+            line.push_str("/usr/bin/env ");
+        }
         if let Some(home) = &self.home {
-            line.push_str(&format!("/usr/bin/env HOME={home} "));
+            line.push_str(&format!("HOME={home} "));
+        }
+        for (name, value) in &self.env {
+            line.push_str(&format!("{name}={value} "));
         }
         line.push_str(&format!("/bin/sh -c <{what}> sh"));
         for arg in args {

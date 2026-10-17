@@ -50,6 +50,11 @@ fn command(repo: &FixtureRepo, cwd: &Path, args: &[&str], env: &[(&str, &str)]) 
         .env_remove("DV_REVIEW")
         .env_remove("DV_WSL_HOME")
         .env("DV_LINUX_DIR", no_linux_build())
+        // The setup checks' seams (PLAN §12): never the registry, GitHub or the real home.
+        .env("DV_USER_PATH_FILE", repo.home().join("user-path.txt"))
+        .env("DV_GH", repo.home().join("no-such-gh"))
+        .env("USERPROFILE", repo.home())
+        .env_remove("CODEX_HOME")
         .env_remove("RUST_LOG");
     for (name, value) in repo.env_overlay() {
         match value {
@@ -200,13 +205,19 @@ fn errors_go_to_stderr_and_set_the_exit_code() {
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).starts_with("dv: not a git repository"));
 
-    // A later version's command: exit 2 with what to do.
-    let output = dv(&repo, repo.path(), &["doctor"], &[]);
-    assert_eq!(output.status.code(), Some(2));
-    assert_eq!(
-        stderr(&output),
-        "dv: `dv doctor` arrives in a later version\n"
-    );
+    // `dv doctor`: exit 1 while something needs fixing, the document on stdout all the same.
+    let output = dv(&repo, repo.path(), &["doctor", "--json"], &[]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let doc = json(&output);
+    assert_eq!(doc["ok"], false);
+    let gh = doc["environments"][0]["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["id"] == "gh")
+        .unwrap()
+        .clone();
+    assert_eq!(gh["state"], "missing");
 }
 
 #[test]

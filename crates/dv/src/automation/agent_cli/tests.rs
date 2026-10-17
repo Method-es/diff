@@ -158,6 +158,10 @@ fn requests_parse_strictly() {
             "can't change DV_WSL_HOME",
         ),
         (
+            json!({"args": ["status"], "env": {"DV_ONLY_DISTROS": "Ubuntu"}}),
+            "can't change DV_ONLY_DISTROS",
+        ),
+        (
             json!({"args": ["status"], "env": {"A=B": "1"}}),
             "isn't an environment",
         ),
@@ -256,10 +260,18 @@ fn the_child_environment_is_the_fixtures_without_the_agents_variables() {
             // A home of its own under the data dir, which a seeded repo's overlay may replace.
             set("HOME", home),
             set("USERPROFILE", home),
-            set("CODEX_HOME", home),
+            set(
+                "CODEX_HOME",
+                Path::new(home).join(".codex").to_str().unwrap()
+            ),
             set("HOME", "/fixture/home"),
             unset("GIT_DIR"),
             set("DV_DATA_DIR", "/data"),
+            // The user Path's stand-in, the app's own.
+            set(
+                "DV_USER_PATH_FILE",
+                Path::new("/data").join("user-path.txt").to_str().unwrap()
+            ),
             unset("CLAUDECODE"),
             unset("DV_AUTHOR"),
             unset("DV_REVIEW"),
@@ -268,6 +280,8 @@ fn the_child_environment_is_the_fixtures_without_the_agents_variables() {
                 "DV_LINUX_DIR",
                 Path::new("/data").join("no-linux-build").to_str().unwrap()
             ),
+            // The setup checks reach no distro.
+            set("DV_ONLY_DISTROS", ""),
             // `env` comes last, so a scenario can make the child Claude Code on purpose.
             set("CLAUDECODE", "1"),
             unset("RUST_LOG"),

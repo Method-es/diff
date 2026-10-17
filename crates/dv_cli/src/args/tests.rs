@@ -187,6 +187,7 @@ fn the_tree_parses_every_documented_command() {
                 yes: YesArg { yes: true },
                 home: Some(PathBuf::from("x")),
             })),
+            yes: YesArg { yes: false },
         })
     );
     assert_eq!(
@@ -196,11 +197,33 @@ fn the_tree_parses_every_documented_command() {
                 distro: "Ubuntu".into(),
                 yes: YesArg { yes: false },
             })),
+            yes: YesArg { yes: false },
         })
     );
     assert_eq!(
         command(&["setup"]),
-        Command::Setup(SetupArgs { what: None })
+        Command::Setup(SetupArgs {
+            what: None,
+            yes: YesArg { yes: false },
+        })
+    );
+    assert_eq!(
+        command(&["setup", "--yes"]),
+        Command::Setup(SetupArgs {
+            what: None,
+            yes: YesArg { yes: true },
+        })
+    );
+    assert_eq!(
+        command(&["setup", "path", "--remove", "--yes", "--dir", "D:/dv"]),
+        Command::Setup(SetupArgs {
+            what: Some(SetupCommand::Path(SetupPathArgs {
+                yes: YesArg { yes: true },
+                remove: true,
+                dir: Some(PathBuf::from("D:/dv")),
+            })),
+            yes: YesArg { yes: false },
+        })
     );
     assert_eq!(command(&["doctor"]), Command::Doctor);
     assert_eq!(

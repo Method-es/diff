@@ -12,6 +12,8 @@
 //!   unified).
 //! - [`LanguageServers`] (`language_servers`): the language servers of every worktree a review
 //!   is open on (`crate::intel::servers`, PLAN §18.5), with `settings.json`'s `lsp`.
+//! - [`Setup`] (`setup`): every environment's setup checks, the first-run marker and the
+//!   status bar's out-of-date skill notice (PLAN §12).
 //!
 //! An open review is a `crate::session::ReviewSession`, which the shell holds; it works through
 //! the same `Locations` backend. The `System` seam (opening URLs, revealing files, the folder
@@ -23,6 +25,7 @@ pub mod persist;
 pub mod review_ui;
 pub mod reviews;
 pub mod settings;
+pub mod setup;
 
 use std::path::{Path, PathBuf};
 
@@ -34,6 +37,7 @@ pub use locations::{EnvOverlay, Locations, LocationsEvent, Reach, Route, WslAcce
 pub use review_ui::{ReviewUi, ViewMode};
 pub use reviews::{Reviews, ReviewsEvent};
 pub use settings::{Mode, Settings, SettingsEvent, SettingsFile};
+pub use setup::{Setup, SetupConfig};
 
 /// What [`init`] needs from the binary.
 #[derive(Clone)]
@@ -43,6 +47,9 @@ pub struct ServicesConfig {
     /// How WSL repositories are reached: this machine's WSL, or a stand-in in tests and in
     /// automation runs without `DV_WSL_HOME` ([`WslAccess::for_run`]).
     pub wsl: WslAccess,
+    /// Where the setup checks look and write (PLAN §12): the real machine, or a scratch home
+    /// and a stand-in `Path` under the data dir ([`SetupConfig::sandboxed`]).
+    pub setup: SetupConfig,
 }
 
 /// The app's services.
@@ -52,6 +59,7 @@ pub struct Services {
     pub reviews: Entity<Reviews>,
     pub review_ui: Entity<ReviewUi>,
     pub language_servers: Entity<LanguageServers>,
+    pub setup: Entity<Setup>,
     data_dir: PathBuf,
 }
 
@@ -69,13 +77,18 @@ impl Services {
             && self.reviews.read(cx).is_settled(cx)
             && self.review_ui.read(cx).is_settled(cx)
             && self.language_servers.read(cx).is_settled()
+            && self.setup.read(cx).is_settled()
     }
 }
 
 /// Builds the services (reading the settings, the known repositories and the per-review
 /// choices synchronously) and installs them as a global.
 pub fn init(config: ServicesConfig, cx: &mut App) {
-    let ServicesConfig { data_dir, wsl } = config;
+    let ServicesConfig {
+        data_dir,
+        wsl,
+        setup,
+    } = config;
     let path = data_dir.join(settings::SETTINGS_FILE);
     let settings = cx.new(|cx| Settings::load(path, cx));
     let locations = cx.new(|cx| Locations::new(wsl, cx));
@@ -83,12 +96,14 @@ pub fn init(config: ServicesConfig, cx: &mut App) {
     let review_ui = cx.new(|cx| ReviewUi::new(&data_dir, cx));
     let lsp = settings.read(cx).file().lsp_settings();
     let language_servers = cx.new(|cx| LanguageServers::new(lsp, cx));
+    let setup = cx.new(|cx| Setup::new(setup, &data_dir, locations.clone(), cx));
     cx.set_global(Services {
         settings,
         locations,
         reviews,
         review_ui,
         language_servers,
+        setup,
         data_dir,
     });
 }

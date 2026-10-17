@@ -30,6 +30,7 @@ use crate::output;
 pub(crate) fn wsl(
     global: &GlobalArgs,
     args: &SetupWslArgs,
+    yes: bool,
     ctx: &mut Context,
 ) -> Result<Exit, CliError> {
     if !cfg!(windows) {
@@ -52,7 +53,7 @@ pub(crate) fn wsl(
     let installed = !probe.up_to_date();
     let mut linked = probe.link == LinkState::Ok;
     if installed {
-        if !args.yes.yes {
+        if !(yes || args.yes.yes) {
             let lines = plan(&distro.name, &probe, build.len);
             if global.json || !ctx.stdin_is_terminal || !ctx.stdout_is_terminal {
                 if !global.json {

@@ -29,7 +29,7 @@ WSL; macOS and Linux supported. Agents read and answer reviews through the `dv` 
 | `dv_ui` | views (`shell`, `switcher`, `file_list`, `comments_list`, `diff_pane`, `thread`, `submit`, …) and their keys (`keymap`, `actions`), services (`Settings`, `Locations` with the app's `Connections` and how WSL is reached, `WslAccess`; `Reviews`, `ReviewUi`), the open review (`session::ReviewSession`: its comparison, interdiff or all changes, where each thread shows, through `dv_core`'s placement, and its remote backend's connection, `session::connection`), highlighting (`syntax`, token kinds) and comment Markdown (`markdown`, sanitised), the file view (`diff_pane::file_view`: one file whole in the stream's pane, a one-file scope), the file finder (`file_finder`, `Ctrl P`) and the history of positions (`history`, `Alt ←`/`→`), code intelligence (`intel`: `CodeIntel` per review, the hover card, the References tab, and the `LanguageServers` service, one server per worktree, spec and executable, through `dv_lsp`; the shell's navigation and status bar items, `shell::intel`), the Glass theme (`theme`), window material (`appearance`, `platform`), assets, the `system` and `automation` seams (PLAN §11) | yes |
 | `dv_core` | locations, the `Backend` trait and `LocalBackend` (PLAN §5.1; `probe_path`, the one read-only op for an absolute path outside the worktree, for the language servers' resolvers) with the processes a backend runs where its repo lives (`backend::process`: `spawn_stdio`, a process group or job of its own, PLAN §18.3), the job object children that die with dv join on Windows (`job`), targets and their labels (`label`), git runner, diff pipeline, one side's files whole (`diff::side_file`: a side's paths and one file's text as the pipeline decodes it), review event store, anchors, relocation and placement (`review::relocate`, a file the review doesn't change included: `place_unlisted`), a thread's round snapshot read for renames and where its code went (`review::history`), the diff around a thread's code now (`review::excerpt`), GitHub via `gh` (PLAN §6–§9) | **never** |
 | `dv_backend` | the stdio protocol (`proto`: JSON lines, bytes base64, `WireError` for every `BackendError`), the `dv backend --stdio` server loop (`server`), how a server starts (`launch`: `Launcher::Command` a child process such as a loopback `dv backend --stdio`, `Launcher::Wsl` a distro's through `wsl.exe`, `Launcher::InProcess` a thread over in-memory pipes for tests), `RemoteBackend` over a `Connection` with its lifecycle (`client`: state and `subscribe`, reconnect with backoff 1/2/5 s then `Failed` until `retry`, worktrees re-opened and watches resubscribed with a synthetic rescan, remote processes ended by a death, `kill` as a test seam) and the app's `Connections` registry, build hashes (`build`), WSL (`wsl`: the distros, the `/bin/sh` scripts run through `wsl.exe` as a `Shell`, the launch with its markers) and this app's Linux builds and their install, prune and check in a distro (`install`) (PLAN §5); a test helper bin, never shipped: `dv_test_child`, the process the conformance suite spawns and its child-process loopback server | never |
-| `dv_cli` | the headless commands (`args`, clap) and what they run with (`Context`: the command line, cwd, env, streams, git env, so tests run them in-process), the repository and which review a command means (PLAN §10.2), a WSL repository's command run inside its distro on Windows (`reexec`, PLAN §10.4), who it acts as, thread placement, JSON DTOs (`dto`), exit and error codes (`error`), the `dv-review` agent skill (`skill/SKILL.md`, PLAN §10.5), setup (`setup agents`, `setup wsl`) and doctor checks (PLAN §10, §12) | never |
+| `dv_cli` | the headless commands (`args`, clap) and what they run with (`Context`: the command line, cwd, env, streams, git env, so tests run them in-process), the repository and which review a command means (PLAN §10.2), a WSL repository's command run inside its distro on Windows (`reexec`, PLAN §10.4), who it acts as, thread placement, JSON DTOs (`dto`), exit and error codes (`error`), the `dv-review` agent skill (`skill/SKILL.md`, PLAN §10.5), the setup checks of every environment (`checks`: dv in a distro, the CLI on PATH with the user `Path` behind a seam, `user_path`, the agents' skills, git identity, `gh`; a distro's run as its own Linux dv, `checks::distro`) behind `dv doctor` and `dv setup [agents | path | wsl | all]` (PLAN §10, §12) | never |
 | `dv_lsp` | language servers where the repo lives (PLAN §18.4): the LSP client (`client`: `LspClient` over a `Backend::spawn_stdio` process, Content-Length framing (`framing`), requests with timeouts and `$/cancelRequest` on drop, the server's own requests answered, progress, registered file watchers, UTF-8 columns with UTF-16 converted (`text`), worktree paths and `file:` URIs (`paths`)), `LanguageServerSpec` as data (`spec`) and the registry (`languages`: `typescript`, TypeScript 7's native `tsc --lsp --stdio`; `tailwindcss` and `css`, JavaScript servers), the `Resolver` (`resolve`: the `DV_LSP_<ID>` override, the project's own copy by Node's resolution through the backend, above the worktree root and through links that leave it (`resolve::node`, `Backend::probe_path`; npm, pnpm and bun layouts), the native CPU first (`resolve::platform`), `settings.json`'s `lsp.<id>.command` and `lsp.runtime` (`settings`), `PATH` and the home (`resolve::host`; a distro's read from its user's interactive login shell through `spawn_stdio`, `resolve::shell`), JavaScript servers' entry scripts, bun's global folder and the runtime, bun then node (`resolve::js`), `files_changed` / `resolve_fresh` for installs), the restart schedule (`restarts`) | never |
 | `gpui_automation` | JSONL automation over stdio + the `e2e` runner bin (PLAN §14) | yes |
 | `mock_gh` | bin: fake `gh` for tests (PLAN §14.2) | never |
@@ -37,7 +37,7 @@ WSL; macOS and Linux supported. Agents read and answer reviews through the `dv` 
 | `dv_test_support` | dev-only lib: `FixtureRepo` and shared test helpers (PLAN §14.2) | never |
 
 Direction: `dv` → {`dv_ui`, `dv_cli`, `dv_core`}; `dv_ui` → {`dv_cli`, `dv_backend`, `dv_lsp`,
-`dv_core`, `gpui-component`}; `dv_cli` → {`dv_backend`, `dv_core`}; `dv_lsp` → `dv_core`; `dv_backend` →
+`dv_core`, `gpui-component`}; `dv_cli` → {`dv_backend`, `dv_lsp`, `dv_core`}; `dv_lsp` → `dv_core`; `dv_backend` →
 `dv_core`. `dv` and
 `dv_ui` reach `gpui_automation` only through their `automation` features; `dv`'s also brings
 `dv_test_support` (gpui-free) for the scenario repos it seeds and `dv_backend` for their
@@ -164,6 +164,8 @@ dv comment reply <thread> --body-file -    # also add, address, resolve, reopen 
 dv review new | done | submit | close | delete | wait     # wait: exit 3 on --timeout
 dv setup agents --home <dir> --yes         # the dv-review skill; never without --home in tests
 dv setup wsl <distro> --yes  # Windows: this build into the distro; only with DV_WSL_HOME=/tmp/… here
+dv doctor [--json]           # every environment's setup checks (exit 1: something to fix); reads only
+dv setup path | all --yes    # PATH (the user Path on Windows) / every fix: only with the seams below
 dv --wsl Ubuntu:/tmp/x status # Windows: runs inside the distro (installs dv there first); the same rule
 dv open <path>               # the GUI, detached; `dv` alone opens the working directory's repo
 ```
@@ -184,9 +186,18 @@ the app is sandboxed. Test commands in-process (`dv_cli::main_with` with a `Cont
 `dv` alone or `dv open` opens a window on the owner's desktop, so no test runs them (the
 startup decisions are pure functions in `crates/dv/src/launch.rs`). `dv setup agents`
 writes into the home directory: tests pass the hidden `--home <temp dir>`, and nothing runs it
-against the real home (`~/.claude`, `~/.agents`, or `~/.codex` / `$CODEX_HOME`, which it reads
-to see whether Codex is installed). `dv setup wsl` writes into a distro's home: tests set
-`DV_WSL_HOME` to a folder under its `/tmp` (WSL below). Every command line in
+against the real home (`~/.claude`, `~/.agents`, `~/.cursor`, or `~/.codex` / `$CODEX_HOME`,
+which it reads to see whether Codex is installed). `dv setup wsl` writes into a distro's home:
+tests set `DV_WSL_HOME` to a folder under its `/tmp` (WSL below). `dv setup path` (and `setup
+all`) writes the Windows user `Path` in the registry and broadcasts `WM_SETTINGCHANGE`: every
+test, scenario and agent run sets `DV_USER_PATH_FILE` to a scratch text file that stands in for
+it (`dv_cli`'s own tests refuse the registry without it; the automation host gives the app and
+its `cli` children `<data_dir>/user-path.txt`), and `HOME`/`USERPROFILE` to a scratch home, and
+`DV_GH` to `mock_gh` or a program that isn't there (`DV_MACHINE_PATH_FILE` stands in for the
+machine's `Path`, read for a `dv.exe` that shadows ours); no test reads or writes the real
+registry. `DV_ONLY_DISTROS` (set by the automation host for its `cli` children, empty unless
+sandboxed) keeps `dv doctor` / `dv setup` from reaching any distro but the sandbox's.
+`dv doctor` itself only reads, but runs `gh auth status` and git: the same seams in tests. Every command line in
 `crates/dv_cli/skill/SKILL.md` is run by `crates/dv_cli/src/tests/skill.rs`; change both
 together.
 
@@ -214,8 +225,10 @@ App windows open on the owner's real desktop.
   own); under `--automation` without one, dv uses a fresh temp dir (removed when it exits), never
   the real one. dv reads that folder's `settings.json` leniently and keeps keys it doesn't know,
   because the first implementation's file has the same name; dv's repo list is
-  `known_repos.json`, never the first implementation's `repos.json`, and its per-review choices
-  (split or unified) are `review_ui.json`.
+  `known_repos.json`, never the first implementation's `repos.json`, its per-review choices
+  (split or unified) are `review_ui.json`, and its first-run marker is `onboarding.json`, never
+  the first implementation's `setup.json`. An automation run's setup checks use `<data_dir>/home`
+  and `<data_dir>/user-path.txt`, and show the first-run screen only with `DV_FIRST_RUN=1`.
 - Verify UI by looking: read the PNGs a run writes and inspect them against DESIGN.md. `state` is
   the assertion surface; screenshots are for style. The dev display runs at 150% scaling, so
   screenshots are physical pixels (a 1440×900 window captures as ~2160×1350).
@@ -260,7 +273,7 @@ App windows open on the owner's real desktop.
   MSYS_NO_PATHCONV=1 DV_TEST_WSL_DISTRO=Ubuntu DV_WSL_HOME=/tmp/dv-check-$$ \
     cargo test -p dv_backend --test wsl -- --test-threads=1
   # the same for `dv setup wsl` and the CLI run inside the distro:
-  #   cargo test -p dv_cli --lib -- setup_wsl reexec --test-threads=1
+  #   cargo test -p dv_cli --lib -- setup_wsl reexec doctor --test-threads=1
   #   cargo test -p dv --test wsl_cli -- --test-threads=1
   #   cargo test -p dv_lsp --test wsl_shell -- --test-threads=1
   ```

@@ -115,7 +115,7 @@ impl WslAccess {
 }
 
 /// dv_ui's tests never reach this machine's WSL: a test that would is a bug (module docs).
-fn guard_tests() {
+pub(crate) fn guard_tests() {
     if cfg!(test) {
         panic!("dv_ui's tests reach WSL only through WslAccess::Scripted");
     }

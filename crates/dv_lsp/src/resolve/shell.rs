@@ -20,11 +20,18 @@
 //! marker text never appears whole in it, so a shell that echoes its commands (`set -x`,
 //! `setopt verbose`) can't fake one. Nothing runs through a shell but these commands, and they
 //! only print.
+//!
+//! [`read_here`] reads this machine's user the same way, without a repository: `dv doctor`
+//! inside a distro asking whether `~/.local/bin` is on the user's `PATH` (PLAN §12.2). There
+//! the shell runs in a session of its own (`setsid -w`, when there is one): dv may run in a
+//! terminal, which an interactive shell would otherwise try to take, and be stopped for it.
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use dv_core::backend::{Backend, PathProbe, ProcessEvent, ProcessSpec};
+use dv_core::backend::{
+    Backend, BackendError, PathProbe, ProcessEvent, ProcessHandle, ProcessSink, ProcessSpec,
+};
 
 use super::host::{HostEnv, PathFrom};
 use crate::paths::PathStyle;
@@ -45,19 +52,67 @@ struct Ran {
     code: Option<i32>,
 }
 
+/// Where the commands run: through a repository's backend, or on this machine.
+enum On<'a> {
+    Backend(&'a dyn Backend),
+    /// This machine, every command with these environment changes (`dv doctor`'s home).
+    Here(&'a [(String, Option<String>)]),
+}
+
+impl On<'_> {
+    fn spawn(&self, spec: ProcessSpec, sink: ProcessSink) -> Result<ProcessHandle, BackendError> {
+        match self {
+            Self::Backend(backend) => backend.spawn_stdio(&spec, sink),
+            Self::Here(env) => {
+                let mut spec = spec;
+                spec.env.extend(env.iter().cloned());
+                dv_core::backend::process::spawn_in(std::path::Path::new("/"), &spec, sink)
+            }
+        }
+    }
+
+    /// A small file's bytes, `None` when it can't be read.
+    fn read_small(&self, path: &str) -> Option<Vec<u8>> {
+        match self {
+            Self::Backend(backend) => match backend
+                .probe_path(path, dv_core::backend::PROBE_READ_SMALL)
+                .ok()?
+            {
+                PathProbe::File {
+                    contents: Some(bytes),
+                    ..
+                } => Some(bytes),
+                _ => None,
+            },
+            Self::Here(_) => std::fs::read(path).ok(),
+        }
+    }
+}
+
 /// The machine of `backend`, a POSIX one (a WSL distro), as its user's shell sees it (module
 /// docs). Never fails: what can't be read is left out, the reason logged.
 pub fn read(backend: &dyn Backend) -> HostEnv {
     read_with(backend, "/usr/bin/env", SHELL_TIMEOUT)
 }
 
+/// This machine, a POSIX one, as its user's shell sees it, every command run with `env`'s
+/// changes (`HOME`, so a test's scratch home is the one the shell reads): [`read`] without a
+/// repository (module docs).
+pub fn read_here(env: &[(String, Option<String>)]) -> HostEnv {
+    read_on(&On::Here(env), "/usr/bin/env", SHELL_TIMEOUT)
+}
+
 /// [`read`] with another `env` program and timeout (tests).
 pub fn read_with(backend: &dyn Backend, env_program: &str, timeout: Duration) -> HostEnv {
+    read_on(&On::Backend(backend), env_program, timeout)
+}
+
+fn read_on(on: &On<'_>, env_program: &str, timeout: Duration) -> HostEnv {
     // `-0` first; an `env` without it (BusyBox's) prints lines.
     let mut env = Vec::new();
     for args in [&["-0"][..], &[]] {
         let spec = ProcessSpec::new(env_program).args(args.iter().copied());
-        match run(backend, spec, ENV_TIMEOUT, |_| false) {
+        match run(on, spec, ENV_TIMEOUT, |_| false) {
             Ok(ran) => env = parse_env(&String::from_utf8_lossy(&ran.stdout)),
             Err(error) => log::info!("reading the backend's environment: {error}"),
         }
@@ -74,11 +129,11 @@ pub fn read_with(backend: &dyn Backend, env_program: &str, timeout: Duration) ->
     let shell = var("SHELL")
         .filter(|shell| shell.starts_with('/'))
         .map(str::to_string)
-        .or_else(|| passwd_shell(backend, var("USER").or_else(|| var("LOGNAME"))?));
+        .or_else(|| passwd_shell(on, var("USER").or_else(|| var("LOGNAME"))?));
     let home = var("HOME");
     if let Some(shell) = shell {
         for flags in TRIES {
-            match shell_path(backend, &shell, flags, timeout) {
+            match shell_path(on, &shell, flags, timeout) {
                 Ok(printed) => {
                     return HostEnv::new(
                         PathStyle::Posix,
@@ -120,18 +175,28 @@ struct Printed {
 
 /// `shell`'s `PATH` (and `BUN_INSTALL`), as `<shell> <flags> -c` prints it.
 fn shell_path(
-    backend: &dyn Backend,
+    on: &On<'_>,
     shell: &str,
     flags: &[&str],
     timeout: Duration,
 ) -> Result<Printed, String> {
     let nonce = nonce();
+    // On this machine dv may run in a terminal (`dv doctor`): an interactive shell in a process
+    // group of its own there would take the terminal and be stopped (SIGTTOU), so it runs in a
+    // session of its own, without one. A backend's process has no terminal to take.
+    let start = match on {
+        On::Here(_) => {
+            "if command -v setsid >/dev/null 2>&1; then exec setsid -w \"$0\" \"$@\" </dev/null; \
+             fi; exec \"$0\" \"$@\" </dev/null"
+        }
+        On::Backend(_) => "exec \"$0\" \"$@\" </dev/null",
+    };
     let spec = ProcessSpec::new("/bin/sh")
-        .args(["-c", "exec \"$0\" \"$@\" </dev/null", shell])
+        .args(["-c", start, shell])
         .args(flags.iter().copied())
         .args(["-c", &print_script()])
         .env("DV_PATH_NONCE", Some(&nonce));
-    let ran = run(backend, spec, timeout, |stdout| {
+    let ran = run(on, spec, timeout, |stdout| {
         between_markers(&String::from_utf8_lossy(stdout), &nonce).is_some()
     })?;
     let stdout = String::from_utf8_lossy(&ran.stdout);
@@ -191,16 +256,8 @@ fn parse_env(output: &str) -> Vec<(String, String)> {
 }
 
 /// `user`'s login shell from `/etc/passwd`.
-fn passwd_shell(backend: &dyn Backend, user: &str) -> Option<String> {
-    let PathProbe::File {
-        contents: Some(bytes),
-        ..
-    } = backend
-        .probe_path("/etc/passwd", dv_core::backend::PROBE_READ_SMALL)
-        .ok()?
-    else {
-        return None;
-    };
+fn passwd_shell(on: &On<'_>, user: &str) -> Option<String> {
+    let bytes = on.read_small("/etc/passwd")?;
     String::from_utf8_lossy(&bytes).lines().find_map(|line| {
         let fields: Vec<&str> = line.split(':').collect();
         (fields.len() >= 7 && fields[0] == user && fields[6].starts_with('/'))
@@ -224,19 +281,19 @@ fn nonce() -> String {
     )
 }
 
-/// Runs `spec` through `backend` until it ends, or until `enough` says the stdout so far holds
+/// Runs `spec` where `on` says until it ends, or until `enough` says the stdout so far holds
 /// what is wanted, killing it then (dropping the handle kills it and everything it started) or
 /// after `timeout`.
 fn run(
-    backend: &dyn Backend,
+    on: &On<'_>,
     spec: ProcessSpec,
     timeout: Duration,
     enough: impl Fn(&[u8]) -> bool,
 ) -> Result<Ran, String> {
     let (sender, events) = mpsc::channel();
-    let handle = backend
-        .spawn_stdio(
-            &spec,
+    let handle = on
+        .spawn(
+            spec,
             Box::new(move |event| {
                 let _ = sender.send(event);
             }),

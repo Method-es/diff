@@ -1,4 +1,5 @@
-//! The commands that open repositories and reviews, and the one that plays the agent:
+//! The commands that open repositories and reviews, the one that plays the agent, and the one
+//! that writes into the run's scratch home:
 //!
 //! - `open {path}`: as `dv open <path>` starts the app (`Shell::open_repo`): the repository
 //!   becomes a known one (its worktree root; a WSL path as given), its switcher row is
@@ -14,6 +15,7 @@
 //!   (with an optional `note`) or `done` (the review's status to `ready`, as `dv review done`;
 //!   no `thread`). `author` is the agent's name (`agent` by default). The open review sees the
 //!   change through its watch, as it would an agent's, so scenarios `wait_for` it.
+//! - `home_file {path, contents}`: a file in the run's scratch home ([`home_file`]).
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use dv_core::review::{Author, ReviewStatus, ThreadId, ThreadState, ops};
@@ -165,4 +167,34 @@ pub fn review_op(
         other => bail!("review_op's op is \"reply\", \"address\" or \"done\", not {other:?}"),
     };
     Ok(cx.background_spawn(async move { job() }))
+}
+
+/// `home_file {path, contents}`: writes `contents` at `path` (relative, inside it) in the run's
+/// scratch home, `<data_dir>/home` (`crate::app::AUTOMATION_HOME`), its folders made: a fake
+/// agent's folder (`.claude/settings.json`), a skill an older dv installed. Replies `{path}`,
+/// the file's absolute path. The setup checks see it once they run again (`setup/check_again`).
+pub fn home_file(args: &Value, cx: &mut Context<DvAutomation>) -> Result<Value> {
+    let args = object("home_file", args.clone(), &["path", "contents"])?;
+    let path = string("home_file", &args, "path")?;
+    let contents = string("home_file", &args, "contents")?;
+    let relative = std::path::Path::new(path);
+    let inside = !path.is_empty()
+        && relative.is_relative()
+        && relative
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)));
+    if !inside {
+        bail!("home_file's \"path\" is a relative path inside the home, not {path:?}");
+    }
+    use dv_ui::ActiveServices as _;
+    let file = cx
+        .services()
+        .data_dir()
+        .join(crate::app::AUTOMATION_HOME)
+        .join(relative);
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    std::fs::write(&file, contents).with_context(|| format!("writing {}", file.display()))?;
+    Ok(json!({"path": file.display().to_string()}))
 }

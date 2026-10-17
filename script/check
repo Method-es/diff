@@ -183,7 +183,7 @@ if [[ "$linux" -eq 1 ]]; then
                 cargo test -p dv_backend --test wsl -- --test-threads=1 || wsl_status=$?
             if [[ "$wsl_status" -eq 0 ]]; then
                 MSYS_NO_PATHCONV=1 DV_TEST_WSL_DISTRO=Ubuntu DV_WSL_HOME="$wsl_home" \
-                    cargo test -p dv_cli --lib -- setup_wsl reexec --test-threads=1 ||
+                    cargo test -p dv_cli --lib -- setup_wsl reexec doctor --test-threads=1 ||
                     wsl_status=$?
             fi
             if [[ "$wsl_status" -eq 0 ]]; then

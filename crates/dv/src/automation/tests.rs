@@ -26,6 +26,11 @@ fn open(
         dv_ui::system::install(SystemShell::scripted(), cx);
         dv_ui::services::init(
             ServicesConfig {
+                setup: dv_ui::services::SetupConfig::sandboxed(
+                    data_dir.join("home"),
+                    data_dir.join("user-path.txt"),
+                    false,
+                ),
                 data_dir,
                 wsl: WslAccess::scripted(Vec::new()),
             },

@@ -8,8 +8,9 @@
 //! panel), `session` (the open review, or `null`), `stream` (the diff stream, or `null`),
 //! `comments_list`, `find`, `file_view`, `file_finder`, `history`, `intel` (code
 //! intelligence: the language servers, the hover card, the references), `cli` (the
-//! `cli_spawn` children not yet joined) and `backends` (the connections to `dv backend
-//! --stdio` servers).
+//! `cli_spawn` children not yet joined), `backends` (the connections to `dv backend
+//! --stdio` servers) and `setup` (the first-run screen, Settings and every environment's
+//! setup checks, PLAN §12).
 //!
 //! Commands:
 //! - `set_setting {key, value}` changes `material` (`mica`, `acrylic`, `opaque`) or `mode`
@@ -27,6 +28,9 @@
 //!   which distros there are and which run, in a run without `DV_WSL_HOME`
 //!   (`dv_ui::services::WslAccess`).
 //! - `open {path}`, `open_review {path, target?}` and `review_op {op, thread, …}` ([`commands`]).
+//! - `home_file {path, contents}` writes a file in the run's scratch home (`<data_dir>/home`,
+//!   the home of the setup checks and the `cli` children): a fake agent's folder, a skill an
+//!   older dv installed, a `.gitconfig` ([`commands`]).
 //! - `cli {args, …}`, `cli_spawn {name, args, …}` and `cli_join {name, timeout_ms?}` run this
 //!   binary's headless commands as child processes: the agent's side of a scenario through the
 //!   real CLI ([`agent_cli`]).
@@ -181,6 +185,7 @@ impl AutomationHost for DvAutomation {
             "comments_list": state::comments_list(self.shell.read(cx), cx),
             "cli": self.cli_state(),
             "backends": state::backends(cx),
+            "setup": state::setup(self.shell.read(cx), cx),
         })
     }
 
@@ -210,6 +215,7 @@ impl AutomationHost for DvAutomation {
             "backend_block" => Some(self.backend_block(args)),
             "backend_hold" => Some(self.backend_hold(args)),
             "wsl_distros" => Some(backends::wsl_distros(args, cx)),
+            "home_file" => Some(commands::home_file(&args, cx)),
             _ => None,
         }
     }

@@ -18,7 +18,8 @@ use gpui::{
 };
 
 use crate::actions::{
-    composer, diff_pane, field, file_finder, file_list, find, sheet, shell, source_picker, switcher,
+    composer, diff_pane, field, file_finder, file_list, find, first_run, settings, sheet, shell,
+    source_picker, switcher,
 };
 
 /// Key context of the shell's root element: everything in the main window.
@@ -38,6 +39,10 @@ pub const FILE_LIST: &str = "FileList";
 pub const COMPOSER: &str = "Composer";
 /// Key context of the open "Finish round" sheet (inside [`SHELL`]).
 pub const SHEET: &str = "Sheet";
+/// Key context of the open Settings sheet (inside [`SHELL`]).
+pub const SETTINGS: &str = "Settings";
+/// Key context of the first-run screen while it shows (inside [`SHELL`]).
+pub const FIRST_RUN: &str = "FirstRun";
 /// Key context of the stream's find bar (inside [`DIFF_PANE`]).
 pub const FIND: &str = "Find";
 /// Key context gpui-component sets on its text fields; gpui-base keeps its constant private.
@@ -130,6 +135,10 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("secondary-o", SHELL, shell::ToggleSwitcher),
     shortcut!("secondary-b", SHELL, shell::TogglePanel),
     shortcut!("secondary-p", SHELL, shell::FindFile),
+    shortcut!("secondary-,", SHELL, shell::ToggleSettings),
+    // Settings and the first-run screen have the keyboard themselves (no text field).
+    shortcut!("escape", SETTINGS, settings::Dismiss),
+    shortcut!("enter", FIRST_RUN, first_run::Continue),
     // Finishing the round stays out of text fields: in the composer `Ctrl Enter` posts, in the
     // sheet it submits (both bound in their own contexts, below).
     shortcut!("secondary-enter", SHELL, shell::FinishReview, OutsideInputs),
@@ -356,6 +365,7 @@ mod tests {
         assert_eq!(label("shift-down"), "Shift ↓");
         assert_eq!(label("escape"), "Esc");
         assert_eq!(label("v j"), "V J");
+        assert_eq!(label("secondary-,"), format!("{ctrl} ,"));
         assert_eq!(
             shortcut_for(&shell::ToggleSwitcher, SHELL).map(Shortcut::label),
             Some(format!("{ctrl} O").into())

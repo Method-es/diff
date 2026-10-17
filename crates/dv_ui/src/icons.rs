@@ -55,6 +55,9 @@ dv_icons! {
     ChevronsUpDown => "chevrons-up-down",
     CircleCheck => "circle-check",
     CircleMinus => "circle-minus",
+    // A setup check's states (DESIGN §4.3): missing, failed.
+    Circle => "circle",
+    CircleX => "circle-x",
     Columns => "columns-2",
     Copy => "copy",
     Ellipsis => "ellipsis",
@@ -67,6 +70,8 @@ dv_icons! {
     ListFilter => "list-filter",
     MessageSquare => "message-square",
     MessageSquarePlus => "message-square-plus",
+    // This machine among the setup screen's environments (DESIGN §4.3).
+    Monitor => "monitor",
     Package => "package",
     Play => "play",
     Plus => "plus",

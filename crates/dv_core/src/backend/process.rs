@@ -23,6 +23,17 @@ use super::BackendError;
 
 pub(super) use local::spawn;
 
+/// Starts `spec` on this machine as [`super::Backend::spawn_stdio`] does, its working
+/// directory relative to `dir` rather than to a worktree: for what runs where dv runs with no
+/// repository open, such as the user's shell asked for its `PATH` by `dv doctor` (PLAN §12.2).
+pub fn spawn_in(
+    dir: &std::path::Path,
+    spec: &ProcessSpec,
+    sink: ProcessSink,
+) -> Result<ProcessHandle, BackendError> {
+    local::spawn(dir, spec, sink)
+}
+
 /// The longest stderr line a sink is given, in bytes: a longer one is cut at a character
 /// boundary and ends in `…`. Stderr is diagnostics, kept a few lines at a time.
 pub const STDERR_LINE_MAX: usize = 8 * 1024;

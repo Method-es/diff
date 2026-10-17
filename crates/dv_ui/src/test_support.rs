@@ -20,6 +20,16 @@ use crate::system::SystemShell;
 pub fn open_shell(
     cx: &mut TestAppContext,
 ) -> (tempfile::TempDir, Entity<Shell>, &mut VisualTestContext) {
+    open_shell_with(cx, false)
+}
+
+/// [`open_shell`], the first-run screen allowed (`first_run`) on its fresh data dir. The setup
+/// checks run against a scratch home in the data dir (`home/`) and a stand-in user `Path`
+/// (`user-path.txt`), never the machine's.
+pub fn open_shell_with(
+    cx: &mut TestAppContext,
+    first_run: bool,
+) -> (tempfile::TempDir, Entity<Shell>, &mut VisualTestContext) {
     cx.executor().allow_parking();
     let dir = tempfile::tempdir().expect("a temporary data dir");
     let data_dir = dir.path().to_path_buf();
@@ -28,6 +38,11 @@ pub fn open_shell(
         crate::system::install(SystemShell::scripted(), cx);
         crate::services::init(
             ServicesConfig {
+                setup: crate::services::SetupConfig::sandboxed(
+                    data_dir.join("home"),
+                    data_dir.join("user-path.txt"),
+                    first_run,
+                ),
                 data_dir,
                 wsl: crate::services::WslAccess::scripted(Vec::new()),
             },

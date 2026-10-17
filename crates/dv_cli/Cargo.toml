@@ -15,9 +15,21 @@ doctest = false
 clap.workspace = true
 dv_backend.workspace = true
 dv_core.workspace = true
+# The user's shell's `PATH` inside a distro (`dv doctor`'s CLI-on-PATH check), read as the
+# language servers' resolver reads it (`dv_lsp::resolve::shell`).
+dv_lsp.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+# The user `Path` in the registry and the broadcast that tells running programs it changed
+# (`checks::user_path`, PLAN §12.2).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Registry",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 dv_test_support.workspace = true

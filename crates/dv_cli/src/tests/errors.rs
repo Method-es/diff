@@ -182,12 +182,8 @@ fn later_commands_are_refused_with_what_to_do() {
         message.starts_with("GitHub PRs arrive in a later version"),
         "{message}"
     );
-    refused(&["doctor"], Exit::Usage, "unsupported");
     // `dv backend` runs only as the app starts it.
     refused(&["backend"], Exit::Usage, "usage");
-    refused(&["setup", "path"], Exit::Usage, "unsupported");
-    refused(&["setup", "all"], Exit::Usage, "unsupported");
-    refused(&["setup"], Exit::Usage, "usage");
 }
 
 #[test]

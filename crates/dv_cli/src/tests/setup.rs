@@ -69,6 +69,12 @@ fn the_skill_is_installed_for_each_agent_found() {
                 "action": "skipped",
                 "reason": format!("no {} here", home.join(".codex").display()),
             },
+            {
+                "agent": "cursor",
+                "path": codex_skill(home).display().to_string(),
+                "action": "skipped",
+                "reason": format!("no {} here", home.join(".cursor").display()),
+            },
         ])
     );
     assert_eq!(
@@ -81,7 +87,11 @@ fn the_skill_is_installed_for_each_agent_found() {
     let json = setup(&fixture, home, &["--json"]).ok_json();
     assert_eq!(
         actions(&json),
-        [pair("claude-code", "unchanged"), pair("codex", "skipped")]
+        [
+            pair("claude-code", "unchanged"),
+            pair("codex", "skipped"),
+            pair("cursor", "skipped"),
+        ]
     );
 
     // A copy that drifted is repaired; Codex, once set up, gets its own.
@@ -94,6 +104,10 @@ fn the_skill_is_installed_for_each_agent_found() {
         [
             format!("claude-code  updated  {}", claude_skill(home).display()),
             format!("codex  installed  {}", codex_skill(home).display()),
+            format!(
+                "cursor  skipped  (no {} here)",
+                home.join(".cursor").display()
+            ),
         ]
     );
     assert_eq!(
@@ -124,7 +138,11 @@ fn codex_home_says_where_codex_is() {
     let json = setup(&fixture, home.path(), &["--yes", "--json"]).ok_json();
     assert_eq!(
         actions(&json),
-        [pair("claude-code", "skipped"), pair("codex", "installed")]
+        [
+            pair("claude-code", "skipped"),
+            pair("codex", "installed"),
+            pair("cursor", "skipped"),
+        ]
     );
     // The skill goes where Codex reads user skills, not into its state folder.
     assert!(codex_skill(home.path()).is_file());
@@ -147,6 +165,7 @@ fn it_asks_first() {
         [
             format!("claude-code  install  {}", claude_skill(home).display()),
             format!("codex  skip  (no {} here)", home.join(".codex").display()),
+            format!("cursor  skip  (no {} here)", home.join(".cursor").display()),
         ]
     );
     assert!(ran.stderr.contains("pass --yes"), "{}", ran.stderr);
@@ -178,14 +197,48 @@ fn it_asks_first() {
     assert_eq!(ran.exit, Exit::Ok, "{}", ran.stderr);
     assert!(
         ran.stdout.ends_with(&format!(
-            "[y/N] claude-code  installed  {}\ncodex  skipped  (no {} here)\n",
+            "[y/N] claude-code  installed  {}\ncodex  skipped  (no {} here)\ncursor  skipped  \
+             (no {} here)\n",
             claude_skill(home).display(),
-            home.join(".codex").display()
+            home.join(".codex").display(),
+            home.join(".cursor").display()
         )),
         "{}",
         ran.stdout
     );
     assert!(claude_skill(home).is_file());
+}
+
+#[test]
+fn cursor_shares_codexs_skill_file() {
+    let fixture = Fixture::new();
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    std::fs::create_dir(home.join(".cursor")).unwrap();
+    std::fs::create_dir(home.join(".codex")).unwrap();
+    let json = setup(&fixture, home, &["--yes", "--json"]).ok_json();
+    assert_eq!(
+        actions(&json),
+        [
+            pair("claude-code", "skipped"),
+            pair("codex", "installed"),
+            pair("cursor", "installed"),
+        ]
+    );
+    assert_eq!(json["agents"][1]["path"], json["agents"][2]["path"]);
+    assert_eq!(
+        std::fs::read_to_string(codex_skill(home)).unwrap(),
+        SKILL_MD
+    );
+    // Cursor alone reads it there too.
+    std::fs::remove_dir(home.join(".codex")).unwrap();
+    std::fs::write(codex_skill(home), "an older dv's").unwrap();
+    let json = setup(&fixture, home, &["--yes", "--json"]).ok_json();
+    assert_eq!(json["agents"][2]["action"], "updated");
+    assert_eq!(
+        std::fs::read_to_string(codex_skill(home)).unwrap(),
+        SKILL_MD
+    );
 }
 
 #[test]

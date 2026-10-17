@@ -140,10 +140,11 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
 - **Title bar:** dv mark; switcher button "`api-server` · working tree vs main" (the repo's name at
   600, the target label with its "vs" in `fg3`) with the location chip (`Ubuntu`, WSL repos only) and
   its `Ctrl O` keycap; source picker (`⇄ ▾`); centred command field (`Ctrl K`); `PRs Ctrl G`;
-  overflow; caption buttons (Windows) / traffic lights (macOS, left). The field is centred on the
+  overflow (`⋯`, a 28-square ghost button with the ellipsis in `fg2`: Settings, `Ctrl ,`, §4.3);
+  caption buttons (Windows) / traffic lights (macOS, left). The field is centred on the
   window unless the left group needs more than the half that leaves it: then the field moves
-  right as far as the group needs (12 between them), never closer than 12 to the caption
-  buttons. The left group never runs under the field: once the field can't move further the
+  right as far as the group needs (12 between them), never closer than 12 to the `⋯` and the
+  caption buttons. The left group never runs under the field: once the field can't move further the
   target label truncates at its end, and once it has no room left the repo's name does. With no
   review open the
   button reads "No review open"; while one opens, "`repo` · opening…", then the full label at once
@@ -576,17 +577,46 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   text, so `Ctrl O` and the source picker open over it, not in its place. It hangs 92 below the
   title bar in a 900-high window, less in a shorter one (24 at 700).
 
-### 4.3 Onboarding (`GlassOnboarding`)
-- Whole client area is window material; a centred column of step cards (`layer`), "Set up dv" and
-  "Step n of m".
-- Steps (PLAN §12.2): environments (Windows / each distro with running state and **Start** for
-  stopped ones), install backend (progress with bytes), CLI on PATH (per environment), agent
-  integrations (agents × environments checkbox grid), GitHub (`gh` account per environment).
-- Current step: accent ring + expanded; done: green check, collapsed summary; pending: dimmed.
-- Footer: "The install keeps running if you continue. Change any of this later in Settings.",
-  **Skip for now**, **Continue `Enter`**.
-- Shown on first run, and when a WSL repo is opened in an environment that isn't set up — then only
-  that environment's steps.
+### 4.3 Onboarding (`GlassOnboarding`) and Settings › Setup
+One screen of grouped rows rather than the board's numbered steps: the checks (PLAN §12) are
+independent of each other (only a distro's own checks wait for dv to be installed there, which
+its card says), so a wizard's order would only add clicks, and the same cards serve Settings ›
+Setup unchanged.
+- **First run:** shown in place of the panel, the main area and the status bar (the title bar
+  stays) while the data dir has no `onboarding.json`, on the `panel` surface over the window
+  material. A centred column 860 wide, 30 from the top: "Set up dv" (the onboarding title, 20/600)
+  over "dv runs where your code lives. Each environment is set up once, here." in `fg2`, **Check
+  again** (a ghost button with the rotate glyph, "Checking…" while checks run) on the right; then
+  one card per environment; then, over a `line` rule, "Change any of this later in Settings." in
+  `fg2`, **Skip for now** and **Continue `Enter`**, both of which end the first run. It has the
+  keyboard: `Enter` continues.
+- **An environment's card** (`layer`, `line` outline, the card radius 10): a 30×30 tile on
+  `blueSoft` with its glyph in `blue` (a monitor for this machine, the terminal for a distro), its
+  name at 600 and under it, 12px in `fg2`, a dot (`green` running, a `fg3` ring stopped) and "This
+  PC", "WSL · running" or "WSL · stopped" ("· checking…" in `fg3` while it is checked); a stopped
+  distro has **Start** (a small button; "Starting…"). A note in `fg2` says why its checks are
+  missing or short ("Ubuntu isn't running: start it to check it", "the other checks run once dv
+  is installed in Ubuntu"); a failed Start says why in `red`. Then its checks as rows in a
+  `line`-outlined box (radius 8), 1px `line` between rows.
+- **A check's row:** the state's glyph at 15 (ok: circle-check in `green`; missing: a `yellow`
+  ring; out of date: the warning triangle in `yellow`; failed: circle-x in `red`; skipped:
+  circle-minus in `fg3`), the title at 500 in a 230 column, the detail in 12px `fg2` (`red` when
+  failed; the sentence first, a path last), whose longest path gives way first, by whole
+  segments in its middle (`D:\Software\…\SKILL.md`), so the sentence's start and the path's end
+  stay readable, then the fix: a small button when dv applies it (Install, Update, Add to
+  PATH; its progress in `fg3` while it runs, "Installing 3.1 / 7.4 MB…"), else the command as
+  inline code (at most 280 wide, cut with an ellipsis) and a copy button that goes through the
+  clipboard seam. A fix that failed says "Didn't work: …" under the row in `red`, until the row
+  reads ok.
+- **Settings** (`Ctrl ,`, the title bar's `⋯`): a sheet over the scrim like the "Finish round"
+  sheet (`overlay`, radius 12, up to 900 wide, hung as §4.2's), its header "Settings" with a
+  close button; its one page, "Setup" (13/600), is the cards above with Check again, scrolling
+  when tall. Opening it checks everything again; `Esc`, the close button or a click on the scrim
+  closes it, the keyboard back where it was.
+- **The out-of-date notice** sits at the status bar's right: the warning triangle and
+  "dv-review skill out of date in Ubuntu" ("on Windows" for this machine; "not installed in
+  Ubuntu" for a distro reached without it) in `yellow`, **Update** (or Install) and a dismiss
+  (×). Once dismissed it doesn't come back this session.
 
 ### 4.4 States every view handles
 - **Loading:** skeleton rows in the panel and diff (no spinners over content) for up to 300 ms, then a
@@ -645,7 +675,7 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   the status bar says "Ubuntu · stopped" in `red` and the banner reads "Ubuntu stopped", why and
   the diagnostics in Details, with **Start Ubuntu** (boots it and connects; the review then reads
   everything again) and Copy diagnostics. A banner that comes back after its action opens with
-  its Details closed. **Open setup** joins it with the setup screen (phase 6).
+  its Details closed. **Open setup** beside the action opens Settings › Setup (§4.3).
 - **Empty:** no changes ("Working tree clean — nothing to review" for a `working` review, "No changes
   — nothing to review" for other targets), an empty interdiff ("No changes since round 1",
   "Nothing changed after the round was handed over.", and **Show all changes** with its `I`
@@ -686,7 +716,8 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
 | `Ctrl O` | switch repo / review (the switcher; again, or `Esc`, closes it) |
 | `Ctrl G` | open a PR |
 | `Ctrl B` | toggle panel |
-| `Ctrl ,` | settings |
+| `Ctrl ,` | Settings › Setup (§4.3); again, or `Esc`, closes it |
+| `Enter` | on the first-run screen: Continue |
 | `Esc` | close the top overlay, else a comments row's menu, else the language server's details, else the hover card, else the file menu, else close an empty composer (one holding a draft is passed over: only `Esc` in the composer discards a draft, so a press in the code to select text to quote, `Ctrl C` and `Esc` never lose it), else close the find bar, else clear the selection (the lines and the text both), else the code notice (a place that can't be shown), else, in the file view, close it (back to the stream where it was); in the find field it closes the bar first, and in the composer it discards the draft once a comments row's menu or a language server's details over it have closed (the field has the keyboard, so the stream's chain doesn't run) |
 | `F` | the current file whole in the file view, at the cursor's line when the cursor is in it (a line on the other side only, a removed one, maps to the next line of the side shown) (the header menu's View file); nothing in the file view itself; with a draft in the file view's composer, the draft takes the keyboard instead |
 | `Ctrl P` | the file finder: every file of the review's new side (again, or `Esc`, closes it) |
@@ -720,7 +751,9 @@ else the file at the top of the viewport, whose header is the pinned one.
 - Boards say "Resolved by agent"; the model is `addressed` by the agent, `resolved` only by the
   reviewer (PLAN §2.5). Build per this file.
 - `GlassOnboarding` says "Installing dv-host 0.3.0"; the backend is the Linux `dv` itself (PLAN D6):
-  "Installing dv 0.3.0 in Ubuntu".
+  "Installing dv 0.3.0 in Ubuntu". It shows numbered steps with a tile row of environments and an
+  agents × environments checkbox grid; this file groups every check under its environment's card
+  instead (§4.3), one row per agent's skill.
 - Boards show one file at a time; the diff is a continuous stream (PLAN §6.7) with the same file
   header pinned. The stream adds a chevron to the header (viewed files collapse, §4.1), shows the
   side labels only over files that show lines, and makes the board's hunk header and its "Expand

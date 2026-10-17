@@ -131,6 +131,11 @@ mod tests {
             crate::init(cx).unwrap();
             crate::services::init(
                 ServicesConfig {
+                    setup: crate::services::SetupConfig::sandboxed(
+                        data_dir.join("home"),
+                        data_dir.join("user-path.txt"),
+                        false,
+                    ),
                     data_dir,
                     wsl: crate::services::WslAccess::scripted(Vec::new()),
                 },

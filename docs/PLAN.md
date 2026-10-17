@@ -115,7 +115,7 @@ material the platform can't show always resolves to Opaque (`dv_ui::platform`).
   full and delta update packages and a release feed, all from a build without the automation feature.
   `vpk` is a .NET tool: the build machine needs the .NET SDK (not installed yet; only Phase 7 needs it).
 - **In the app:** the `velopack` crate. `VelopackApp::build().run()` is the first call in `main` of
-  both Windows binaries; its install/uninstall hooks run `dv setup path --yes` / remove the PATH entry,
+  both Windows binaries; its install/uninstall hooks run `dv setup path --yes` / `dv setup path --remove --yes`,
   so PATH stays app-owned (§12) and the installer has no logic of its own.
 - **Updates:** `UpdateManager` checks a release feed, downloads the delta in the background and
   applies it on the next restart ("Restart to update" in the status bar). Until there is a release
@@ -367,7 +367,8 @@ bringing dv to the front on the agent's working-tree review when the agent finis
 | `dv_test_support` | lib (dev) | fixture repo builder, shared by every crate's tests | no |
 
 Direction: `dv` → `dv_ui` → {`dv_cli`, `dv_backend`, `dv_lsp`, `dv_core`, `gpui-component`};
-`dv_cli` → {`dv_backend`, `dv_core`}; `dv_lsp` → `dv_core`; `dv_backend` → `dv_core`. A gpui import outside `dv_ui`, `dv`
+`dv_cli` → {`dv_backend`, `dv_lsp`, `dv_core`} (`dv_lsp` for the user's shell's `PATH`, §12.2); `dv_lsp` →
+`dv_core`; `dv_backend` → `dv_core`. A gpui import outside `dv_ui`, `dv`
 and `gpui_automation`, or in `dv` built without `gui`, is a build failure (`script/check` verifies
 it with `cargo tree`, §13.2).
 
@@ -1125,8 +1126,8 @@ dv comment address <id> [--note <t> | --note-file <f|->]
                                            agent
 dv comment resolve | reopen <id>           reviewer
 
-dv setup [path | agents | wsl <distro> | all] [--yes]
-dv doctor [--json]
+dv setup [path [--remove] | agents | wsl <distro> | all] [--yes]   alone: `all`
+dv doctor [--json]                         every environment's setup checks (§12)
 dv backend --stdio                         (every build; started by the app, §5.1)
 ```
 
@@ -1254,6 +1255,28 @@ Global flags: `--repo <path>` (also `\\wsl.localhost\<distro>\<path>`), `--wsl <
   longer in context (§10.2), so a wait that may start after the verdict names the review (the
   skill passes the id `dv status` gave).
 - **`setup agents [--yes]`** installs the skill (§10.5).
+- **`doctor [--json]`** lists every environment's checks (§12): this machine's, then on
+  Windows each WSL distro's (a running one's read by its own Linux dv, a stopped one listed as
+  stopped, never booted; none when this dv has no Linux build beside it, which this machine's
+  list says as a skipped `wsl` row without starting `wsl.exe`). It changes nothing. Exit 0 when
+  no check needs fixing (missing, out of date, failed), else 1, its document printed either
+  way. The text is a block per environment (`Windows`, `Ubuntu (WSL)`, `Debian (WSL, stopped)`),
+  then `  <state>  <title>  <detail>` per check and, under one that needs fixing, `    fix:
+  <command>`.
+- **`setup path [--remove] [--yes]`** puts dv on `PATH` (§12.2 item 3): on Windows this
+  executable's folder appended to the user `Path` (`HKCU\Environment`), `WM_SETTINGCHANGE`
+  broadcast (a hidden `--dir` names another folder: tests, the installer's hooks for the
+  installed copy, phase 7); on Linux and inside a distro `~/.local/bin/dv` linked to this dv
+  and, when `~/.local/bin` isn't on the user's shell's `PATH`, a line in its startup file;
+  macOS exit 2 (`unsupported`). `--remove` takes back exactly that folder, link and line. It
+  asks as `setup agents` does. `--json`: `{dir, action: added | unchanged | removed | absent,
+  link, rc_file}`.
+- **`setup all [--yes]`** (and `dv setup` alone) applies every fix dv can apply that `doctor`
+  lists, here and in each running distro (dv installed there first, then the distro's own
+  fixes through its dv), and names the ones only a command fixes (`gh auth login`, `git config
+  --global user.name …`). It asks as `setup agents` does, showing the plan. `--json`: `{steps:
+  [{environment, check, outcome: applied | failed | manual, detail, command}]}`; exit 1 when a
+  fix failed.
 - **`setup wsl <distro> [--yes]`** (Windows; elsewhere exit 2, `unsupported`) installs this
   build of dv in the distro, or checks that it is installed and intact (its sha256), and points
   the distro's `~/.local/bin/dv` at it: §5.2's install, ahead of the app's first open there. It
@@ -1270,9 +1293,8 @@ Global flags: `--repo <path>` (also `\\wsl.localhost\<distro>\<path>`), `--wsl <
   0 at once; the app starts it (inside a distro, and as the tests' loopback). `dv backend` without
   `--stdio` is exit 2 (`usage`).
 - **Recognised, not yet run:** `review new --pr` and `dv open` of a PR (a URL or `#n`: "GitHub
-  PRs arrive in a later version", before any window opens), `review submit` of a PR review,
-  `setup` other than `agents` and `wsl`, and `doctor`, exit 2 (`unsupported`) with what to do
-  instead.
+  PRs arrive in a later version", before any window opens) and `review submit` of a PR review,
+  exit 2 (`unsupported`) with what to do instead.
 - **`dv` and `dv open`** start the GUI detached (§13.1) and return 0 at once; `--automation`
   and `--no-detach` run it in the same process. It opens on the repository named (the path,
   `--repo` or `--wsl`; `dv open` alone: the working directory's): the repository becomes a known
@@ -1352,11 +1374,13 @@ doesn't. A deleted thread is not found.
   add` `{thread}`; `comment reply` `{reply, thread}`; `comment address | resolve | reopen`
   `{changed, thread}`; `setup agents` `{agents: [{agent, path, action: installed | updated |
   unchanged | skipped, reason}]}`; `setup wsl` `{distro, arch, build, installed, linked,
-  path}`;
+  path}`; `doctor` `{ok, environments: [{name, kind: windows | macos | linux | wsl, running,
+  note, checks: [{id, title, state: ok | missing | out_of_date | failed | skipped, detail, fix:
+  {action, command} | null}]}]}`; `setup path` and `setup all` as in §10.1;
   `review wait` as in §10.1.
 - Within a schema a document only grows: readers ignore keys they don't know; a key removed,
   renamed or retyped, or a value whose meaning changes, is a new schema number.
-- Exit codes: `0` ok, `1` operation error, `2` usage / ambiguous review, `3` wait timeout, `4` backend
+- Exit codes: `0` ok, `1` operation error (and `dv doctor` with a check to fix), `2` usage / ambiguous review, `3` wait timeout, `4` backend
   unavailable (the repository's WSL distro can't be reached: WSL, the distro or this app's Linux
   build unavailable, §10.4), `5` GitHub error (with `gh`'s message). A command run inside a
   distro (§10.4) exits with the code of the dv there, whatever it is.
@@ -1528,13 +1552,16 @@ against a fixture repo (`crates/dv_cli/src/tests/skill.rs`).
 set up in the home directory (`%USERPROFILE%` / `$HOME`): Claude Code when `~/.claude` exists,
 at `~/.claude/skills/dv-review/SKILL.md`; Codex when its home (`$CODEX_HOME`, else `~/.codex`)
 exists, at `~/.agents/skills/dv-review/SKILL.md`, the user-level skills folder Codex's
-documentation names (checked 2026-10-09; `$CODEX_HOME` holds Codex's own state). Each file is
+documentation names (checked 2026-10-09; `$CODEX_HOME` holds Codex's own state); Cursor when
+`~/.cursor` exists, at the same `~/.agents/skills/dv-review/SKILL.md`, which Cursor reads too
+(its documentation, checked 2026-10-17): one file the two share (`dv_cli::checks::skills`). Each file is
 written beside itself and renamed into place. Without `--yes` a terminal is shown the plan and
 asked; anything else (a pipe, `--json`) is shown the plan and refused with exit 2 ("pass
 `--yes`"); a "no" is exit 1 (`cancelled`); nothing to change needs no answer. `--json` reports
 `{agent, path, action: installed | updated | unchanged | skipped, reason}` per agent. A hidden
-`--home <dir>` stands in for the home directory, so tests never write the real one. Cursor and
-the skill inside WSL distros come with phase 6 (`dv setup wsl` installs dv itself there).
+`--home <dir>` stands in for the home directory, so tests never write the real one. Inside a WSL
+distro the skill is the distro dv's to install (`dv setup agents` run there, §12.2), and the
+app's setup screen and its out-of-date notice cover each distro too.
 
 ---
 
@@ -1706,40 +1733,123 @@ Keyboard map and states: DESIGN §5.
 ## 12. Onboarding, setup and doctor
 
 ### 12.1 Shape
-- One list of **checks**, each with `detect()` (read-only, fast) and `apply()` (idempotent), per
-  environment (Windows / each WSL distro / macOS / Linux). The same list backs the first-run screen,
-  Settings › Setup, `dv setup` and `dv doctor`.
-- **Setup** stays reachable after the first run (Settings › Setup, and the palette's "Set up dv"):
-  the same screen with every environment's checks, each row its state and its fix, and **Check
-  again**. A skill installed by an older dv, or edited since, shows as out of date with **Update**;
-  when any environment has one, the status bar says so once ("dv-review skill out of date in
-  Ubuntu · Update"), since an agent working from an old skill misuses the CLI.
-- Never blocks local use: a local repo opens immediately. Only opening a WSL repo whose distro isn't
-  set up shows the onboarding for that distro (the VS Code/Zed remote pattern, scoped to where it's
-  needed).
+- One list of **checks** per environment (`dv_cli::checks`): this machine (Windows, macOS,
+  Linux; inside a WSL distro, that distro) and, on Windows, each WSL distro. Each check has an
+  id, a title, a state (`ok`, `missing`, `out_of_date`, `failed`, `skipped`) with a one-line
+  detail, and a fix: the button dv applies (`apply`, idempotent: Install, Update, Add to PATH)
+  and the command that does the same by hand (`dv setup agents`, `gh auth login`); some have
+  only the command. Detecting is read-only and fast. The same list backs the first-run screen,
+  Settings › Setup, `dv setup` and `dv doctor` (§10.1).
+- **The first-run screen** (DESIGN §4.3) shows while the data dir has no `onboarding.json`
+  (never the first implementation's `setup.json`, which `%APPDATA%\dv` holds): one screen of
+  every environment's checks, **Check again**, **Skip for now** and **Continue `Enter`**, both
+  of which write the marker (`{v, finished_at, how}`). It stands in for the columns and the
+  status bar; what `dv open` asked for opens behind it as ever, there the moment it is left. An
+  automation run shows it only with `DV_FIRST_RUN=1` (every scenario starts on a fresh data
+  dir).
+- **Setup** stays reachable after the first run: Settings (`Ctrl ,`, the title bar's `⋯`) has
+  one page, Setup, the same cards with **Check again**; opening it checks everything again.
+  The backend-down banner's **Open setup** opens it too.
+- **The out-of-date notice:** a `dv-review` skill installed by an older dv, or edited since,
+  shows as out of date with **Update**; when any environment has one, the status bar says so
+  once ("dv-review skill out of date in Ubuntu · Update", with a dismiss), since an agent working
+  from an old skill misuses the CLI. A skill *missing* for an installed agent is the first-run
+  screen's and Setup's to offer, not a nag, except in a distro (below). The notice's Update
+  applies every skill fix of that environment. At startup only this machine's skills are
+  checked (no git, `gh` or shell runs: the notice needs nothing else; the first run checks
+  everything); the distros are checked when the setup screen asks, and each once its connection
+  is connected (a WSL repository opened there), never by booting one. Checks run on threads of
+  their own, each environment apart, a late one dropped once a newer one of the same
+  environment started. Fixes that write one file run once (Codex's and Cursor's skill is one
+  file; a distro's `dv setup agents` installs every agent's), and a fix's failure shows under
+  its row until the row reads ok.
+- **Never blocks local use**, and never blocks a review: opening a WSL repository in a distro
+  whose skill is missing or out of date for an installed agent (the distro "isn't set up": dv
+  itself it installs on connect, §5.2) checks that distro once its connection is up and shows
+  the notice there ("dv-review skill not installed in Ubuntu · Install"), Setup having the rest.
 
 ### 12.2 Checks
-1. **Environments:** Windows; WSL installed? distros, version, running state (no distro is booted
-   just to list it).
-2. **Backend in distro:** install/verify the Linux `dv` (§5.2), with progress.
-3. **CLI on PATH:** Windows (HKCU `Path` + `WM_SETTINGCHANGE`), each distro (`~/.local/bin`, plus a
-   shell-rc line if `~/.local/bin` isn't on its PATH), macOS (`/usr/local/bin/dv` symlink, admin prompt
-   or `~/.local/bin`), Linux (`~/.local/bin`).
-4. **Agent integrations:** per environment, detect Claude Code / Codex / Cursor and offer the skill;
-   optional Claude Code `Stop` hook (§3 D). In a distro the check runs as that distro's Linux `dv`
-   (`dv setup agents --json`, through the distro's backend), so it reads and writes the distro
-   user's own `~/.claude`, `~/.agents` and `$CODEX_HOME`, and a sandboxed `DV_WSL_HOME` covers it
-   in tests like every other distro write.
-5. **git identity** per environment (comment author).
-6. **GitHub:** `gh` present and `gh auth status` per environment — WSL's `gh` is a separate login.
-   dv never runs `gh auth login` itself; it shows the command to run.
+1. **Environments:** Windows; WSL distros and their running state from `wsl.exe --list` (no
+   distro is booted to list it), only when this dv has a Linux build to check them against
+   (else this machine's list has a skipped `wsl` row and no `wsl.exe` starts). The distros
+   container tools make for their VMs (`docker-desktop*`, `rancher-desktop*`, `podman-machine*`,
+   `checks::distro::VM_DISTROS`) aren't the user's and aren't listed. A stopped distro is listed
+   as stopped with **Start**, which boots it (`wsl.exe … /bin/sh -c 'exit 0'`, the user's
+   explicit start, §5.2) and checks it. A distro listed running is asked afresh
+   (`wsl::running_now`) right before anything runs in it, so one stopped since the listing isn't
+   booted to check it; one stopped in the instant between that and the probe would still boot,
+   a window this leaves.
+2. **dv in the distro** (`dv`): this app's Linux build installed and intact and
+   `~/.local/bin/dv` running it (`dv_backend::install::probe`); Install is §5.2's install, with
+   its progress. Until it is there, the distro's other checks aren't listed (a note says so).
+   When its dv can't run them, a failed `checks` row says why (so `dv doctor` exits 1).
+3. **CLI on PATH** (`path`): **Windows:** the `dv.exe` a terminal runs, found along the
+   machine's `Path` (`HKLM\…\Session Manager\Environment`, read only) then the user's (HKCU
+   `Environment`): this executable's folder first is ok; absent is missing (Add to PATH);
+   another folder's `dv.exe` ahead of it (an older install, the first implementation's
+   `dist\dv.exe`) fails, naming that `dv.exe`. Applying writes the user `Path`: this folder
+   before the first entry holding another `dv.exe` (any later entry of its own taken out), else
+   at the end, then `WM_SETTINGCHANGE`; a `dv.exe` in the machine's `Path` stays ahead, which
+   only an administrator changes, so that check stays failed, naming the folder, with no button,
+   and `dv setup path` says so. `--remove` takes out exactly this folder's entries, leaving no
+   empty one. Entries match by their expansion (`%VAR%`), case, quotes and a trailing `\`
+   aside. **Linux and each distro:** `~/.local/bin/dv` linking to this dv and `~/.local/bin` on
+   the user's shell's `PATH`, read from their interactive login shell as the language servers'
+   resolver reads it (`dv_lsp::resolve::shell::read_here`, §18.4); else a marked line
+   (`checks::path::RC_MARK`) in the file that shell reads as an interactive login shell:
+   `~/.zshrc` (zsh), the first of `~/.bash_profile`, `~/.bash_login`, `~/.profile` (bash),
+   `~/.config/fish/conf.d/dv.fish` (fish), else `~/.profile`, the shell being the one that
+   printed the `PATH`, else `$SHELL`. After adding the line the shell is asked again (still
+   lacking it is an error); a line there that the shell doesn't pick up fails the check. **macOS:**
+   skipped (unverified, §13.2; its usual places need an admin prompt). `dv setup path` applies
+   it, `--remove` takes it back; phase 7's installer hooks call both for the installed `dv.exe`'s
+   folder.
+4. **Agent skills** (`skill-claude-code`, `skill-codex`, `skill-cursor`): per agent set up in
+   the environment's home (§10.5), installed, missing, out of date (differs from this build's
+   `SKILL.md`) or skipped (agent not installed); Install / Update is `dv setup agents`.
+   Optional Claude Code `Stop` hook (§3 D) later.
+5. **git identity** (`git`): `user.name` and `user.email` as git resolves them outside a
+   repository (`git config --global --includes`, then `--system`, which is skipped when the
+   checks run with `GIT_CONFIG_NOSYSTEM`, as a test's and an automation run's do); the fix is the
+   `git config --global …` command to run.
+6. **GitHub** (`gh`): `gh` there (`DV_GH`) and `gh auth status` ok (with
+   `GH_PROMPT_DISABLED=1`), naming the account; a distro's own `gh` is a separate login. When gh
+   says nobody is signed in (or to sign in again) the check is missing with `gh auth login` to
+   run; any other failure (offline, a timeout) is failed with gh's own first line. dv never runs
+   `gh auth login` itself.
 7. **Later:** default editor for "Open in editor" (VS Code / Cursor / Zed, with WSL remote URIs),
    `dv://` URL handler and Explorer/Finder "Review in dv" entry come with polish (phase 9); the
    update channel with packaging (phase 7).
 
+**A distro's checks run as that distro's Linux dv** (`dv_cli::checks::distro`), so they read and
+write the distro user's own home, shell, `~/.claude`, `~/.agents`, `$CODEX_HOME` and `gh`:
+detecting runs this app's build there as `dv doctor --json` and applying as `dv setup agents
+--yes --json` / `dv setup path --yes --json`, each through `wsl.exe` on §10.4's run line (`RUN`,
+the build by its hash). Not through the distro's backend connection: a backend's processes
+belong to an open worktree (`Backend::spawn_stdio`, §18.3), and setup runs before any
+repository there is open. Every one of them runs with `DV_WSL_HOME` as `$HOME` when it is set
+(the sandbox, §5.2), with `Seams::distro_env` (an automation run's and the real-WSL test's
+`DV_GH` naming a program that isn't there, so nothing in the distro asks GitHub).
+`DV_ONLY_DISTROS` (comma-separated; set and empty, none) names the only distros the checks
+check, start and fix: an automation run reaches no distro but `DV_TEST_WSL_DISTRO`'s, and
+its `cli` children get the same restriction.
+
+**Seams** (`dv_cli::checks::Seams`, CLAUDE.md): the home directory, the `Path` values
+(`DV_USER_PATH_FILE` names a text file that stands in for the user's registry value and
+`DV_MACHINE_PATH_FILE` one for the machine's, empty without it; `dv_cli`'s own tests refuse the
+registry outright), the variables `%VAR%` expands from, this executable, `gh` (`DV_GH`), the
+environment of the git and `gh` the checks run, the Linux builds, the WSL sandbox and the
+distros reached (`DV_ONLY_DISTROS`). The CLI reads them from its environment; the app under
+`--automation` points the home at `<data_dir>/home` (git's global configuration there,
+`GIT_CONFIG_NOSYSTEM` set so the system's isn't read), the user `Path` at
+`<data_dir>/user-path.txt` and `gh` at `DV_GH` or nothing, and its `cli` children get the same
+(§14.2).
+
 ### 12.3 Failure surface
-Every failed check renders as one row: what failed, the exact error, a primary fix action, and "Copy
-diagnostics". The repo banner for a dead WSL backend uses the same row.
+Every failed check renders as one row: what failed, the exact error, a primary fix action (or
+the command to copy). A fix that fails says why under its row ("Didn't work: …"); a Start that
+fails says why under its distro's name. The repo banner for a dead WSL backend offers **Open
+setup**.
 
 ---
 
@@ -1897,7 +2007,10 @@ with and without its bytes, only looked at, read past what was asked, a director
   store and a watch seeing an edit made inside the distro, a build changed in the distro
   installed again, the prune, a `~/.local/bin` dv can't write (the install done with a
   warning, the server started), and a distro that isn't there: an automatic start launching
-  nothing (`Stopped`), an explicit one `Unavailable` with `wsl.exe`'s words. `dv setup wsl`'s own check (`crates/dv_cli/src/tests/setup_wsl.rs`) runs the same way,
+  nothing (`Stopped`), an explicit one `Unavailable` with `wsl.exe`'s words. `dv setup wsl`'s own check (`crates/dv_cli/src/tests/setup_wsl.rs`) runs the same way, as
+  do a distro's setup checks read and applied through its own dv (§12.2:
+  `crates/dv_cli/src/tests/doctor.rs`, dv installed, a skill missing, installed, edited and
+  updated, `PATH`),
   and so does the CLI run inside the distro (§10.4): in-process with captured streams
   (`crates/dv_cli/src/tests/reexec.rs`), and as the built `dv` from Windows
   (`crates/dv/tests/wsl_cli.rs`, where cargo builds and names it): a first command installing
@@ -1938,7 +2051,11 @@ with and without its bytes, only looked at, read past what was asked, a director
   agent through the real CLI: the same `dv` executable started as a child process with a
   headless command (never one that opens a window), off the UI thread, in the seeded repo's
   fixture environment (also from one of its linked worktrees) with the app's data dir, a home of its own under it (`HOME`,
-  `USERPROFILE`, `CODEX_HOME`: `dv setup agents` never reaches the owner's), and without the
+  `USERPROFILE`, `CODEX_HOME` its `.codex`: `dv setup agents` never reaches the owner's; the
+  app's own setup checks use the same home, §12.2), the user `Path`'s stand-in
+  (`DV_USER_PATH_FILE` = `<data_dir>/user-path.txt`: `dv setup path` never writes the
+  registry), `DV_ONLY_DISTROS` (the sandbox's distro, else none: `dv doctor` and `dv setup`
+  reach no other), and without the
   inherited `CLAUDECODE`, `DV_AUTHOR` and `DV_REVIEW` (a scenario sets them on purpose); `cli`
   runs one to its end and replies `{exit, stdout, stderr, json}`, `cli_spawn` starts one that
   blocks (`dv review wait`) and `cli_join` collects it, and a child still running when the app
@@ -1946,7 +2063,8 @@ with and without its bytes, only looked at, read past what was asked, a director
   `dv backend --stdio` the scenario can kill (`backend_kill`), stop from starting
   (`backend_block`) and stop the host of, as `wsl --shutdown` stops a distro (`backend_stop`);
   `wsl_distros` tells WSL's stand-in which distros there are and which run; `state.backends`
-  lists the connections.
+  lists the connections; `home_file` writes into the scratch home (a fake agent's folder, an
+  older dv's skill) and `state.setup` is the setup screen's (§12).
   `workflow_a_agent` runs §3 workflow A end to end that way. The runner wires `mock_gh` itself:
   every launch gets `DV_GH` = `mock_gh` and `DV_DATA_DIR` = the scenario's data dir and no inherited
   `DV_WSL_HOME` (only a header's `env` names one, so dv reaches WSL through its stand-in), a scenario
