@@ -177,12 +177,38 @@ fn probe(seams: &Seams, distro: &str) -> Result<(LinuxBuilds, Probe), String> {
 /// The [`id::DV`] check for what `probe` found.
 fn dv_check(distro: &str, probe: &Probe) -> Check {
     let fix = |action: &str| Fix::apply(action, format!("dv setup wsl {distro}"));
+    let this = if probe.packaged {
+        "this dv's build (packaged)"
+    } else {
+        "this development build"
+    };
     match (probe.build, probe.link) {
-        (BuildState::Ok, LinkState::Ok | LinkState::Directory) => Check::new(
+        (BuildState::Ok, LinkState::Ok) => Check::new(
             id::DV,
             title(distro),
             State::Ok,
-            format!("this dv's build is installed at {}", probe.path),
+            format!(
+                "{this} is installed at {}, and {} runs it",
+                probe.path,
+                probe.link_path()
+            ),
+        ),
+        (BuildState::Ok, LinkState::Directory) => Check::new(
+            id::DV,
+            title(distro),
+            State::Ok,
+            format!("{this} is installed at {}", probe.path),
+        ),
+        // A development build leaves the installed copy's link alone (PLAN §5.2).
+        (BuildState::Ok, LinkState::Packaged) if !probe.packaged => Check::new(
+            id::DV,
+            title(distro),
+            State::Ok,
+            format!(
+                "{this} is installed at {}; {} runs the installed dv (packaged)",
+                probe.path,
+                probe.link_path()
+            ),
         ),
         (BuildState::Ok, _) => Check::new(
             id::DV,

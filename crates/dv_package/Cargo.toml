@@ -1,0 +1,25 @@
+[package]
+name = "dv_package"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "script/package's helper: the version of a local release (docs/PLAN.md §13.2); never shipped"
+
+# gpui: never, not even transitively (`script/check` step 3).
+[lib]
+path = "src/lib.rs"
+doctest = false
+
+[[bin]]
+name = "dv_package"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+semver.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+tempfile.workspace = true

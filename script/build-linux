@@ -11,30 +11,52 @@
 #   script/build-linux --debug-only  copies it to target/debug only, leaving target/release's
 #                                 copy (an installed or running release app's) alone;
 #                                 script/check --linux builds this way
+#   script/build-linux --out <dir>   copies it to <dir> alone (a Windows or POSIX path), not to
+#                                 target/debug or target/release: script/package's own copy
+#   script/build-linux --profile <name>  builds with that Cargo profile (default release):
+#                                 script/package's `dist`
+#
+# DV_CHANNEL and DV_VERSION, when set, reach the build (a packaged release's channel and
+# version, crates/dv_backend/src/build.rs).
 #
 # On Windows it builds inside WSL Ubuntu with the target dir on the distro's ext4 disk
 # ($HOME/.cache/dv-target; building onto /mnt is many times slower); on Linux, a WSL distro
-# included, it builds right there the same way. rustup adds the musl targets on first use. The release profile itself is left alone: stripping is this build's
-# alone (CARGO_PROFILE_RELEASE_STRIP).
+# included, it builds right there the same way. rustup adds the musl targets on first use. The
+# profile itself is left alone: stripping is this build's alone (CARGO_PROFILE_<NAME>_STRIP).
 set -euo pipefail
 
 usage() {
     cat <<'EOF'
-usage: script/build-linux [--aarch64] [--debug-only]
+usage: script/build-linux [--aarch64] [--debug-only] [--out <dir>] [--profile <name>]
 
   builds the static Linux dv (x86_64-unknown-linux-musl) inside WSL Ubuntu and copies it to
   target/debug/dv-linux-x86_64 and target/release/dv-linux-x86_64
   --aarch64     also aarch64-unknown-linux-musl (dv-linux-aarch64), linked with rust-lld
   --debug-only  only the target/debug copy: the release app's stays as it was
+  --out <dir>   the copy in <dir> alone (script/package: target/package/linux)
+  --profile <name>  the Cargo profile to build with (default release; script/package: dist)
+  DV_CHANNEL and DV_VERSION in the environment reach the build when set
 EOF
 }
 
 aarch64=0
 profiles="debug release"
-for arg in "$@"; do
+out_dir=""
+cargo_profile="release"
+while [[ $# -gt 0 ]]; do
+    arg="$1"
+    shift
     case "$arg" in
         --aarch64) aarch64=1 ;;
         --debug-only) profiles="debug" ;;
+        --out | --profile)
+            if [[ $# -eq 0 || -z "$1" ]]; then
+                echo "script/build-linux: $arg needs a value" >&2
+                exit 2
+            fi
+            if [[ "$arg" == --out ]]; then out_dir="$1"; else cargo_profile="$1"; fi
+            shift
+            ;;
         -h | --help)
             usage
             exit 0
@@ -50,18 +72,29 @@ done
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 target_dir="${CARGO_TARGET_DIR:-$root/target}"
+if [[ -n "$out_dir" ]]; then
+    # Only there: "." is the folder itself.
+    mkdir -p "$out_dir"
+    target_dir="$(cd "$out_dir" && pwd)"
+    profiles="."
+fi
 
 # The build, run by Linux's bash in the checkout: $1 is where the copies go (a Windows path is
-# translated), $2 is 1 to also build aarch64, $3 the profile folders the copies go into.
+# translated), $2 is 1 to also build aarch64, $3 the profile folders the copies go into (`.`:
+# $1 itself), $4 the Cargo profile, $5 and $6 DV_CHANNEL and DV_VERSION (empty: unset).
 read -r -d '' inner <<'EOF' || true
 set -euo pipefail
 profiles="$3"
+cargo_profile="$4"
+if [ -n "$5" ]; then export DV_CHANNEL="$5"; fi
+if [ -n "$6" ]; then export DV_VERSION="$6"; fi
 case "$1" in
     [A-Za-z]:\\* | [A-Za-z]:/*) out="$(wslpath -u "$1")" ;;
     *) out="$1" ;;
 esac
 export CARGO_TARGET_DIR="$HOME/.cache/dv-target"
-export CARGO_PROFILE_RELEASE_STRIP=symbols
+# Stripping is this build's alone, whichever profile it uses.
+export "CARGO_PROFILE_$(printf '%s' "$cargo_profile" | tr 'a-z-' 'A-Z_')_STRIP=symbols"
 
 # Builds triple $1 as dv-linux-$2 and copies it to each of $profiles' folders under $out;
 # returns non-zero when any step fails.
@@ -69,9 +102,10 @@ build() {
     local triple="$1" arch="$2" bin
     echo "==> rustup target add $triple"
     rustup target add "$triple" || return 1
-    echo "==> cargo build -p dv --no-default-features --release --target $triple"
-    cargo build -p dv --no-default-features --release --target "$triple" || return 1
-    bin="$CARGO_TARGET_DIR/$triple/release/dv"
+    echo "==> cargo build -p dv --no-default-features --profile $cargo_profile --target $triple"
+    cargo build -p dv --no-default-features --profile "$cargo_profile" --target "$triple" ||
+        return 1
+    bin="$CARGO_TARGET_DIR/$triple/$cargo_profile/dv"
     # Static: no program interpreter, so it runs in any distro of that architecture.
     if ! readelf -h "$bin" > /dev/null; then
         echo "build-linux: $bin isn't an ELF file" >&2
@@ -90,8 +124,9 @@ build() {
 }
 
 build x86_64-unknown-linux-musl x86_64
+first="${profiles%% *}"
 echo "==> dv-linux-x86_64 --version"
-"$out/debug/dv-linux-x86_64" --version
+"$out/$first/dv-linux-x86_64" --version
 
 if [ "$2" = 1 ]; then
     if CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld \
@@ -107,7 +142,8 @@ EOF
 # the distro it runs in. The hop through wsl.exe is Windows' (Git Bash, MSYS, Cygwin).
 case "$(uname -s)" in
     Linux)
-        bash -c "$inner" bash "$target_dir" "$aarch64" "$profiles"
+        bash -c "$inner" bash "$target_dir" "$aarch64" "$profiles" "$cargo_profile" \
+            "${DV_CHANNEL:-}" "${DV_VERSION:-}"
         ;;
     MINGW* | MSYS* | CYGWIN*)
         if ! command -v wsl.exe > /dev/null 2>&1; then
@@ -117,7 +153,8 @@ case "$(uname -s)" in
         win_root="$(cygpath -w "$root")"
         win_target="$(cygpath -w "$target_dir")"
         MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu --cd "$win_root" --exec bash -lc "$inner" \
-            bash "$win_target" "$aarch64" "$profiles"
+            bash "$win_target" "$aarch64" "$profiles" "$cargo_profile" "${DV_CHANNEL:-}" \
+            "${DV_VERSION:-}"
         ;;
     *)
         echo "script/build-linux: needs Windows (with WSL Ubuntu) or a Linux host" >&2

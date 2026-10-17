@@ -5,7 +5,7 @@
 use super::format;
 use crate::args::GlobalArgs;
 use crate::context::Context;
-use crate::dto::{AuthorDto, RepoDto, ReviewDto, StatusDoc};
+use crate::dto::{AuthorDto, BuildDto, RepoDto, ReviewDto, StatusDoc};
 use crate::error::{CliError, Exit};
 use crate::identity;
 use crate::output;
@@ -20,6 +20,7 @@ pub(crate) fn status(global: &GlobalArgs, ctx: &mut Context) -> Result<Exit, Cli
     let current = select::current(&repo, global, ctx, &listing)?;
     let reviews = super::review::load_all(&repo, listing.open())?;
     let doc = StatusDoc {
+        dv: BuildDto::this(),
         repo: RepoDto {
             root: repo.root().to_string(),
             branch: labels.here.branch.clone(),

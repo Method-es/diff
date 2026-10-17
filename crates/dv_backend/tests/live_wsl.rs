@@ -76,23 +76,39 @@ fn live_wsl_install_open_watch_and_the_cli() {
     assert!(probe.up_to_date(), "{probe:?}");
     eprintln!("installed: {}", probe.path);
 
-    // `~/.local/bin/dv` is this build.
-    assert_eq!(
-        sh(&shell, r#""$HOME/.local/bin/dv" --version"#, &[]),
-        format!("dv {}\n", env!("CARGO_PKG_VERSION"))
-    );
-    assert_eq!(
-        sh(&shell, r#"readlink "$HOME/.local/bin/dv""#, &[]),
-        format!("{}\n", probe.path)
-    );
-    assert_eq!(
-        sh(
-            &shell,
-            r#"sha256sum < "$HOME/.local/bin/dv" | cut -d' ' -f1"#,
-            &[]
-        ),
-        format!("{}\n", build.hash)
-    );
+    // `~/.local/bin/dv` is this build, or, for a development build once the owner installed
+    // the packaged app, the installed copy's build, which it leaves alone (PLAN §5.2's link
+    // rule): a packaged build with its `.packaged` marker.
+    let linked = sh(&shell, r#"readlink "$HOME/.local/bin/dv""#, &[]);
+    if linked.trim_end() == probe.path {
+        assert_eq!(
+            sh(&shell, r#""$HOME/.local/bin/dv" --version"#, &[]),
+            format!("dv {}\n", dv_backend::build::version_text())
+        );
+        assert_eq!(
+            sh(
+                &shell,
+                r#"sha256sum < "$HOME/.local/bin/dv" | cut -d' ' -f1"#,
+                &[]
+            ),
+            format!("{}\n", build.hash)
+        );
+    } else {
+        assert!(
+            !builds.packaged(),
+            "a packaged build always takes the link, but it runs {linked}"
+        );
+        assert_eq!(probe.link, install::LinkState::Packaged, "{probe:?}");
+        assert_eq!(
+            sh(
+                &shell,
+                r#"[ -f "$(readlink "$HOME/.local/bin/dv").packaged" ] && echo marked"#,
+                &[]
+            ),
+            "marked\n",
+            "{linked}"
+        );
+    }
 
     // A repository under /tmp opens, and its git, store and watch work.
     let scratch = TmpDir::new(&shell, "/tmp", "dv-live-check");

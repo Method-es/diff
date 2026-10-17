@@ -492,6 +492,42 @@ mod windows {
     }
 
     #[test]
+    fn the_installed_copy_first_on_path_is_named_so_for_a_development_build() {
+        // Velopack's layout (PLAN §13.3): `<root>\Update.exe` and `<root>\current\dv.exe`.
+        let home = tempfile::tempdir().unwrap();
+        let fixture = with_home(home.path(), None);
+        let root = tempfile::tempdir().unwrap();
+        let current = root.path().join("current");
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::write(current.join("dv.exe"), "the installed dv").unwrap();
+        std::fs::write(root.path().join("Update.exe"), "Velopack's").unwrap();
+        assert!(crate::checks::path::is_installed_copy(&current));
+        assert!(!crate::checks::path::is_installed_copy(root.path()));
+        let dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        std::fs::write(
+            &fixture.env["DV_USER_PATH_FILE"],
+            format!("{};{}\n", current.display(), dir.display()),
+        )
+        .unwrap();
+        let (_, json) = doctor(&fixture);
+        assert_eq!(
+            checks(&json)["path"],
+            (
+                "failed".to_string(),
+                format!(
+                    "the installed dv comes first on PATH, so a terminal runs it, not this one: \
+                     {}",
+                    current.join("dv.exe").display()
+                )
+            )
+        );
+    }
+
+    #[test]
     fn another_dv_in_the_system_path_stays_ahead_and_says_so() {
         let home = tempfile::tempdir().unwrap();
         let mut fixture = with_home(home.path(), None);

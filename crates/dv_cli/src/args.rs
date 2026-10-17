@@ -46,7 +46,7 @@ pub struct GlobalArgs {
 #[command(
     name = "dv",
     bin_name = "dv",
-    version,
+    version = crate::version_text(),
     about = "Review diffs locally; agents answer through this CLI"
 )]
 pub struct Cli {

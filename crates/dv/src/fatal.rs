@@ -9,7 +9,7 @@
 pub fn report(error: &anyhow::Error, show_dialog: bool) {
     log::error!("dv couldn't start: {error:#}");
     if show_dialog {
-        show(&message(error));
+        show_message(&message(error));
     }
 }
 
@@ -23,11 +23,35 @@ fn message(error: &anyhow::Error) -> String {
     text
 }
 
+/// Shows `message` in a blocking error box (Windows only: elsewhere the log line is the report).
 #[cfg(windows)]
-fn show(message: &str) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MessageBoxW,
-    };
+pub fn show_message(message: &str) {
+    show_box(
+        message,
+        windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
+    );
+}
+
+/// Shows `text` in a blocking information box: `dv-gui.exe --help` and `--version`, which have
+/// no console (Windows only; elsewhere it is printed).
+#[cfg(windows)]
+pub fn show_info(text: &str) {
+    show_box(
+        text,
+        windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION,
+    );
+}
+
+/// Prints `text`: the console this binary has off Windows.
+#[cfg(not(windows))]
+pub fn show_info(text: &str) {
+    println!("{text}");
+}
+
+/// A blocking message box of `message` with the `icon` style.
+#[cfg(windows)]
+fn show_box(message: &str, icon: windows_sys::Win32::UI::WindowsAndMessaging::MESSAGEBOX_STYLE) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_OK, MB_SETFOREGROUND, MessageBoxW};
 
     let wide = |text: &str| -> Vec<u16> { text.encode_utf16().chain([0]).collect() };
     let (text, caption) = (wide(message), wide("dv"));
@@ -38,13 +62,15 @@ fn show(message: &str) {
             std::ptr::null_mut(),
             text.as_ptr(),
             caption.as_ptr(),
-            MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
+            MB_OK | icon | MB_SETFOREGROUND,
         );
     }
 }
 
+/// Shows `message` in a blocking error box (Windows only: elsewhere the log line is the report).
 #[cfg(not(windows))]
-fn show(_message: &str) {
+pub fn show_message(message: &str) {
+    log::error!("{message}");
     // The log line is the report; the detached app's stderr goes nowhere, so `dv --no-detach`
     // shows it in the terminal.
 }

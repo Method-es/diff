@@ -14,7 +14,12 @@ use clap::{Args, CommandFactory as _, Parser, Subcommand};
 // A repeated option takes its last value: the e2e runner passes the scenario's `--window-size`
 // before the scenario's own `app_args`, which may give another (tests/e2e/README.md, `restart`).
 #[derive(Parser, Debug, Clone, PartialEq)]
-#[command(name = "dv", bin_name = "dv", version, args_override_self = true)]
+#[command(
+    name = "dv",
+    bin_name = "dv",
+    version = dv_cli::version_text(),
+    args_override_self = true
+)]
 #[cfg_attr(
     not(feature = "gui"),
     command(

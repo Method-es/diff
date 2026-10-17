@@ -9,8 +9,8 @@
 //! `comments_list`, `find`, `file_view`, `file_finder`, `history`, `intel` (code
 //! intelligence: the language servers, the hover card, the references), `cli` (the
 //! `cli_spawn` children not yet joined), `backends` (the connections to `dv backend
-//! --stdio` servers) and `setup` (the first-run screen, Settings and every environment's
-//! setup checks, PLAN §12).
+//! --stdio` servers), `setup` (the first-run screen, Settings and every environment's
+//! setup checks, PLAN §12) and `update` (dv's own update ready to restart into, PLAN D9).
 //!
 //! Commands:
 //! - `set_setting {key, value}` changes `material` (`mica`, `acrylic`, `opaque`) or `mode`
@@ -28,6 +28,8 @@
 //!   which distros there are and which run, in a run without `DV_WSL_HOME`
 //!   (`dv_ui::services::WslAccess`).
 //! - `open {path}`, `open_review {path, target?}` and `review_op {op, thread, …}` ([`commands`]).
+//! - `update_ready {version}` makes an update of dv ready through the seam (the status bar's
+//!   Restart to update, which records the restart, [`commands`]).
 //! - `home_file {path, contents}` writes a file in the run's scratch home (`<data_dir>/home`,
 //!   the home of the setup checks and the `cli` children): a fake agent's folder, a skill an
 //!   older dv installed, a `.gitconfig` ([`commands`]).
@@ -186,6 +188,7 @@ impl AutomationHost for DvAutomation {
             "cli": self.cli_state(),
             "backends": state::backends(cx),
             "setup": state::setup(self.shell.read(cx), cx),
+            "update": state::update(cx),
         })
     }
 
@@ -216,6 +219,7 @@ impl AutomationHost for DvAutomation {
             "backend_hold" => Some(self.backend_hold(args)),
             "wsl_distros" => Some(backends::wsl_distros(args, cx)),
             "home_file" => Some(commands::home_file(&args, cx)),
+            "update_ready" => Some(commands::update_ready(&args, cx)),
             _ => None,
         }
     }

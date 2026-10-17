@@ -6,9 +6,28 @@ rust-version.workspace = true
 publish.workspace = true
 description = "dv: local diff and PR review (docs/PLAN.md)"
 
+build = "build.rs"
+# `cargo run -p dv` is the console binary.
+default-run = "dv"
+
+# The two binaries share everything in the library (`src/lib.rs`, PLAN §13.1).
+[lib]
+path = "src/lib.rs"
+doctest = false
+
+# The console program: the CLI, `dv backend --stdio`, and `dv` / `dv open` starting the app.
 [[bin]]
 name = "dv"
 path = "src/main.rs"
+test = false
+
+# The windows-subsystem binary that runs the app in its own process (the Start menu's shortcut,
+# Velopack's main executable). Only with the app; on macOS and Linux `dv` is the one shipped.
+[[bin]]
+name = "dv-gui"
+path = "src/bin/dv-gui.rs"
+required-features = ["gui"]
+test = false
 
 # Three shapes (docs/PLAN.md §13.1), all linted by `script/check` step 2:
 # - default (`gui` + `automation`): development, tests and the e2e runner;
@@ -26,6 +45,7 @@ gui = [
     "dep:dv_ui",
     "dep:gpui",
     "dep:gpui_platform",
+    "dep:velopack",
     "dep:windows-sys",
 ]
 # `--automation`: the JSONL driver used by the e2e scenarios (docs/PLAN.md §14). Shipped builds
@@ -62,11 +82,16 @@ serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
+# Velopack's install, update and uninstall hooks and the app's updates (`installer`, `updates`,
+# PLAN D9): the app's, never the headless build's.
+velopack = { workspace = true, optional = true }
 # The fatal-error message box of the detached app, which has no console (`fatal.rs`), and the
-# flags and handle inheritance it is started detached with (`launch.rs`, PLAN §13.1).
+# flags and handle inheritance it is started detached with (`launch.rs`, PLAN §13.1), and the
+# other dv processes of an install an update would stop (`processes.rs`, PLAN D9).
 windows-sys = { workspace = true, optional = true, features = [
     "Win32_Foundation",
     "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
 ] }
@@ -74,11 +99,18 @@ windows-sys = { workspace = true, optional = true, features = [
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui_platform = { workspace = true, optional = true, features = ["x11"] }
 
+# dv.exe's and dv-gui.exe's icon and version resource on Windows (`build.rs`); a no-op elsewhere.
+[build-dependencies]
+embed-resource.workspace = true
+
 # The unit tests that need gpui are gated on `gui`; `tests/*` run in every shape.
 [dev-dependencies]
 dv_backend.workspace = true
 dv_test_support.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
+# The app icon's test renders its SVG and reads and writes the .ico (`tests/app_icon.rs`).
+png.workspace = true
 pretty_assertions.workspace = true
+resvg.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

@@ -310,6 +310,7 @@ impl Shell {
         let settings = cx.services().settings.clone();
         let locations = cx.services().locations.clone();
         let setup = cx.services().setup.clone();
+        let updates = cx.services().updates.clone();
         let subscriptions = vec![
             // The first-run screen, the setup cards' state and the status bar's notice.
             cx.observe_in(&setup, window, |this, _, window, cx| {
@@ -355,6 +356,8 @@ impl Shell {
             }),
             // The panel's width lives in the settings.
             cx.observe(&settings, |_, _, cx| cx.notify()),
+            // The status bar's Restart to update (PLAN D9).
+            cx.observe(&updates, |_, _, cx| cx.notify()),
             cx.subscribe_in(
                 &file_list,
                 window,

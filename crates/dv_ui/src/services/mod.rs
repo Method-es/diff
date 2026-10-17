@@ -14,6 +14,8 @@
 //!   is open on (`crate::intel::servers`, PLAN §18.5), with `settings.json`'s `lsp`.
 //! - [`Setup`] (`setup`): every environment's setup checks, the first-run marker and the
 //!   status bar's out-of-date skill notice (PLAN §12).
+//! - [`Updates`] (`updates`): dv's own update, downloaded and ready to restart into (PLAN D9),
+//!   which the binary reports.
 //!
 //! An open review is a `crate::session::ReviewSession`, which the shell holds; it works through
 //! the same `Locations` backend. The `System` seam (opening URLs, revealing files, the folder
@@ -26,6 +28,7 @@ pub mod review_ui;
 pub mod reviews;
 pub mod settings;
 pub mod setup;
+pub mod updates;
 
 use std::path::{Path, PathBuf};
 
@@ -38,6 +41,7 @@ pub use review_ui::{ReviewUi, ViewMode};
 pub use reviews::{Reviews, ReviewsEvent};
 pub use settings::{Mode, Settings, SettingsEvent, SettingsFile};
 pub use setup::{Setup, SetupConfig};
+pub use updates::{Unsaved, UpdateStatus, Updater, Updates};
 
 /// What [`init`] needs from the binary.
 #[derive(Clone)]
@@ -60,6 +64,7 @@ pub struct Services {
     pub review_ui: Entity<ReviewUi>,
     pub language_servers: Entity<LanguageServers>,
     pub setup: Entity<Setup>,
+    pub updates: Entity<Updates>,
     data_dir: PathBuf,
 }
 
@@ -97,6 +102,7 @@ pub fn init(config: ServicesConfig, cx: &mut App) {
     let lsp = settings.read(cx).file().lsp_settings();
     let language_servers = cx.new(|cx| LanguageServers::new(lsp, cx));
     let setup = cx.new(|cx| Setup::new(setup, &data_dir, locations.clone(), cx));
+    let updates = cx.new(|_| Updates::new());
     cx.set_global(Services {
         settings,
         locations,
@@ -104,6 +110,7 @@ pub fn init(config: ServicesConfig, cx: &mut App) {
         review_ui,
         language_servers,
         setup,
+        updates,
         data_dir,
     });
 }

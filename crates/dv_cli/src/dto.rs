@@ -7,7 +7,7 @@
 //!
 //! | Command | Document |
 //! |---|---|
-//! | `status` | [`StatusDoc`]: `repo`, `author` (who this command acts as), `current` (the review the commands mean, or `null`), `reviews` (the open ones), `unreadable` |
+//! | `status` | [`StatusDoc`]: `dv` (this build: `{version, channel}`, `channel` `release` for a packaged build, else `development`), `repo`, `author` (who this command acts as), `current` (the review the commands mean, or `null`), `reviews` (the open ones), `unreadable` |
 //! | `review list` | [`ReviewListDoc`]: `reviews`, `unreadable` (logs that don't load: `{id, error}`) |
 //! | `review show` | [`ReviewShowDoc`]: `review` |
 //! | `review new` | [`ReviewNewDoc`]: `created` (`false`: the target's open review, resumed), `review` |
@@ -586,9 +586,30 @@ pub struct RepoDto {
     pub head: Option<String>,
 }
 
+/// This build of dv, as `dv status` names it (`dv_backend::build`).
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct BuildDto {
+    /// `dv --version`'s, without the development note.
+    pub version: String,
+    /// `release` for a build `script/package` made, else `development`.
+    pub channel: String,
+}
+
+impl BuildDto {
+    /// This executable's.
+    pub fn this() -> Self {
+        Self {
+            version: dv_backend::build::VERSION.to_string(),
+            channel: dv_backend::build::channel_name().to_string(),
+        }
+    }
+}
+
 /// `dv status`.
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct StatusDoc {
+    /// This build of dv.
+    pub dv: BuildDto,
     pub repo: RepoDto,
     /// Who this command's writes would be by: an agent (`--author`, `$DV_AUTHOR`, Claude
     /// Code) or the reviewer.

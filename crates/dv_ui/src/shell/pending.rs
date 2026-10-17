@@ -164,9 +164,17 @@ impl Shell {
     /// again by itself waits for (module docs): the "Finish round" sheet open over it (a round
     /// being finished included), or a composer with a draft.
     fn holds_unsaved_text(&self, cx: &App) -> bool {
-        self.sheet.is_some()
-            || self.diff_pane.read(cx).has_draft(cx)
-            || self.file_view.read(cx).has_draft(cx)
+        let unsaved = self.unsaved_text(cx);
+        unsaved.sheet || unsaved.draft
+    }
+
+    /// The unsaved text [`Self::holds_unsaved_text`] reads, apart: what Restart to update asks
+    /// about before an update closes this window (`crate::services::updates`).
+    pub(super) fn unsaved_text(&self, cx: &App) -> crate::services::Unsaved {
+        crate::services::Unsaved {
+            draft: self.diff_pane.read(cx).has_draft(cx) || self.file_view.read(cx).has_draft(cx),
+            sheet: self.sheet.is_some(),
+        }
     }
 
     /// The main area's banner's Dismiss: it goes, and so does the pick it reports, when it is

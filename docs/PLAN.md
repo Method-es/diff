@@ -113,14 +113,49 @@ material the platform can't show always resolves to Opaque (`dv_ui::platform`).
 - **Packages:** `vpk pack` produces a one-click per-user `Setup.exe` on Windows (no wizard, no
   admin, installs under `%LOCALAPPDATA%\dv\`), a `.pkg` on macOS and an AppImage on Linux, plus the
   full and delta update packages and a release feed, all from a build without the automation feature.
-  `vpk` is a .NET tool: the build machine needs the .NET SDK (not installed yet; only Phase 7 needs it).
-- **In the app:** the `velopack` crate. `VelopackApp::build().run()` is the first call in `main` of
-  both Windows binaries; its install/uninstall hooks run `dv setup path --yes` / `dv setup path --remove --yes`,
-  so PATH stays app-owned (§12) and the installer has no logic of its own.
-- **Updates:** `UpdateManager` checks a release feed, downloads the delta in the background and
-  applies it on the next restart ("Restart to update" in the status bar). Until there is a release
-  workflow (§16 phase 10) the feed is a local folder of `vpk pack` output, so a locally built release is
-  picked up by the installed copy; later the same code points at GitHub Releases.
+  `vpk` is a .NET tool (the .NET SDK 8 and `vpk` 1.2.161 are installed on the build machine);
+  `script/package` makes a Windows release (§13.2).
+- **In the app:** the `velopack` crate, pinned to the `vpk` version (`=1.2.161`; Velopack's crate
+  and CLI go together), a Windows dependency of the `gui` feature (the default shape carries it;
+  the headless and musl builds don't). `VelopackApp::build()…run()` is the first call in `main` of
+  both Windows binaries (`crates/dv/src/installer.rs`; skipped for a command line that isn't all
+  Unicode, which its `env::args` would panic on: the hooks' arguments are ASCII). Its hooks,
+  which `Update.exe` runs on the main executable (`dv-gui.exe`) before anything else of dv and
+  which exit without a window, call `dv setup path`'s functions for the installed copy's folder,
+  Velopack's stable `current` (never a versioned one): after install the `--yes` logic, before
+  uninstall the `--remove` logic, so PATH stays app-owned (§12) and the installer has no logic of
+  its own. **An update leaves PATH alone**: the folder doesn't change, and a user who took it off
+  with `dv setup path --remove` keeps it off. Only a packaged build that Velopack's locator finds
+  installed acts on a hook; anything else does nothing. An agent never runs `Setup.exe`,
+  `Update.exe` or a dv executable with `--veloapp-*` arguments; the hooks' logic is tested
+  through the `Path` seam.
+- **Applying an update ends every dv process running from the install:** `Update.exe` stops
+  each process whose executable is under the install folder before it replaces the files —
+  other dv windows, with whatever they hold unsaved (drafts live in memory), and an agent's `dv
+  review wait` or `dv comment reply`. So neither binary applies a downloaded update by itself at
+  startup (auto-apply is off in both); an update applies only from **Restart to update**, which
+  first counts the other dv processes whose image is under the install's `current`
+  (a Toolhelp snapshot, `QueryFullProcessImageNameW`, this process left out) and, when there
+  are any or this window holds an unsent comment or the open Finish round sheet, asks: what
+  will close ("2 other dv windows or commands running from this install", "your unsent comment
+  in this window"), **Restart anyway** and **Not now** (DESIGN §4.1). Nothing is dropped
+  without that answer.
+- **Updates** (`crates/dv/src/updates.rs`): `UpdateManager` over the release feed checks a few
+  seconds after the app starts and every 4 hours, downloads the newer release (its delta when
+  there is one) in the background, and the status bar then shows "dv <version> is ready" with
+  **Restart to update**, which (after the question above, when it asks) hands it to
+  `Update.exe` — it waits for dv to quit, applies it and starts dv again on what this window
+  had open, its repository and review named absolutely (`open <path> --review <id>`), since the
+  restarted app starts in the install's folder — and quits. A restart that fails says so in the
+  status bar ("Update failed · details", why in its tooltip) with **Retry**. Never under
+  `--automation` (scenarios make one ready through the seam, `update_ready`, `state.update`), and
+  never in a build that isn't installed: `UpdateManager::new` fails there and updates are off,
+  silently. Until there is a release workflow (§16 phase 10) **the feed** is a local folder of
+  `vpk pack` output: the one `script/package --publish` writes, the packaging checkout's
+  `target\package\releases`, which every packaged build names (`DV_UPDATE_FEED`), so a release
+  the owner publishes is picked up by the installed copy, while a trial run (the default,
+  `target\package\try`) reaches nobody; `settings.json`'s `"update": {"feed": "<folder or URL>"}`
+  names another (empty turns updates off), and later the same code points at GitHub Releases.
 - Chosen over cargo-packager (the sibling app's tool; a classic NSIS wizard and an updater that re-downloads the
   whole installer and needs manifest signing keys) for delta updates and the simpler install flow.
 
@@ -360,11 +395,12 @@ bringing dv to the front on the agent's working-tree review when the agent finis
 | `dv_cli` | lib | clap command tree, JSON output DTOs, setup/doctor checks, a WSL repository's commands run inside its distro (§10, §12) | never |
 | `dv_lsp` | lib | language servers where the repo lives: the LSP client, the language specs and their resolvers (§18.4) | never |
 | `dv_ui` | lib | views + services (§11) | yes |
-| `dv` | bin | entry: GUI (the `gui` feature), CLI and `dv backend --stdio`; on Windows also the console/GUI split; three shapes, one of them headless (§13.1) | with `gui` |
+| `dv` | lib + bins `dv`, `dv-gui` | entry: GUI (the `gui` feature), CLI and `dv backend --stdio`; on Windows also the console/GUI split (`dv-gui` with `gui`), Velopack's hooks and updates (D9); three shapes, one of them headless (§13.1) | with `gui` |
 | `gpui_automation` | lib + bin `e2e` | ported from the sibling app (§14) | yes |
 | `mock_gh` | bin | fake `gh` for tests (§14.2) | no |
 | `mock_lsp` | bin | a scripted language server for tests (§18.7) | no |
 | `dv_test_support` | lib (dev) | fixture repo builder, shared by every crate's tests | no |
+| `dv_package` | lib + bin (dev) | `script/package`'s helper: the version of a local release (§13.2) | no |
 
 Direction: `dv` → `dv_ui` → {`dv_cli`, `dv_backend`, `dv_lsp`, `dv_core`, `gpui-component`};
 `dv_cli` → {`dv_backend`, `dv_lsp`, `dv_core`} (`dv_lsp` for the user's shell's `PATH`, §12.2); `dv_lsp` →
@@ -609,7 +645,18 @@ the same cases against both implementations.
   checked (a copy that isn't the build is exit 3, nothing installed), renamed into place; then
   `~/.local/bin/dv` becomes a symbolic link to it, a temporary link renamed over whatever file
   was there (the first implementation's regular file too), so the dv on the distro's `PATH` is
-  this app's. The link is a convenience — the launch and the CLI's run use the build itself —
+  an app's, under **the link rule**:
+  **the link belongs to the installed copy.** A packaged build (`script/package`'s, §13.2:
+  `DV_CHANNEL=release` at build time, `dv_backend::build::is_packaged`) also writes the marker
+  `dv-<hash>.packaged` beside its build and always takes the link; a development build installs
+  and runs its own `dv-<hash>` (the launch and the CLI's run use the build by its hash) but
+  leaves the link alone while it points at a packaged build that is there (the script says
+  `dv-kept`), and takes it otherwise. So a development build run beside the installed app never
+  replaces the installed copy's `dv` in the distro, and the next release takes it from the last.
+  The probe says `packaged` for a link to another packaged build: up to date for a development
+  build, an install to do for a packaged one; `dv setup path` inside a distro leaves the same
+  link alone for a development build, and the "dv in the distro" check (§12.2) says which
+  build the link runs. The link is a convenience — the launch and the CLI's run use the build itself —
   so one that can't be made (a directory at `~/.local/bin/dv`, a `~/.local/bin` that isn't a
   folder dv can write) is a warning on stderr (kept in the connection's diagnostics, printed
   by the CLI), never a failed install. A script that fails before it reads all of the build
@@ -617,8 +664,9 @@ the same cases against both implementations.
 - **Prune** after the first successful handshake per process and distro, in the background,
   best effort: every `~/.local/share/dv/bin/dv-*` but this app's builds and the one
   `~/.local/bin/dv` links to (another app's install may have pointed it there since; a running
-  server keeps its deleted file), and temporary copies an install left more than an hour ago.
-  `~/.local/share/dv`'s other folders are never touched.
+  server keeps its deleted file), the `.packaged` marker of a build that is gone, and temporary
+  copies an install left more than an hour ago. `~/.local/share/dv`'s other folders are never
+  touched.
 - **Sandbox** `DV_WSL_HOME` (a POSIX path): every launch, install, prune and check runs as `…
   --exec /usr/bin/env HOME=<it> /bin/sh -c …`, so tests and agents' runs install into a scratch
   folder under the distro's `/tmp`, never the user's own home. One check decides what it means,
@@ -1266,7 +1314,7 @@ Global flags: `--repo <path>` (also `\\wsl.localhost\<distro>\<path>`), `--wsl <
 - **`setup path [--remove] [--yes]`** puts dv on `PATH` (§12.2 item 3): on Windows this
   executable's folder appended to the user `Path` (`HKCU\Environment`), `WM_SETTINGCHANGE`
   broadcast (a hidden `--dir` names another folder: tests, the installer's hooks for the
-  installed copy, phase 7); on Linux and inside a distro `~/.local/bin/dv` linked to this dv
+  installed copy, §13.3); on Linux and inside a distro `~/.local/bin/dv` linked to this dv
   and, when `~/.local/bin` isn't on the user's shell's `PATH`, a line in its startup file;
   macOS exit 2 (`unsupported`). `--remove` takes back exactly that folder, link and line. It
   asks as `setup agents` does. `--json`: `{dir, action: added | unchanged | removed | absent,
@@ -1395,7 +1443,10 @@ doesn't. A deleted thread is not found.
   what is wrong (the missing arguments after "the following required arguments were not
   provided:"; a command group named alone, `dv --json review`, for which clap prints the group's
   help on stderr, "'dv review' requires a subcommand but one was not provided"); `--help` and
-  `--version` print on stdout and exit 0.
+  `--version` print on stdout and exit 0. `--version` is `dv <version>`, followed by
+  `(development build)` unless `script/package` built it (§13.2); `dv status --json` names the
+  same as `dv: {version, channel}`, `channel` `release` or `development`
+  (`dv_backend::build`).
 - Human output: short stable lines, fields two spaces apart, no colour. A thread's place reads
   `path:12`, `path:14-16 (moved from 12-14)` or `path (outdated, was 12)` (with its trail,
   `path (outdated, was 12, replaced by 40-45)` or `(outdated, was 12, removed before 40)`), and a
@@ -1780,20 +1831,25 @@ Keyboard map and states: DESIGN §5.
    booted to check it; one stopped in the instant between that and the probe would still boot,
    a window this leaves.
 2. **dv in the distro** (`dv`): this app's Linux build installed and intact and
-   `~/.local/bin/dv` running it (`dv_backend::install::probe`); Install is §5.2's install, with
-   its progress. Until it is there, the distro's other checks aren't listed (a note says so).
+   `~/.local/bin/dv` running it, or, for a development build, the installed copy's packaged
+   build (§5.2's link rule; the detail says which build the link runs) (`dv_backend::install::
+   probe`); Install is §5.2's install, with its progress. Until it is there, the distro's other checks aren't listed (a note says so).
    When its dv can't run them, a failed `checks` row says why (so `dv doctor` exits 1).
 3. **CLI on PATH** (`path`): **Windows:** the `dv.exe` a terminal runs, found along the
    machine's `Path` (`HKLM\…\Session Manager\Environment`, read only) then the user's (HKCU
    `Environment`): this executable's folder first is ok; absent is missing (Add to PATH);
    another folder's `dv.exe` ahead of it (an older install, the first implementation's
-   `dist\dv.exe`) fails, naming that `dv.exe`. Applying writes the user `Path`: this folder
+   `dist\dv.exe`) fails, naming that `dv.exe` (the installed copy's, Velopack's `current`
+   folder with `Update.exe` above it, reads "the installed dv comes first": what a development
+   build run from `target\debug` says once dv is installed, which is right). Applying writes the user `Path`: this folder
    before the first entry holding another `dv.exe` (any later entry of its own taken out), else
    at the end, then `WM_SETTINGCHANGE`; a `dv.exe` in the machine's `Path` stays ahead, which
    only an administrator changes, so that check stays failed, naming the folder, with no button,
    and `dv setup path` says so. `--remove` takes out exactly this folder's entries, leaving no
    empty one. Entries match by their expansion (`%VAR%`), case, quotes and a trailing `\`
-   aside. **Linux and each distro:** `~/.local/bin/dv` linking to this dv and `~/.local/bin` on
+   aside. **Linux and each distro:** `~/.local/bin/dv` linking to this dv (for a development
+   build, the installed copy's packaged build will do, which it leaves alone: §5.2's link
+   rule) and `~/.local/bin` on
    the user's shell's `PATH`, read from their interactive login shell as the language servers'
    resolver reads it (`dv_lsp::resolve::shell::read_here`, §18.4); else a marked line
    (`checks::path::RC_MARK`) in the file that shell reads as an interactive login shell:
@@ -1802,8 +1858,8 @@ Keyboard map and states: DESIGN §5.
    printed the `PATH`, else `$SHELL`. After adding the line the shell is asked again (still
    lacking it is an error); a line there that the shell doesn't pick up fails the check. **macOS:**
    skipped (unverified, §13.2; its usual places need an admin prompt). `dv setup path` applies
-   it, `--remove` takes it back; phase 7's installer hooks call both for the installed `dv.exe`'s
-   folder.
+   it, `--remove` takes it back; Velopack's install and uninstall hooks call them for
+   the installed copy's `current` folder (D9).
 4. **Agent skills** (`skill-claude-code`, `skill-codex`, `skill-cursor`): per agent set up in
    the environment's home (§10.5), installed, missing, out of date (differs from this build's
    `SKILL.md`) or skipped (agent not installed); Install / Update is `dv setup agents`.
@@ -1818,8 +1874,8 @@ Keyboard map and states: DESIGN §5.
    run; any other failure (offline, a timeout) is failed with gh's own first line. dv never runs
    `gh auth login` itself.
 7. **Later:** default editor for "Open in editor" (VS Code / Cursor / Zed, with WSL remote URIs),
-   `dv://` URL handler and Explorer/Finder "Review in dv" entry come with polish (phase 9); the
-   update channel with packaging (phase 7).
+   `dv://` URL handler and Explorer/Finder "Review in dv" entry come with polish (phase 9). The update
+   feed is no check: `settings.json`'s `update.feed` (D9).
 
 **A distro's checks run as that distro's Linux dv** (`dv_cli::checks::distro`), so they read and
 write the distro user's own home, shell, `~/.claude`, `~/.agents`, `$CODEX_HOME` and `gh`:
@@ -1857,20 +1913,31 @@ setup**.
 
 ### 13.1 Binaries
 - **Windows:** `dv.exe` (console subsystem: CLI, and launches the GUI detached) + `dv-gui.exe`
-  (windows subsystem). The split exists only because a Windows exe is one or the other.
-  `dv.exe` is a console program in every build, so a headless command prints and returns its
-  exit code in a terminal. `dv` and `dv open` start the GUI detached (`crates/dv/src/launch.rs`):
-  the same binary again with the hidden `--no-detach`, `DETACHED_PROCESS |
-  CREATE_NEW_PROCESS_GROUP` on Windows (its own process group elsewhere), stdio closed, while
-  the first returns 0 at once; `--automation` and `--no-detach` run the GUI in the process.
+  (windows subsystem). The split exists only because a Windows exe is one or the other. Both
+  are thin `main`s over the `dv` crate's library (`src/main.rs`, `src/bin/dv-gui.rs`, `dv::main`),
+  so they share everything; `dv-gui` needs the `gui` feature. `dv.exe` is a console program in
+  every build, so a headless command prints and returns its exit code in a terminal. `dv` and
+  `dv open` start the GUI detached (`crates/dv/src/launch.rs`): in a packaged build (an
+  installed copy) `dv-gui.exe` when it is beside `dv.exe`, else — a development build always,
+  so it never starts a `dv-gui.exe` an older build left in `target` — the same binary again
+  with the hidden `--no-detach`, `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` on Windows (its
+  own process group elsewhere), stdio closed, while the first returns 0 at once; `--automation`
+  and `--no-detach` run the GUI in the process. The detached line names what it opens
+  absolutely: a path, `--repo` and `--wsl` become `open <absolute path>` (`--review <id>`
+  after it), a bare `dv` in a repository `open <its absolute path>`, the app's own options
+  kept, so the GUI opens the same thing whatever folder it starts in. `cargo run -p dv` runs
+  `dv` (`default-run`). `dv-gui.exe` always runs the GUI in its own process (the Start menu's
+  shortcut and Velopack start it, with no console to flash); handed a headless command or a
+  line that doesn't parse it says so in a message box and exits 2, the commands being
+  `dv.exe`'s, and `--help` / `--version` show their text in an information box and exit 0. Both carry dv's
+  icon (DESIGN §1.7) as resource 1, which gpui loads as the window's icon, and a version
+  resource (`crates/dv/build.rs`, `embed-resource`, Windows only).
   A Windows child inherits every inheritable handle of its parent, the caller's stdout pipe
   among them, so the first makes its own standard handles non-inheritable before it starts the
   second: a caller capturing the output (`$(dv open .)`, an agent's shell tool) sees its end at
   once, not when the window closes. The detached GUI has no console, so a fatal startup error is
   a message box (`fatal.rs`): one before the app starts (the data dir) and one inside it (the
   window can't open, the fonts don't load) alike.
-  `dv-gui.exe` comes with packaging (phase 7, for shortcuts and the installer); until then a
-  double-clicked `dv.exe` flashes a console window while it detaches the GUI.
 - **macOS:** `dv.app` containing one `dv` binary; the CLI is a symlink to it.
 - **Linux:** one `dv` binary (GUI + CLI + backend), plus the static musl build used inside WSL.
 
@@ -1920,13 +1987,51 @@ Every gate runs locally through one script, `script/check` (bash; also used by a
 build -p dv --no-default-features --release --target x86_64-unknown-linux-musl` with the target
 dir on ext4 and `CARGO_PROFILE_RELEASE_STRIP=symbols` (the release profile itself stays as the
 Windows build has it); the result, a static ELF of about 5 MB that `--version` runs, is copied
-beside the Windows builds as `target/debug/dv-linux-x86_64` and `target/release/dv-linux-x86_64`.
+beside the Windows builds as `target/debug/dv-linux-x86_64` and `target/release/dv-linux-x86_64`
+(`--debug-only`: the first alone). `--out <dir>` copies it to that folder alone and `--profile
+<name>` builds with another Cargo profile (stripped the same way): packaging's own copy, which
+never touches `target/release`. `DV_CHANNEL` and `DV_VERSION` in its environment reach the build.
 `--aarch64` adds `aarch64-unknown-linux-musl` linked with `rust-lld` (`dv-linux-aarch64`; it links
 here, checked 2026-10-10; when it can't, the script says so and the x86_64 build stands). No
 dependency of the headless shape needs a C toolchain beyond what the musl target ships. **The
 Linux builds ship beside `dv.exe`, not embedded in it**: an embedded build would force a WSL
 build into every Windows build. The app looks in `DV_LINUX_DIR` when set, else its own folder;
-packaging (phase 7) puts them beside the installed `dv.exe`.
+packaging puts them beside the installed `dv.exe` (below).
+
+**A Windows release** is `script/package [--publish] [--version <semver>] [--aarch64]` (bash;
+Windows only; never run by `script/check`). By default it is a **trial**: everything below, its
+installer and feed in the scratch folder `target/package/try`, which no installed copy reads.
+**`--publish` is the owner's alone** (no agent passes it): it writes the feed the packaged app
+names, `target/package/releases`, so the owner's installed copy updates to it. It builds nothing
+until the version is settled, then:
+1. **the version** (`dv_package`, a never-shipped helper crate): the workspace's with a prerelease
+   of the UTC time, `0.1.0-local.20261018093012`, or `--version`'s; it must be newer than every
+   release already in the folder it writes (`releases.*.json`: the trial folder, or the
+   published feed with `--publish`), since Velopack updates only to a newer version and `vpk
+   pack` refuses another; later local releases are newer, and the workspace's own `0.1.0`
+   once released is newer than all of them. So an explicit `--version` of the workspace's own
+   (`--version 0.1.0`, or anything above `0.1.0-local.*`) published to the feed blocks every
+   later default local version there: each must then be named with a higher `--version`;
+2. **the app** in the shipped shape (`-p dv --no-default-features --features gui`) with the
+   `dist` profile (`[profile.dist]`, release's settings: its own `target/dist`, so packaging
+   never writes `target/release`, the owner's own build; its limited debug info stays there as
+   `.pdb` files, which `vpk pack` leaves out), with `DV_CHANNEL=release`, `DV_VERSION=<version>`
+   and `DV_UPDATE_FEED` baked in (`dv_backend::build`, D9), the feed always the published one,
+   `target\package\releases`, whether or not this run publishes; `target/dist/dv.exe --version`
+   must say that version;
+3. **the Linux build** the same way, `script/build-linux --profile dist --out
+   target/package/linux` (with `--aarch64` when asked);
+4. **the stage**, `target/package/stage`: `dv.exe`, `dv-gui.exe`, `dv-linux-x86_64` (and
+   `dv-linux-aarch64`);
+5. **`vpk pack`** (found on `PATH`, else `%USERPROFILE%\.dotnet\tools\vpk.exe`; missing, exit 2
+   with `winget install Microsoft.DotNet.SDK.8` and `dotnet tool install -g vpk`): pack id `dv`,
+   title `dv`, `--mainExe dv-gui.exe`, dv's icon, `--runtime win-x64`, the default channel
+   `win`, `--shortcuts StartMenuRoot` (no desktop shortcut), `--noPortable`,
+   `--skipVeloAppCheck` (vpk can't read a Rust binary's startup code), into the trial folder or
+   the feed: `dv-win-Setup.exe`, `dv-<version>-full.nupkg`, from the second release there on
+   `dv-<version>-delta.nupkg`, `releases.win.json` and the older `RELEASES`.
+It never runs the installer, `Update.exe` or a built dv but `dv.exe --version`, and stops when
+the checkout's drive would have under 30 GB free.
 
 macOS has no local machine: macOS-only code is kept compiling by `cargo check --target
 aarch64-apple-darwin` where that works without the SDK, and is otherwise unverified until a Mac or
@@ -1937,6 +2042,14 @@ phase 10's CI is available.
 Windows per-user `%LOCALAPPDATA%\dv\` (Velopack), settings in `%APPDATA%\dv\`; macOS
 `/Applications/dv.app`, `~/Library/Application Support/dv/`; Linux AppImage or tarball,
 `$XDG_CONFIG_HOME/dv/`. Every data path honours `--data-dir` / `DV_DATA_DIR` (tests, §14).
+
+On Windows Velopack puts the app in `%LOCALAPPDATA%\dv\current\` (`dv.exe`, `dv-gui.exe`, the
+Linux builds; the same folder after every update), `Update.exe` beside `current`, downloaded
+packages in `packages\`. The install hook puts `current` on the user `Path`, ahead of an older
+`dv.exe` there, and the uninstall hook takes it off (D9, §12.2); the Start menu's "dv" starts
+`dv-gui.exe`. The installed copy's updates come from its feed (D9: the packaging checkout's
+`target\package\releases`, or `settings.json`'s `update.feed`). In a WSL distro its Linux build
+owns `~/.local/bin/dv` (§5.2's link rule).
 
 ---
 

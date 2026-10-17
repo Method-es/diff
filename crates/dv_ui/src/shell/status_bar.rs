@@ -9,18 +9,26 @@
 //! Retry); once it is connected, the review's own state as for a local one. A connection closed
 //! for idleness (PLAN §5.1: an open review whose watch couldn't start holds none) is up too,
 //! since the next call starts it again: the review's own state shows.
+//!
+//! At the right, when an update of dv is downloaded (PLAN D9, `crate::services::Updates`),
+//! "dv <version> is ready" in `accentText` and **Restart to update**, which applies it, asking
+//! first over the status bar when that would close other dv processes or this window's unsent
+//! text; a restart that failed reads "Update failed · details" in `red` (why in its tooltip) with
+//! **Retry**.
 
 use dv_backend::ConnectionState;
 use dv_core::Location;
 use dv_core::review::ThreadCounts;
 use gpui::{
-    AnyElement, App, Context, Hsla, ParentElement as _, Styled as _, div,
+    AnyElement, App, Context, Hsla, InteractiveElement as _, IntoElement as _, ParentElement as _,
+    StatefulInteractiveElement as _, Styled as _, Window, anchored, deferred, div, point,
     prelude::FluentBuilder as _, px,
 };
 
 use super::Shell;
 use crate::automation::AutomationTargetExt as _;
-use crate::components::{kbd, status_label};
+use crate::components::{icon, kbd, menu_panel, small_button, status_label, tooltip};
+use crate::icons::DvIcon;
 use crate::keymap;
 use crate::services::ActiveServices as _;
 use crate::theme::{DvTheme, StyledText as _};
@@ -211,6 +219,148 @@ impl Shell {
         }
     }
 
+    /// The update downloaded and ready, with Restart to update, or the restart that failed,
+    /// with Retry (module docs), if there is one.
+    fn render_update_item(&self, theme: &DvTheme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let updates = cx.services().updates.read(cx);
+        let version = updates.ready_version()?.to_string();
+        let failure = updates.failure().map(str::to_string);
+        let c = &theme.colors;
+        let (label, tip) = match &failure {
+            Some(_) => ("Retry", format!("Try installing dv {version} again")),
+            None => (
+                "Restart to update",
+                format!("Quit dv, install {version} and start it again"),
+            ),
+        };
+        let restart = small_button("update-restart", label, theme)
+            .h(theme.sizes.control_xsmall_height)
+            .tooltip(tooltip(tip))
+            .on_click(cx.listener(|this, _, _, cx| this.request_update_restart(cx)))
+            .automation_target("status/update/restart");
+        let line = match failure {
+            Some(error) => div()
+                .id("update-failed")
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .text_color(c.red)
+                .child(icon(DvIcon::TriangleAlert, px(13.), c.red))
+                .child(
+                    div()
+                        .text_spec(&theme.text.secondary)
+                        .child("Update failed · details"),
+                )
+                .tooltip(tooltip(format!("dv {version} wasn't installed: {error}")))
+                .automation_target("status/update/failed")
+                .into_any_element(),
+            None => div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .text_color(c.accent_text)
+                .child(icon(DvIcon::ArrowUp, px(13.), c.accent_text))
+                .child(
+                    div()
+                        .text_spec(&theme.text.secondary)
+                        .child(format!("dv {version} is ready")),
+                )
+                .into_any_element(),
+        };
+        Some(
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(line)
+                .child(restart)
+                .automation_target("status/update"),
+        )
+    }
+
+    /// Restart to update (or Retry): with what this window holds, which the update service
+    /// asks about before it restarts (`Updates::request_restart`).
+    fn request_update_restart(&mut self, cx: &mut Context<Self>) {
+        let unsaved = self.unsaved_text(cx);
+        let updates = cx.services().updates.clone();
+        updates.update(cx, |updates, cx| updates.request_restart(unsaved, cx));
+    }
+
+    /// The confirmation Restart to update shows when applying would close something (module
+    /// docs): what will close, **Not now** and **Restart anyway**, over the status bar's right
+    /// end, as a language server's details are.
+    pub(super) fn render_update_confirm(
+        &self,
+        window: &Window,
+        theme: &DvTheme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let updates = cx.services().updates.clone();
+        let read = updates.read(cx);
+        let closes = read.confirm()?.to_vec();
+        let version = read.ready_version().unwrap_or_default().to_string();
+        let c = &theme.colors;
+        let not_now = {
+            let updates = updates.clone();
+            small_button("update-not-now", "Not now", theme)
+                .on_click(move |_, _, cx| updates.update(cx, |u, cx| u.cancel_restart(cx)))
+                .automation_target("status/update/not_now")
+        };
+        let anyway = small_button("update-restart-anyway", "Restart anyway", theme)
+            .on_click(move |_, _, cx| updates.update(cx, |u, cx| u.confirm_restart(cx)))
+            .automation_target("status/update/restart_anyway");
+        let panel = menu_panel("update-confirm", theme)
+            .w(px(420.))
+            .p(theme.spacing.lg)
+            .flex()
+            .flex_col()
+            .gap(theme.spacing.sm)
+            .text_spec(&theme.text.body)
+            .child(
+                div()
+                    .text_spec(&theme.text.title)
+                    .child(format!("Restart into dv {version}?")),
+            )
+            .child(
+                div()
+                    .text_color(c.fg2)
+                    .child("Installing the update now closes:"),
+            )
+            .children(closes.into_iter().map(|line| {
+                div()
+                    .flex()
+                    .gap(theme.spacing.sm)
+                    .text_color(c.fg)
+                    .child(div().text_color(c.fg3).child("•"))
+                    .child(div().flex_1().min_w_0().child(line))
+            }))
+            .child(
+                div()
+                    .mt(theme.spacing.sm)
+                    .flex()
+                    .justify_end()
+                    .gap(theme.spacing.sm)
+                    .child(not_now)
+                    .child(anyway),
+            );
+        let bottom = window.viewport_size().height - theme.sizes.status_bar_height;
+        let right = window.viewport_size().width - theme.spacing.lg;
+        Some(
+            deferred(
+                anchored()
+                    .position(point(right, bottom - px(6.)))
+                    .anchor(gpui::Anchor::BottomRight)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(panel.automation_target("status/update/confirm")),
+            )
+            .with_priority(super::render::MENU_PRIORITY)
+            .into_any_element(),
+        )
+    }
+
     pub(super) fn render_status_bar(&self, theme: &DvTheme, cx: &mut Context<Self>) -> AnyElement {
         let c = &theme.colors;
         let line = self.status_line(cx);
@@ -253,6 +403,7 @@ impl Shell {
                     )
             })
             .child(div().flex_1())
+            .children(self.render_update_item(theme, cx))
             .children(self.render_skill_notice(theme, cx))
             .children(self.render_server_items(theme, cx))
             .when(line.finish, |this| {

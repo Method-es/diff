@@ -25,7 +25,7 @@ WSL; macOS and Linux supported. Agents read and answer reviews through the `dv` 
 
 | Crate | Role | gpui? |
 |---|---|---|
-| `dv` | bin: entry for the GUI (the `gui` feature), the CLI and `dv backend --stdio`, in three shapes: default (`gui` + `automation`), the shipped app (`--no-default-features --features gui`) and headless (`--no-default-features`: no gpui, the static musl build for WSL distros, whose `dv` and `dv open` exit 2 saying to open the repo from Windows, `windowless`); one clap tree (`cli`, the headless commands flattened in from `dv_cli` and run before any gpui code), the GUI started detached and what `dv open` opens (`launch`); automation host (`automation` feature, on by default), which also seeds scenario repos with `dv_test_support` (in process, or through a loopback `dv backend --stdio` it can kill and block: `backends`) and plays a scenario's agent through its own CLI (`cli`, `cli_spawn`, `cli_join`: this executable as a child process) | with `gui` |
+| `dv` | lib + bins `dv` (`dv.exe`, the console program) and `dv-gui` (the windows-subsystem app, with `gui`), thin `main`s over `dv::main`: entry for the GUI (the `gui` feature), the CLI and `dv backend --stdio`, in three shapes: default (`gui` + `automation`), the shipped app (`--no-default-features --features gui`) and headless (`--no-default-features`: no gpui, the static musl build for WSL distros, whose `dv` and `dv open` exit 2 saying to open the repo from Windows, `windowless`); one clap tree (`cli`, the headless commands flattened in from `dv_cli` and run before any gpui code), the GUI started detached (`dv-gui.exe` when a packaged `dv.exe` has it beside it) on an absolute `open` line and what `dv open` opens (`launch`); on Windows Velopack's install and uninstall hooks (`installer`, PLAN D9) and an installed copy's updates, which ask before they close other dv processes (`updates`, `processes`); the icon and version resource (`build.rs`, `resources/windows/dv.svg` → `dv.ico`, `tests/app_icon.rs`); automation host (`automation` feature, on by default), which also seeds scenario repos with `dv_test_support` (in process, or through a loopback `dv backend --stdio` it can kill and block: `backends`) and plays a scenario's agent through its own CLI (`cli`, `cli_spawn`, `cli_join`: this executable as a child process) | with `gui` |
 | `dv_ui` | views (`shell`, `switcher`, `file_list`, `comments_list`, `diff_pane`, `thread`, `submit`, …) and their keys (`keymap`, `actions`), services (`Settings`, `Locations` with the app's `Connections` and how WSL is reached, `WslAccess`; `Reviews`, `ReviewUi`), the open review (`session::ReviewSession`: its comparison, interdiff or all changes, where each thread shows, through `dv_core`'s placement, and its remote backend's connection, `session::connection`), highlighting (`syntax`, token kinds) and comment Markdown (`markdown`, sanitised), the file view (`diff_pane::file_view`: one file whole in the stream's pane, a one-file scope), the file finder (`file_finder`, `Ctrl P`) and the history of positions (`history`, `Alt ←`/`→`), code intelligence (`intel`: `CodeIntel` per review, the hover card, the References tab, and the `LanguageServers` service, one server per worktree, spec and executable, through `dv_lsp`; the shell's navigation and status bar items, `shell::intel`), the Glass theme (`theme`), window material (`appearance`, `platform`), assets, the `system` and `automation` seams (PLAN §11) | yes |
 | `dv_core` | locations, the `Backend` trait and `LocalBackend` (PLAN §5.1; `probe_path`, the one read-only op for an absolute path outside the worktree, for the language servers' resolvers) with the processes a backend runs where its repo lives (`backend::process`: `spawn_stdio`, a process group or job of its own, PLAN §18.3), the job object children that die with dv join on Windows (`job`), targets and their labels (`label`), git runner, diff pipeline, one side's files whole (`diff::side_file`: a side's paths and one file's text as the pipeline decodes it), review event store, anchors, relocation and placement (`review::relocate`, a file the review doesn't change included: `place_unlisted`), a thread's round snapshot read for renames and where its code went (`review::history`), the diff around a thread's code now (`review::excerpt`), GitHub via `gh` (PLAN §6–§9) | **never** |
 | `dv_backend` | the stdio protocol (`proto`: JSON lines, bytes base64, `WireError` for every `BackendError`), the `dv backend --stdio` server loop (`server`), how a server starts (`launch`: `Launcher::Command` a child process such as a loopback `dv backend --stdio`, `Launcher::Wsl` a distro's through `wsl.exe`, `Launcher::InProcess` a thread over in-memory pipes for tests), `RemoteBackend` over a `Connection` with its lifecycle (`client`: state and `subscribe`, reconnect with backoff 1/2/5 s then `Failed` until `retry`, worktrees re-opened and watches resubscribed with a synthetic rescan, remote processes ended by a death, `kill` as a test seam) and the app's `Connections` registry, build hashes (`build`), WSL (`wsl`: the distros, the `/bin/sh` scripts run through `wsl.exe` as a `Shell`, the launch with its markers) and this app's Linux builds and their install, prune and check in a distro (`install`) (PLAN §5); a test helper bin, never shipped: `dv_test_child`, the process the conformance suite spawns and its child-process loopback server | never |
@@ -35,6 +35,7 @@ WSL; macOS and Linux supported. Agents read and answer reviews through the `dv` 
 | `mock_gh` | bin: fake `gh` for tests (PLAN §14.2) | never |
 | `mock_lsp` | bin: a scripted language server for tests and scenarios (`DV_LSP_<ID>` names it; scenario `--scenario` / `DV_MOCK_LSP`, log `--log` / `DV_MOCK_LSP_LOG`, PLAN §18.7) | never |
 | `dv_test_support` | dev-only lib: `FixtureRepo` and shared test helpers (PLAN §14.2) | never |
+| `dv_package` | dev-only lib + bin: `script/package`'s release version rule (PLAN §13.2) | never |
 
 Direction: `dv` → {`dv_ui`, `dv_cli`, `dv_core`}; `dv_ui` → {`dv_cli`, `dv_backend`, `dv_lsp`,
 `dv_core`, `gpui-component`}; `dv_cli` → {`dv_backend`, `dv_lsp`, `dv_core`}; `dv_lsp` → `dv_core`; `dv_backend` →
@@ -88,6 +89,15 @@ selection, which `dv_ui` copies through the clipboard seam) (PLAN D1). Don't gue
   for the appearance × material in use) and never hard-code a colour. Shared sizes (DESIGN §1.5:
   control and bar heights, radii, the spacing scale, type) come from the theme too; a one-off
   pixel value copied from the design board may stay inline next to the element it sizes.
+- **Installing and updating are the owner's.** No agent, test or script runs `Setup.exe`,
+  `Update.exe` or a dv executable with Velopack's hook arguments (`--veloapp-install`,
+  `--veloapp-updated`, `--veloapp-uninstall`, any `--veloapp-*`): they write the real
+  `%LOCALAPPDATA%\dv`, the real user `Path` and the Start menu. The hooks' logic is tested through
+  the `Path` seam (`crates/dv/src/installer.rs`). `target/release` is the owner's own build: build
+  releases with `script/package` (its `dist` profile, `target/dist`), never `--release` into the
+  default target dir, and never write `target/release`. No agent passes `script/package
+  --publish`: it writes `target/package/releases`, the feed the owner's installed copy updates
+  from, so any release there reaches his app; an agent's run is a trial (`target/package/try`).
 - **Live checks are the owner's.** `DV_LIVE_WSL=1` and `DV_LIVE_GH=1` (PLAN §14.3) touch a real
   distro's home and the `kylekz/difftest` repo; no agent, script or scenario sets them.
 - **The owner's WSL home is off limits.** Nothing an agent, a test or a script runs installs
@@ -121,7 +131,12 @@ script/check --foreground    # also tests/e2e/foreground: takes the focus for a 
 script/check --linux         # also step 6: the headless crates and dv tested and linted in WSL
                              # Ubuntu, script/build-linux --debug-only, the real WSL sandboxed under /tmp
 script/build-linux [--aarch64] [--debug-only]   # the static musl dv for WSL:
-                             # target/{debug,release}/dv-linux-x86_64 (--debug-only: debug's alone)
+                             # target/{debug,release}/dv-linux-x86_64 (--debug-only: debug's alone;
+                             # --out <dir> [--profile dist]: only there, script/package's form)
+script/package [--version <semver>] [--aarch64]  # a trial Windows release (PLAN §13.2): target/dist,
+                             # target/package/{linux,stage,try}; Setup.exe and a feed nothing reads
+                             # (needs vpk; never run the installer it makes; --publish, which writes
+                             # the installed app's feed target/package/releases, is the owner's)
 
 cargo build                  # the dv binary (default member)
 cargo build --workspace

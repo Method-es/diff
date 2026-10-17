@@ -1,6 +1,8 @@
 //! `dv setup wsl <distro> [--yes]` (docs/PLAN.md §5.2, §12): installs this build of dv in a WSL
 //! distro, or checks that it is there and intact, and points the distro's `~/.local/bin/dv` at
-//! it: the install the app makes when it first opens a repository there, ahead of time.
+//! it: the install the app makes when it first opens a repository there, ahead of time. A
+//! development build leaves that link on the installed copy's packaged build (PLAN §5.2's link
+//! rule, `dv_backend::install`).
 //!
 //! On Windows only (inside a distro dv is the Linux build already: exit 2). The Linux build is
 //! the one beside this executable (`DV_LINUX_DIR` names another folder), `script/build-linux`'s
@@ -81,7 +83,7 @@ pub(crate) fn wsl(
             output::warning(ctx, warning)?;
         }
         linked = done.linked;
-        if !linked {
+        if !linked && !done.kept {
             output::warning(ctx, &link_fix(&distro.name, &probe))?;
         }
     }
@@ -120,6 +122,13 @@ fn plan(distro: &str, probe: &Probe, len: u64) -> Vec<String> {
         LinkState::None => format!("{distro}  link  {link} to it"),
         LinkState::Other => format!("{distro}  link  {link} to it, replacing what is there"),
         LinkState::Directory => format!("{distro}  leave  {link} (a directory)"),
+        LinkState::Packaged if probe.packaged => {
+            format!("{distro}  link  {link} to it, replacing the installed dv's older build")
+        }
+        LinkState::Packaged => format!(
+            "{distro}  keep  {link} (runs the installed dv; this development build runs as \
+             itself)"
+        ),
     });
     lines
 }

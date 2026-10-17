@@ -82,6 +82,7 @@ fn a_probe_is_up_to_date_when_the_build_is_intact_and_the_link_runs_it() {
         path: "/home/kyle/.local/share/dv/bin/dv-abc".into(),
         build,
         link,
+        packaged: false,
     };
     assert!(probe(BuildState::Ok, LinkState::Ok).up_to_date());
     assert!(probe(BuildState::Ok, LinkState::Directory).up_to_date());
@@ -93,6 +94,38 @@ fn a_probe_is_up_to_date_when_the_build_is_intact_and_the_link_runs_it() {
         probe(BuildState::Ok, LinkState::Ok).link_path(),
         "/home/kyle/.local/bin/dv"
     );
+}
+
+#[test]
+fn a_development_build_is_up_to_date_with_the_installed_copys_link_and_a_packaged_one_isnt() {
+    // The link on another build with its `.packaged` marker: the installed copy's (PLAN §5.2).
+    let probe = |packaged, build, link| Probe {
+        arch: Arch::X86_64,
+        home: "/home/kyle".into(),
+        path: "/home/kyle/.local/share/dv/bin/dv-abc".into(),
+        build,
+        link,
+        packaged,
+    };
+    assert!(probe(false, BuildState::Ok, LinkState::Packaged).up_to_date());
+    assert!(!probe(true, BuildState::Ok, LinkState::Packaged).up_to_date());
+    assert!(!probe(false, BuildState::Missing, LinkState::Packaged).up_to_date());
+    assert!(probe(true, BuildState::Ok, LinkState::Ok).up_to_date());
+    assert!(!probe(true, BuildState::Ok, LinkState::Other).up_to_date());
+}
+
+#[test]
+fn builds_are_packaged_when_this_app_is() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("dv-linux-x86_64"), b"abc").unwrap();
+    let builds = LinuxBuilds::find(dir.path()).unwrap();
+    assert_eq!(builds.packaged(), crate::build::is_packaged());
+    assert_eq!(
+        builds.get(Arch::X86_64).unwrap().packaged,
+        crate::build::is_packaged()
+    );
+    let packaged = builds.with_packaged(true);
+    assert!(packaged.packaged() && packaged.get(Arch::X86_64).unwrap().packaged);
 }
 
 /// The scripts under this machine's `/bin/sh` in a scratch home.
@@ -124,7 +157,7 @@ mod local {
             )
             .unwrap();
             Self {
-                builds: LinuxBuilds::find(&folder).unwrap(),
+                builds: LinuxBuilds::find(&folder).unwrap().with_packaged(false),
                 shell: Shell::local(Some(home.to_str().unwrap().to_string())).unwrap(),
                 home,
                 _dir: dir,
@@ -182,6 +215,7 @@ mod local {
             Installed {
                 path: scratch.installed().to_str().unwrap().to_string(),
                 linked: true,
+                kept: false,
                 warnings: Vec::new(),
             }
         );
@@ -393,6 +427,127 @@ mod local {
         assert_eq!(
             prune(&fresh.shell, &fresh.builds).unwrap(),
             Vec::<String>::new()
+        );
+    }
+
+    /// Another build of the stand-in dv, in its own folder under the scratch's: `packaged` or
+    /// not.
+    fn other_builds(scratch: &Scratch, name: &str, packaged: bool) -> LinuxBuilds {
+        let folder = scratch._dir.path().join(name);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join(Arch::host().file_name()),
+            format!("#!/bin/sh\necho \"{name}: $*\"\n"),
+        )
+        .unwrap();
+        LinuxBuilds::find(&folder).unwrap().with_packaged(packaged)
+    }
+
+    #[test]
+    fn a_development_build_leaves_the_installed_copys_link_alone() {
+        let scratch = Scratch::new();
+        let installed = other_builds(&scratch, "installed", true);
+        let packaged = installed.get(Arch::host()).unwrap();
+        let packaged_path = scratch.bin().join(format!("dv-{}", packaged.hash));
+        let done = install(&scratch.shell, packaged, &|_, _| {}).unwrap();
+        assert!(done.linked && !done.kept, "{done:?}");
+        assert!(
+            scratch
+                .bin()
+                .join(format!("dv-{}.packaged", packaged.hash))
+                .is_file()
+        );
+        assert_eq!(std::fs::read_link(scratch.link()).unwrap(), packaged_path);
+
+        // The development build installs and runs as itself; the link stays the installed
+        // copy's, and that is up to date for it.
+        let probe = scratch.probe();
+        assert_eq!(
+            (probe.build, probe.link, probe.packaged),
+            (BuildState::Missing, LinkState::Packaged, false)
+        );
+        let done = install(&scratch.shell, scratch.build(), &|_, _| {}).unwrap();
+        assert!(!done.linked && done.kept, "{done:?}");
+        assert_eq!(done.warnings, Vec::<String>::new());
+        assert_eq!(std::fs::read_link(scratch.link()).unwrap(), packaged_path);
+        assert!(scratch.installed().is_file());
+        assert!(
+            !scratch
+                .bin()
+                .join(format!("dv-{}.packaged", scratch.build().hash))
+                .exists()
+        );
+        let probe = scratch.probe();
+        assert_eq!(probe.link, LinkState::Packaged);
+        assert!(probe.up_to_date());
+        // Its prune keeps the build the link runs, and its marker.
+        assert_eq!(
+            prune(&scratch.shell, &scratch.builds).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(names(&scratch.bin()), {
+            let mut names = vec![
+                format!("dv-{}", packaged.hash),
+                format!("dv-{}.packaged", packaged.hash),
+                format!("dv-{}", scratch.build().hash),
+            ];
+            names.sort();
+            names
+        });
+
+        // The installed copy's build gone (removed by hand): a development build takes the
+        // link, and a prune drops the marker left without its build.
+        std::fs::remove_file(&packaged_path).unwrap();
+        let done = install(&scratch.shell, scratch.build(), &|_, _| {}).unwrap();
+        assert!(done.linked && !done.kept, "{done:?}");
+        assert_eq!(
+            std::fs::read_link(scratch.link()).unwrap(),
+            scratch.installed()
+        );
+        prune(&scratch.shell, &scratch.builds).unwrap();
+        assert_eq!(
+            names(&scratch.bin()),
+            [format!("dv-{}", scratch.build().hash)]
+        );
+    }
+
+    #[test]
+    fn a_packaged_build_always_takes_the_link() {
+        let scratch = Scratch::new();
+        // A development build first, then the installed copy's release: it takes the link.
+        install(&scratch.shell, scratch.build(), &|_, _| {}).unwrap();
+        let first = other_builds(&scratch, "first", true);
+        let done = install(&scratch.shell, first.get(Arch::host()).unwrap(), &|_, _| {}).unwrap();
+        assert!(done.linked && !done.kept, "{done:?}");
+        // A newer release takes it from the older one, whose probe says so.
+        let second = other_builds(&scratch, "second", true);
+        let before = probe(&scratch.shell, &second).unwrap();
+        assert_eq!(before.link, LinkState::Packaged);
+        assert!(!before.up_to_date());
+        let newer = second.get(Arch::host()).unwrap();
+        let done = install(&scratch.shell, newer, &|_, _| {}).unwrap();
+        assert!(done.linked && !done.kept, "{done:?}");
+        let newer_path = scratch.bin().join(format!("dv-{}", newer.hash));
+        assert_eq!(std::fs::read_link(scratch.link()).unwrap(), newer_path);
+        assert!(probe(&scratch.shell, &second).unwrap().up_to_date());
+
+        // The newer release's prune removes the older one with its marker, and the
+        // development build.
+        let older = first.get(Arch::host()).unwrap();
+        let mut pruned = prune(&scratch.shell, &second).unwrap();
+        pruned.sort();
+        let mut expected = vec![
+            format!("dv-{}", older.hash),
+            format!("dv-{}", scratch.build().hash),
+        ];
+        expected.sort();
+        assert_eq!(pruned, expected);
+        assert_eq!(
+            names(&scratch.bin()),
+            [
+                format!("dv-{}", newer.hash),
+                format!("dv-{}.packaged", newer.hash)
+            ]
         );
     }
 }

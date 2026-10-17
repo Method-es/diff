@@ -1,0 +1,41 @@
+{"scenario": {"window_size": "1440x900", "description": "dv's own update (PLAN D9, DESIGN §4.1's status bar): an automation run checks no feed, so nothing shows; through the seam an installed copy's updates report to, an update downloaded and ready shows 'dv <version> is ready' and Restart to update at the status bar's right. With other dv processes running from the install, Restart to update asks first (what will close, Not now, Restart anyway), and Not now keeps everything; a restart that fails reads 'Update failed · details' with Retry; with an unsent comment the confirmation names it, and Restart anyway records the restart (a scripted run never applies one) and dv keeps running, the draft intact."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "seed_repo", "name": "api", "steps": [{"write": "src/app.ts", "text": "export const a = 1;\n"}, {"commit": "base"}, {"write": "src/app.ts", "text": "export const a = 2;\n"}], "save": {"repo": "/path"}}
+{"cmd": "open_review", "path": "${repo}"}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/session/target", "equals": "working"}, {"pointer": "/update/ready", "equals": null}, {"pointer": "/update/restart_requested", "equals": false}, {"pointer": "/update/scripted", "equals": false}]}
+
+// Ready, with two other dv processes running from the install: Restart to update asks first.
+{"cmd": "update_ready", "version": "0.1.0-local.20261018120000", "others": 2, "expect_result": [{"pointer": "/ready", "equals": "0.1.0-local.20261018120000"}]}
+{"cmd": "settle", "expect": [{"pointer": "/update/ready", "equals": "0.1.0-local.20261018120000"}, {"pointer": "/update/scripted", "equals": true}, {"pointer": "/update/confirm", "equals": null}]}
+{"cmd": "screenshot", "name": "update-ready"}
+{"cmd": "set_setting", "key": "mode", "value": "light"}
+{"cmd": "screenshot", "name": "update-ready-light"}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "click", "target": "status/update/restart"}
+{"cmd": "settle", "expect": [{"pointer": "/update/confirm", "equals": ["2 other dv windows or commands running from this install"]}, {"pointer": "/update/restart_requested", "equals": false}]}
+{"cmd": "screenshot", "name": "update-confirm"}
+{"cmd": "click", "target": "status/update/not_now"}
+{"cmd": "settle", "expect": [{"pointer": "/update/confirm", "equals": null}, {"pointer": "/update/restart_requested", "equals": false}, {"pointer": "/update/ready", "equals": "0.1.0-local.20261018120000"}]}
+
+// A restart that fails says so, why in its tooltip, with Retry.
+{"cmd": "update_ready", "version": "0.1.0-local.20261018120000", "fail": "Update.exe isn't where Velopack put it"}
+{"cmd": "click", "target": "status/update/restart"}
+{"cmd": "settle", "expect": [{"pointer": "/update/failure", "equals": "Update.exe isn't where Velopack put it"}, {"pointer": "/update/restart_requested", "equals": false}, {"pointer": "/update/confirm", "equals": null}]}
+{"cmd": "mouse_move", "target": "status/update/failed"}
+{"cmd": "wait", "ms": 800}
+{"cmd": "screenshot", "name": "update-failed"}
+
+// An unsent comment: the confirmation names it; Restart anyway goes on, and the draft is still
+// there in a run that only records the restart.
+{"cmd": "key", "keystroke": "j"}
+{"cmd": "key", "keystroke": "c"}
+{"cmd": "type", "text": "not sent yet"}
+{"cmd": "settle", "expect": {"pointer": "/session/composer/text", "equals": "not sent yet"}}
+{"cmd": "update_ready", "version": "0.1.0-local.20261018120000"}
+{"cmd": "click", "target": "status/update/restart"}
+{"cmd": "settle", "expect": [{"pointer": "/update/confirm", "equals": ["your unsent comment in this window"]}, {"pointer": "/update/restart_requested", "equals": false}]}
+{"cmd": "screenshot", "name": "update-confirm-draft"}
+{"cmd": "click", "target": "status/update/restart_anyway"}
+{"cmd": "settle", "expect": [{"pointer": "/update/restart_requested", "equals": true}, {"pointer": "/update/confirm", "equals": null}, {"pointer": "/update/failure", "equals": null}, {"pointer": "/session/composer/text", "equals": "not sent yet"}]}
+{"cmd": "quit"}

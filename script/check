@@ -60,7 +60,7 @@ step() {
 }
 
 # The crates that must never depend on gpui, even transitively (PLAN §4).
-headless_crates=(dv_core dv_backend dv_cli dv_lsp mock_gh mock_lsp dv_test_support)
+headless_crates=(dv_core dv_backend dv_cli dv_lsp mock_gh mock_lsp dv_test_support dv_package)
 
 step 1 "cargo fmt --all --check"
 cargo fmt --all --check

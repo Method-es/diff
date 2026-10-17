@@ -183,6 +183,17 @@ fn windows_dir(seams: &Seams, dir: Option<&Path>) -> Result<PathBuf, String> {
         .ok_or_else(|| "can't tell which folder this dv is in".to_string())
 }
 
+/// Whether `folder` is an installed copy's (PLAN §13.3): Velopack's `current` folder, with the
+/// installation's `Update.exe` beside it.
+pub fn is_installed_copy(folder: &Path) -> bool {
+    folder
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("current"))
+        && folder
+            .parent()
+            .is_some_and(|root| root.join("Update.exe").is_file())
+}
+
 /// Whether `folder` holds a `dv.exe`.
 fn has_dv(folder: &Path) -> bool {
     folder.join("dv.exe").is_file()
@@ -226,10 +237,18 @@ fn windows_check(seams: &Seams) -> Check {
             id::PATH,
             TITLE,
             State::Failed,
-            format!(
-                "another dv comes first on PATH, so a terminal runs it, not this one: {}",
-                by.join("dv.exe").display()
-            ),
+            if is_installed_copy(&by) {
+                format!(
+                    "the installed dv comes first on PATH, so a terminal runs it, not this \
+                     one: {}",
+                    by.join("dv.exe").display()
+                )
+            } else {
+                format!(
+                    "another dv comes first on PATH, so a terminal runs it, not this one: {}",
+                    by.join("dv.exe").display()
+                )
+            },
         )
         .with_fix(Fix::apply("Put this dv first", "dv setup path")),
         Ok(Resolved::Shadowed {
@@ -264,6 +283,10 @@ mod unix {
         link: PathBuf,
         /// `~/.local/bin/dv` runs this dv.
         linked: bool,
+        /// `~/.local/bin/dv` runs the installed copy's packaged build (its `.packaged` marker
+        /// beside it, `dv_backend::install`), and this is a development build, which leaves
+        /// that link alone (PLAN §5.2).
+        installed: bool,
         /// `~/.local/bin` is on the shell's `PATH`.
         on_path: bool,
         /// The shell printed its `PATH` (else `on_path` can't be told).
@@ -282,10 +305,18 @@ mod unix {
             .ok_or_else(|| "can't tell where this dv is".to_string())?;
         let bin = home.join(".local").join("bin");
         let link = bin.join("dv");
-        let linked = match (std::fs::canonicalize(&link), std::fs::canonicalize(exe)) {
-            (Ok(target), Ok(exe)) => target == exe,
+        let target = std::fs::canonicalize(&link).ok();
+        let linked = match (&target, std::fs::canonicalize(exe)) {
+            (Some(target), Ok(exe)) => *target == exe,
             _ => false,
         };
+        let installed = !linked
+            && !dv_backend::build::is_packaged()
+            && target.is_some_and(|target| {
+                let mut marker = target.into_os_string();
+                marker.push(".packaged");
+                Path::new(&marker).exists()
+            });
         let shell = dv_lsp::resolve::shell::read_here(&[(
             "HOME".to_string(),
             Some(home.display().to_string()),
@@ -310,11 +341,28 @@ mod unix {
             bin,
             link,
             linked,
+            installed,
             on_path,
             asked,
             rc,
             rc_has_line,
         })
+    }
+
+    impl Look {
+        /// `~/.local/bin/dv` runs what it should: this dv, or the installed copy's.
+        fn runs(&self) -> bool {
+            self.linked || self.installed
+        }
+
+        /// What `~/.local/bin/dv` runs, for a check's detail.
+        fn runs_what(&self) -> &'static str {
+            if self.linked {
+                "this dv"
+            } else {
+                "the installed dv (packaged; a development build leaves the link alone)"
+            }
+        }
     }
 
     /// The startup file the shell named `shell` reads as an interactive login shell (module
@@ -354,8 +402,9 @@ mod unix {
         let link = look.link.display();
         let bin = look.bin.display();
         let rc = look.rc.display();
-        match (look.linked, look.on_path) {
-            (true, true) => Check::new(id::PATH, TITLE, State::Ok, format!("{link} runs this dv")),
+        let runs = look.runs_what();
+        match (look.runs(), look.on_path) {
+            (true, true) => Check::new(id::PATH, TITLE, State::Ok, format!("{link} runs {runs}")),
             (false, _) => Check::new(
                 id::PATH,
                 TITLE,
@@ -368,7 +417,7 @@ mod unix {
                 TITLE,
                 State::Ok,
                 format!(
-                    "{link} runs this dv, and {rc} puts {bin} on PATH (the shell couldn't be asked)"
+                    "{link} runs {runs}, and {rc} puts {bin} on PATH (the shell couldn't be asked)"
                 ),
             ),
             (true, false) if look.rc_has_line => Check::new(
@@ -398,7 +447,7 @@ mod unix {
                 steps.push(format!("take dv's line out of {}", look.rc.display()));
             }
         } else {
-            if !look.linked {
+            if !look.runs() {
                 steps.push(format!("link {} to this dv", look.link.display()));
             }
             if !look.on_path && !look.rc_has_line {
@@ -419,7 +468,7 @@ mod unix {
             .as_deref()
             .ok_or_else(|| "can't tell where this dv is".to_string())?;
         let mut changed = false;
-        if !look.linked {
+        if !look.runs() {
             link(&look.link, exe)?;
             changed = true;
         }

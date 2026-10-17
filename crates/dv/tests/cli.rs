@@ -114,7 +114,7 @@ fn help_lists_every_command_and_the_version_prints() {
     assert_eq!(version.status.code(), Some(0));
     assert_eq!(
         stdout(&version),
-        format!("dv {}\n", env!("CARGO_PKG_VERSION"))
+        format!("dv {}\n", dv_backend::build::version_text())
     );
 }
 

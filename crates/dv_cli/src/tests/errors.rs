@@ -159,7 +159,10 @@ fn parse_errors_are_json_when_json_is_asked_for() {
     assert!(ran.stdout.contains("comment"), "{}", ran.stdout);
     let ran = fixture.run(&["--version"]);
     assert_eq!(ran.exit, Exit::Ok);
-    assert_eq!(ran.stdout, format!("dv {}\n", env!("CARGO_PKG_VERSION")));
+    assert_eq!(
+        ran.stdout,
+        format!("dv {}\n", dv_backend::build::version_text())
+    );
 }
 
 #[test]

@@ -220,6 +220,17 @@ impl SettingsFile {
             .unwrap_or_default()
     }
 
+    /// `update.feed` as written by hand: the folder (or URL) of `vpk pack` output an installed
+    /// dv updates from instead of the one its build names (PLAN D9, §13.3); `Some("")` turns
+    /// updates off. Read only: dv keeps the key as it is, like every key it doesn't own.
+    pub fn update_feed(&self) -> Option<String> {
+        self.extra
+            .get("update")?
+            .get("feed")?
+            .as_str()
+            .map(|feed| feed.trim().to_string())
+    }
+
     /// The keys kept from the file that this version doesn't know.
     pub fn unknown_keys(&self) -> impl Iterator<Item = &str> {
         self.extra.keys().map(String::as_str)
@@ -605,6 +616,22 @@ mod tests {
         assert_eq!(file.unknown_keys().collect::<Vec<_>>(), ["later_key"]);
         assert_eq!(problems.len(), 1);
         assert!(problems[0].contains("newer dv"));
+    }
+
+    #[test]
+    fn the_update_feed_is_read_from_a_key_dv_keeps_as_written() {
+        let (file, _) = SettingsFile::parse(r#"{"update": {"feed": " D:\\releases ", "x": 1}}"#);
+        assert_eq!(file.update_feed().as_deref(), Some(r"D:\releases"));
+        let written: Value = serde_json::from_str(&file.to_json()).unwrap();
+        assert_eq!(
+            written["update"],
+            serde_json::json!({"feed": " D:\\releases ", "x": 1})
+        );
+        for text in ["{}", r#"{"update": 3}"#, r#"{"update": {"feed": 3}}"#] {
+            assert_eq!(SettingsFile::parse(text).0.update_feed(), None, "{text}");
+        }
+        let (off, _) = SettingsFile::parse(r#"{"update": {"feed": ""}}"#);
+        assert_eq!(off.update_feed().as_deref(), Some(""));
     }
 
     #[test]

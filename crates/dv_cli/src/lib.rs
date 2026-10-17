@@ -46,6 +46,17 @@ pub use error::{CliError, Exit};
 pub use identity::CLAUDE_CODE;
 pub use repo::{location, this_distro};
 
+/// What `dv --version` prints after `dv ` (`dv_backend::build::version_text`): the version,
+/// and whether this is a development build.
+pub fn version_text() -> &'static str {
+    dv_backend::build::version_text()
+}
+
+/// Whether `script/package` built this dv (`dv_backend::build::is_packaged`, PLAN §13.2).
+pub fn is_packaged() -> bool {
+    dv_backend::build::is_packaged()
+}
+
 /// Runs a parsed headless command with `ctx`; an error is reported on stderr (and, with
 /// `--json`, on stdout) before its exit code is returned (PLAN §10.3).
 pub fn run(global: &GlobalArgs, command: Command, ctx: &mut Context) -> Exit {

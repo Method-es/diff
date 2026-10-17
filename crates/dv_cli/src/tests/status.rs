@@ -13,6 +13,10 @@ fn status_names_the_repo_and_the_current_review() {
     let json = fixture.run(&["status", "--json"]).ok_json();
     let root = fixture.backend().repo().toplevel.clone();
     assert_eq!(
+        json["dv"],
+        json!({"version": env!("CARGO_PKG_VERSION"), "channel": "development"})
+    );
+    assert_eq!(
         json["repo"],
         json!({"root": root, "branch": "main", "head": "main"})
     );

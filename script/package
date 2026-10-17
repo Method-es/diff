@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# A local release of dv for Windows (docs/PLAN.md D9, §13.2, §13.3): the shipped shape built
+# with its own profile, the Linux builds beside it, and `vpk pack` making the installer and the
+# update feed an installed copy updates from.
+#
+#   script/package                    a trial: the next version (below), x86_64 Linux build,
+#                                     into target/package/try, which no installed copy reads
+#   script/package --publish          the same into the feed the installed app updates from,
+#                                     target/package/releases: the owner's alone, never an
+#                                     agent's (CLAUDE.md)
+#   script/package --version <semver> that version instead
+#   script/package --aarch64          also the aarch64 Linux build (dv-linux-aarch64)
+#
+# 1. the version: the workspace's with the UTC time, `0.1.0-local.20261018093012`, or
+#    --version's; it must be newer than every release already in the folder this run writes
+#    (the trial folder, or the feed with --publish), which `dv_package` checks before anything
+#    builds (crates/dv_package: Velopack updates only to a newer one)
+# 2. the app, `cargo build -p dv --no-default-features --features gui --profile dist`, with
+#    DV_CHANNEL=release, DV_VERSION=<version> and DV_UPDATE_FEED=<the feed> baked in (always
+#    target/package/releases, a trial's too): target/dist/dv.exe and dv-gui.exe, never
+#    target/release (the owner's own build)
+# 3. the Linux build the same way, `script/build-linux --profile dist --out
+#    target/package/linux`, never target/debug's or target/release's copy
+# 4. dv.exe, dv-gui.exe and dv-linux-* staged in target/package/stage
+# 5. `vpk pack` (pack id `dv`, main executable dv-gui.exe, the icon, a Start menu shortcut and no
+#    desktop one, no portable zip) into the trial folder or the feed: dv-win-Setup.exe,
+#    dv-<version>-full.nupkg, from the second release there on dv-<version>-delta.nupkg, and
+#    releases.win.json with the older RELEASES
+#
+# It never runs the installer or Update.exe, and never runs a built dv but `dv.exe --version`.
+# vpk is a .NET tool: without it this exits 2 saying how to install it. It stops when D: would
+# have under 30 GB free.
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+usage: script/package [--publish] [--version <semver>] [--aarch64]
+
+  builds a local release of dv (Setup.exe and an update feed) into target/package/try
+  --publish           into target/package/releases instead, the feed the installed app updates
+                      from (the owner's alone)
+  --version <semver>  the release's version [default: the workspace's, -local.<UTC time>]
+  --aarch64           also the aarch64 Linux build
+EOF
+}
+
+explicit=""
+publish=0
+aarch64=()
+while [[ $# -gt 0 ]]; do
+    arg="$1"
+    shift
+    case "$arg" in
+        --version)
+            if [[ $# -eq 0 || -z "$1" ]]; then
+                echo "script/package: --version needs a value" >&2
+                exit 2
+            fi
+            explicit="$1"
+            shift
+            ;;
+        --publish) publish=1 ;;
+        --aarch64) aarch64=(--aarch64) ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "script/package: unknown argument: $arg" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+case "$(uname -s)" in
+    MINGW* | MSYS* | CYGWIN*) ;;
+    *)
+        echo "script/package: packages the Windows app; run it from Git Bash on Windows" >&2
+        exit 2
+        ;;
+esac
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+step() {
+    printf '\n==> [%s] %s\n' "$1" "$2"
+}
+
+# vpk: on PATH, else where `dotnet tool install -g` puts it.
+vpk="$(command -v vpk 2> /dev/null || true)"
+if [[ -z "$vpk" && -n "${USERPROFILE:-}" ]]; then
+    candidate="$(cygpath -u "$USERPROFILE")/.dotnet/tools/vpk.exe"
+    if [[ -x "$candidate" ]]; then
+        vpk="$candidate"
+    fi
+fi
+if [[ -z "$vpk" ]]; then
+    cat >&2 <<'EOF'
+script/package: vpk (Velopack's packaging tool) isn't installed. It is a .NET tool:
+  winget install Microsoft.DotNet.SDK.8
+  dotnet tool install -g vpk
+then open a new terminal and run script/package again.
+EOF
+    exit 2
+fi
+
+package="$root/target/package"
+# The feed every packaged build names (DV_UPDATE_FEED), which the owner's installed copy reads;
+# only --publish writes it. A trial run writes its own folder, which nothing reads.
+feed="$package/releases"
+if [[ "$publish" -eq 1 ]]; then
+    out="$feed"
+else
+    out="$package/try"
+fi
+stage="$package/stage"
+linux="$package/linux"
+dist="$root/target/dist"
+
+# D: keeps 30 GB free (CLAUDE.md "Disk"); a release build adds a few.
+free_kb="$(df -Pk "$root" | awk 'NR == 2 { print $4 }')"
+if [[ -n "$free_kb" && "$free_kb" -lt $((30 * 1024 * 1024)) ]]; then
+    echo "script/package: under 30 GB free where the checkout is; free some space first" >&2
+    exit 1
+fi
+
+step 1 "the version"
+base="$(sed -n '/^\[workspace.package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+stamp="$(date -u +%Y%m%d%H%M%S)"
+version_args=(version --base "$base" --feed "$(cygpath -w "$out")" --stamp "$stamp")
+if [[ -n "$explicit" ]]; then
+    version_args+=(--version "$explicit")
+fi
+if ! version="$(cargo run -q -p dv_package -- "${version_args[@]}")"; then
+    exit 2
+fi
+echo "dv $version"
+
+export DV_CHANNEL=release
+export DV_VERSION="$version"
+export DV_UPDATE_FEED
+DV_UPDATE_FEED="$(cygpath -w "$feed")"
+
+step 2 "cargo build -p dv --no-default-features --features gui --profile dist  (target/dist)"
+cargo build -p dv --no-default-features --features gui --profile dist
+said="$("$dist/dv.exe" --version)"
+if [[ "$said" != "dv $version" ]]; then
+    echo "script/package: target/dist/dv.exe --version says \"$said\", not \"dv $version\"" >&2
+    exit 1
+fi
+echo "ok: $said"
+
+step 3 "script/build-linux --profile dist --out target/package/linux ${aarch64[*]}"
+rm -f "$linux"/dv-linux-*
+bash script/build-linux --profile dist --out "$linux" "${aarch64[@]}"
+
+step 4 "staging in target/package/stage"
+rm -rf "$stage"
+mkdir -p "$stage" "$out"
+cp "$dist/dv.exe" "$dist/dv-gui.exe" "$stage/"
+for arch in x86_64 aarch64; do
+    if [[ -f "$linux/dv-linux-$arch" ]]; then
+        cp "$linux/dv-linux-$arch" "$stage/"
+    fi
+done
+if [[ ! -f "$stage/dv-linux-x86_64" ]]; then
+    echo "script/package: the Linux build is missing from $linux" >&2
+    exit 1
+fi
+ls -l "$stage"
+
+step 5 "vpk pack  (${out#"$root/"})"
+# `--skipVeloAppCheck`: vpk can't read a Rust binary's startup code, and dv-gui.exe is never run
+# here. Shortcuts: the Start menu's alone.
+"$vpk" pack --skip-updates \
+    --packId dv \
+    --packVersion "$version" \
+    --packTitle dv \
+    --packAuthors dv \
+    --packDir "$(cygpath -w "$stage")" \
+    --mainExe dv-gui.exe \
+    --icon "$(cygpath -w "$root/crates/dv/resources/windows/dv.ico")" \
+    --runtime win-x64 \
+    --shortcuts StartMenuRoot \
+    --noPortable \
+    --skipVeloAppCheck \
+    --outputDir "$(cygpath -w "$out")"
+
+echo
+ls -l "$out"
+if [[ "$publish" -eq 1 ]]; then
+    printf '\nscript/package: dv %s published in %s\n' "$version" "$(cygpath -w "$out")"
+else
+    printf '\nscript/package: dv %s in %s (a trial; the installed app reads only --publish'"'"'s)\n' \
+        "$version" "$(cygpath -w "$out")"
+fi

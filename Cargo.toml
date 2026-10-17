@@ -75,6 +75,9 @@ anyhow = "1.0"
 base64 = "0.23"
 clap = { version = "4.5", features = ["derive", "env"] }
 dirs = "6"
+# dv.exe's and dv-gui.exe's icon and version resource (`crates/dv/build.rs`); already in the
+# tree through gpui's own manifest.
+embed-resource = "3.0"
 env_logger = "0.11"
 futures = "0.3"
 # The globs a language server registers for `workspace/didChangeWatchedFiles` (`dv_lsp`, PLAN
@@ -97,6 +100,11 @@ parking_lot = "0.12"
 png = "0.18"
 pretty_assertions = "1.4"
 raw-window-handle = "0.6"
+# The app icon's test renders `crates/dv/resources/windows/dv.svg` (`crates/dv/tests/app_icon.rs`);
+# already in the tree through gpui.
+resvg = { version = "0.46", default-features = false }
+# The version of a local release (`dv_package`, PLAN §13.2); already in the tree through velopack.
+semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # The build hash of the Linux dv a WSL distro runs (PLAN §5.2).
@@ -107,6 +115,9 @@ thiserror = "2"
 # new line from scratch (`InputEdit`); already in the tree through gpui-component.
 tree-sitter = "0.26"
 ulid = "3"
+# Velopack (PLAN D9): the install hooks and the updates of the Windows app. Pinned to the `vpk` that
+# packages it (1.2.161): Velopack's crate and CLI versions go together.
+velopack = "=1.2.161"
 windows-sys = "0.61"
 x11rb = "0.13"
 
@@ -123,3 +134,9 @@ debug = false
 debug = "limited"
 lto = "thin"
 codegen-units = 16
+
+# A packaged release (`script/package`, PLAN §13.2): release's settings in its own folder,
+# `target/dist`, so packaging never touches `target/release` (the owner's own build). Its
+# limited debug info stays there as .pdb files beside the binaries; `vpk pack` leaves them out.
+[profile.dist]
+inherits = "release"

@@ -846,3 +846,18 @@ pub fn setup(shell: &Shell, cx: &App) -> Value {
         "environments": environments,
     })
 }
+
+/// `state.update` (PLAN D9): the update ready to restart into (`null` when none), whether the
+/// restart was asked for, what the confirmation says will close while it asks (`confirm`, else
+/// `null`), why the last restart failed (`failure`), and whether the seam's stand-in records it
+/// (`scripted`).
+pub fn update(cx: &App) -> Value {
+    let updates = cx.services().updates.read(cx);
+    json!({
+        "ready": updates.ready_version(),
+        "restart_requested": updates.restart_requested(),
+        "confirm": updates.confirm(),
+        "failure": updates.failure(),
+        "scripted": updates.is_scripted(),
+    })
+}

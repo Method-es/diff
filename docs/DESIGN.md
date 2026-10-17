@@ -86,6 +86,16 @@ inner top highlight `rgba(255,255,255,.06)`.
 Inline stroke icons at 14–16px, 1.5–1.6 stroke, `currentColor`, from one set (Lucide-compatible
 geometry, bundled as SVG paths). No emoji anywhere.
 
+### 1.7 App icon
+dv's icon (the executables, the window and the taskbar, the Start menu's shortcut, the installer)
+is a split diff on an accent tile: a 224/256 square with radius 52 filled with the accent
+(`#b694ff` at the top to `#8c5cf5` at the bottom), on it the title bar's mark — two panes — as
+two code surfaces (`#15141b`, radius 18), each with three lines: `fg3` above and below, the old
+side's middle line `red`, the new side's `green`. It reads at 16 px (the tile and the two coloured
+lines) and on light and dark taskbars alike. The source is `crates/dv/resources/windows/dv.svg`;
+`dv.ico` holds it at 16, 20, 24, 32, 40, 48, 64 (bitmaps) and 256 (PNG), written and checked by
+`crates/dv/tests/app_icon.rs`.
+
 ---
 
 ## 2. Layout
@@ -532,7 +542,19 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   `controlHover` under the pointer: green "TypeScript ready", yellow "TypeScript loading 40%" (its
   progress), "TypeScript restarting…" and "TypeScript waiting for the connection", `fg3` "TypeScript starting…", red
   "failed", and `fg3` "TypeScript missing" for a server the project lacks — then `Ctrl Enter
-  finish review` while the review can still be finished. A click on a server opens its details
+  finish review` while the review can still be finished. When an update of dv is downloaded
+  (PLAN D9) the right end starts with the ↑ glyph and "dv 0.1.0-local.20261018120000 is ready"
+  in `accentText` and a small **Restart to update** button (22 high), which quits dv, installs
+  the update and starts it again on the open review; it shows until then, before the
+  out-of-date notice (§4.3). When installing would close something (other dv processes running
+  from the install, this window's unsent comment or open Finish round sheet, PLAN D9) it asks
+  first, over the status bar's right end as a server's details do (a menu panel 420 wide, 16
+  padding): "Restart into dv <version>?" (title), "Installing the update now closes:" in `fg2`,
+  a `fg3` bullet per thing ("2 other dv windows or commands running from this install", "your
+  unsent comment in this window", "the Finish round sheet in this window"), and right-aligned
+  small buttons **Not now** and **Restart anyway**. A restart that fails turns the item into
+  the warning triangle and "Update failed · details" in `red`, its tooltip "dv <version> wasn't
+  installed: <why>", and **Retry**. A click on a server opens its details
   over the status bar's right end (a menu panel 420 wide, 16 padding, the `popover` surface): the
   dot, the name at 600, its version in `fg3` when the server gives one (`initialize`'s
   `serverInfo`) and its state, **Retry** (a small button) on a failed one with why it failed in

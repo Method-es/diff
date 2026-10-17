@@ -176,7 +176,7 @@ fn an_install_streams_the_build_and_checks_it() {
     // `~/.local/bin/dv` runs it.
     assert_eq!(
         sh(&shell, r#""$HOME/.local/bin/dv" --version"#, &[]),
-        format!("dv {}\n", env!("CARGO_PKG_VERSION"))
+        format!("dv {}\n", dv_backend::build::version_text())
     );
     assert_eq!(
         sh(&shell, r#"readlink "$HOME/.local/bin/dv""#, &[]),

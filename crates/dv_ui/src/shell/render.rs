@@ -123,6 +123,7 @@ impl Render for Shell {
             .children(self.render_sheet(window, &theme))
             .children(self.render_settings(window, &theme))
             .children(self.render_server_details(window, &theme, cx))
+            .children(self.render_update_confirm(window, &theme, cx))
     }
 }
 

@@ -1,12 +1,16 @@
 //! How `dv` (no subcommand) and `dv open` start the app (docs/PLAN.md §10.1, §13.1).
 //!
 //! `dv.exe` is a console program, so every headless command prints and returns its exit code
-//! in a terminal. The app itself starts **detached**: the same binary run again with the hidden
-//! `--no-detach`, with no console (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` on Windows, its
-//! own process group elsewhere), its standard streams closed and none of the caller's handles
-//! inherited ([`spawn_detached`]), while the first one returns 0 at once, also to a caller that
-//! captures its output. `--automation` (a driver talks to it over stdio) and `--no-detach` run
-//! the app in this process instead ([`launch`]).
+//! in a terminal. The app itself starts **detached**: `dv-gui.exe` (the windows-subsystem
+//! binary, PLAN §13.1) when a packaged build (an installed copy) has it beside this executable,
+//! else this same binary run again with the hidden `--no-detach`, with no
+//! console (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` on Windows, its own process group
+//! elsewhere), its standard streams closed and none of the caller's handles inherited
+//! ([`spawn_detached`]), while the first one returns 0 at once, also to a caller that captures
+//! its output. `--automation` (a driver talks to it over stdio) and `--no-detach` run the app
+//! in this process instead, as `dv-gui.exe` always does ([`launch`]).
+//! The detached copy's line names what it opens absolutely (`open <path>`, [`detached_args`]),
+//! so it opens the same repository whatever folder it starts in.
 //!
 //! What the app starts on ([`Startup`]) is worked out before anything starts, so a PR (a later
 //! version) is refused in the terminal; before detaching, a path that isn't a repository and a
@@ -24,6 +28,17 @@ use dv_core::review::{ReviewId, ReviewStore, StoreError};
 
 use crate::cli::{Cli, OpenArgs};
 
+/// Which binary is running: `dv.exe`, the console program, or `dv-gui.exe`, the windowed one
+/// (PLAN §13.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Entry {
+    Console,
+    Gui,
+}
+
+/// The windows-subsystem binary's file name beside `dv.exe`.
+pub const GUI_EXE: &str = "dv-gui.exe";
+
 /// Where the app runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Launch {
@@ -33,9 +48,10 @@ pub enum Launch {
     Detach,
 }
 
-/// Where `cli` (a GUI command line: no subcommand, or `open`) runs the app.
-pub fn launch(cli: &Cli) -> Launch {
-    if cli.automation_enabled() || cli.no_detach {
+/// Where `cli` (a GUI command line: no subcommand, or `open`) runs the app when `entry` reads
+/// it: `dv-gui.exe` never detaches, being the detached app itself.
+pub fn launch(cli: &Cli, entry: Entry) -> Launch {
+    if entry == Entry::Gui || cli.automation_enabled() || cli.no_detach {
         Launch::InProcess
     } else {
         Launch::Detach
@@ -151,19 +167,120 @@ pub fn check(startup: &Startup, options: LocalBackendOptions) -> Result<(), CliE
     Ok(())
 }
 
-/// The command line of the detached copy: `--no-detach`, then this one's arguments (`args`,
-/// the program name first) as given.
-pub fn detached_args(args: &[OsString]) -> Vec<OsString> {
-    std::iter::once(OsString::from("--no-detach"))
-        .chain(args.iter().skip(1).cloned())
-        .collect()
+/// The command line of the detached copy (`args` this one's, the program name first): this
+/// line's own options for the app (`--data-dir`, `--window-size`), `--no-detach`, then what it
+/// opens as [`open_args`] spell it, absolute, from `startup`: a path, `--repo` and `--wsl` all
+/// become `open <absolute path>` (`--review` after it), and a bare `dv` in a repository
+/// (`current_is_repo`) `open <its absolute path>`, so the app opens the same thing whatever
+/// folder it starts in. A bare `dv` elsewhere opens nothing, as here.
+pub fn detached_args(args: &[OsString], startup: &Startup, current_is_repo: bool) -> Vec<OsString> {
+    let mut line = app_options(args);
+    line.push(OsString::from("--no-detach"));
+    match startup {
+        Startup::Nothing => {}
+        Startup::CurrentRepo(location) => {
+            if current_is_repo && matches!(location, Location::Local(_)) {
+                line.extend(open_args(location, None));
+            }
+        }
+        Startup::Repo(location) => line.extend(open_args(location, None)),
+        Startup::Review(location, id) => line.extend(open_args(location, Some(id))),
+    }
+    line
 }
 
-/// Starts this binary again with [`detached_args`], detached from this process's console and
-/// process group, its standard streams closed (module docs, [`spawn_detached`]).
-pub fn detach(args: &[OsString]) -> std::io::Result<()> {
-    let mut command = std::process::Command::new(std::env::current_exe()?);
-    command.args(detached_args(args));
+/// `open <location> [--review <id>]`, the location absolute: a local path made absolute, a WSL
+/// one as its `\\wsl.localhost\<distro>\<path>` share. Also what an update's restart reopens
+/// (`crate::updates`).
+pub fn open_args(location: &Location, review: Option<&ReviewId>) -> Vec<OsString> {
+    let path = match location {
+        Location::Local(path) => std::path::absolute(path)
+            .unwrap_or_else(|_| path.clone())
+            .into_os_string(),
+        Location::Wsl { .. } => OsString::from(location.unc_path().unwrap_or_default()),
+    };
+    let mut line = vec![OsString::from("open"), path];
+    if let Some(id) = review {
+        line.push(OsString::from("--review"));
+        line.push(OsString::from(id.as_str()));
+    }
+    line
+}
+
+/// The app's own options at the start of `args` (the program name first, skipped), with their
+/// values: the tree's options that aren't global (the global ones, and everything from the
+/// command on, are what [`detached_args`] spells as `open …`), but `--no-detach`.
+fn app_options(args: &[OsString]) -> Vec<OsString> {
+    use clap::CommandFactory as _;
+    let tree = crate::cli::Cli::command();
+    let mut out = Vec::new();
+    let mut rest = args.iter().skip(1);
+    while let Some(arg) = rest.next() {
+        let Some(name) = arg
+            .to_str()
+            .and_then(|text| text.strip_prefix("--"))
+            .filter(|name| !name.is_empty())
+        else {
+            break;
+        };
+        let (name, inline) = match name.split_once('=') {
+            Some((name, _)) => (name, true),
+            None => (name, false),
+        };
+        let Some(option) = tree
+            .get_arguments()
+            .find(|option| option.get_long() == Some(name))
+        else {
+            break;
+        };
+        let value = if !inline && option.get_action().takes_values() {
+            rest.next()
+        } else {
+            None
+        };
+        if !option.is_global_set() && name != "no-detach" {
+            out.push(arg.clone());
+            out.extend(value.cloned());
+        }
+    }
+    out
+}
+
+/// The program the detached app runs, for this executable `exe` (module docs): in a packaged
+/// build (`packaged`) on Windows, `dv-gui.exe` beside it when `exists` says it is there; else
+/// `exe` itself, so a development build never starts a `dv-gui.exe` an older build left.
+pub fn detached_program(
+    exe: &Path,
+    packaged: bool,
+    exists: impl Fn(&Path) -> bool,
+) -> std::path::PathBuf {
+    let gui = exe.with_file_name(GUI_EXE);
+    if cfg!(windows) && packaged && exists(&gui) {
+        gui
+    } else {
+        exe.to_path_buf()
+    }
+}
+
+/// Whether `startup`'s bare-`dv` folder is a repository, opened with `options` (the app's:
+/// the user's own git configuration), for [`detached_args`].
+pub fn current_is_repo(startup: &Startup, options: LocalBackendOptions) -> bool {
+    match startup {
+        Startup::CurrentRepo(Location::Local(path)) => {
+            LocalBackend::open_with(path, options).is_ok()
+        }
+        _ => false,
+    }
+}
+
+/// Starts the app with [`detached_args`] ([`detached_program`]), detached from this process's
+/// console and process group, its standard streams closed (module docs, [`spawn_detached`]).
+pub fn detach(args: &[OsString], startup: &Startup) -> std::io::Result<()> {
+    let exe = std::env::current_exe()?;
+    let program = detached_program(&exe, dv_cli::is_packaged(), Path::is_file);
+    let mut command = std::process::Command::new(program);
+    let here = current_is_repo(startup, LocalBackendOptions::default());
+    command.args(detached_args(args, startup, here));
     spawn_detached(command)
 }
 

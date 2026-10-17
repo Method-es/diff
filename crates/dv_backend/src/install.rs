@@ -8,15 +8,24 @@
 //! hashing its own executable.
 //!
 //! **The install layout** in the distro's home: `~/.local/share/dv/bin/dv-<hash>`, and
-//! `~/.local/bin/dv` a symbolic link to the build installed last, so the dv on the distro's
-//! `PATH` is this app's. [`install`] streams a build over `wsl.exe`'s stdin into a temporary
-//! file beside its final name, checks its sha256 and renames it into place, then points the
-//! link at it (a temporary link renamed over the old one). The link is a convenience: the
-//! app's launch and the CLI's run use the build itself, so a link that can't be made (a
-//! directory at `~/.local/bin/dv`, a `~/.local/bin` that isn't a writable folder) is a warning,
-//! never a failed install. [`prune`] removes the other `dv-*` builds of that folder (a running server keeps
-//! its deleted file) and never touches `~/.local/share/dv`'s other folders. [`probe`] reads
-//! the state of all this without changing it (`dv setup wsl`).
+//! `~/.local/bin/dv` a symbolic link to a build, so the dv on the distro's `PATH` is an app's.
+//! [`install`] streams a build over `wsl.exe`'s stdin into a temporary file beside its final
+//! name, checks its sha256 and renames it into place, then points the link at it (a temporary
+//! link renamed over the old one).
+//!
+//! **The link belongs to the installed copy** (PLAN §5.2): a packaged build
+//! (`crate::build::is_packaged`, `script/package`'s) also writes the marker
+//! `dv-<hash>.packaged` beside itself and always takes the link; a development build installs
+//! and runs its own `dv-<hash>` but leaves the link alone while it points at a packaged build
+//! that is there (`dv-kept`), and takes it otherwise. So a development build run beside an
+//! installed dv never replaces the installed copy's `dv` in the distro.
+//!
+//! The link is a convenience: the app's launch and the CLI's run use the build itself, so a
+//! link that can't be made (a directory at `~/.local/bin/dv`, a `~/.local/bin` that isn't a
+//! writable folder) is a warning, never a failed install. [`prune`] removes the other `dv-*`
+//! builds of that folder (a running server keeps its deleted file) and the markers of builds
+//! that are gone, and never touches `~/.local/share/dv`'s other folders. [`probe`] reads the
+//! state of all this without changing it (`dv setup wsl`).
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -40,9 +49,10 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(120);
 /// How long a prune or a probe may take.
 const SCRIPT_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Copies stdin into place as `dv-<$1>` (module docs) and prints `dv-installed <path>`, after
-/// `dv-linked <link>` once `~/.local/bin/dv` runs it; exit 3 (`dv-corrupt <its sha256>`) when
-/// the copy isn't that build, nothing installed. Lines starting `dv:` on stderr are warnings:
+/// Copies stdin into place as `dv-<$1>` (module docs), with its `.packaged` marker when `$2`
+/// is `packaged`, and prints `dv-installed <path>`, after `dv-linked <link>` once
+/// `~/.local/bin/dv` runs it or `dv-kept <link> <build>` when it was left on a packaged build;
+/// exit 3 (`dv-corrupt <its sha256>`) when the copy isn't that build, nothing installed. Lines starting `dv:` on stderr are warnings:
 /// a link that couldn't be made, which leaves the install done.
 pub const INSTALL: &str = r#"d="$HOME/.local/share/dv/bin"
 l="$HOME/.local/bin/dv"
@@ -55,8 +65,12 @@ s=$(sha256sum < "$t") || exit 1
 s=${s%% *}
 if [ "$s" != "$1" ]; then echo "dv-corrupt $s"; exit 3; fi
 mv -f "$t" "$d/dv-$1" || exit 1
+if [ "$2" = packaged ]; then : > "$d/dv-$1.packaged" || exit 1; fi
+k=$(readlink "$l" 2> /dev/null)
 if [ -d "$l" ]; then
   echo "dv: $l is a directory, so it doesn't run this dv; it was left alone" >&2
+elif [ "$2" != packaged ] && [ -n "$k" ] && [ "$k" != "$d/dv-$1" ] && [ -f "$k" ] && [ -e "$k.packaged" ]; then
+  echo "dv-kept $l $k"
 elif e=$({ mkdir -p "$HOME/.local/bin" && ln -sfn "$d/dv-$1" "$l.$$" && mv -f "$l.$$" "$l"; } 2>&1); then
   echo "dv-linked $l"
 else
@@ -69,23 +83,30 @@ echo "dv-installed $d/dv-$1"
 
 /// Removes `~/.local/share/dv/bin/dv-*` but `dv-<$1>`, `dv-<$2>` and the build `~/.local/bin/dv`
 /// links to (another app's install may have pointed it there since), and temporary copies an
-/// install left more than an hour ago, printing `dv-pruned <name>` for each build removed.
+/// install left more than an hour ago, printing `dv-pruned <name>` for each build removed; a
+/// `.packaged` marker goes with its build.
 pub const PRUNE: &str = r#"d="$HOME/.local/share/dv/bin"
 [ -d "$d" ] || exit 0
 k=$(readlink "$HOME/.local/bin/dv" 2> /dev/null)
 for f in "$d"/dv-*; do
   [ -e "$f" ] || [ -L "$f" ] || continue
   n=${f##*/}
+  case "$n" in *.packaged) continue ;; esac
   if [ "$n" != "dv-$1" ] && [ "$n" != "dv-$2" ] && [ "$f" != "$k" ]; then
     rm -f "$f" && echo "dv-pruned $n"
   fi
+done
+for f in "$d"/dv-*.packaged; do
+  [ -e "$f" ] || continue
+  [ -e "${f%.packaged}" ] || rm -f "$f"
 done
 find "$d" -maxdepth 1 -name '.dv-*' -mmin +60 -exec rm -f {} + 2> /dev/null
 exit 0
 "#;
 
 /// Reports, without changing anything, the distro's architecture and home, whether this app's
-/// build for it is installed and intact, and where `~/.local/bin/dv` points. Args: the x86_64
+/// build for it is installed and intact, and where `~/.local/bin/dv` points (`packaged`: at
+/// another build with its `.packaged` marker, the installed copy's). Args: the x86_64
 /// and aarch64 build hashes.
 pub const PROBE: &str = concat!(
     "say() { echo \"$*\"; }\n",
@@ -101,6 +122,7 @@ fi
 l="$HOME/.local/bin/dv"
 if [ -L "$l" ] && [ "$(readlink "$l")" = "$b" ]; then say "dv-link ok"
 elif [ -d "$l" ]; then say "dv-link directory"
+elif [ -L "$l" ] && k=$(readlink "$l") && [ -f "$k" ] && [ -e "$k.packaged" ]; then say "dv-link packaged"
 elif [ -e "$l" ] || [ -L "$l" ]; then say "dv-link other"
 else say "dv-link none"; fi
 "#
@@ -126,6 +148,9 @@ pub struct LinuxBuild {
     /// The build hash: the file's lowercase hex sha256.
     pub hash: String,
     pub len: u64,
+    /// Whether it is a packaged build (`script/package`'s, [`crate::build::is_packaged`] of
+    /// this app), which takes `~/.local/bin/dv` from any other (module docs).
+    pub packaged: bool,
 }
 
 impl LinuxBuild {
@@ -153,6 +178,7 @@ impl LinuxBuild {
                 path,
                 hash: hash.clone(),
                 len,
+                packaged: crate::build::is_packaged(),
             }));
         }
         let hash = crate::build::sha256_file(&path).map_err(|error| read_error(&path, &error))?;
@@ -165,6 +191,7 @@ impl LinuxBuild {
             path,
             hash,
             len,
+            packaged: crate::build::is_packaged(),
         }))
     }
 }
@@ -179,6 +206,8 @@ pub struct LinuxBuilds {
     /// Where they are looked for.
     pub dir: PathBuf,
     builds: Vec<LinuxBuild>,
+    /// This app is a packaged build ([`LinuxBuild::packaged`]).
+    packaged: bool,
 }
 
 impl LinuxBuilds {
@@ -193,7 +222,22 @@ impl LinuxBuilds {
         Ok(Self {
             dir: dir.to_path_buf(),
             builds,
+            packaged: crate::build::is_packaged(),
         })
+    }
+
+    /// These builds as packaged ones or not, whatever this app is: tests of the link rule.
+    pub fn with_packaged(mut self, packaged: bool) -> Self {
+        for build in &mut self.builds {
+            build.packaged = packaged;
+        }
+        self.packaged = packaged;
+        self
+    }
+
+    /// Whether these are a packaged app's builds.
+    pub fn packaged(&self) -> bool {
+        self.packaged
     }
 
     pub fn get(&self, arch: Arch) -> Option<&LinuxBuild> {
@@ -229,6 +273,9 @@ pub struct Installed {
     /// Whether `~/.local/bin/dv` links to it now (module docs: a link that couldn't be made
     /// is a warning).
     pub linked: bool,
+    /// Whether `~/.local/bin/dv` was left on the installed copy's packaged build, as a
+    /// development build leaves it (module docs).
+    pub kept: bool,
     /// What the install warned about: `~/.local/bin/dv` being a directory, or a link that
     /// couldn't be made.
     pub warnings: Vec<String>,
@@ -243,7 +290,10 @@ pub fn install(
 ) -> Result<Installed, WslError> {
     let mut file = File::open(&build.path).map_err(|error| read_error(&build.path, &error))?;
     let output = wsl::run(
-        shell.command(INSTALL, &[&build.hash]),
+        shell.command(
+            INSTALL,
+            &[&build.hash, if build.packaged { "packaged" } else { "dev" }],
+        ),
         Some(Input {
             reader: &mut file,
             len: build.len,
@@ -267,6 +317,9 @@ pub fn install(
             linked: stdout
                 .lines()
                 .any(|line| line.trim().starts_with("dv-linked ")),
+            kept: stdout
+                .lines()
+                .any(|line| line.trim().starts_with("dv-kept ")),
             warnings,
         });
     }
@@ -347,13 +400,22 @@ pub struct Probe {
     pub path: String,
     pub build: BuildState,
     pub link: LinkState,
+    /// This app is a packaged build, which takes the link from the installed copy's
+    /// ([`LinkState::Packaged`]).
+    pub packaged: bool,
 }
 
 impl Probe {
-    /// Whether this app's build is installed, intact, and `~/.local/bin/dv` runs it (or can't,
-    /// being a directory, which an install leaves alone too).
+    /// Whether this app's build is installed, intact, and `~/.local/bin/dv` runs what it
+    /// should: this build, or, for a development build, the installed copy's packaged one
+    /// (module docs); or can't, being a directory, which an install leaves alone too.
     pub fn up_to_date(&self) -> bool {
-        self.build == BuildState::Ok && matches!(self.link, LinkState::Ok | LinkState::Directory)
+        self.build == BuildState::Ok
+            && match self.link {
+                LinkState::Ok | LinkState::Directory => true,
+                LinkState::Packaged => !self.packaged,
+                LinkState::Other | LinkState::None => false,
+            }
     }
 
     /// `~/.local/bin/dv` there.
@@ -379,6 +441,9 @@ pub enum LinkState {
     Ok,
     /// A directory, which an install leaves alone.
     Directory,
+    /// A link to another build that a packaged dv installed (its `.packaged` marker beside
+    /// it): the installed copy's, which a development build leaves alone (module docs).
+    Packaged,
     /// Something else: another build, or the first implementation's file.
     Other,
     /// Nothing.
@@ -425,6 +490,7 @@ pub fn probe(shell: &Shell, builds: &LinuxBuilds) -> Result<Probe, WslError> {
         let link = match *said.get("dv-link")? {
             "ok" => LinkState::Ok,
             "directory" => LinkState::Directory,
+            "packaged" => LinkState::Packaged,
             "other" => LinkState::Other,
             "none" => LinkState::None,
             _ => return None,
@@ -436,6 +502,7 @@ pub fn probe(shell: &Shell, builds: &LinuxBuilds) -> Result<Probe, WslError> {
             home,
             build,
             link,
+            packaged: builds.packaged,
         })
     })();
     match parsed {

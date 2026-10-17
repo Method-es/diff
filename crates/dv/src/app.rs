@@ -151,6 +151,9 @@ fn start(startup: StartOptions, cx: &mut App) -> Result<()> {
         start_automation(&main, automation_pipe, cx)?;
     }
     open_startup(open, &main, cx)?;
+    // An installed copy's updates, in the background (PLAN D9); none under automation.
+    #[cfg(windows)]
+    crate::updates::start(automation, main.shell.clone(), cx);
     // A background run must never take the foreground from the person at the machine.
     if !dv_ui::automation::is_background() {
         cx.activate(true);

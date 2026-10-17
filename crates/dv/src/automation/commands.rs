@@ -1,5 +1,5 @@
-//! The commands that open repositories and reviews, the one that plays the agent, and the one
-//! that writes into the run's scratch home:
+//! The commands that open repositories and reviews, the one that plays the agent, the one that
+//! writes into the run's scratch home, and the one that makes an update of dv ready:
 //!
 //! - `open {path}`: as `dv open <path>` starts the app (`Shell::open_repo`): the repository
 //!   becomes a known one (its worktree root; a WSL path as given), its switcher row is
@@ -16,6 +16,8 @@
 //!   no `thread`). `author` is the agent's name (`agent` by default). The open review sees the
 //!   change through its watch, as it would an agent's, so scenarios `wait_for` it.
 //! - `home_file {path, contents}`: a file in the run's scratch home ([`home_file`]).
+//! - `update_ready {version, others?, fail?}`: an update of dv ready to restart into, through
+//!   the seam, with a stand-in for the install ([`update_ready`]).
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use dv_core::review::{Author, ReviewStatus, ThreadId, ThreadState, ops};
@@ -197,4 +199,38 @@ pub fn home_file(args: &Value, cx: &mut Context<DvAutomation>) -> Result<Value> 
     }
     std::fs::write(&file, contents).with_context(|| format!("writing {}", file.display()))?;
     Ok(json!({"path": file.display().to_string()}))
+}
+
+/// `update_ready {version, others?, fail?}`: an update of dv downloaded and ready, through the
+/// seam an installed copy's updates report to (`dv_ui::services::Updates`, PLAN D9), with a
+/// stand-in for the install: `others` other dv processes running from it (default 0), which
+/// Restart to update asks about first, and `fail` the error its restart reports (default none:
+/// it is recorded, never done). The status bar shows Restart to update; clicking it
+/// (`status/update/restart`) sets `state.update.restart_requested` or opens the confirmation.
+/// Again with other arguments, the stand-in changes. Replies `state.update`.
+pub fn update_ready(args: &Value, cx: &mut Context<DvAutomation>) -> Result<Value> {
+    let args = object("update_ready", args.clone(), &["version", "others", "fail"])?;
+    let version = string("update_ready", &args, "version")?.trim().to_string();
+    if version.is_empty() {
+        bail!("update_ready needs a non-empty \"version\"");
+    }
+    let others = match args.get("others") {
+        None | Some(Value::Null) => 0,
+        Some(value) => value
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .with_context(|| format!("update_ready's \"others\" is a count, not {value}"))?,
+    };
+    let fail = match args.get("fail") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(text)) => Some(text.clone()),
+        Some(other) => bail!("update_ready's \"fail\" is a string, not {other}"),
+    };
+    use dv_ui::ActiveServices as _;
+    let updates = cx.services().updates.clone();
+    updates.update(cx, |updates, cx| {
+        updates.set_updater(dv_ui::services::Updater::Scripted { others, fail });
+        updates.set_ready(version, cx);
+    });
+    Ok(super::state::update(cx))
 }

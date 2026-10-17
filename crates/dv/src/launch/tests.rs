@@ -38,56 +38,184 @@ const REVIEW: &str = "r-01k6zzzzzzzzzzzzzzzzzzzzzz";
 
 #[test]
 fn the_app_detaches_unless_automated_or_told_not_to() {
-    assert_eq!(launch(&gui(&[]).0), Launch::Detach);
-    assert_eq!(launch(&gui(&["open", "."]).0), Launch::Detach);
-    assert_eq!(launch(&gui(&["--no-detach"]).0), Launch::InProcess);
+    assert_eq!(launch(&gui(&[]).0, Entry::Console), Launch::Detach);
     assert_eq!(
-        launch(&gui(&["--no-detach", "open", "."]).0),
+        launch(&gui(&["open", "."]).0, Entry::Console),
+        Launch::Detach
+    );
+    assert_eq!(
+        launch(&gui(&["--no-detach"]).0, Entry::Console),
         Launch::InProcess
     );
-    assert_eq!(launch(&gui(&["--automation"]).0), Launch::InProcess);
     assert_eq!(
-        launch(&gui(&["--automation-pipe", "dv-x"]).0),
+        launch(&gui(&["--no-detach", "open", "."]).0, Entry::Console),
+        Launch::InProcess
+    );
+    assert_eq!(
+        launch(&gui(&["--automation"]).0, Entry::Console),
+        Launch::InProcess
+    );
+    assert_eq!(
+        launch(&gui(&["--automation-pipe", "dv-x"]).0, Entry::Console),
         Launch::InProcess
     );
 }
 
 #[test]
-fn the_detached_copy_runs_in_process_with_the_same_arguments() {
-    let args: Vec<OsString> = [
-        "dv",
-        "--data-dir",
-        "D:\\x",
-        "open",
-        "repo",
-        "--review",
-        REVIEW,
-    ]
-    .iter()
-    .map(OsString::from)
-    .collect();
-    let detached = detached_args(&args);
-    assert_eq!(
-        detached,
-        [
-            "--no-detach",
-            "--data-dir",
-            "D:\\x",
-            "open",
-            "repo",
-            "--review",
-            REVIEW
-        ]
-        .iter()
-        .map(OsString::from)
-        .collect::<Vec<_>>()
+fn dv_gui_always_runs_the_app_in_its_own_process() {
+    for line in [&[][..], &["open", "."], &["--no-detach"]] {
+        assert_eq!(
+            launch(&gui(line).0, Entry::Gui),
+            Launch::InProcess,
+            "{line:?}"
+        );
+    }
+}
+
+#[test]
+fn the_detached_app_is_dv_gui_beside_a_packaged_dv_and_itself_otherwise() {
+    let exe = Path::new(r"C:\Users\me\AppData\Local\dv\current\dv.exe");
+    let gui = exe.with_file_name("dv-gui.exe");
+    let with_gui = detached_program(exe, true, |path| path == gui);
+    if cfg!(windows) {
+        assert_eq!(with_gui, gui);
+    } else {
+        // macOS and Linux have one binary for both.
+        assert_eq!(with_gui, exe);
+    }
+    // A packaged build without it: this executable again, as `--no-detach`.
+    assert_eq!(detached_program(exe, true, |_| false), exe);
+    // A development build never starts a `dv-gui.exe` beside it, which may be an older
+    // build's (`cargo build --bin dv`).
+    assert_eq!(detached_program(exe, false, |path| path == gui), exe);
+}
+
+fn words(line: &[&str]) -> Vec<OsString> {
+    line.iter().map(OsString::from).collect()
+}
+
+/// The detached line for `dv <args>` run in `cwd`, `current_is_repo` saying whether a bare
+/// `dv` is in a repository.
+fn detached(args: &[&str], cwd: &Path, current_is_repo: bool) -> Vec<OsString> {
+    let startup = startup_of(args, cwd).unwrap();
+    let mut line = vec!["dv"];
+    line.extend_from_slice(args);
+    detached_args(&words(&line), &startup, current_is_repo)
+}
+
+#[test]
+fn the_detached_copy_runs_in_process_and_names_the_repository_absolutely() {
+    let cwd = cwd();
+    let repo = cwd.join("repo");
+    let review = detached(
+        &["--data-dir", r"D:\x", "open", "repo", "--review", REVIEW],
+        &cwd,
+        false,
     );
-    // That line parses, and runs in process.
+    assert_eq!(
+        review,
+        [
+            OsString::from("--data-dir"),
+            OsString::from(r"D:\x"),
+            OsString::from("--no-detach"),
+            OsString::from("open"),
+            repo.clone().into_os_string(),
+            OsString::from("--review"),
+            OsString::from(REVIEW),
+        ]
+    );
+    // That line parses, runs in process, and opens the same review from any folder.
     let mut line = vec![OsString::from("dv")];
-    line.extend(detached);
+    line.extend(review);
     let cli = Cli::try_parse_from(line).unwrap();
-    assert_eq!(launch(&cli), Launch::InProcess);
-    assert!(matches!(cli.command, Some(Command::Open(_))));
+    assert_eq!(launch(&cli, Entry::Console), Launch::InProcess);
+    let Some(Command::Open(open)) = &cli.command else {
+        panic!("{:?}", cli.command);
+    };
+    let elsewhere = std::env::temp_dir().join("somewhere-else");
+    assert_eq!(
+        startup(&cli, Some(open), &elsewhere, None).unwrap(),
+        Startup::Review(
+            Location::Local(repo.clone()),
+            ReviewId::parse(REVIEW).unwrap()
+        )
+    );
+
+    // `dv open .` and `--repo` become `open <absolute path>`; the app's options stay.
+    let dot = detached(&["--window-size", "1100x700", "open", "."], &cwd, false);
+    assert_eq!(
+        &dot[..3],
+        &words(&["--window-size", "1100x700", "--no-detach"])[..]
+    );
+    assert_eq!(dot[3], "open");
+    let opened = PathBuf::from(&dot[4]);
+    assert!(opened.is_absolute(), "{opened:?}");
+    assert_eq!(std::path::absolute(&opened).unwrap(), opened);
+    // `.` resolved: the working directory itself.
+    assert_eq!(opened, cwd);
+    assert_eq!(dot.len(), 5);
+    let flag = detached(&["--repo", "repo"], &cwd, false);
+    assert_eq!(
+        flag,
+        [
+            OsString::from("--no-detach"),
+            OsString::from("open"),
+            repo.clone().into_os_string()
+        ]
+    );
+}
+
+#[test]
+fn a_bare_dv_passes_its_repository_absolutely_and_nothing_elsewhere() {
+    let cwd = cwd();
+    assert_eq!(
+        detached(&[], &cwd, true),
+        [
+            OsString::from("--no-detach"),
+            OsString::from("open"),
+            cwd.clone().into_os_string()
+        ]
+    );
+    assert_eq!(detached(&[], &cwd, false), words(&["--no-detach"]));
+    // A WSL repository goes as its share, whatever this folder is.
+    let wsl = detached(
+        &["open", r"\\wsl.localhost\Ubuntu\home\kyle\api"],
+        &cwd,
+        false,
+    );
+    assert_eq!(
+        wsl,
+        words(&[
+            "--no-detach",
+            "open",
+            r"\\wsl.localhost\Ubuntu\home\kyle\api"
+        ])
+    );
+    assert_eq!(
+        open_args(
+            &Location::Wsl {
+                distro: "Ubuntu".into(),
+                path: "/tmp/x".into()
+            },
+            None
+        ),
+        words(&["open", r"\\wsl.localhost\Ubuntu\tmp\x"])
+    );
+}
+
+#[test]
+fn only_a_bare_dv_in_a_repository_reads_as_one() {
+    let repo = FixtureRepo::new();
+    let options = || LocalBackendOptions {
+        env: repo.env_overlay(),
+    };
+    let here = Startup::CurrentRepo(Location::Local(repo.path().to_path_buf()));
+    assert!(current_is_repo(&here, options()));
+    let empty = tempfile::tempdir().unwrap();
+    let elsewhere = Startup::CurrentRepo(Location::Local(empty.path().to_path_buf()));
+    assert!(!current_is_repo(&elsewhere, options()));
+    let named = Startup::Repo(Location::Local(repo.path().to_path_buf()));
+    assert!(!current_is_repo(&named, options()));
 }
 
 #[test]
