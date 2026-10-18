@@ -27,6 +27,25 @@ fn thread_of<'v>(json: &'v Value, id: &ThreadId) -> &'v Value {
         .unwrap_or_else(|| panic!("no thread {id} in {json}"))
 }
 
+/// `link`, a new link to the folder `target`: a symbolic link, or on Windows a junction, which
+/// needs no privilege.
+fn link_dir(target: &std::path::Path, link: &std::path::Path) {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).unwrap();
+    #[cfg(windows)]
+    {
+        let made = std::process::Command::new("cmd")
+            .arg("/c")
+            .arg("mklink")
+            .arg("/J")
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "mklink /J: {made:?}");
+    }
+}
+
 fn listed(fixture: &Fixture, args: &[&str]) -> Vec<String> {
     let mut line = vec!["comment", "list", "--json"];
     line.extend_from_slice(args);
@@ -113,6 +132,18 @@ fn threads_are_placed_where_their_code_is_now() {
         listed(&fixture, &["--file", absolute.to_str().unwrap()]).len(),
         3,
         "an absolute path inside the work tree"
+    );
+    // The same file through a link to the work tree (a junction on Windows), which git's root
+    // never has: the path counts as the file system resolves it, as one through a Windows 8.3
+    // short name does.
+    let links = tempfile::tempdir().unwrap();
+    let link = links.path().join("linked");
+    link_dir(fixture.path(), &link);
+    let through_link = link.join("src").join("app.ts");
+    assert_eq!(
+        listed(&fixture, &["--file", through_link.to_str().unwrap()]).len(),
+        3,
+        "an absolute path through a link to the work tree"
     );
     assert_eq!(
         listed(&fixture, &["--file", "README.md"]),

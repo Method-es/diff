@@ -114,7 +114,9 @@ impl Repo {
     /// in loses that root, the longer one when both hold it, `\` becomes `/`, and a leading
     /// `./` goes; any other path is taken as already relative to the root. Inside a WSL
     /// distro, a path spelled through that distro's share (`\\wsl.localhost\Ubuntu\…`) is its
-    /// path there first.
+    /// path there first. An absolute path whose spelling starts with neither root is compared
+    /// again as the file system resolves it ([`resolved`]): through a Windows 8.3 short name
+    /// (`RUNNER~1`) or a link, neither of which git's resolved root has.
     pub fn relative_path(&self, path: &str, review: &Review, ctx: &Context) -> String {
         let path = match Location::parse(path.trim()) {
             Ok(Location::Wsl { distro, path }) if in_distro(ctx, &distro) => path,
@@ -122,14 +124,20 @@ impl Repo {
         };
         let roots = [review.worktree.as_str(), self.root()]
             .map(|root| format!("{}/", root.replace('\\', "/").trim_end_matches('/')));
-        let inside = roots
-            .iter()
-            .filter(|root| {
-                path.get(..root.len())
-                    .is_some_and(|head| same_path_text(head, root))
-            })
-            .max_by_key(|root| root.len())
-            .map(|root| &path[root.len()..]);
+        let resolved_path;
+        let mut inside = inside_root(&path, &roots);
+        if inside.is_none()
+            && Path::new(&path).is_absolute()
+            && let Some(long) = resolved(&path)
+        {
+            let long_roots = roots.clone().map(|root| {
+                resolved(&root)
+                    .map(|root| format!("{}/", root.trim_end_matches('/')))
+                    .unwrap_or(root)
+            });
+            resolved_path = long;
+            inside = inside_root(&resolved_path, &long_roots);
+        }
         let mut rel = inside.unwrap_or(&path);
         while let Some(rest) = rel.strip_prefix("./") {
             rel = rest;
@@ -185,6 +193,44 @@ pub fn location(global: &GlobalArgs, cwd: &Path, here: Option<&str>) -> Result<L
         }
         other => Ok(other),
     }
+}
+
+/// What of `path` follows the longest of `roots` (each ending in `/`) that starts it.
+fn inside_root<'a>(path: &'a str, roots: &[String]) -> Option<&'a str> {
+    roots
+        .iter()
+        .filter(|root| {
+            path.get(..root.len())
+                .is_some_and(|head| same_path_text(head, root))
+        })
+        .max_by_key(|root| root.len())
+        .map(|root| &path[root.len()..])
+}
+
+/// `path` as the file system resolves it, `/`-separated: its longest existing ancestor
+/// canonicalized (long names, links followed, Windows' `\\?\` prefix taken off) with the rest
+/// after it as written, since a file the review deleted needn't exist. `None` when no part of
+/// it resolves.
+fn resolved(path: &str) -> Option<String> {
+    let mut rest = Vec::new();
+    let mut ancestor = Path::new(path);
+    let base = loop {
+        if let Ok(base) = std::fs::canonicalize(ancestor) {
+            break base;
+        }
+        rest.push(ancestor.file_name()?);
+        ancestor = ancestor.parent()?;
+    };
+    let mut text = base.to_string_lossy().replace('\\', "/");
+    if let Some(unc) = text.strip_prefix("//?/UNC/") {
+        text = format!("//{unc}");
+    } else if let Some(local) = text.strip_prefix("//?/") {
+        text = local.to_string();
+    }
+    for part in rest.iter().rev() {
+        text = format!("{}/{}", text.trim_end_matches('/'), part.to_string_lossy());
+    }
+    Some(text)
 }
 
 /// Whether two spellings of a path are the same: ignoring case on Windows and macOS, whose
