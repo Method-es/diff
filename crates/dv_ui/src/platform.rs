@@ -6,7 +6,11 @@
 //! older builds lack, and does nothing there), acrylic needs Windows 11 (build 22000; Windows 10
 //! gets Opaque, PLAN D8), and both need "Transparency effects" on
 //! (`HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize\EnableTransparency`).
-//! macOS has vibrancy (gpui's `Blurred`), shown as Acrylic. Linux shows Opaque.
+//! Linux shows Opaque, and so does macOS: gpui's `Blurred` there (an `NSVisualEffectView`
+//! with its tint and saturation layers stripped) leaves the window clear on macOS 27, the
+//! wallpaper sharp behind dv's translucent tints, with no blur at all (seen on the owner's Mac,
+//! active and inactive alike), which reads worse than Opaque; vibrancy comes back once gpui's
+//! blur does (PLAN D8).
 
 use gpui::{Window, WindowBackgroundAppearance};
 
@@ -25,7 +29,7 @@ pub struct MaterialSupport {
 }
 
 impl MaterialSupport {
-    /// Opaque only: Linux, Windows 10, transparency effects off, tests.
+    /// Opaque only: Linux, macOS, Windows 10, transparency effects off, tests.
     pub const OPAQUE_ONLY: Self = Self {
         mica: false,
         acrylic: false,
@@ -42,14 +46,7 @@ impl MaterialSupport {
         {
             Self::for_windows(windows::build_number(), windows::transparency_enabled())
         }
-        #[cfg(target_os = "macos")]
-        {
-            Self {
-                mica: false,
-                acrylic: true,
-            }
-        }
-        #[cfg(not(any(windows, target_os = "macos")))]
+        #[cfg(not(windows))]
         {
             Self::OPAQUE_ONLY
         }

@@ -18,8 +18,8 @@ use gpui::{
 };
 
 use crate::actions::{
-    composer, diff_pane, field, file_finder, file_list, find, first_run, settings, sheet, shell,
-    source_picker, switcher,
+    app, composer, diff_pane, field, file_finder, file_list, find, first_run, settings, sheet,
+    shell, source_picker, switcher,
 };
 
 /// Key context of the shell's root element: everything in the main window.
@@ -266,11 +266,29 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("secondary-x", INPUT, field::Cut),
 ];
 
-/// Binds [`SHORTCUTS`]. Call after `gpui_component::init`, so dv's rows are registered last
-/// and win within a context depth.
+/// The keys every Mac app has (DESIGN §5, "macOS"), bound on macOS only, anywhere in the window:
+/// the app menu shows them (`crate::app_menu`).
+pub const MACOS_SHORTCUTS: &[Shortcut] = &[
+    shortcut!("cmd-q", SHELL, app::Quit),
+    shortcut!("cmd-h", SHELL, app::Hide),
+    shortcut!("alt-cmd-h", SHELL, app::HideOthers),
+    shortcut!("cmd-m", SHELL, app::Minimize),
+];
+
+/// The rows this platform binds: [`SHORTCUTS`], and on macOS [`MACOS_SHORTCUTS`].
+pub fn platform_shortcuts() -> impl Iterator<Item = &'static Shortcut> {
+    let macos: &[Shortcut] = if cfg!(target_os = "macos") {
+        MACOS_SHORTCUTS
+    } else {
+        &[]
+    };
+    SHORTCUTS.iter().chain(macos)
+}
+
+/// Binds [`platform_shortcuts`]. Call after `gpui_component::init`, so dv's rows are registered
+/// last and win within a context depth.
 pub fn init(cx: &mut App) -> anyhow::Result<()> {
-    let bindings = SHORTCUTS
-        .iter()
+    let bindings = platform_shortcuts()
         .map(Shortcut::key_binding)
         .collect::<anyhow::Result<Vec<_>>>()?;
     cx.bind_keys(bindings);
@@ -284,45 +302,90 @@ pub fn shortcut_for(action: &dyn Action, context: &str) -> Option<&'static Short
         .find(|shortcut| shortcut.context == context && (shortcut.action)().partial_eq(action))
 }
 
-/// Keycap text for gpui keystroke syntax (DESIGN §5 writes `Ctrl O`, `Ctrl Enter`): `secondary`
-/// is `Ctrl`, or `Cmd` on macOS; arrows are drawn as arrows; a sequence joins with spaces.
+/// How keycaps spell modifiers (DESIGN §5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Keycaps {
+    /// Windows and Linux: words, `Ctrl O`, `Ctrl Shift K`, `Alt ←`.
+    Words,
+    /// macOS: the symbols of its menus in its order (`⌃⌥⇧⌘`) against the key, `⌘O`, `⇧⌘K`,
+    /// `⌥←`, `⌘↩`.
+    Symbols,
+}
+
+impl Keycaps {
+    /// This platform's.
+    pub const NATIVE: Self = if cfg!(target_os = "macos") {
+        Self::Symbols
+    } else {
+        Self::Words
+    };
+}
+
+/// Keycap text for gpui keystroke syntax in this platform's spelling (DESIGN §5 writes `Ctrl O`,
+/// `Ctrl Enter`; macOS `⌘O`, `⌘↩`): `secondary` is `Ctrl`, or `⌘` on macOS; arrows are drawn as
+/// arrows; a sequence joins with spaces.
 pub fn label(keys: &str) -> SharedString {
+    label_as(keys, Keycaps::NATIVE)
+}
+
+/// [`label`] in the spelling `caps`.
+pub fn label_as(keys: &str, caps: Keycaps) -> SharedString {
     keys.split_whitespace()
-        .map(keystroke_label)
+        .map(|stroke| keystroke_label(stroke, caps))
         .collect::<Vec<_>>()
         .join(" ")
         .into()
 }
 
-fn keystroke_label(stroke: &str) -> String {
+fn keystroke_label(stroke: &str, caps: Keycaps) -> String {
     let (modifiers, key) = match stroke.rsplit_once('-') {
         Some((modifiers, key)) if !key.is_empty() => (modifiers, key),
         _ => ("", stroke),
     };
-    let mut parts: Vec<String> = modifiers
-        .split('-')
-        .filter(|modifier| !modifier.is_empty())
-        .map(|modifier| match modifier {
-            "secondary" if cfg!(target_os = "macos") => "Cmd".to_string(),
-            "secondary" | "ctrl" => "Ctrl".to_string(),
-            "cmd" | "platform" => "Cmd".to_string(),
-            "alt" => "Alt".to_string(),
-            "shift" => "Shift".to_string(),
-            other => capitalize(other),
-        })
-        .collect();
-    parts.push(match key {
+    let modifiers = modifiers.split('-').filter(|modifier| !modifier.is_empty());
+    let key = match key {
         "left" => "←".to_string(),
         "right" => "→".to_string(),
         "up" => "↑".to_string(),
         "down" => "↓".to_string(),
+        "enter" if caps == Keycaps::Symbols => "↩".to_string(),
         "escape" => "Esc".to_string(),
         "pageup" => "PgUp".to_string(),
         "pagedown" => "PgDn".to_string(),
         other if other.chars().count() > 1 => capitalize(other),
         other => other.to_uppercase(),
-    });
-    parts.join(" ")
+    };
+    match caps {
+        Keycaps::Words => {
+            let mut parts: Vec<String> = modifiers
+                .map(|modifier| match modifier {
+                    "secondary" | "ctrl" => "Ctrl".to_string(),
+                    "cmd" | "platform" => "Cmd".to_string(),
+                    "alt" => "Alt".to_string(),
+                    "shift" => "Shift".to_string(),
+                    other => capitalize(other),
+                })
+                .collect();
+            parts.push(key);
+            parts.join(" ")
+        }
+        Keycaps::Symbols => {
+            // macOS's order, whatever order the keystroke names them in; a modifier without a
+            // symbol (`fn`) spelled out ahead of them (`sort_by_key` puts `None` first).
+            const ORDER: [&str; 4] = ["⌃", "⌥", "⇧", "⌘"];
+            let mut symbols: Vec<String> = modifiers
+                .map(|modifier| match modifier {
+                    "ctrl" => "⌃".to_string(),
+                    "alt" => "⌥".to_string(),
+                    "shift" => "⇧".to_string(),
+                    "secondary" | "cmd" | "platform" => "⌘".to_string(),
+                    other => capitalize(other),
+                })
+                .collect();
+            symbols.sort_by_key(|symbol| ORDER.iter().position(|it| it == symbol));
+            symbols.concat() + &key
+        }
+    }
 }
 
 fn capitalize(word: &str) -> String {
@@ -342,7 +405,7 @@ mod tests {
     #[test]
     fn every_row_binds_and_no_keystroke_is_bound_twice_under_one_predicate() {
         let mut seen = HashSet::new();
-        for shortcut in SHORTCUTS {
+        for shortcut in SHORTCUTS.iter().chain(MACOS_SHORTCUTS) {
             shortcut
                 .key_binding()
                 .unwrap_or_else(|error| panic!("{shortcut:?}: {error}"));
@@ -355,20 +418,37 @@ mod tests {
 
     #[test]
     fn labels_read_as_design_writes_them() {
-        let ctrl = if cfg!(target_os = "macos") {
-            "Cmd"
+        let words = |keys| label_as(keys, Keycaps::Words);
+        assert_eq!(words("secondary-o"), "Ctrl O");
+        assert_eq!(words("secondary-enter"), "Ctrl Enter");
+        assert_eq!(words("shift-down"), "Shift ↓");
+        assert_eq!(words("alt-left"), "Alt ←");
+        assert_eq!(words("escape"), "Esc");
+        assert_eq!(words("v j"), "V J");
+        assert_eq!(words("secondary-,"), "Ctrl ,");
+
+        let symbols = |keys| label_as(keys, Keycaps::Symbols);
+        assert_eq!(symbols("secondary-o"), "⌘O");
+        assert_eq!(symbols("secondary-enter"), "⌘↩");
+        assert_eq!(symbols("secondary-shift-k"), "⇧⌘K");
+        assert_eq!(symbols("shift-down"), "⇧↓");
+        assert_eq!(symbols("alt-left"), "⌥←");
+        assert_eq!(symbols("ctrl-alt-shift-cmd-x"), "⌃⌥⇧⌘X");
+        assert_eq!(symbols("cmd-shift-alt-ctrl-x"), "⌃⌥⇧⌘X");
+        // A modifier with no symbol (gpui's `fn`) is spelled out ahead of the symbols.
+        assert_eq!(symbols("shift-fn-x"), "Fn⇧X");
+        assert_eq!(symbols("escape"), "Esc");
+        assert_eq!(symbols("v j"), "V J");
+        assert_eq!(symbols("secondary-,"), "⌘,");
+
+        let native = if cfg!(target_os = "macos") {
+            "⌘O"
         } else {
-            "Ctrl"
+            "Ctrl O"
         };
-        assert_eq!(label("secondary-o"), format!("{ctrl} O"));
-        assert_eq!(label("secondary-enter"), format!("{ctrl} Enter"));
-        assert_eq!(label("shift-down"), "Shift ↓");
-        assert_eq!(label("escape"), "Esc");
-        assert_eq!(label("v j"), "V J");
-        assert_eq!(label("secondary-,"), format!("{ctrl} ,"));
         assert_eq!(
             shortcut_for(&shell::ToggleSwitcher, SHELL).map(Shortcut::label),
-            Some(format!("{ctrl} O").into())
+            Some(native.into())
         );
     }
 

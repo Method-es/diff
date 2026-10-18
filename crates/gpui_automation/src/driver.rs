@@ -1124,7 +1124,11 @@ impl<H: AutomationHost> Driver<H> {
         source: CaptureSource,
         cx: &mut AsyncApp,
     ) -> Result<Value> {
-        if source == CaptureSource::Screen && crate::background::is_background() {
+        // macOS keeps a background window in front (`background`), so the screen shows it.
+        if source == CaptureSource::Screen
+            && crate::background::is_background()
+            && !cfg!(target_os = "macos")
+        {
             bail!(
                 "a screen capture copies what the desktop shows, and a background window sits \
                  behind every other window; run this scenario in the foreground \

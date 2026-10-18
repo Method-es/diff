@@ -235,7 +235,10 @@ impl Shell {
                 div()
                     .id("titlebar-switcher")
                     .role(Role::Button)
-                    .aria_label("Switch repository or review (Ctrl O)")
+                    .aria_label(format!(
+                        "Switch repository or review ({})",
+                        keymap::label("secondary-o")
+                    ))
                     .flex()
                     .items_center()
                     .gap(px(7.))
@@ -510,7 +513,10 @@ fn command_field(theme: &DvTheme) -> AnyElement {
     div()
         .id("titlebar-command")
         .role(Role::Button)
-        .aria_label("Go to file, review or command (Ctrl K)")
+        .aria_label(format!(
+            "Go to file, review or command ({})",
+            keymap::label("secondary-k")
+        ))
         .flex()
         .items_center()
         .gap(theme.spacing.md)

@@ -21,7 +21,7 @@
 {"cmd": "settle", "expect": [{"pointer": "/session/composer/path", "equals": "src/hooks/use-can.ts"}, {"pointer": "/session/composer/file_level", "equals": true}, {"pointer": "/session/composer/side", "equals": "new"}, {"pointer": "/session/composer/start_line", "equals": 0}, {"pointer": "/stream/files/0/heading", "equals": ["composer"]}]}
 {"cmd": "type", "text": "Fold this hook into useAuth: two hooks for one user is one too many.", "expect": {"pointer": "/session/composer/text", "equals": "Fold this hook into useAuth: two hooks for one user is one too many."}}
 {"cmd": "screenshot", "name": "composer-dark-mica"}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": [{"pointer": "/session/composer", "equals": null}, {"pointer": "/session/threads", "len": 1}]}
 {"cmd": "state", "save": {"t1": "/session/threads/0/id"}}
 // Its card heads the file; the comments list names it as the file.
@@ -47,7 +47,7 @@
 {"cmd": "key", "keystroke": "shift-c"}
 {"cmd": "settle", "expect": [{"pointer": "/session/composer/path", "equals": "src/lib/format.ts"}, {"pointer": "/session/composer/file_level", "equals": true}, {"pointer": "/stream/files/1/heading", "equals": ["composer"]}]}
 {"cmd": "type", "text": "Does anything still call this?"}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": [{"pointer": "/session/composer", "equals": null}, {"pointer": "/session/threads", "len": 2}]}
 {"cmd": "state", "save": {"t2": "/session/threads/1/id"}}
 {"cmd": "settle", "expect": [{"pointer": "/session/threads/1/file_level", "equals": true}, {"pointer": "/session/threads/1/placement", "equals": "file"}, {"pointer": "/stream/files/1/heading", "equals": ["${t2}"]}]}

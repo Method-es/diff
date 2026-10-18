@@ -1,0 +1,41 @@
+{"scenario": {"window_size": "1440x900", "gh": "../fixtures/gh/auth_status.json", "env": {"DV_FIRST_RUN": "1"}, "platforms": ["macos"], "description": "Setup on macOS (PLAN §12, DESIGN §4.3), setup's macOS sibling (as setup_linux is its Linux one): a fresh data dir shows the first-run screen over this machine's checks alone (no WSL on macOS): a scratch home, mock_gh signed in; a fake Claude Code folder, Check again, Install; Add to PATH links ~/.local/bin/dv to this dv and puts ~/.local/bin on the shell's PATH through its startup file (zsh's ~/.zshrc), all in the scratch home; the git command copied through the clipboard seam; Continue and a review opens; after a restart the status bar's notice offers Update for a skill edited since, and its Update fixes it."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "settle", "timeout_ms": 30000}
+{"expect": [{"pointer": "/setup/first_run", "equals": true}, {"pointer": "/setup/open", "equals": true}, {"pointer": "/setup/environments", "len": 1}, {"pointer": "/setup/environments/0/name", "equals": "macOS"}, {"pointer": "/setup/environments/0/kind", "equals": "macos"}, {"pointer": "/setup/environments/0/checks/0/id", "equals": "path"}, {"pointer": "/setup/environments/0/checks/0/state", "equals": "missing"}, {"pointer": "/setup/environments/0/checks/1/id", "equals": "skill-claude-code"}, {"pointer": "/setup/environments/0/checks/1/state", "equals": "skipped"}, {"pointer": "/setup/environments/0/checks/4/id", "equals": "git"}, {"pointer": "/setup/environments/0/checks/4/state", "equals": "missing"}, {"pointer": "/setup/environments/0/checks/5/id", "equals": "gh"}, {"pointer": "/setup/environments/0/checks/5/state", "equals": "ok"}, {"pointer": "/setup/notice", "equals": null}]}
+{"cmd": "screenshot", "name": "first-run"}
+
+// Claude Code set up in the scratch home: its skill is missing, and Install puts it there.
+{"cmd": "home_file", "path": ".claude/settings.json", "contents": "{}\n"}
+{"cmd": "click", "target": "setup/check_again"}
+{"cmd": "settle", "timeout_ms": 30000, "expect": [{"pointer": "/setup/environments/0/checks/1/state", "equals": "missing"}, {"pointer": "/setup/environments/0/checks/1/fix/action", "equals": "Install"}]}
+{"cmd": "click", "target": "setup/macOS/skill-claude-code/fix"}
+{"cmd": "settle", "timeout_ms": 30000, "expect": [{"pointer": "/setup/environments/0/checks/1/state", "equals": "ok"}, {"pointer": "/setup/environments/0/checks/1/error", "equals": null}]}
+
+// Add to PATH: ~/.local/bin/dv and ~/.zshrc's line, in the scratch home; the shell, asked again
+// with that home, has ~/.local/bin on its PATH (after /etc/zprofile's path_helper).
+{"cmd": "click", "target": "setup/macOS/path/fix"}
+{"cmd": "settle", "timeout_ms": 30000, "expect": [{"pointer": "/setup/environments/0/checks/0/state", "equals": "ok"}, {"pointer": "/setup/environments/0/checks/0/error", "equals": null}]}
+
+// git's fix is a command to run: Copy goes through the clipboard seam.
+{"cmd": "click", "target": "setup/macOS/git/copy", "expect": [{"pointer": "/system/requests/0/kind", "equals": "clipboard"}, {"pointer": "/system/requests/0/text", "contains": "git config --global user.name"}]}
+{"cmd": "screenshot", "name": "first-run-set-up"}
+{"cmd": "set_setting", "key": "mode", "value": "light"}
+{"cmd": "screenshot", "name": "first-run-set-up-light"}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+
+// Continue (Enter) ends the first run; the review opens as ever.
+{"cmd": "key", "keystroke": "enter"}
+{"cmd": "settle", "expect": [{"pointer": "/setup/first_run", "equals": false}, {"pointer": "/setup/open", "equals": false}, {"pointer": "/shell/empty_state", "equals": "no_review"}]}
+{"cmd": "seed_repo", "name": "api", "steps": [{"write": "src/app.ts", "text": "export const a = 1;\n"}, {"commit": "base"}, {"write": "src/app.ts", "text": "export const a = 2;\n"}], "save": {"repo": "/path"}}
+{"cmd": "open_review", "path": "${repo}"}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/session/target", "equals": "working"}, {"pointer": "/setup/notice", "equals": null}]}
+
+// Edited since, then a restart: no first run (the marker), and the status bar's notice.
+{"cmd": "home_file", "path": ".claude/skills/dv-review/SKILL.md", "contents": "edited by hand\n"}
+{"restart": {}}
+{"cmd": "settle", "timeout_ms": 30000, "expect": [{"pointer": "/setup/first_run", "equals": false}, {"pointer": "/setup/notice/text", "equals": "dv-review skill out of date on macOS"}, {"pointer": "/setup/notice/action", "equals": "Update"}]}
+{"cmd": "screenshot", "name": "notice"}
+{"cmd": "click", "target": "status/skill_notice/update"}
+{"cmd": "settle", "timeout_ms": 30000, "expect": [{"pointer": "/setup/notice", "equals": null}, {"pointer": "/setup/environments/0/checks/0/id", "equals": "skill-claude-code"}, {"pointer": "/setup/environments/0/checks/0/state", "equals": "ok"}]}
+{"cmd": "quit"}

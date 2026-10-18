@@ -55,9 +55,19 @@ libc.workspace = true
 raw-window-handle.workspace = true
 x11rb.workspace = true
 
+# Window screenshots (`capture_macos`) and background windows (`background`) on macOS.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics.workspace = true
+objc2.workspace = true
+raw-window-handle.workspace = true
+
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 gpui-component.workspace = true
 gpui_platform.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
+
+# The example harness's text and shaders on macOS, as `dv`'s (crates/dv/Cargo.toml).
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+gpui_platform = { workspace = true, features = ["font-kit", "runtime_shaders"] }

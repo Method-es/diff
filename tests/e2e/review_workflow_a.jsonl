@@ -30,7 +30,7 @@
 {"cmd": "type", "text": "Entries never expire from the map itself; add a sweep or **cap** the size. Just a JV note."}
 {"cmd": "settle", "expect": [{"pointer": "/session/composer/text", "equals": "Entries never expire from the map itself; add a sweep or **cap** the size. Just a JV note."}, {"pointer": "/session/current_file", "equals": "src/lib/cache.ts"}, {"pointer": "/session/viewed", "equals": 1}]}
 {"cmd": "screenshot", "name": "composer-dark-mica"}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": [{"pointer": "/session/composer", "equals": null}, {"pointer": "/session/threads", "len": 1}, {"pointer": "/session/threads/0/path", "equals": "src/lib/cache.ts"}, {"pointer": "/session/threads/0/side", "equals": "new"}, {"pointer": "/session/threads/0/start_line", "equals": 1}, {"pointer": "/session/threads/0/end_line", "equals": 3}, {"pointer": "/session/threads/0/state", "equals": "open"}, {"pointer": "/session/threads/0/author/kind", "equals": "reviewer"}, {"pointer": "/session/threads/0/outdated", "equals": false}, {"pointer": "/session/selection", "equals": null}, {"pointer": "/session/files/2/open_threads", "equals": 1}, {"pointer": "/comments_list/rows", "len": 1}, {"pointer": "/shell/status/review", "equals": "Open · round 1 · 1 open"}]}
 {"cmd": "state", "save": {"thread": "/session/threads/0/id"}, "expect": {"pointer": "/session/focused_thread", "equals": "${thread}"}}
 // The panel's row reads the comment as the card renders it, its Markdown dropped.
@@ -38,14 +38,14 @@
 {"cmd": "screenshot", "name": "thread-open-dark-mica"}
 
 // Request changes (Ctrl Enter): the sheet opens on Request changes, since a thread is open.
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": [{"pointer": "/session/sheet/verdict", "equals": "request_changes"}, {"pointer": "/session/sheet/can_submit", "equals": true}, {"pointer": "/session/sheet/tab", "equals": "write"}]}
 {"cmd": "key", "keystroke": "up", "expect": {"pointer": "/session/sheet/verdict", "equals": "approve"}}
 {"cmd": "key", "keystroke": "down", "expect": {"pointer": "/session/sheet/verdict", "equals": "request_changes"}}
 {"cmd": "key", "keystroke": "tab"}
 {"cmd": "type", "text": "One thing before this lands: the cache never sweeps."}
 // `Ctrl O` opens the switcher over the sheet, which keeps the summary; `Esc` goes back to it.
-{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "key", "keystroke": "secondary-o"}
 {"cmd": "settle", "expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/session/sheet/summary", "equals": "One thing before this lands: the cache never sweeps."}]}
 {"cmd": "key", "keystroke": "escape"}
 {"cmd": "settle", "expect": [{"pointer": "/switcher/open", "equals": false}, {"pointer": "/session/sheet/summary", "equals": "One thing before this lands: the cache never sweeps."}]}
@@ -53,7 +53,7 @@
 {"cmd": "settle", "expect": [{"pointer": "/session/sheet/summary", "equals": "One thing before this lands: the cache never sweeps."}, {"pointer": "/session/sheet/verdict", "equals": "request_changes"}]}
 {"cmd": "screenshot", "name": "sheet-dark-mica"}
 // Round 1 is snapshotted; status changes_requested; round 2 is current and nothing is viewed in it.
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle"}
 {"cmd": "wait_for", "pointer": "/session/status", "equals": "changes_requested"}
 {"cmd": "settle", "expect": [{"pointer": "/session/sheet", "equals": null}, {"pointer": "/session/round", "equals": 2}, {"pointer": "/session/rounds", "len": 1}, {"pointer": "/session/rounds/0/n", "equals": 1}, {"pointer": "/session/rounds/0/verdict", "equals": "request_changes"}, {"pointer": "/session/rounds/0/new_oid", "not_equals": null}, {"pointer": "/session/rounds/0/body", "equals": "One thing before this lands: the cache never sweeps."}, {"pointer": "/session/viewed", "equals": 0}, {"pointer": "/stream/focused", "equals": true}]}
@@ -77,7 +77,7 @@
 {"cmd": "type", "text": "Thanks, that reads right."}
 {"cmd": "settle"}
 {"cmd": "screenshot", "name": "reply-dark-mica"}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": [{"pointer": "/session/composer", "equals": null}, {"pointer": "/session/threads/0/replies", "len": 2}, {"pointer": "/session/threads/0/replies/1/author/kind", "equals": "reviewer"}]}
 {"cmd": "key", "keystroke": "x"}
 {"cmd": "settle", "expect": [{"pointer": "/session/threads/0/state", "equals": "resolved"}, {"pointer": "/comments_list/rows", "len": 0}, {"pointer": "/shell/status/review", "equals": "Changes requested · round 2 · 1 resolved"}]}
@@ -106,7 +106,7 @@
 {"cmd": "settle", "expect": {"pointer": "/session/composer/text", "equals": "Is the TTL in ms?"}}
 {"cmd": "screenshot", "name": "composer-dark-opaque"}
 {"cmd": "key", "keystroke": "escape", "expect": [{"pointer": "/session/composer", "equals": null}, {"pointer": "/session/threads", "len": 1}]}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": {"pointer": "/session/sheet/verdict", "equals": "approve"}}
 {"cmd": "screenshot", "name": "sheet-dark-opaque"}
 {"cmd": "key", "keystroke": "escape", "expect": {"pointer": "/session/sheet", "equals": null}}
@@ -127,17 +127,17 @@
 {"cmd": "settle"}
 {"cmd": "screenshot", "name": "composer-light"}
 {"cmd": "key", "keystroke": "escape"}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": {"pointer": "/session/sheet/verdict", "equals": "request_changes"}}
 {"cmd": "key", "keystroke": "1", "expect": {"pointer": "/session/sheet/verdict", "equals": "approve"}}
 {"cmd": "settle"}
 {"cmd": "screenshot", "name": "sheet-light"}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle"}
 {"cmd": "wait_for", "pointer": "/session/status", "equals": "approved"}
 {"cmd": "settle", "expect": [{"pointer": "/session/read_only", "equals": true}, {"pointer": "/session/round", "equals": 2}, {"pointer": "/session/rounds/1/verdict", "equals": "approve"}, {"pointer": "/shell/status/finish", "equals": false}, {"pointer": "/shell/status/review", "equals": "Approved · round 2 · 1 open"}]}
 // Read-only: C opens nothing, Ctrl Enter opens no sheet, X changes nothing.
-{"cmd": "keys", "keys": "c ctrl-enter x"}
+{"cmd": "keys", "keys": "c secondary-enter x"}
 {"cmd": "settle", "expect": [{"pointer": "/session/composer", "equals": null}, {"pointer": "/session/sheet", "equals": null}, {"pointer": "/session/threads/0/state", "equals": "open"}]}
 {"cmd": "screenshot", "name": "approved-light"}
 {"cmd": "query", "prefix": "banner/finished", "expect_result": {"pointer": "", "len": 2}}

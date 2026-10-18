@@ -2935,6 +2935,7 @@ dependencies = [
  "smallvec",
  "strum",
  "uuid",
+ "zed-font-kit",
 ]
 
 [[package]]
@@ -3217,12 +3218,14 @@ name = "gpui_automation"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "core-graphics 0.24.0",
  "futures",
  "gpui-component",
  "gpui-pre",
  "gpui-pre-platform",
  "libc",
  "log",
+ "objc2 0.6.4",
  "png 0.18.1",
  "pretty_assertions",
  "raw-window-handle",

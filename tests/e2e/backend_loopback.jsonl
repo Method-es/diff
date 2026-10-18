@@ -15,7 +15,7 @@
 {"cmd": "settle", "expect": {"pointer": "/session/cursor", "equals": {"path": "src/lib/cache.ts", "side": "new", "line": 8}}}
 {"cmd": "key", "keystroke": "c"}
 {"cmd": "type", "text": "Entries never expire; add a TTL."}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/session/composer", "equals": null}, {"pointer": "/session/threads", "len": 1}, {"pointer": "/session/threads/0/start_line", "equals": 8}, {"pointer": "/shell/status/review", "equals": "Open · round 1 · 1 open"}]}
 
 // The remote watch follows the agent.
@@ -44,7 +44,7 @@
 {"cmd": "screenshot", "name": "reconnecting-dark-mica"}
 // The switcher says so too, keeping the repo's rows (DESIGN §4.1); once the connection fails
 // it hears of it, and the row offers Retry instead.
-{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "key", "keystroke": "secondary-o"}
 {"cmd": "wait_for", "pointer": "/repos/0/reconnecting", "equals": true, "timeout_ms": 5000}
 {"expect": [{"pointer": "/switcher/items", "contains": {"key": "api-server/working", "kind": "target"}}, {"pointer": "/repos/0/working", "not_equals": null}, {"pointer": "/repos/0/error", "equals": null}]}
 {"cmd": "screenshot", "name": "switcher-reconnecting-dark-mica"}
@@ -92,7 +92,7 @@
 {"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/shell/status/health", "equals": "failing"}, {"pointer": "/shell/backend_banner/message", "equals": "loopback stopped"}, {"pointer": "/shell/backend_banner/action", "equals": "Start loopback"}, {"pointer": "/shell/banner", "equals": null}, {"pointer": "/session/error", "equals": null}, {"pointer": "/session/total", "equals": 6}]}
 {"cmd": "bounds", "target": "banner/backend/start", "expect_result": {"pointer": "/visible", "not_equals": null}}
 {"cmd": "screenshot", "name": "stopped-dark-mica"}
-{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "key", "keystroke": "secondary-o"}
 {"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/repos/0/stopped", "equals": "loopback"}, {"pointer": "/switcher/items", "contains": {"key": "api-server/start", "kind": "start", "label": "Start loopback"}}, {"pointer": "/backends/0/state", "equals": "stopped"}]}
 {"cmd": "screenshot", "name": "switcher-stopped-dark-mica"}
 {"cmd": "key", "keystroke": "escape", "expect": {"pointer": "/switcher/open", "equals": false}}
@@ -107,7 +107,7 @@
 // selection.
 {"cmd": "backend_stop", "name": "loopback"}
 {"cmd": "wait_for", "pointer": "/backends/0/state", "equals": "stopped", "timeout_ms": 10000}
-{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "key", "keystroke": "secondary-o"}
 {"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/switcher/selected", "equals": "api-server/start"}, {"pointer": "/switcher/items", "contains": {"key": "api-server/start", "kind": "start", "starting": false}}]}
 {"cmd": "backend_hold", "name": "loopback", "held": true, "expect_result": {"pointer": "", "equals": {"name": "loopback", "held": true}}}
 {"cmd": "key", "keystroke": "enter"}
@@ -127,7 +127,7 @@
 // of its own (respawns blocked meanwhile, so the pick lands while it reconnects).
 {"cmd": "backend_block", "name": "loopback", "blocked": true}
 {"cmd": "backend_kill", "name": "loopback", "expect_result": {"pointer": "/state", "equals": "reconnecting"}}
-{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "key", "keystroke": "secondary-o"}
 {"cmd": "wait_for", "pointer": "/repos/0/reconnecting", "equals": true, "timeout_ms": 5000}
 {"expect": {"pointer": "/switcher/items", "contains": {"key": "api-server/staged", "kind": "target"}}}
 {"cmd": "click", "target": "switcher/api-server/staged"}
@@ -143,7 +143,7 @@
 // it is back the pick opens by itself, no banner left.
 {"cmd": "backend_block", "name": "loopback", "blocked": true}
 {"cmd": "backend_kill", "name": "loopback", "expect_result": {"pointer": "/state", "equals": "reconnecting"}}
-{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "key", "keystroke": "secondary-o"}
 {"cmd": "wait_for", "pointer": "/repos/0/reconnecting", "equals": true, "timeout_ms": 5000}
 {"cmd": "click", "target": "switcher/api-server/working"}
 {"cmd": "wait_for", "pointer": "/backends/0/state", "equals": "failed", "timeout_ms": 20000}
@@ -153,12 +153,12 @@
 // The reviewer goes on meanwhile, writing a round summary in the sheet. The pick never replaces
 // unsaved text by itself (PLAN §5.2): the switcher's Retry brings the connection back, and the
 // review under the sheet stays, the pick waiting on until the sheet is cancelled.
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "key", "keystroke": "tab"}
 {"cmd": "type", "text": "An unsaved round summary."}
 {"cmd": "settle", "expect": {"pointer": "/session/sheet/summary", "equals": "An unsaved round summary."}}
 {"cmd": "backend_block", "name": "loopback", "blocked": false}
-{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "key", "keystroke": "secondary-o"}
 {"cmd": "wait_for", "pointer": "/repos/0/retry", "equals": true, "timeout_ms": 10000}
 {"cmd": "click", "target": "switcher/api-server/retry"}
 {"cmd": "wait_for", "pointer": "/backends/0/state", "equals": "connected", "timeout_ms": 15000}

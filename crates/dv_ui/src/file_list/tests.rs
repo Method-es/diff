@@ -170,10 +170,10 @@ fn typing_in_the_filter_narrows_the_rows_and_enter_shows_the_first(cx: &mut Test
     // Hidden from inside the field, the panel hands the keyboard to the shell, so the shell's
     // keys keep working.
     cx.update(|window, cx| field.focus(window, cx));
-    cx.simulate_keystrokes("ctrl-b");
+    cx.simulate_keystrokes("secondary-b");
     assert!(!shell.read_with(cx, |shell, _| shell.panel_visible()));
     assert!(cx.update(|window, _| shell_focus.is_focused(window)));
-    cx.simulate_keystrokes("ctrl-b");
+    cx.simulate_keystrokes("secondary-b");
     assert!(shell.read_with(cx, |shell, _| shell.panel_visible()));
 
     // A filter nothing matches leaves no rows.

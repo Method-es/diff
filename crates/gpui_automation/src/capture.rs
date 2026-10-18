@@ -4,7 +4,8 @@
 //! window); the pixel read-back and PNG encoding then run on a background
 //! thread so the UI thread keeps pumping messages, which `PrintWindow`
 //! relies on. Windows reads back through Win32 (`capture_windows`), Linux
-//! through X11 (`capture_x11`); elsewhere the command reports it's missing.
+//! through X11 (`capture_x11`), macOS through Core Graphics
+//! (`capture_macos`); elsewhere the command reports it's missing.
 
 use std::path::Path;
 
@@ -17,7 +18,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub(crate) enum CaptureSource {
     /// The window's own composed frame: `PrintWindow(PW_RENDERFULLCONTENT)`
-    /// on Windows, a `GetImage` of the window on X11. It works while other
+    /// on Windows, a `GetImage` of the window on X11, a Core Graphics image of
+    /// the window on macOS. It works while other
     /// windows cover the window, so background runs use it. On Windows it
     /// includes Mica but not Acrylic's blur-behind, so translucent surfaces
     /// over Acrylic come out composited over black (`capture_windows`).
@@ -25,25 +27,43 @@ pub(crate) enum CaptureSource {
     Window,
     /// The window's client rect copied from the desktop as it is shown,
     /// blur-behind included. Only meaningful for a window in front (a
-    /// foreground run); Windows only. The capture fails, rather than copying
+    /// foreground run). On Windows the capture fails, rather than copying
     /// another window's pixels, when the window isn't the foreground window
-    /// or something covers its client area.
+    /// or something covers its client area. On macOS it is the window and
+    /// everything under it, composed as the screen shows them (what shows
+    /// through translucency included) but without any window above it; a
+    /// background window is in front there anyway (`background`), so
+    /// background runs can use it.
     Screen,
 }
 
 /// What the capture thread needs to find the window again.
 #[derive(Debug, Clone, Copy)]
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+#[cfg_attr(
+    not(any(windows, target_os = "linux", target_os = "macos")),
+    allow(dead_code)
+)]
 pub(crate) struct CaptureTarget {
     #[cfg(windows)]
     hwnd: isize,
     #[cfg(target_os = "linux")]
     x11_window: u32,
+    /// The `NSWindow`'s window number, Core Graphics' `CGWindowID`.
+    #[cfg(target_os = "macos")]
+    window_number: u32,
+    /// The window's frame in points, in Core Graphics' global coordinates
+    /// (top-left origin at the main display's top-left, whichever display
+    /// the window is on): the `Screen` source's rectangle.
+    #[cfg(target_os = "macos")]
+    frame: [f64; 4],
 }
 
 /// Physical pixel size of a written screenshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+#[cfg_attr(
+    not(any(windows, target_os = "linux", target_os = "macos")),
+    allow(dead_code)
+)]
 pub(crate) struct Captured {
     pub width: u32,
     pub height: u32,
@@ -89,9 +109,18 @@ pub(crate) fn capture_target(window: &Window) -> Result<CaptureTarget> {
     Ok(CaptureTarget { x11_window })
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(target_os = "macos")]
+pub(crate) fn capture_target(window: &Window) -> Result<CaptureTarget> {
+    let (window_number, frame) = crate::capture_macos::window_target(window)?;
+    Ok(CaptureTarget {
+        window_number,
+        frame,
+    })
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub(crate) fn capture_target(_window: &Window) -> Result<CaptureTarget> {
-    anyhow::bail!("window screenshots are only implemented on Windows and Linux (X11)")
+    anyhow::bail!("window screenshots are only implemented on Windows, Linux (X11) and macOS")
 }
 
 /// Capture the window's client area and write it to `path` as a PNG.
@@ -127,18 +156,41 @@ pub(crate) fn capture_png(
     })
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+/// Capture the window and write it to `path` as a PNG.
+#[cfg(target_os = "macos")]
+pub(crate) fn capture_png(
+    target: CaptureTarget,
+    path: &Path,
+    source: CaptureSource,
+) -> Result<Captured> {
+    let image = match source {
+        CaptureSource::Window => crate::capture_macos::capture_window(target.window_number)?,
+        CaptureSource::Screen => {
+            crate::capture_macos::capture_screen(target.window_number, target.frame)?
+        }
+    };
+    write_png(path, image.width, image.height, &image.rgba)?;
+    Ok(Captured {
+        width: image.width,
+        height: image.height,
+    })
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub(crate) fn capture_png(
     _target: CaptureTarget,
     _path: &Path,
     _source: CaptureSource,
 ) -> Result<Captured> {
-    anyhow::bail!("window screenshots are only implemented on Windows and Linux (X11)")
+    anyhow::bail!("window screenshots are only implemented on Windows, Linux (X11) and macOS")
 }
 
 /// Encode tightly packed 8-bit RGBA pixels as a PNG, creating parent
 /// directories as needed.
-#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+#[cfg_attr(
+    not(any(windows, target_os = "linux", target_os = "macos")),
+    allow(dead_code)
+)]
 pub(crate) fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)

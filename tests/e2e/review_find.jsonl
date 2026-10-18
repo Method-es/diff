@@ -11,7 +11,7 @@
 {"cmd": "settle", "expect": [{"pointer": "/stream/files/4/collapsed", "equals": true}]}
 
 // Ctrl F opens the bar with its field focused; typing searches once it pauses.
-{"cmd": "key", "keystroke": "ctrl-f", "expect": [{"pointer": "/find/open", "equals": true}, {"pointer": "/find/focused", "equals": true}, {"pointer": "/find/query", "equals": ""}]}
+{"cmd": "key", "keystroke": "secondary-f", "expect": [{"pointer": "/find/open", "equals": true}, {"pointer": "/find/focused", "equals": true}, {"pointer": "/find/query", "equals": ""}]}
 {"cmd": "type", "text": "needle"}
 // Three: the gap's line (once: a context line matches on the new column only, in split view
 // too), and zeta.ts's `NEEDLE` and `needle` (no capital: case is ignored). The logo can't be
@@ -30,18 +30,18 @@
 {"cmd": "click", "target": "find/prev", "expect": [{"pointer": "/find/current", "equals": 2}, {"pointer": "/find/focused", "equals": true}]}
 
 // A capital makes it case-sensitive.
-{"cmd": "key", "keystroke": "ctrl-a"}
+{"cmd": "key", "keystroke": "secondary-a"}
 {"cmd": "type", "text": "NEEDLE"}
 {"cmd": "settle", "expect": [{"pointer": "/find/count", "equals": 1}, {"pointer": "/find/current", "equals": 1}]}
 
 // A match in the viewed file opens it.
-{"cmd": "key", "keystroke": "ctrl-a"}
+{"cmd": "key", "keystroke": "secondary-a"}
 {"cmd": "type", "text": "f3_6 ="}
 {"cmd": "settle", "expect": [{"pointer": "/find/count", "equals": 2}, {"pointer": "/stream/files/4/collapsed", "equals": false}, {"pointer": "/session/cursor", "equals": {"path": "src/f3.ts", "side": "old", "line": 6}}]}
 {"cmd": "screenshot", "name": "find-viewed-file"}
 
 // Nothing matches.
-{"cmd": "key", "keystroke": "ctrl-a"}
+{"cmd": "key", "keystroke": "secondary-a"}
 {"cmd": "type", "text": "haystack"}
 {"cmd": "settle", "expect": [{"pointer": "/find/count", "equals": 0}, {"pointer": "/find/current", "equals": null}, {"pointer": "/find/complete", "equals": true}]}
 {"cmd": "screenshot", "name": "find-no-results"}
@@ -49,7 +49,7 @@
 // Esc closes the bar and the keyboard goes back to the stream, the cursor where it was.
 {"cmd": "key", "keystroke": "escape", "expect": [{"pointer": "/find/open", "equals": false}, {"pointer": "/stream/focused", "equals": true}, {"pointer": "/session/cursor/path", "equals": "src/f3.ts"}]}
 // Ctrl F again keeps the query, its text selected; the close button closes it too.
-{"cmd": "key", "keystroke": "ctrl-f", "expect": [{"pointer": "/find/open", "equals": true}, {"pointer": "/find/query", "equals": "haystack"}, {"pointer": "/find/focused", "equals": true}]}
+{"cmd": "key", "keystroke": "secondary-f", "expect": [{"pointer": "/find/open", "equals": true}, {"pointer": "/find/query", "equals": "haystack"}, {"pointer": "/find/focused", "equals": true}]}
 {"cmd": "type", "text": "needle"}
 {"cmd": "settle", "expect": [{"pointer": "/find/count", "equals": 3}]}
 {"cmd": "set_setting", "key": "mode", "value": "light"}

@@ -16,6 +16,7 @@ const RUNNER_KEYS: &[&str] = &[
     "expect",
     "expect_result",
     "expect_error",
+    "platforms",
     "runner_timeout_ms",
     "save",
 ];
@@ -143,6 +144,9 @@ pub struct Step {
     /// `save`: variables to set from the action's result, as (name, JSON
     /// pointer) pairs; later lines use them as `${name}`.
     pub save: Vec<(String, String)>,
+    /// `platforms`: the operating systems this line runs on, named as in the
+    /// header's (empty: all); elsewhere the runner passes over it.
+    pub platforms: Vec<String>,
 }
 
 /// What a step does before its `expect` is checked.
@@ -181,6 +185,11 @@ pub struct Restart {
 }
 
 impl Step {
+    /// Whether the line runs on `os` (a `std::env::consts::OS` value).
+    pub fn runs_on(&self, os: &str) -> bool {
+        self.platforms.is_empty() || self.platforms.iter().any(|p| p == os)
+    }
+
     /// Expectations with the run's variables substituted.
     pub fn expectations(raw: &Option<Value>, vars: &[(&str, String)]) -> Result<Vec<Expectation>> {
         let Some(raw) = raw else {
@@ -373,6 +382,7 @@ fn parse_step(line: usize, mut object: Map<String, Value>) -> Result<Step> {
         })?)),
     };
     let save = parse_save(object.remove("save"))?;
+    let platforms = parse_platforms(object.remove("platforms"))?;
     if !save.is_empty() && expect_error.is_some() {
         bail!("save needs a result, and expect_error means there is none");
     }
@@ -390,6 +400,7 @@ fn parse_step(line: usize, mut object: Map<String, Value>) -> Result<Step> {
         screenshot: None,
         timeout,
         save: save.clone(),
+        platforms: platforms.clone(),
     };
 
     if let Some(options) = object.remove("gh_log") {
@@ -462,6 +473,26 @@ fn parse_step(line: usize, mut object: Map<String, Value>) -> Result<Step> {
         screenshot,
         ..step(Action::Command(object))
     })
+}
+
+/// A line's `platforms`: a list of the header's platform names.
+fn parse_platforms(platforms: Option<Value>) -> Result<Vec<String>> {
+    let Some(platforms) = platforms else {
+        return Ok(Vec::new());
+    };
+    let names: Vec<String> = serde_json::from_value(platforms.clone()).map_err(|_| {
+        anyhow!(
+            "platforms must be a list of platform names, got {}",
+            compact(&platforms)
+        )
+    })?;
+    if let Some(unknown) = names.iter().find(|os| !PLATFORMS.contains(&os.as_str())) {
+        bail!(
+            "unknown platform {unknown:?} in platforms; expected one of {}",
+            PLATFORMS.join(", ")
+        );
+    }
+    Ok(names)
 }
 
 /// `{"name": "/json/pointer", ...}`: variable names are identifiers other
@@ -777,6 +808,31 @@ mod tests {
             parse("{\"scenario\": {\"platforms\": [\"windows\"]}}\n{\"cmd\": \"state\"}").unwrap();
         assert!(windows.runs_on("windows"));
         assert!(!windows.runs_on("linux"));
+    }
+
+    #[test]
+    fn platforms_limit_where_a_line_runs() {
+        let scenario =
+            parse("{\"cmd\": \"state\", \"platforms\": [\"macos\"]}\n{\"cmd\": \"settle\"}")
+                .unwrap();
+        assert!(scenario.steps[0].runs_on("macos"));
+        assert!(!scenario.steps[0].runs_on("windows"));
+        assert!(scenario.steps[1].runs_on("windows"));
+        // The runner's key: never sent to the app.
+        assert!(
+            scenario.steps[0]
+                .request()
+                .unwrap()
+                .get("platforms")
+                .is_none()
+        );
+        let err = parse(r#"{"cmd": "state", "platforms": ["darwin"]}"#).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("unknown platform \"darwin\""),
+            "{err:#}"
+        );
+        let err = parse(r#"{"cmd": "state", "platforms": "macos"}"#).unwrap_err();
+        assert!(format!("{err:#}").contains("must be a list"), "{err:#}");
     }
 
     #[test]

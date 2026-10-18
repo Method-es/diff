@@ -7,7 +7,7 @@
 {"cmd": "settle", "expect": [{"pointer": "/session/total", "equals": 1}, {"pointer": "/file_finder/open", "equals": false}]}
 
 // Ctrl P: every file of the working tree, the review's changed file first.
-{"cmd": "key", "keystroke": "ctrl-p"}
+{"cmd": "key", "keystroke": "secondary-p"}
 {"cmd": "settle", "expect": [{"pointer": "/file_finder/open", "equals": true}, {"pointer": "/file_finder/focused", "equals": true}, {"pointer": "/file_finder/complete", "equals": true}, {"pointer": "/file_finder/count", "equals": 5}, {"pointer": "/file_finder/rows", "equals": ["src/app.ts", "README.md", "docs/guide.md", "src/util.ts", "src/utilities/strings.ts"]}, {"pointer": "/file_finder/selected", "equals": "src/app.ts"}]}
 {"cmd": "type", "text": "util"}
 // `util` in the name before `util` in a directory only.
@@ -24,7 +24,7 @@
 {"cmd": "key", "keystroke": "c"}
 {"cmd": "settle", "expect": [{"pointer": "/session/composer/path", "equals": "src/util.ts"}, {"pointer": "/session/composer/start_line", "equals": 3}]}
 {"cmd": "type", "text": "Is helper3 still used?"}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "wait_for", "pointer": "/session/threads/0/placement", "equals": "unchanged"}
 {"cmd": "settle", "expect": [{"pointer": "/session/composer", "equals": null}, {"pointer": "/session/threads/0/path", "equals": "src/util.ts"}, {"pointer": "/session/threads/0/in_diff", "equals": false}, {"pointer": "/session/threads/0/outdated", "equals": false}, {"pointer": "/session/threads/0/lines", "equals": {"start": 3, "end": 3}}, {"pointer": "/session/threads/0/file", "equals": null}, {"pointer": "/comments_list/rows/0/location", "equals": "src/util.ts:3"}]}
 {"cmd": "state", "save": {"t1": "/session/threads/0/id"}}

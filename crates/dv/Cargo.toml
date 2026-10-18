@@ -108,6 +108,12 @@ libc = { workspace = true, optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui_platform = { workspace = true, optional = true, features = ["wayland", "x11"] }
 
+# macOS (PLAN §13.1): text through Core Text needs gpui's `font-kit` (without it nothing draws),
+# and `runtime_shaders` compiles the Metal shaders when the window opens, so building needs no
+# Metal toolchain (Xcode's is a separate download).
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui_platform = { workspace = true, optional = true, features = ["font-kit", "runtime_shaders"] }
+
 # dv.exe's and dv-gui.exe's icon and version resource on Windows (`build.rs`); a no-op elsewhere.
 [build-dependencies]
 embed-resource.workspace = true

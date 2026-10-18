@@ -324,7 +324,11 @@ fn a_seeded_repo_opens_as_a_review_and_the_agent_answers(cx: &mut TestAppContext
     )
     .unwrap();
     let path = seeded["path"].as_str().unwrap().to_string();
-    assert!(std::path::Path::new(&path).starts_with(dir.path().join("repos")));
+    // Both canonical: macOS's temp dir is under `/var`, a link to `/private/var`, and Windows'
+    // canonical paths carry the `\\?\` prefix.
+    let repos = dir.path().join("repos").canonicalize().unwrap();
+    let seeded_at = std::path::Path::new(&path).canonicalize().unwrap();
+    assert!(seeded_at.starts_with(&repos), "{path}");
     assert_eq!(seeded["commits"].as_array().unwrap().len(), 1);
     let error = run(&host, "seed_repo", json!({"name": "api-server"}), cx).unwrap_err();
     assert!(error.to_string().contains("already seeded"), "{error}");
@@ -753,7 +757,9 @@ fn the_cli_commands_run_children_off_the_ui_thread(cx: &mut TestAppContext) {
     assert_eq!(state(&host, cx)["cli"]["spawned"][0]["running"], true);
     assert!(settled(&host, cx));
     let children = host.read_with(cx, |host, _| host.children.clone());
-    cx.quit();
+    // The app's quit hooks, run as a quit runs them. (`TestAppContext::quit`, the test macro's
+    // own end of the test, crashes on macOS when a test calls it mid-way.)
+    cx.cx.update(|cx| cx.shutdown());
     assert_eq!(
         agent_cli::lock(&children).spawned_state(),
         Vec::<Value>::new()

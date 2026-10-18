@@ -48,9 +48,9 @@
 {"cmd": "key", "keystroke": "escape", "expect": [{"pointer": "/file_list/query", "equals": ""}, {"pointer": "/file_list/shown", "len": 7}]}
 
 // Ctrl B hides the panel and gives the main area the width; again shows it.
-{"cmd": "key", "keystroke": "ctrl-b", "expect": {"pointer": "/shell/panel_visible", "equals": false}}
+{"cmd": "key", "keystroke": "secondary-b", "expect": {"pointer": "/shell/panel_visible", "equals": false}}
 {"cmd": "bounds", "target": "shell/main", "expect_result": [{"pointer": "/x", "equals": 0}, {"pointer": "/w", "equals": 1440}]}
-{"cmd": "key", "keystroke": "ctrl-b", "expect": {"pointer": "/shell/panel_visible", "equals": true}}
+{"cmd": "key", "keystroke": "secondary-b", "expect": {"pointer": "/shell/panel_visible", "equals": true}}
 
 // Dragging the panel's edge resizes it within 220–420 and saves the width; a double click restores 280.
 {"cmd": "drag", "from": "shell/panel/resize", "to": [340, 500]}
@@ -105,7 +105,7 @@
 {"cmd": "set_setting", "key": "material", "value": "mica"}
 {"cmd": "set_setting", "key": "mode", "value": "light"}
 {"cmd": "screenshot", "name": "review-light"}
-{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "key", "keystroke": "secondary-o"}
 {"cmd": "settle", "timeout_ms": 20000}
 {"cmd": "screenshot", "name": "switcher-light"}
 // A click on the scrim closes it.
@@ -115,11 +115,14 @@
 {"cmd": "click", "target": "banner/main/dismiss", "expect": {"pointer": "/shell/banner", "equals": null}}
 
 // At the minimum size the left group needs more than half the bar: the command field moves
-// right as far as it needs (no longer centred at 400), and the label shows whole.
+// right as far as it needs (no longer centred at 400), and the label shows whole. On macOS the
+// traffic lights take the left group 70 further right (DESIGN §2: the mark 84 in, not 14).
 {"cmd": "set_setting", "key": "mode", "value": "dark"}
 {"cmd": "resize", "w": 1100, "h": 700}
-{"cmd": "bounds", "target": "titlebar/command", "expect_result": [{"pointer": "/x", "gte": 440}, {"pointer": "/x", "lte": 500}]}
-{"cmd": "bounds", "target": "titlebar/source", "expect_result": [{"pointer": "/x", "gte": 380}, {"pointer": "/x", "lte": 440}]}
+{"cmd": "bounds", "target": "titlebar/command", "platforms": ["windows", "linux"], "expect_result": [{"pointer": "/x", "gte": 440}, {"pointer": "/x", "lte": 500}]}
+{"cmd": "bounds", "target": "titlebar/source", "platforms": ["windows", "linux"], "expect_result": [{"pointer": "/x", "gte": 380}, {"pointer": "/x", "lte": 440}]}
+{"cmd": "bounds", "target": "titlebar/command", "platforms": ["macos"], "expect_result": [{"pointer": "/x", "gte": 500}, {"pointer": "/x", "lte": 520}]}
+{"cmd": "bounds", "target": "titlebar/source", "platforms": ["macos"], "expect_result": [{"pointer": "/x", "gte": 435}, {"pointer": "/x", "lte": 455}]}
 {"cmd": "screenshot", "name": "review-1100x700"}
 
 // A long repository name: the target label gives way first, then the name truncates; the
@@ -128,9 +131,13 @@
 {"cmd": "open_review", "path": "${long}"}
 {"cmd": "settle", "timeout_ms": 20000}
 // The field moves right as far as the long label needs (at most 650, 12 short of the caption
-// buttons), the source picker staying clear of it.
-{"cmd": "bounds", "target": "titlebar/command", "expect_result": [{"pointer": "/x", "gte": 560}, {"pointer": "/x", "lte": 650}]}
-{"cmd": "bounds", "target": "titlebar/source", "expect_result": {"pointer": "/x", "lte": 584}}
+// buttons), the source picker staying clear of it. On macOS, with no caption buttons, the field
+// may go further: it stops where the group (70 further right) needs it, and the source picker
+// (48 wide) ends 12 or more before it.
+{"cmd": "bounds", "target": "titlebar/command", "platforms": ["windows", "linux"], "expect_result": [{"pointer": "/x", "gte": 560}, {"pointer": "/x", "lte": 650}]}
+{"cmd": "bounds", "target": "titlebar/source", "platforms": ["windows", "linux"], "expect_result": {"pointer": "/x", "lte": 584}}
+{"cmd": "bounds", "target": "titlebar/command", "platforms": ["macos"], "expect_result": [{"pointer": "/x", "gte": 640}, {"pointer": "/x", "lte": 670}]}
+{"cmd": "bounds", "target": "titlebar/source", "platforms": ["macos"], "expect_result": [{"pointer": "/x", "gte": 580}, {"pointer": "/x", "lte": 593}]}
 {"cmd": "screenshot", "name": "long-name-1100x700"}
 
 // A repository whose .git goes away while its review is open: the switcher says why and
@@ -141,7 +148,7 @@
 {"cmd": "settle", "timeout_ms": 20000}
 {"cmd": "repo_edit", "name": "gone", "steps": [{"remove": ".git"}]}
 {"cmd": "settle", "timeout_ms": 20000}
-{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "key", "keystroke": "secondary-o"}
 {"cmd": "settle", "timeout_ms": 20000}
 {"expect": [{"pointer": "/repos/0/name", "equals": "gone"}, {"pointer": "/repos/0/error", "not_equals": null}, {"pointer": "/repos/0/working", "equals": null}, {"pointer": "/switcher/items/0/key", "equals": "customer-portal-frontend-service/working"}]}
 {"cmd": "query", "prefix": "switcher/gone/", "expect_result": {"pointer": "", "len": 0}}
@@ -156,7 +163,7 @@
 {"restart": {}}
 {"cmd": "settle", "timeout_ms": 20000}
 {"cmd": "wsl_distros", "distros": [{"name": "Ubuntu", "running": false}]}
-{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "key", "keystroke": "secondary-o"}
 {"cmd": "settle", "timeout_ms": 20000}
 {"expect": [{"pointer": "/repos", "contains": {"name": "web", "stopped": "Ubuntu", "starting": false, "error": {"message": "Ubuntu isn't running"}}}, {"pointer": "/switcher/items", "contains": {"key": "web/start", "kind": "start", "target": null, "label": "Start Ubuntu", "review": null}}, {"pointer": "/backends", "equals": []}]}
 {"cmd": "bounds", "target": "switcher/web/start", "expect_result": {"pointer": "/visible", "not_equals": null}}
@@ -168,7 +175,7 @@
 {"cmd": "screenshot", "name": "switcher-wsl-start-failed-dark-mica"}
 {"cmd": "key", "keystroke": "escape", "expect": {"pointer": "/switcher/open", "equals": false}}
 {"cmd": "wsl_distros", "distros": [{"name": "Ubuntu", "running": true}]}
-{"cmd": "key", "keystroke": "ctrl-o"}
+{"cmd": "key", "keystroke": "secondary-o"}
 {"cmd": "settle", "timeout_ms": 20000}
 {"expect": [{"pointer": "/repos", "contains": {"name": "web", "stopped": null, "retry": true, "starting": false, "error": {"message": "Ubuntu can't be opened: the connection to dv failed: couldn't start dv: an automation run starts dv in a WSL distro only with DV_WSL_HOME set (a scratch home inside the distro)"}}}, {"pointer": "/switcher/items", "contains": {"key": "web/retry", "kind": "retry", "target": null, "label": "Retry", "review": null}}]}
 {"cmd": "bounds", "target": "switcher/web/retry", "expect_result": {"pointer": "/visible", "not_equals": null}}

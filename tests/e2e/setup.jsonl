@@ -37,7 +37,7 @@
 
 // A skill edited since (or an older dv's) is out of date in Settings › Setup; Update fixes it.
 {"cmd": "home_file", "path": ".claude/skills/dv-review/SKILL.md", "contents": "an older dv's skill\n"}
-{"cmd": "key", "keystroke": "ctrl-,"}
+{"cmd": "key", "keystroke": "secondary-,"}
 {"cmd": "settle", "timeout_ms": 30000, "expect": [{"pointer": "/setup/settings_open", "equals": true}, {"pointer": "/setup/environments/0/checks/1/state", "equals": "out_of_date"}, {"pointer": "/setup/environments/0/checks/1/fix/action", "equals": "Update"}]}
 {"cmd": "screenshot", "name": "settings-out-of-date"}
 {"cmd": "set_setting", "key": "mode", "value": "light"}

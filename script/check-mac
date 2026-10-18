@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# The macOS gate (docs/PLAN.md §13.2), run from Windows (or any machine with ssh): makes the Mac's
+# checkout this one's working tree, then runs script/check there over SSH and exits with its code.
+# The Mac is the owner's (`$DV_MAC_HOST`, the checkout `~/code/dv`); nothing else on it is touched.
+#
+#   script/check-mac [--sync-only] [-- <script/check arguments>]
+#
+#   DV_MAC_HOST  the ssh destination (required)
+#   DV_MAC_REPO  the checkout there (default code/dv, relative to the home; an absolute path
+#                must be inside the home)
+#
+# First it verifies the target and refuses, touching nothing, unless DV_MAC_REPO names (no `.`
+# or `..` parts, not blank) the top folder of a checkout of this repository (the same root
+# commits) holding crates/dv/Cargo.toml, inside the Mac's home.
+#
+# The sync: the Mac's checkout is moved to this HEAD (sent as a git bundle when it hasn't the
+# commit, never through GitHub), its tracked files reset and its untracked ones removed (ignored
+# ones such as target/ stay), then this tree's uncommitted changes applied (`git diff --binary`)
+# and its untracked files copied (tar). Builds on the Mac need no Xcode (gpui's runtime shaders,
+# crates/dv/Cargo.toml); rustup installs the pinned toolchain there on first use.
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+usage: script/check-mac [--sync-only] [-- <script/check arguments>]
+
+  syncs this working tree to the Mac's checkout ($DV_MAC_HOST:$DV_MAC_REPO, default
+  $DV_MAC_HOST:code/dv), then runs script/check there (any arguments after -- go to it)
+EOF
+}
+
+sync_only=0
+check_args=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --sync-only) sync_only=1 ;;
+        --)
+            shift
+            check_args=("$@")
+            break
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "script/check-mac: unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+host="${DV_MAC_HOST:?set DV_MAC_HOST to the ssh destination of the Mac}"
+# Set but blank is refused below, not taken for the default.
+repo="${DV_MAC_REPO-code/dv}"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+remote() {
+    ssh -o BatchMode=yes "$host" "$@"
+}
+
+refuse() {
+    echo "script/check-mac: $*" >&2
+    exit 2
+}
+
+# The checkout is named relative to the Mac's home (where ssh starts), or absolutely inside it;
+# never blank, and with no `.` or `..` parts, so it can't name the home itself or climb out.
+if [[ -z "${repo//[[:space:]]/}" ]]; then
+    refuse "DV_MAC_REPO is blank"
+fi
+case "/$repo/" in
+    */../* | */./*) refuse "DV_MAC_REPO has a . or .. part: $repo" ;;
+esac
+# Quoted once for the remote shell; every remote command enters the checkout through it.
+qrepo="$(printf %q "$repo")"
+
+# Before anything there is reset: the folder must be the top of a checkout of this repository
+# (the same root commits) with dv's sources in it, inside the Mac's home. A wrong
+# DV_MAC_REPO stops here, its folder untouched.
+roots="$(git rev-list --max-parents=0 HEAD | sort | tr '\n' ' ')"
+echo "==> verify that $host:$repo is a checkout of this repository"
+remote "/bin/sh -s -- $qrepo $(printf %q "$roots")" << 'EOF'
+repo=$1
+roots=$2
+case "$repo" in
+    /*)
+        case "$repo/" in
+            "$HOME"/?*) ;;
+            *)
+                echo "script/check-mac: $repo isn't a folder inside the Mac's home ($HOME)" >&2
+                exit 2
+                ;;
+        esac
+        ;;
+esac
+cd -- "$repo" 2> /dev/null || {
+    echo "script/check-mac: $repo isn't a folder on the Mac" >&2
+    exit 2
+}
+top=$(git rev-parse --show-toplevel 2> /dev/null) || {
+    echo "script/check-mac: $repo isn't a git checkout" >&2
+    exit 2
+}
+if [ "$top" != "$(pwd -P)" ]; then
+    echo "script/check-mac: $repo is inside the checkout $top, not its top" >&2
+    exit 2
+fi
+theirs=$(git rev-list --max-parents=0 HEAD 2> /dev/null | sort | tr '\n' ' ')
+if [ "$theirs" != "$roots" ]; then
+    echo "script/check-mac: $repo is a checkout of another repository (root commits" \
+        "${theirs:-none}, here $roots)" >&2
+    exit 2
+fi
+if [ ! -f crates/dv/Cargo.toml ]; then
+    echo "script/check-mac: $repo has no crates/dv/Cargo.toml" >&2
+    exit 2
+fi
+EOF
+
+head="$(git rev-parse HEAD)"
+echo "==> sync: $host:$repo to $head and this tree's changes"
+if ! remote "cd -- $qrepo && git cat-file -e $head^{commit}" 2> /dev/null; then
+    git bundle create - HEAD 2> /dev/null |
+        remote "cd -- $qrepo && cat > .git/dv-sync.bundle && git fetch -q .git/dv-sync.bundle HEAD && rm .git/dv-sync.bundle"
+fi
+remote "cd -- $qrepo && git checkout -q -f --detach $head && git clean -fdq"
+# safecrlf off: a Windows checkout's line-ending warnings are noise here.
+if ! git -c core.safecrlf=false diff --quiet HEAD; then
+    git -c core.safecrlf=false diff --binary HEAD | remote "cd -- $qrepo && git apply --whitespace=nowarn"
+fi
+untracked="$(git ls-files --others --exclude-standard | wc -l)"
+if [[ "$untracked" -gt 0 ]]; then
+    git ls-files -z --others --exclude-standard | tar --null -T - -cf - |
+        remote "cd -- $qrepo && tar xf -"
+fi
+
+if [[ "$sync_only" -eq 1 ]]; then
+    exit 0
+fi
+
+# A login shell, so ~/.cargo/env puts cargo on PATH; script/check's exit code is ssh's.
+quoted=""
+if [[ ${#check_args[@]} -gt 0 ]]; then
+    quoted="$(printf ' %q' "${check_args[@]}")"
+fi
+echo "==> $host: script/check$quoted"
+remote "cd -- $qrepo && exec zsh -lc $(printf %q "bash script/check$quoted")"

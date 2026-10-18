@@ -28,7 +28,8 @@ labels, "used to…") belongs in commit messages, never in comments.
 4. WSL repos behave exactly like local ones: native speed, live updates while the agent edits (§5).
 5. First-run onboarding and a re-runnable setup/doctor that install the WSL backend, put `dv` on PATH,
    install agent skills and check `gh` — per environment (§12).
-6. A per-user installer with delta auto-updates (Velopack); Linux builds; macOS kept compiling (§13).
+6. A per-user installer with delta auto-updates (Velopack); Linux builds; macOS verified on the
+   owner's Mac (§13).
 7. Hermetic automated testing: fixture repos, a fake `gh`, GUI e2e scenarios (§14).
 8. Read the code around a change as an editor would: select and find text, view whole files, and
    hover, go to definition and find references through the project's own language servers, run
@@ -102,8 +103,12 @@ Every list is paginated.
 
 ### D8. Window material: Mica by default
 Windows 11: `MicaBackdrop` by default, `Blurred` (Acrylic) as a setting, `Opaque` automatically on
-Windows 10, when "transparency effects" is off, on Linux, and as a setting. macOS: vibrancy via
-`Blurred`. GPUI only blurs what is *behind* the window; in-app overlays are opaque tinted layers over a
+Windows 10, when "transparency effects" is off, on Linux, and as a setting. **macOS: Opaque.**
+gpui's `Blurred` there (an `NSVisualEffectView` with its tint and saturation layers stripped)
+leaves the window clear with no blur at all on macOS 27 (the wallpaper sharp behind dv's
+translucent tints, active and inactive alike), which reads worse
+than Opaque; vibrancy via `Blurred` comes back when gpui's blur works again (a Mica or Acrylic
+setting made elsewhere is kept and resolves to Opaque meanwhile). GPUI only blurs what is *behind* the window; in-app overlays are opaque tinted layers over a
 scrim (DESIGN §3). Acrylic uses the undocumented composition API and can lag while dragging on some
 Windows builds — hence Mica as the default. gpui sets Mica through `DWMWA_SYSTEMBACKDROP_TYPE`, which
 only build 22621+ has, so earlier Windows 11 builds (22000–22620) resolve Mica to Opaque too; a
@@ -1316,7 +1321,7 @@ Global flags: `--repo <path>` (also `\\wsl.localhost\<distro>\<path>`), `--wsl <
   broadcast (a hidden `--dir` names another folder: tests, the installer's hooks for the
   installed copy, §13.3); on Linux and inside a distro `~/.local/bin/dv` linked to this dv
   and, when `~/.local/bin` isn't on the user's shell's `PATH`, a line in its startup file;
-  macOS exit 2 (`unsupported`). `--remove` takes back exactly that folder, link and line. It
+  macOS the same as Linux. `--remove` takes back exactly that folder, link and line. It
   asks as `setup agents` does. `--json`: `{dir, action: added | unchanged | removed | absent,
   link, rc_file}`.
 - **`setup all [--yes]`** (and `dv setup` alone) applies every fix dv can apply that `doctor`
@@ -1847,7 +1852,7 @@ Keyboard map and states: DESIGN §5.
    only an administrator changes, so that check stays failed, naming the folder, with no button,
    and `dv setup path` says so. `--remove` takes out exactly this folder's entries, leaving no
    empty one. Entries match by their expansion (`%VAR%`), case, quotes and a trailing `\`
-   aside. **Linux and each distro:** `~/.local/bin/dv` linking to this dv (for a development
+   aside. **Linux, each distro and macOS:** `~/.local/bin/dv` linking to this dv (for a development
    build, the installed copy's packaged build will do, which it leaves alone: §5.2's link
    rule) and `~/.local/bin` on
    the user's shell's `PATH`, read from their interactive login shell as the language servers'
@@ -1856,8 +1861,10 @@ Keyboard map and states: DESIGN §5.
    `~/.zshrc` (zsh), the first of `~/.bash_profile`, `~/.bash_login`, `~/.profile` (bash),
    `~/.config/fish/conf.d/dv.fish` (fish), else `~/.profile`, the shell being the one that
    printed the `PATH`, else `$SHELL`. After adding the line the shell is asked again (still
-   lacking it is an error); a line there that the shell doesn't pick up fails the check. **macOS:**
-   skipped (unverified, §13.2; its usual places need an admin prompt). `dv setup path` applies
+   lacking it is an error); a line there that the shell doesn't pick up fails the check. On
+   **macOS** this route needs no administrator, where the usual `/usr/local/bin` would, and zsh
+   (its shell) reads `~/.zshrc` after `/etc/zprofile`'s `path_helper`, so `~/.local/bin` stays
+   first. `dv setup path` applies
    it, `--remove` takes it back; Velopack's install and uninstall hooks call them for
    the installed copy's `current` folder (D9).
 4. **Agent skills** (`skill-claude-code`, `skill-codex`, `skill-cursor`): per agent set up in
@@ -1942,7 +1949,15 @@ setup**.
   once, not when the window closes. The detached GUI has no console, so a fatal startup error is
   a message box (`fatal.rs`): one before the app starts (the data dir) and one inside it (the
   window can't open, the fonts don't load) alike.
-- **macOS:** `dv.app` containing one `dv` binary; the CLI is a symlink to it.
+- **macOS:** `dv.app` containing one `dv` binary; the CLI is a symlink to it (`dv setup path`'s
+  `~/.local/bin/dv`, §12.2). Built on the Mac itself (no cross-build from Windows): gpui's
+  platform there takes `font-kit` (without it Core Text draws no text) and `runtime_shaders`
+  (the Metal shaders compiled when the window opens, so a build needs neither Xcode nor its
+  separately downloaded Metal toolchain; the Command Line Tools do), both in
+  `crates/dv/Cargo.toml`. `dv` and `dv open` detach as on Linux (its own session, stdio
+  closed). The app has a menu bar (`dv_ui::app_menu`: dv › About dv, Settings…, Services, Hide,
+  Quit; Edit; Window › Minimize) and the Mac's own keys (`⌘Q`, `⌘H`, `⌥⌘H`, `⌘M`); its title
+  bar keeps the native traffic lights in a transparent titlebar (DESIGN §2).
 - **Linux:** one `dv` binary (GUI + CLI + backend), plus the static musl build used inside WSL.
   The app is X11 and Wayland both (gpui takes Wayland when `WAYLAND_DISPLAY` is set, else
   X11), with client-side decorations: dv's title bar moves the window and holds its caption
@@ -2070,9 +2085,36 @@ starts the app there (on an Xvfb display: `dv` detaching through `$APPIMAGE`, th
 screen up). The Linux app has no Velopack hooks or updates yet (the
 `velopack` crate is a Windows dependency, D9): it updates by replacing the AppImage.
 
-macOS has no local machine: macOS-only code is kept compiling by `cargo check --target
-aarch64-apple-darwin` where that works without the SDK, and is otherwise unverified until a Mac or
-phase 10's CI is available.
+**The macOS gate** is `script/check-mac [--sync-only] [-- <script/check arguments>]` (bash), run
+on Windows: the owner's Mac (`$DV_MAC_HOST` over SSH, key auth; Apple silicon; its
+checkout `~/code/dv`; `DV_MAC_HOST` / `DV_MAC_REPO` name others) is made this working tree —
+moved to this `HEAD` (sent as a `git bundle` when it hasn't the commit, never through GitHub),
+its tracked files reset and untracked ones removed (ignored ones such as `target/` stay), this
+tree's uncommitted changes applied (`git diff --binary`) and its untracked files copied (tar) —
+then `script/check` runs there in a login shell and its exit code comes back. On the Mac
+`script/check` is the same steps 1–5: fmt, clippy in the three shapes, the boundary, the tests
+and every scenario (a header's `platforms` skips Windows-only ones), the windows shown on the
+Mac's own screen, unfocused, behind nothing (§14.2, "macOS"); `--linux` and `--linux-gui` don't apply there.
+The Mac is the owner's machine: nothing is installed on it but the pinned toolchain through
+rustup, nothing runs with `sudo`, and its real data dir and agent homes are never touched (the
+same rules as on Windows, CLAUDE.md). The macOS-only code is otherwise built only there. A
+known gpui behaviour: on every launch gpui's macOS platform writes
+`NSAutoFillHeuristicControllerEnabled = false` into the process's user defaults when the key
+is unset (a workaround for AppKit's autofill heuristics), so running dv, a test or a scenario
+on the Mac leaves that one key in the defaults domain of the executable's name
+(`~/Library/Preferences/dv.plist` for a bare `dv`); dv writes no defaults itself.
+
+**A macOS release** isn't made yet. Velopack's `.pkg` and update packages come from `vpk
+[osx] pack`, which runs only on a Mac with the .NET SDK 8 and `vpk` installed (neither is on
+the owner's Mac); from Windows, `vpk [osx]` offers only `bundle` (a `.app` from a folder,
+per `vpk` 1.2.161's help), no installer and no feed. What a release
+needs: on the Mac, the shipped shape built with the `dist` profile (`DV_CHANNEL`, `DV_VERSION`,
+`DV_UPDATE_FEED` as on Windows), a stage folder with `dv`, then `vpk pack` with `--mainExe dv`,
+dv's icon as an `.icns` (made from `crates/dv/resources/windows/dv.svg`), `--packId dv`, the
+`osx` channel; unsigned and unnotarized (D10), so Gatekeeper asks once on first open of a
+downloaded copy (a local build has no quarantine mark). The `velopack` crate's hooks and
+updates are Windows-only in the code today (`crates/dv/src/installer.rs`, `updates.rs`) and
+would need their macOS half.
 
 
 ### 13.3 Install layout
@@ -2237,6 +2279,15 @@ with and without its bytes, only looked at, read past what was asked, a director
   "screen"` copies the window from the desktop instead; it only works in front, so the scenarios
   that use it live in `tests/e2e/foreground/` and run on demand (`script/check --foreground`),
   never by default (tests/e2e/README.md, "Screenshots and window materials").
+- **macOS runs** (`script/check-mac`): the runner holds the display awake (`caffeinate -d -u`
+  for the run: macOS stops drawing a window nobody can see, a sleeping display's included); a
+  background window opens in front but unfocused (macOS stops drawing a fully covered one), the
+  app an accessory (no Dock icon); screenshots are Core Graphics images of the window
+  (`CGWindowListCreateImage`, Retina 2x, sRGB), and `"source": "screen"` works there in the
+  background too (the window and what is under it as the screen shows them).
+  `shell_materials_macos` covers its one material, `setup_macos` its Setup (§12). A line of a
+  scenario can be limited to some platforms too (`"platforms"`), for a value that differs by
+  platform, such as the title bar's layout around the traffic lights.
 - **View tests** with gpui's `TestAppContext`/`VisualTestContext` next to each view (`tests.rs`).
 - **CLI tests** run the commands in-process (`dv_cli::main_with` with a `Context` over captured
   streams, an explicit environment and the fixture's git environment) against fixture repos and
@@ -2306,7 +2357,7 @@ Each phase ends with its e2e scenarios green and a screenshot review against DES
 | 7 | Packaging + updates on Windows with Velopack (D9), local feed: `Setup.exe`, `dv-gui.exe`, dv's icon on the executables, the window and the shortcuts, the install hooks running `dv setup path` (§12), the Linux builds beside the installed `dv.exe` (§13.2); a development build never replaces the installed copy's `dv` in a distro | install from `Setup.exe` → PATH set, icon in the taskbar and Start → a WSL repo opens from the installed copy → a second local release updates it |
 | 8 | GitHub: open PR, pull threads, submit sheet with validation and file-comment fallback (§9) | Workflow C against `mock_gh`; owner's live check |
 | 9 | Polish: settings, palette, light themes, empty states, performance pass on a 2,000-file PR (the Linux app, its gate `script/check --linux-gui` and its trial AppImage are done, §13.1, §13.2) | DESIGN review of every screen; perf budget (§17) met |
-| 10 | *(last, optional)* GitHub Actions: CI matrix incl. macOS, release workflow publishing to GitHub Releases, update feed switched over | owner asks for it |
+| 10 | *(last, optional)* GitHub Actions: CI matrix incl. macOS, release workflow publishing to GitHub Releases, update feed switched over. macOS itself is verified already on the owner's Mac (`script/check-mac`, §13.2); its package (`.pkg`) waits for `vpk` on a Mac (§13.2) | owner asks for it |
 
 ---
 
@@ -2324,8 +2375,8 @@ Each phase ends with its e2e scenarios green and a screenshot review against DES
 - **A second GUI on the same data dir** is allowed for now: `dv open` always starts a new app.
   Handing the request to a running one (single instance) comes later; until then two apps share
   `settings.json` and `known_repos.json`, each written atomically, the last write winning.
-- **macOS is unverified** until a Mac or phase 10's CI exists (§13.2); keep platform code behind small
-  modules so the gap is contained.
+- **macOS is verified on one Mac**, the owner's (§13.2: `script/check-mac`); keep platform code
+  behind small modules so a gap there stays contained.
 - Window material (D8) is available: `gpui-pre` 0.3.6 has `WindowBackgroundAppearance::{Blurred,
   MicaBackdrop, MicaAltBackdrop}` (`gpui-pre-windows/src/window.rs`), checked 2026-10-04.
 

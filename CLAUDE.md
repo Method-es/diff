@@ -18,8 +18,8 @@ WSL; macOS and Linux supported. Agents read and answer reviews through the `dv` 
 
 - Rust 1.98.1 (pinned in `rust-toolchain.toml`), edition 2024, resolver 3.
 - Windows 11 is the primary platform. Linux, the headless build and the Linux app (X11 and
-  Wayland) alike, is built and tested inside WSL Ubuntu (below). macOS is
-  kept compiling where cheap and is otherwise unverified (PLAN §13.2).
+  Wayland) alike, is built and tested inside WSL Ubuntu (below). macOS is built and tested on the
+  owner's Mac over SSH (`script/check-mac`, macOS below, PLAN §13.2).
 - `git` and `gh` are on `PATH`. dv shells out to both and never links a git library (PLAN D4, D7).
 
 ## Crates (`crates/`)
@@ -133,6 +133,8 @@ script/check --linux         # also step 6: the headless crates and dv tested an
                              # Ubuntu, script/build-linux --debug-only, the real WSL sandboxed under /tmp
 script/check --linux-gui     # also step 7: the Linux app in WSL Ubuntu (~/.cache/dv-target-gui):
                              # clippy in its GUI shapes, dv/dv_ui/gpui_automation tests, e2e on Xvfb
+script/check-mac [--sync-only] [-- <check args>]  # the Mac ($DV_MAC_HOST, ~/code/dv) made this working
+                             # tree, then script/check run there; its exit code (macOS below)
 script/build-linux [--aarch64] [--debug-only]   # the static musl dv for WSL:
                              # target/{debug,release}/dv-linux-x86_64 (--debug-only: debug's alone;
                              # --out <dir> [--profile dist]: only there, script/package's form)
@@ -235,7 +237,8 @@ this themselves (`"env": {"CLAUDECODE": "1"}` makes the agent Claude Code;
 App windows open on the owner's real desktop.
 
 - Run the app only through the e2e runner (background mode, the default: windows never take focus
-  and stay behind everything) or `--automation` scripts that end with `quit`. Never leave `dv.exe`
+  and stay behind everything; on macOS they open unfocused but in front, since macOS stops drawing
+  a covered window) or `--automation` scripts that end with `quit`. Never leave `dv.exe`
   or `mock_gh.exe` running; if a run fails, kill what you started (`taskkill //F //IM dv.exe` from
   bash). Scenarios that must take the focus (`tests/e2e/foreground/`) run only on demand.
 - **Linux GUI runs go on an Xvfb display, never WSLg's.** Inside WSL the desktop's display
@@ -321,6 +324,26 @@ App windows open on the owner's real desktop.
   --test-threads=1` after `cargo build -p dv` and `script/build-linux` (it ends with
   `target/debug/dv.exe` running a command inside the distro), `DV_LIVE_WSL_DISTRO` naming the
   distro (default `Ubuntu`). The owner runs it; no agent does.
+
+## macOS
+
+- **The Mac** is the owner's Mac (Apple silicon, macOS 27), `ssh $DV_MAC_HOST` (key
+  auth, `BatchMode`), its checkout `~/code/dv`, zsh. Its screen is the owner's test desktop:
+  dv's windows may show there. Screen Recording is granted to SSH sessions, so `screencapture
+  -x` and the automation's captures work over SSH.
+- **Build there, never cross-build here**: no cargo for macOS on Windows. `script/check-mac`
+  syncs this working tree (a bundle for a commit the Mac lacks, never through GitHub; the
+  Mac's own uncommitted changes and untracked files are discarded, `target/` stays) and runs
+  `script/check` there; `--sync-only` stops after the sync, for running one thing by hand:
+  `ssh $DV_MAC_HOST 'cd ~/code/dv && zsh -lc "cargo test -p dv_ui"'`. Copy screenshots back with
+  `scp` into `target/tmp/mac/` and look at them (Retina: physical pixels at 2x).
+- **Its rules**: install nothing on it but the pinned toolchain through rustup (no brew, no
+  .NET, no Xcode components such as the Metal toolchain: the build uses gpui's runtime
+  shaders), never `sudo`, never touch its real data dir (`~/Library/Application Support/dv`) or
+  its `~/.claude`, `~/.agents`, `~/.codex`, `~/.cursor`. An exploratory run sets `DV_DATA_DIR`
+  (or `--data-dir`) under `target/tmp/`, quits through automation or is killed by its pid, never
+  by name. The display sleeps after a minute: the e2e runner keeps it awake while it runs
+  (`caffeinate`); for a `screencapture` by hand, `caffeinate -u -t 2` first.
 
 ## Disk
 

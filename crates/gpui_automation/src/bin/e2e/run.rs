@@ -541,6 +541,14 @@ impl Session<'_> {
             if process::interrupted() {
                 return Err(Stop::Interrupted);
             }
+            if !step.runs_on(std::env::consts::OS) {
+                self.log(&format!(
+                    "# line {}: skipped, it runs on {} only",
+                    step.line,
+                    step.platforms.join(", ")
+                ));
+                continue;
+            }
             self.run_step(step)
                 .and_then(|()| self.check_foreground())
                 .map_err(|stop| match stop {

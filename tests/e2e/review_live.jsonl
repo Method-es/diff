@@ -16,7 +16,7 @@
 {"cmd": "click", "target": "stream/line/src/routes/users.ts/new/8"}
 {"cmd": "key", "keystroke": "c", "expect": {"pointer": "/session/composer/start_line", "equals": 8}}
 {"cmd": "type", "text": "Normalise the id before it goes into the cache key."}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": [{"pointer": "/session/threads", "len": 1}, {"pointer": "/session/threads/0/start_line", "equals": 8}, {"pointer": "/session/threads/0/outdated", "equals": false}]}
 {"cmd": "state", "save": {"thread": "/session/threads/0/id"}}
 

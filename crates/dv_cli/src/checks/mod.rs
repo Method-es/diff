@@ -12,9 +12,8 @@
 //! 1. [`id::DV`], **dv in the distro** (a distro's, from Windows): this app's Linux build
 //!    installed and intact (`dv_backend::install::probe`), with Install ([`distro`]).
 //! 2. [`id::PATH`], **the CLI on `PATH`** ([`path`]): on Windows this executable's folder in
-//!    the user `Path` (through [`user_path`]'s seam); on Linux and in a distro
-//!    `~/.local/bin/dv` running this dv and `~/.local/bin` on the user's shell's `PATH`; on
-//!    macOS skipped, unverified (PLAN §13.2).
+//!    the user `Path` (through [`user_path`]'s seam); on Linux, in a distro and on macOS
+//!    `~/.local/bin/dv` running this dv and `~/.local/bin` on the user's shell's `PATH`.
 //! 3. **The `dv-review` skill** per agent ([`skills`]): Claude Code, Codex, Cursor.
 //! 4. [`id::GIT`], **git identity** ([`git`]): `user.name` and `user.email`, no apply.
 //! 5. [`id::GH`], **GitHub** ([`gh`]): `gh` there and signed in, no apply.
@@ -75,7 +74,7 @@ pub enum State {
     OutOfDate,
     /// Couldn't be told, or broken.
     Failed,
-    /// Doesn't apply here: the agent isn't installed, macOS's PATH.
+    /// Doesn't apply here: the agent isn't installed, no Linux build to check distros with.
     Skipped,
 }
 

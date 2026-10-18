@@ -809,10 +809,10 @@ fn too_large_cap_counts_unchanged_lines() {
 
 #[test]
 fn user_config_diff_algorithm_histogram_is_ignored() {
-    // An input where Myers and histogram disagree (found by search): Myers adds one line and
-    // removes two in separate places, histogram replaces a block.
-    let before = "{\ny\ny\ny\nreturn;\n{\n";
-    let after = "{\ny\n{\ny\n{\n";
+    // An input where Myers and histogram disagree (found by search; git 2.53 and 2.54 alike):
+    // Myers removes two lines and adds two in separate places, histogram changes three.
+    let before = "}\nreturn;\n{\n{\n{\n";
+    let after = "{\n}\n{\n{\nreturn;\n";
     let repo = FixtureRepo::new();
     repo.config("diff.algorithm", "histogram");
     repo.write("f.c", before);
@@ -824,7 +824,7 @@ fn user_config_diff_algorithm_histogram_is_ignored() {
     assert_ne!(myers, histogram, "the input must tell the algorithms apart");
 
     let listed = Listed::of(&repo, Target::Commit { rev: changed });
-    assert_eq!(listed.summary(), [("f.c", FileStatus::Modified, 1, 2)]);
+    assert_eq!(listed.summary(), [("f.c", FileStatus::Modified, 2, 2)]);
     let text = listed.text("f.c");
     // Exactly git's Myers output, line for line.
     let changes: Vec<_> = render(&text)
@@ -837,8 +837,8 @@ fn user_config_diff_algorithm_histogram_is_ignored() {
         .filter(|line| line.starts_with(['+', '-']))
         .map(str::to_string)
         .collect();
-    assert_eq!(myers_changes, ["+{", "-y", "-return;"]);
-    assert_eq!(changes, ["+:3 {", "-4: y", "-5: return;"]);
+    assert_eq!(myers_changes, ["-}", "-return;", "+}", "+return;"]);
+    assert_eq!(changes, ["-1: }", "-2: return;", "+:2 }", "+:5 return;"]);
 }
 
 #[test]

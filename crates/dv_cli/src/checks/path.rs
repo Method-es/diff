@@ -9,16 +9,17 @@
 //!   opened afterwards finds it; one in the machine's `Path` stays ahead (only an administrator
 //!   changes that), which the check keeps saying. The installer's hooks call it for the
 //!   installed copy's folder; `--remove` takes out exactly that folder.
-//! - **Linux, and inside a WSL distro:** `~/.local/bin/dv` a link to this dv (inside a distro
+//! - **Linux, inside a WSL distro, and macOS:** `~/.local/bin/dv` a link to this dv (inside a distro
 //!   the link `dv setup wsl` makes already), and `~/.local/bin` on the user's shell's `PATH`, as
 //!   their interactive login shell prints it (`dv_lsp::resolve::shell::read_here`); when it
 //!   isn't, a line in the startup file that shell reads puts it there ([`RC_MARK`] heads it, so
 //!   it is added once and `--remove` finds it): `~/.zshrc` for zsh; for bash the login file it
 //!   reads (`~/.bash_profile`, else `~/.bash_login`, else `~/.profile`);
 //!   `~/.config/fish/conf.d/dv.fish` for fish; else `~/.profile`. The shell is the one that
-//!   printed the `PATH`, else `$SHELL`. After adding the line the shell is asked again.
-//! - **macOS:** skipped. macOS is unverified (PLAN §13.2), and its usual places
-//!   (`/usr/local/bin`) need an admin prompt; link dv into a folder on `PATH` by hand.
+//!   printed the `PATH`, else `$SHELL`. After adding the line the shell is asked again. On
+//!   macOS this beats the usual `/usr/local/bin`, which needs an administrator (PLAN §12.2):
+//!   zsh, macOS's shell, reads `~/.zshrc` after `/etc/zprofile`'s `path_helper`, so the line
+//!   keeps `~/.local/bin` first.
 
 use std::path::{Path, PathBuf};
 
@@ -39,13 +40,13 @@ pub fn has_mark(text: &str) -> bool {
 /// What `dv setup path` did (or, with `--remove`, took back).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Done {
-    /// The folder on `PATH`: this executable's (Windows), `~/.local/bin` (Linux).
+    /// The folder on `PATH`: this executable's (Windows), `~/.local/bin` (Linux, macOS).
     pub dir: PathBuf,
     /// `added`, `unchanged`, `removed` or `absent` (nothing to remove).
     pub action: &'static str,
-    /// Linux: `~/.local/bin/dv`, which links to this dv (`None` on Windows).
+    /// Linux and macOS: `~/.local/bin/dv`, which links to this dv (`None` on Windows).
     pub link: Option<PathBuf>,
-    /// Linux: the shell startup file changed, if one was.
+    /// Linux and macOS: the shell startup file changed, if one was.
     pub rc_file: Option<PathBuf>,
     /// Windows: a folder in the machine's `Path` whose `dv.exe` still comes first.
     pub shadowed_by: Option<PathBuf>,
@@ -81,8 +82,6 @@ impl Done {
 pub(super) fn check(seams: &Seams) -> Check {
     if cfg!(windows) {
         windows_check(seams)
-    } else if cfg!(target_os = "macos") {
-        Check::new(id::PATH, TITLE, State::Skipped, MACOS)
     } else {
         unix::check(seams)
     }
@@ -115,8 +114,6 @@ pub fn add_dir(seams: &Seams, dir: Option<&Path>) -> Result<Done, String> {
             rc_file: None,
             shadowed_by,
         })
-    } else if cfg!(target_os = "macos") {
-        Err(MACOS.to_string())
     } else {
         unix::add(seams)
     }
@@ -147,8 +144,6 @@ pub fn remove_dir(seams: &Seams, dir: Option<&Path>) -> Result<Done, String> {
             rc_file: None,
             shadowed_by: None,
         })
-    } else if cfg!(target_os = "macos") {
-        Err(MACOS.to_string())
     } else {
         unix::remove(seams)
     }
@@ -168,14 +163,10 @@ pub fn planned(seams: &Seams, dir: Option<&Path>, remove: bool) -> Result<Option
             user_path::with_added(value.as_deref(), &dir, &vars, &has_dv)
                 .map(|_| format!("put {} in {place}, ahead of any other dv", dir.display()))
         })
-    } else if cfg!(target_os = "macos") {
-        Err(MACOS.to_string())
     } else {
         unix::planned(seams, remove)
     }
 }
-
-const MACOS: &str = "dv doesn't set up PATH on macOS yet: link dv into a folder on your PATH";
 
 fn windows_dir(seams: &Seams, dir: Option<&Path>) -> Result<PathBuf, String> {
     dir.or(seams.exe_dir())
@@ -268,7 +259,7 @@ fn windows_check(seams: &Seams) -> Check {
 
 #[cfg(unix)]
 mod unix {
-    //! Linux and WSL distros (module docs).
+    //! Linux, WSL distros and macOS (module docs).
 
     use std::io::Write as _;
     use std::path::{Path, PathBuf};

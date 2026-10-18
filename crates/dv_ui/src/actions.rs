@@ -3,6 +3,30 @@
 //! `shell::ToggleSwitcher` or `diff_pane::NextFile`, and automation's `actions` command lists
 //! them all.
 
+/// The app's own actions on macOS (`crate::app_menu`): its menu bar's and the keys every Mac
+/// app has. Handled by the app, wherever the keyboard is.
+pub mod app {
+    use gpui::actions;
+
+    actions!(
+        app,
+        [
+            /// Show dv's name and version (dv › About dv).
+            About,
+            /// Quit dv (`⌘Q`).
+            Quit,
+            /// Hide dv (`⌘H`).
+            Hide,
+            /// Hide the other apps (`⌥⌘H`).
+            HideOthers,
+            /// Show every app again.
+            ShowAll,
+            /// Minimize the window to the Dock (`⌘M`).
+            Minimize,
+        ]
+    );
+}
+
 /// The shell's own actions, dispatched in the `Shell` key context.
 pub mod shell {
     use gpui::actions;

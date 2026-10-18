@@ -17,35 +17,35 @@
 // 8-10 (a drag from line 8's + to line 10).
 {"cmd": "click", "target": "stream/comment/README.md/new/3", "expect": {"pointer": "/session/composer/start_line", "equals": 3}}
 {"cmd": "type", "text": "Say what the cache holds."}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": {"pointer": "/session/threads", "len": 1}}
 {"cmd": "key", "keystroke": "j"}
 {"cmd": "settle", "expect": {"pointer": "/session/current_file", "equals": "src/lib/cache.ts"}}
 {"cmd": "click", "target": "stream/line/src/lib/cache.ts/new/1"}
 {"cmd": "key", "keystroke": "c"}
 {"cmd": "type", "text": "This map never forgets an entry."}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": {"pointer": "/session/threads", "len": 2}}
 {"cmd": "key", "keystroke": "j"}
 {"cmd": "settle", "expect": {"pointer": "/session/current_file", "equals": "src/lib/http.ts"}}
 {"cmd": "click", "target": "stream/line/src/lib/http.ts/new/4"}
 {"cmd": "key", "keystroke": "c"}
 {"cmd": "type", "text": "Retry once before giving up?"}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": {"pointer": "/session/threads", "len": 3}}
 {"cmd": "key", "keystroke": "j"}
 {"cmd": "settle", "expect": {"pointer": "/session/current_file", "equals": "src/routes/users.ts"}}
 {"cmd": "drag", "from": {"target": "stream/comment/src/routes/users.ts/new/8"}, "to": {"target": "stream/comment/src/routes/users.ts/new/10"}}
 {"cmd": "settle", "expect": [{"pointer": "/session/composer/start_line", "equals": 8}, {"pointer": "/session/composer/end_line", "equals": 10}]}
 {"cmd": "type", "text": "Normalise the id before it goes into the key."}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": [{"pointer": "/session/threads", "len": 4}, {"pointer": "/session/threads/3/start_line", "equals": 8}, {"pointer": "/session/threads/3/end_line", "equals": 10}]}
 {"cmd": "state", "save": {"readme": "/session/threads/0/id", "cache": "/session/threads/1/id", "http": "/session/threads/2/id", "users": "/session/threads/3/id"}}
 
 // Request changes: round 1 closes, and the stream shows what changed since it: nothing yet.
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": {"pointer": "/session/sheet/verdict", "equals": "request_changes"}}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle"}
 {"cmd": "wait_for", "pointer": "/session/status", "equals": "changes_requested"}
 {"cmd": "settle", "expect": [{"pointer": "/session/comparison", "equals": {"kind": "since_round", "round": 1}}, {"pointer": "/session/comparison_available", "equals": true}, {"pointer": "/session/total", "equals": 0}, {"pointer": "/shell/empty_state", "equals": "no_changes_since"}, {"pointer": "/shell/status/review", "equals": "Changes requested · round 2 · 4 open · since round 1"}, {"pointer": "/comments_list/rows", "len": 4}, {"pointer": "/comments_list/rows/0/not_in_comparison", "equals": true}, {"pointer": "/comments_list/rows/3/not_in_comparison", "equals": true}, {"pointer": "/session/threads/0/placement", "equals": "not_in_comparison"}]}
@@ -126,10 +126,10 @@
 {"cmd": "settle", "expect": [{"pointer": "/session/threads/3/state", "equals": "resolved"}, {"pointer": "/session/threads/3/start_line", "equals": 14}, {"pointer": "/session/threads/3/end_line", "equals": 16}, {"pointer": "/session/threads/3/original_lines", "equals": {"start": 8, "end": 10}}, {"pointer": "/session/threads/3/placement", "equals": "moved"}]}
 
 // Approve: the review is finished, and shows all changes without a toggle.
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": {"pointer": "/session/sheet/verdict", "equals": "request_changes"}}
 {"cmd": "key", "keystroke": "1", "expect": {"pointer": "/session/sheet/verdict", "equals": "approve"}}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle"}
 {"cmd": "wait_for", "pointer": "/session/status", "equals": "approved"}
 {"cmd": "settle", "expect": [{"pointer": "/session/comparison", "equals": {"kind": "all"}}, {"pointer": "/session/comparison_available", "equals": false}, {"pointer": "/session/ready_note", "equals": null}, {"pointer": "/session/total", "equals": 4}, {"pointer": "/shell/status/review", "equals": "Approved · round 2 · 3 open · 1 resolved"}]}

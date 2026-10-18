@@ -15,9 +15,9 @@
 {"cmd": "settle", "expect": [{"pointer": "/session/threads/0/placement", "equals": "unchanged"}, {"pointer": "/session/threads/1/placement", "equals": "unchanged"}]}
 {"cmd": "click", "target": "stream/line/src/lib/format.ts/new/2"}
 {"cmd": "settle", "expect": {"pointer": "/stream/focused", "equals": true}}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": {"pointer": "/session/sheet/verdict", "equals": "request_changes"}}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle"}
 {"cmd": "wait_for", "pointer": "/session/status", "equals": "changes_requested"}
 {"cmd": "wait_for", "pointer": "/session/comparison", "equals": {"kind": "since_round", "round": 1}}
@@ -49,7 +49,7 @@
 {"cmd": "key", "keystroke": "r"}
 {"cmd": "settle", "expect": {"pointer": "/session/composer/reply_to", "equals": "${t1}"}}
 {"cmd": "type", "text": "Better. Keep the rounding at one digit."}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": [{"pointer": "/session/composer", "equals": null}, {"pointer": "/session/threads/0/replies/0/body", "equals": "Better. Keep the rounding at one digit."}, {"pointer": "/session/threads/0/start_line", "equals": 6}, {"pointer": "/session/threads/0/end_line", "equals": 7}, {"pointer": "/session/threads/0/round", "equals": 1}, {"pointer": "/session/threads/0/trail/start", "equals": 6}]}
 
 // All changes: the same places.

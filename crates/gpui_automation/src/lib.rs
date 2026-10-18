@@ -35,6 +35,8 @@ pub mod background;
 #[cfg(windows)]
 mod background_windows;
 mod capture;
+#[cfg(target_os = "macos")]
+mod capture_macos;
 #[cfg(windows)]
 mod capture_windows;
 #[cfg(target_os = "linux")]

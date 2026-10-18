@@ -66,9 +66,9 @@ impl Appearance {
 pub enum Material {
     /// Windows 11's Mica backdrop: samples only the wallpaper; the Windows default.
     Mica,
-    /// Blur of whatever is behind the window (Windows' acrylic, macOS vibrancy).
+    /// Blur of whatever is behind the window (Windows' acrylic).
     Acrylic,
-    /// No material: solid surfaces. Windows 10, transparency effects off, Linux.
+    /// No material: solid surfaces. Windows 10, transparency effects off, Linux, macOS.
     Opaque,
 }
 
@@ -112,14 +112,12 @@ impl Material {
         }
     }
 
-    /// The setting's default on this platform (PLAN D8): Mica on Windows, Acrylic (vibrancy) on
-    /// macOS, Opaque elsewhere. What the platform can show narrows it further
+    /// The setting's default on this platform (PLAN D8): Mica on Windows, Opaque elsewhere (on
+    /// macOS too: `crate::platform` says why). What the platform can show narrows it further
     /// (`crate::platform::MaterialSupport`).
     pub fn platform_default() -> Self {
         if cfg!(windows) {
             Self::Mica
-        } else if cfg!(target_os = "macos") {
-            Self::Acrylic
         } else {
             Self::Opaque
         }
@@ -422,7 +420,8 @@ pub struct Sizes {
     pub command_field_width: Pixels,
     /// A Windows caption button: 46 wide, the title bar's height.
     pub caption_button_width: Pixels,
-    /// Room for macOS's traffic lights at the title bar's left edge.
+    /// Room for macOS's traffic lights at the title bar's left edge: the three lights from 12 to
+    /// 72, then the spacing scale's 12 (DESIGN §2).
     pub traffic_lights_inset: Pixels,
     pub window_width: Pixels,
     pub window_height: Pixels,
@@ -446,7 +445,7 @@ impl Default for Sizes {
             code_row_height: px(20.),
             command_field_width: px(300.),
             caption_button_width: px(46.),
-            traffic_lights_inset: px(78.),
+            traffic_lights_inset: px(84.),
             window_width: px(1440.),
             window_height: px(900.),
             window_min_width: px(1100.),

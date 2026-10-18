@@ -70,7 +70,7 @@ fn the_window_opens_at_its_size_with_the_material(cx: &mut TestAppContext) {
 fn ctrl_b_toggles_the_panel(cx: &mut TestAppContext) {
     let (_dir, shell, cx) = open_shell(cx);
     assert_eq!(bounds(cx, "panel").map(|b| b.size.width), Some(px(280.)));
-    cx.simulate_keystrokes("ctrl-b");
+    cx.simulate_keystrokes("secondary-b");
     assert!(!shell.read_with(cx, |shell, _| shell.panel_visible()));
     assert_eq!(bounds(cx, "panel"), None);
     assert_eq!(
@@ -78,7 +78,7 @@ fn ctrl_b_toggles_the_panel(cx: &mut TestAppContext) {
         Some((px(0.), px(1440.))),
         "the main area takes the whole width"
     );
-    cx.simulate_keystrokes("ctrl-b");
+    cx.simulate_keystrokes("secondary-b");
     assert!(shell.read_with(cx, |shell, _| shell.panel_visible()));
     assert_eq!(bounds(cx, "panel").map(|b| b.size.width), Some(px(280.)));
 }

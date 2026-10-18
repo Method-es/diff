@@ -220,7 +220,7 @@ fn ctrl_f_searches_the_file_shown_and_ctrl_c_copies_from_it(cx: &mut TestAppCont
     });
     settle_view(&shell, cx);
     let view = file_view(&shell, cx);
-    press(cx, &shell, "ctrl-f");
+    press(cx, &shell, "secondary-f");
     cx.simulate_input("a");
     settle_drawn(cx, &shell, "the search", |_, _| true);
     let found = view.read_with(cx, |view, _| view.find_summary().expect("open"));
@@ -260,7 +260,7 @@ fn ctrl_f_searches_the_file_shown_and_ctrl_c_copies_from_it(cx: &mut TestAppCont
     draw(cx);
     let selected = view.read_with(cx, |view, _| view.text_selection().map(|s| s.text));
     assert_eq!(selected.as_deref(), Some("delta"));
-    press(cx, &shell, "ctrl-c");
+    press(cx, &shell, "secondary-c");
     let copied: Vec<String> = cx.update(|_, cx| {
         crate::system::requests(cx)
             .0

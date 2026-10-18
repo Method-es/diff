@@ -70,13 +70,16 @@ fn named(key: &str, key_char: Option<&str>) -> Keystroke {
 /// Parse a dash- or plus-separated modifier spec (`"ctrl"`, `"ctrl-shift"`,
 /// `"cmd+alt"`). Names follow what the modifier means rather than which key
 /// produces it on this OS: `ctrl`/`control`, `alt`/`option`, `shift`,
-/// `cmd`/`platform`/`super`/`win`, `fn`/`function`. Unknown names are an
+/// `cmd`/`platform`/`super`/`win`, `fn`/`function`, and `secondary` (as in
+/// gpui's keymap: `cmd` on macOS, `ctrl` elsewhere). Unknown names are an
 /// error, never a silent no-op.
 pub fn parse_modifiers(spec: &str) -> Result<Modifiers> {
     let mut modifiers = Modifiers::default();
     for token in spec.split(['-', '+']) {
         match token.trim().to_ascii_lowercase().as_str() {
             "" => {}
+            "secondary" if cfg!(target_os = "macos") => modifiers.platform = true,
+            "secondary" => modifiers.control = true,
             "ctrl" | "control" => modifiers.control = true,
             "alt" | "option" => modifiers.alt = true,
             "shift" => modifiers.shift = true,
@@ -167,6 +170,12 @@ mod tests {
         assert!(parse_modifiers("Option+fn").unwrap().alt);
         assert!(parse_modifiers("option+fn").unwrap().function);
         assert_eq!(parse_modifiers("").unwrap(), Modifiers::default());
+        // The keymap's platform modifier, as `secondary-k` is in a keystroke.
+        assert_eq!(
+            parse_modifiers("secondary").unwrap(),
+            parse_keystroke("secondary-k").unwrap().modifiers
+        );
+        assert!(parse_modifiers("secondary").unwrap().secondary());
         let err = parse_modifiers("meta").unwrap_err().to_string();
         assert!(err.contains("unknown modifier"), "{err}");
     }

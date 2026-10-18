@@ -298,3 +298,44 @@ mod job {
         Ok(())
     }
 }
+
+/// Keeps the display awake while it is held: the whole run.
+///
+/// macOS stops drawing a window nobody can see, a sleeping display's included (gpui's display
+/// link stops while a window is occluded), so a scenario waiting for a frame would time out
+/// once the display idles off. `caffeinate -d -u -w <runner>` wakes the display, keeps it from
+/// idling and ends with the runner. It changes no setting; elsewhere this does nothing.
+pub struct DisplayAwake(Option<Child>);
+
+impl DisplayAwake {
+    pub fn hold() -> Self {
+        if !cfg!(target_os = "macos") {
+            return Self(None);
+        }
+        let child = Command::new("/usr/bin/caffeinate")
+            .args(["-d", "-u", "-w", &std::process::id().to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        match child {
+            Ok(child) => Self(Some(child)),
+            Err(err) => {
+                eprintln!(
+                    "e2e: couldn't start caffeinate ({err}); a display that sleeps stops the \
+                     app drawing"
+                );
+                Self(None)
+            }
+        }
+    }
+}
+
+impl Drop for DisplayAwake {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}

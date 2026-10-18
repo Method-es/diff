@@ -45,7 +45,9 @@
 //! Fullscreen is fine: gpui switches with `SWP_NOACTIVATE | SWP_NOZORDER`.
 //!
 //! On Linux and macOS only the unfocused, windowed and unthrottled parts
-//! apply.
+//! apply; on macOS the app also leaves the Dock and the app switcher (an
+//! accessory app), and its window stays in front of others, unfocused,
+//! because macOS stops drawing a window that is fully covered.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -93,9 +95,11 @@ fn background_options(options: WindowOptions) -> WindowOptions {
 }
 
 /// [`App::open_window`] for apps that run under automation: in background
-/// mode the window opens unfocused, windowed, behind every other window, out
-/// of the taskbar and unable to be activated (see the [module docs](self));
-/// otherwise this is exactly `cx.open_window(options, build_root_view)`.
+/// mode the window opens unfocused and windowed; on Windows also behind every
+/// other window, out of the taskbar and unable to be activated; on macOS in
+/// front of the others (macOS stops drawing a covered window) with the app
+/// out of the Dock (see the [module docs](self)); otherwise this is exactly
+/// `cx.open_window(options, build_root_view)`.
 /// Open every window of the app through it, not just the first.
 pub fn open_window<V: 'static + Render>(
     cx: &mut App,
@@ -107,8 +111,9 @@ pub fn open_window<V: 'static + Render>(
     }
     cx.open_window(window_options(options), |window, cx| {
         // Before the root view is built: the platform window has just been
-        // shown (without activation) and has not drawn yet, so it moves to
-        // the back before it ever appears in front.
+        // shown (without activation) and has not drawn yet, so on Windows it
+        // moves to the back before it ever appears in front (on macOS the app
+        // only leaves the Dock: `send_to_back` there).
         if let Err(err) = send_to_back(window) {
             log::warn!("automation: could not move the window to the background: {err:#}");
         }
@@ -116,12 +121,43 @@ pub fn open_window<V: 'static + Render>(
     })
 }
 
+/// Windows: the bottom of the z-order, a tool window that can't be activated
+/// (`background_windows`).
 #[cfg(windows)]
 fn send_to_back(window: &Window) -> Result<()> {
     crate::background_windows::send_to_back(crate::capture::hwnd(window)?)
 }
 
-#[cfg(not(windows))]
+/// macOS sends nothing to the back, despite the name: the window stays where
+/// gpui ordered it (in front, but not key: an inactive app's window), since
+/// AppKit stops drawing a window that is fully covered (gpui stops its
+/// display link when the window is occluded), which would stall every
+/// frame-synced step. The app becomes an accessory
+/// instead, out of the Dock and the app switcher, so nothing invites the
+/// person at the machine to switch to it.
+#[cfg(target_os = "macos")]
+fn send_to_back(_window: &Window) -> Result<()> {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+
+    /// `NSApplicationActivationPolicyAccessory`.
+    const ACCESSORY: isize = 1;
+    // SAFETY: `sharedApplication` and `setActivationPolicy:` are NSApplication's own class and
+    // instance methods, called on the main thread (window creation runs there).
+    let changed: bool = unsafe {
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        let Some(app) = app.as_ref() else {
+            anyhow::bail!("there is no NSApplication");
+        };
+        msg_send![app, setActivationPolicy: ACCESSORY]
+    };
+    if !changed {
+        anyhow::bail!("NSApplication refused the accessory activation policy");
+    }
+    Ok(())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn send_to_back(_window: &Window) -> Result<()> {
     Ok(())
 }

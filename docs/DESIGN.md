@@ -148,8 +148,9 @@ lines) and on light and dark taskbars alike. The source is `crates/dv/resources/
 | Popovers with no scrim (hover card, menus, find bar, a server's details) | `popover`: solid, so the code under them never shows through | solid |
 
 GPUI blurs only what is behind the window, so in-app overlays never "frost" app content (PLAN D8).
-Opaque is chosen automatically on Windows 10, with system transparency off, on Linux, and for
-non-Aura themes; it must look finished in its own right, not like a degraded mode. Window
+Opaque is chosen automatically on Windows 10, with system transparency off, on Linux, on macOS
+(gpui's vibrancy there shows no blur on macOS 27, PLAN D8) and for non-Aura themes; it must look
+finished in its own right, not like a degraded mode. Window
 inactive: material falls back to its inactive appearance (OS-managed); dv dims nothing itself.
 
 ---
@@ -162,7 +163,9 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   its `Ctrl O` keycap; source picker (`⇄ ▾`); centred command field (`Ctrl K`); `PRs Ctrl G`;
   overflow (`⋯`, a 28-square ghost button with the ellipsis in `fg2`: Settings, `Ctrl ,`, §4.3);
   caption buttons (Windows; Linux while dv draws the decorations, §2) / traffic lights (macOS,
-  left). The field is centred on the
+  left: the native ones in a transparent titlebar, centred on the bar at 12 from its left edge,
+  dv's mark 84 in, after the lights' 60 and the spacing scale's 12; nothing at the right). The
+  field is centred on the
   window unless the left group needs more than the half that leaves it: then the field moves
   right as far as the group needs (12 between them), never closer than 12 to the `⋯` and the
   caption buttons. The left group never runs under the field: once the field can't move further the
@@ -766,8 +769,24 @@ Setup unchanged.
 | `Ctrl Enter` / `Esc` | in the composer: post / discard (both return to the diff; `Enter` is a newline) |
 | `↑` / `↓`, `1` / `2`, `Tab` | in the "Finish round" sheet: choose the verdict (Approve, Request changes) / move between the verdicts and the summary; `Ctrl Enter` finishes the round, `Esc` closes |
 
-macOS uses `Cmd` for every `Ctrl` above. Single-letter keys are inactive while a text field has focus.
-Keycaps render with `kbd` style (11px mono, `line2` border).
+macOS uses `Cmd` for every `Ctrl` above (`⌘`+click for `Ctrl`+click; gpui's `secondary`
+modifier, which every row of `dv_ui::keymap` names). Single-letter keys are inactive while a text
+field has focus. Keycaps render with `kbd` style (11px mono, `line2` border), in the platform's
+spelling: words on Windows and Linux (`Ctrl O`, `Shift ↓`, `Alt ←`, `Ctrl Enter`), macOS's menu
+symbols in its order `⌃⌥⇧⌘` against the key there (`⌘O`, `⇧↓`, `⌥←`, `⌘↩`).
+
+**macOS** also has its menu bar (`dv_ui::app_menu`) and the keys every Mac app has:
+
+| Key | Action |
+|---|---|
+| `⌘Q` | quit dv (dv › Quit dv) |
+| `⌘H` / `⌥⌘H` | hide dv / hide the other apps (dv › Hide dv, Hide Others; Show All) |
+| `⌘M` | minimize the window (Window › Minimize) |
+| `⌘,` | Settings (dv › Settings…, the row above) |
+
+dv › About dv shows its version. The Edit menu (Undo, Redo, Cut, Copy, Paste, Select All) acts
+on the focused text field, with the keys the fields already have (`⌘Z`, `⇧⌘Z`, `⌘X`, `⌘C`,
+`⌘V`, `⌘A`); its Cut and Copy are dv's, through the clipboard seam.
 
 In the file view the stream's keys act on its one file; `S`, `V`, `I` and the gap keys do
 nothing there.

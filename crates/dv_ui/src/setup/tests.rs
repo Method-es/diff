@@ -44,7 +44,7 @@ fn the_first_run_screen_shows_until_continue_writes_the_marker(cx: &mut TestAppC
 fn without_the_first_run_settings_shows_the_same_checks(cx: &mut TestAppContext) {
     let (dir, shell, cx) = open_shell(cx);
     assert!(cx.update(|_, cx| !shell.read(cx).first_run_open(cx)));
-    cx.simulate_keystrokes("ctrl-,");
+    cx.simulate_keystrokes("secondary-,");
     settle(cx, &shell, "settings", |shell, _| {
         shell.settings().is_some()
     });

@@ -948,9 +948,13 @@ impl Shell {
     }
 
     /// `Ctrl C` in a text field: its selected text through the system seam
-    /// ([`crate::system::write_clipboard`]), never gpui's clipboard directly.
+    /// ([`crate::system::write_clipboard`]), never gpui's clipboard directly. Away from any
+    /// field (macOS's Edit › Copy, `crate::app_menu`, sends this wherever the keyboard is), the
+    /// stream's selection, as its own `Ctrl C` copies it.
     fn copy_field(&mut self, _: &field::Copy, window: &mut Window, cx: &mut Context<Self>) {
-        field_clipboard(false, window, cx);
+        if !field_clipboard(false, window, cx) {
+            self.diff_pane.update(cx, |pane, cx| pane.copy(cx));
+        }
     }
 
     /// `Ctrl X` in a text field: as `Ctrl C`, then the selected text removed.
@@ -1254,8 +1258,9 @@ pub fn open_main_window(window_size: Size<gpui::Pixels>, cx: &mut App) -> Result
 }
 
 /// The focused text field's selected text onto the clipboard through the system seam, and with
-/// `cut` out of the field. Nothing happens without a selection.
-fn field_clipboard(cut: bool, window: &mut Window, cx: &mut App) {
+/// `cut` out of the field. Nothing happens without a selection. `false` when there was neither
+/// a focused field nor selected Markdown to act on.
+fn field_clipboard(cut: bool, window: &mut Window, cx: &mut App) -> bool {
     use gpui_component::WindowExt as _;
     use gpui_component::input::AnyInputState;
     macro_rules! clip {
@@ -1267,6 +1272,7 @@ fn field_clipboard(cut: bool, window: &mut Window, cx: &mut App) {
                     $state.update(cx, |state, cx| state.replace("", window, cx));
                 }
             }
+            true
         }};
     }
     match window.focused_input(cx) {
@@ -1276,10 +1282,12 @@ fn field_clipboard(cut: bool, window: &mut Window, cx: &mut App) {
         _ if !cut => {
             let text = gpui_base::TextSelection::selected_text(window, cx);
             let text = text.trim();
-            if !text.is_empty() {
-                crate::system::write_clipboard(text.to_string(), cx);
+            if text.is_empty() {
+                return false;
             }
+            crate::system::write_clipboard(text.to_string(), cx);
+            true
         }
-        _ => {}
+        _ => false,
     }
 }

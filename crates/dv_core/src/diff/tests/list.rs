@@ -117,22 +117,22 @@ fn totals_are_myers_whatever_a_diff_driver_prefers() {
     let repo = FixtureRepo::new();
     repo.set_attributes("*.c diff=weird\n");
     repo.config("diff.weird.algorithm", "histogram");
-    repo.write("f.c", "{\ny\ny\ny\nreturn;\n{\n");
+    repo.write("f.c", "}\nreturn;\n{\n{\n{\n");
     repo.commit("before");
-    repo.write("f.c", "{\ny\n{\ny\n{\n");
+    repo.write("f.c", "{\n}\n{\n{\nreturn;\n");
     let changed = repo.commit("after");
     let listed = Listed::of(&repo, Target::Commit { rev: changed });
     if listed.git.info().git_version.at_least(2, 41) {
         // git itself follows the driver.
         assert_eq!(
             repo.git(&["diff", "--numstat", "HEAD~1", "HEAD"]),
-            "2\t3\tf.c\n"
+            "3\t3\tf.c\n"
         );
     }
-    assert_eq!(listed.summary(), [("f.c", FileStatus::Modified, 1, 2)]);
+    assert_eq!(listed.summary(), [("f.c", FileStatus::Modified, 2, 2)]);
     let text = listed.text("f.c");
     let count = |kind: LineKind| text.lines.iter().filter(|line| line.kind == kind).count();
-    assert_eq!((count(LineKind::Added), count(LineKind::Removed)), (1, 2));
+    assert_eq!((count(LineKind::Added), count(LineKind::Removed)), (2, 2));
 }
 
 #[test]

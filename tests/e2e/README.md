@@ -114,7 +114,12 @@ exactly that). A scenario that needs an active window sets
 `"foreground": true` in its header; the runner then starts that one app
 normally.
 
-On Linux and macOS only the unfocused, unthrottled part applies.
+On Linux and macOS only the unfocused, unthrottled part applies. On macOS the
+window opens in front of other windows, unfocused, and the app becomes an
+accessory (no Dock icon, not in the app switcher): macOS stops drawing a
+window that is fully covered, or on a sleeping display, so the runner also
+holds the display awake for the whole run (`caffeinate -d -u -w <runner>`,
+which ends with it and changes no setting).
 
 The runner holds apps to it: on Windows it records the foreground window
 before starting each scenario and hooks foreground changes
@@ -157,6 +162,20 @@ is the person's machine: it takes the focus for a few seconds, keystrokes
 typed meanwhile reach dv, and a click elsewhere fails its screen captures.
 That is why it lives in `tests/e2e/foreground/` and runs only on demand.
 
+On **macOS** both sources are Core Graphics images (`CGWindowListCreateImage`,
+at the display's resolution: 2x on Retina, so a 1440x900 window captures as
+2880x1800; converted to sRGB; the shadow left out). `window` is the window's
+own image, covered or not. `screen` is the window's frame as the screen
+composes the window and what is under it (windows above it left out); since a
+background window is in front on macOS, it works in background runs there.
+macOS's only material is Opaque (PLAN D8), so the two should look the same;
+`shell_materials_macos` takes both for a look side by side (nothing compares
+the files). They differ at the rounded corners (black in the window's image,
+the desktop in the screen's), and a dark window's own image can come out a
+few pixels wider than its frame (seen as 2884 against 2880: the outline macOS
+draws around a dark window). Both need the Screen Recording permission for whatever runs the
+app (granted to SSH sessions on the owner's Mac).
+
 ### Linux
 
 On Linux the runner starts an **Xvfb display of its own** for the whole run
@@ -172,7 +191,7 @@ X11's scale 1 a 1440x900 window captures as 1440x900 (`GPUI_X11_SCALE_FACTOR`
 in a header's `env` renders at another scale). Xvfb has no compositor, so the
 window keeps the platform's decorations (none drawn: there is no window
 manager either) and dv's caption buttons don't show; the `screen` source is
-Windows'. Without Xvfb installed the runner says so and stops.
+Windows' and macOS's. Without Xvfb installed the runner says so and stops.
 
 `--host-display` keeps the display the runner was started with instead
 (WSLg's, under WSL: Wayland, with X11 through `env -u WAYLAND_DISPLAY`): for an
@@ -181,7 +200,8 @@ explicit exploratory look at dv on a real compositor, a short scenario under
 X11 capture needs an X11 window); `bounds`/`query` still answer.
 
 Every scenario but `setup`, `shell_caption_buttons` and `shell_materials`
-(Windows' chrome: `platforms: ["windows"]`) runs on Linux; `setup_linux` is
+(Windows' chrome: `platforms: ["windows"]`), `setup_macos` and
+`shell_materials_macos` (`["macos"]`) runs on Linux; `setup_linux` is
 `setup`'s Linux sibling. `script/check --linux-gui` runs them all in WSL
 Ubuntu, from the Linux GUI target dir (`~/.cache/dv-target-gui`), whose
 `e2e/` then holds the screenshots.
@@ -194,6 +214,8 @@ Ubuntu, from the Linux GUI target dir (`~/.cache/dv-target-gui`), whose
 | `shell_caption_buttons` | Windows only: the caption buttons' bounds |
 | `shell_materials` | Windows only: every material × mode through `set_setting`, the resolved values, a screenshot of each (`NN-shell-<material>-<mode>.png`, window source), and the last choice surviving a restart. Needs a machine that can show all three materials (Windows 11 22H2+, transparency effects on); its first assertion says so when it can't |
 | `foreground/shell_materials_foreground` | Windows only, foreground, on demand: the same six combinations as screen captures (`NN-shell-<material>-<mode>-screen.png`) |
+| `setup_macos` | macOS only: `setup`'s macOS sibling (as `setup_linux` is its Linux one): the first-run screen over this Mac's checks alone (`macOS`, no WSL) in a scratch home with `mock_gh` signed in; a fake Claude Code folder, Check again, Install; Add to PATH linking `~/.local/bin/dv` to this dv and putting `~/.local/bin` on the shell's `PATH` through `~/.zshrc`, all in the scratch home; the git command through the clipboard seam; Continue and a review opening; after a `restart` the status bar's notice for a skill edited since, and its Update; screenshots of the first run, set up (dark and light) and the notice |
+| `shell_materials_macos` | macOS only: Opaque the only material available and the default; an Acrylic or Mica setting kept but resolved to Opaque; the empty shell dark and light, each as the window's own image and as the screen shows it (`NN-shell-<mode>.png`, `NN-shell-<mode>-screen.png`, to look at side by side); the last choice surviving a restart |
 | `review_chrome` | the screen around the stream (DESIGN §4.1): `open` on a seeded repo (the board's `api-server`) opens the switcher on its uncommitted changes; typing filters, `↑`/`↓` wrap, `Enter` opens the working review; the file list (rows, current file, viewed checkboxes through the store, the filter and `Esc`), `Ctrl B`, the panel's resize and double-click reset, the source picker, the status bar, a WSL repo's switcher row (through WSL's stand-in, which refuses to start anything) and the main area's banner ("couldn't open Ubuntu:/home/kyle/web", Details with why and the connection's diagnostics, Copy diagnostics through the clipboard seam, Dismiss), the title bar at 1100x700 (and with a long repository name), a repo whose `.git` went away while open (its switcher row says why and offers nothing to open), and after a `restart` the WSL repo, its distro stopped (`wsl_distros`), listed as "Ubuntu isn't running" with **Start Ubuntu**, whose click connects and, the stand-in booting nothing, leaves the row offering Start again with why it failed as its `error`; then, the distro running (`wsl_distros`), the failed connection's row offering **Retry**, whose click connects again; screenshots of the switcher, the review and the banner (and its Details) in dark Mica, dark Opaque and light, and of the stopped distro's row, its failed start and the Retry row |
 | `review_session` | the review plumbing without its screens: a seeded repo is `open`ed and listed with its uncommitted changes, its working review opens (named in full at once) and resumes, follows the agent's edits and commit live, and sees the agent's `review_op` through the watch; a WSL location is listed as unavailable (WSL's stand-in refuses to start anything); repos, review and seeded fixture survive a `restart` |
 | `setup` | Windows only. Setup (PLAN §12, DESIGN §4.3) on a fresh data dir with `DV_FIRST_RUN=1` and `mock_gh` signed in (`tests/fixtures/gh/auth_status.json`): the first-run screen over this machine's checks; a fake Claude Code folder (`home_file`), Check again, its skill's Install; Add to PATH writing the user `Path`'s stand-in; the git command copied through the clipboard seam; WSL's stand-in naming Ubuntu (listed, not reached), Debian (stopped; Start refused: the run reaches no distro but its sandbox's, why under its name) and `docker-desktop` and `podman-machine-default` (container tools' VMs, not listed); Continue (`Enter`) writing the marker and a review opening; Settings (`Ctrl ,`) showing a skill edited since as out of date and Update fixing it, `Esc` closing it; after a `restart`, no first run and the status bar's notice "dv-review skill out of date on Windows", whose Update fixes it; screenshots of the first-run screen, with the distros, Settings and the notice |
@@ -236,7 +258,7 @@ assert on them rather than on screenshots, which are for style.
 | `data_dir` | the data dir this run uses (absolute) |
 | `settings.material`, `settings.mode` | the settings as set: `"mica"` / `"acrylic"` / `"opaque"`, and `"system"` / `"dark"` / `"light"` |
 | `settings.resolved_material`, `settings.resolved_mode` | what is on screen: the material the platform can show (an unsupported one resolves to `"opaque"`, PLAN D8) and `"dark"` / `"light"` (`system` follows the OS) |
-| `settings.available_materials` | the materials this machine can show now, e.g. `["mica", "acrylic", "opaque"]`; `["opaque"]` on Windows 10, with transparency effects off, and on Linux |
+| `settings.available_materials` | the materials this machine can show now, e.g. `["mica", "acrylic", "opaque"]`; `["opaque"]` on Windows 10, with transparency effects off, on Linux and on macOS |
 | `settings.path` | the settings file, `<data_dir>/settings.json` |
 | `settings.save_error` | why the last save failed, or `null` |
 | `shell.panel_visible` | whether the left panel shows |
@@ -389,7 +411,7 @@ cursor on the line, a shift-click selects to it); `stream/comment/<path>/<old|ne
 only under the pointer: a click opens the composer on the line, a `drag` from it to
 another line's opens it on the lines between); `stream/notice/<path>` (with
 `/load_anyway` for a file too large, and a failed load's banner parts `/retry`,
-`/details` and `/copy`); `stream/footer/<path>` and its `/next`; `code/<path>/<old|new>/<line>/<column>`, each character of a line's code in view (`column` 1-based in characters of the source line, a tab one character; recorded through `gpui_automation::record_target`, so `query{"prefix": "code/"}` lists only the characters drawn): a press puts the caret before it, a `drag` from one to another selects between them, `count` 2 or 3 a word or the line. The find bar (`Ctrl F`): `find`, `find/input` (its field), `find/count`, `find/skipped`, `find/prev`, `find/next` and `find/close`. The file menu's `stream/menu/view_file`; a "Not in the diff" card found in a file the review doesn't change, `thread/<id>/view_file`. The file view: `file_view` (the pane), `file_view/header` (pinned `file_view/pinned`), `file_view/close`, `file_view/line/<n>` (a line number: a click puts the cursor there), `file_view/comment/<n>` (its `+`), `file_view/code/<n>/<column>` (a character, as `code/…`), `file_view/notice` (with `/load_anyway` for a file over the size caps), and the find bar's and the cards' own. The file finder: `file_finder`, `file_finder/input`, `file_finder/row/<path>` (a click opens it), `file_finder/empty`. Code intelligence (PLAN §18.1): `hover` (the card) with `hover/section/<id>` (each server's answer, by spec id), `hover/definition` and `hover/references`; hovering is a `mouse_move` onto a `code/…` target and a `settle` (the 350 ms rest is part of it), `Ctrl`+click a `click` with `"modifiers": "ctrl"`; the panel's tabs `panel/tab/review` and `panel/tab/references` (while a list is open); `references` (the tab's body), `references/close`, `references/in_review`, `references/row/<path>/<line>` (the first place on that line); the status bar's `statusbar/lsp/<id>` (a server, or a missing one), its details `statusbar/lsp/details`, `statusbar/lsp/<id>/retry` on a failed one, `statusbar/lsp/<id>/check_again` and `statusbar/lsp/<id>/copy/<n>` (the n-th command of its hint, from 1) on a missing one; `notice/intel` (a place that can't be shown) with `/dismiss`.
+`/details` and `/copy`); `stream/footer/<path>` and its `/next`; `code/<path>/<old|new>/<line>/<column>`, each character of a line's code in view (`column` 1-based in characters of the source line, a tab one character; recorded through `gpui_automation::record_target`, so `query{"prefix": "code/"}` lists only the characters drawn): a press puts the caret before it, a `drag` from one to another selects between them, `count` 2 or 3 a word or the line. The find bar (`Ctrl F`): `find`, `find/input` (its field), `find/count`, `find/skipped`, `find/prev`, `find/next` and `find/close`. The file menu's `stream/menu/view_file`; a "Not in the diff" card found in a file the review doesn't change, `thread/<id>/view_file`. The file view: `file_view` (the pane), `file_view/header` (pinned `file_view/pinned`), `file_view/close`, `file_view/line/<n>` (a line number: a click puts the cursor there), `file_view/comment/<n>` (its `+`), `file_view/code/<n>/<column>` (a character, as `code/…`), `file_view/notice` (with `/load_anyway` for a file over the size caps), and the find bar's and the cards' own. The file finder: `file_finder`, `file_finder/input`, `file_finder/row/<path>` (a click opens it), `file_finder/empty`. Code intelligence (PLAN §18.1): `hover` (the card) with `hover/section/<id>` (each server's answer, by spec id), `hover/definition` and `hover/references`; hovering is a `mouse_move` onto a `code/…` target and a `settle` (the 350 ms rest is part of it), `Ctrl`+click (`⌘`+click on macOS) a `click` with `"modifiers": "secondary"`; the panel's tabs `panel/tab/review` and `panel/tab/references` (while a list is open); `references` (the tab's body), `references/close`, `references/in_review`, `references/row/<path>/<line>` (the first place on that line); the status bar's `statusbar/lsp/<id>` (a server, or a missing one), its details `statusbar/lsp/details`, `statusbar/lsp/<id>/retry` on a failed one, `statusbar/lsp/<id>/check_again` and `statusbar/lsp/<id>/copy/<n>` (the n-th command of its hint, from 1) on a missing one; `notice/intel` (a place that can't be shown) with `/dismiss`.
 
 ## Runner
 
@@ -529,6 +551,7 @@ Runner-only keys (never sent to the app):
 | `expect` | expectation(s) checked against a fresh `state` after the line's action (same `window` as the command) |
 | `expect_result` | expectation(s) checked against the action's own result: a command's `result`, a `gh_log`'s calls, a restart's `ready` event |
 | `expect_error` | the command must fail with an error containing this text |
+| `platforms` | the operating systems this line runs on (`windows`, `linux`, `macos`, as the header's); elsewhere the runner passes over it, noting it in `transcript.log`. For a value that differs by platform (the title bar's layout around macOS's traffic lights): one line per platform, each tight, rather than one loose range |
 | `runner_timeout_ms` | reply timeout for this line, replacing the default |
 | `save` | `{"name": "<pointer>", ...}`: sets `${name}` from the action's result (a command's `result`, a `gh_log`'s calls, a restart's `ready` event) for this line's `expect` and every later line; a string is used as-is, anything else as compact JSON. E.g. `{"cmd": "state", "save": {"review": "/review/id"}}`, then `{"cmd": "click", "target": "switcher/review/${review}"}` |
 
@@ -783,10 +806,10 @@ leaving the window could turn into a real OS drag-and-drop.
 | `window` | `index` or `name` | selects the default window for later commands; returns its `window` info |
 | `actions` | | every registered action name |
 | `action` | `name` (full, or a unique suffix such as `"ToggleSplit"`), `data`? | `{action}` with the full name |
-| `key` | `keystroke` (`"ctrl-shift-k"`) | `{handled}`; the key goes down and comes back up, so Enter or Space on a focused button presses it |
+| `key` | `keystroke` (`"ctrl-shift-k"`; `secondary` is the platform modifier, as in gpui's keymap: `Cmd` on macOS, `Ctrl` elsewhere, so a scenario that presses dv's `Ctrl`/`⌘` keys writes `"secondary-o"` and runs on every platform) | `{handled}`; the key goes down and comes back up, so Enter or Space on a focused button presses it |
 | `keys` | `keys`: `"ctrl-k down enter"` or a list | `{handled: [..]}`; each key goes down and up, and a frame renders between keystrokes |
 | `type` | `text` | `{typed}`; per-character keystrokes into the focused input, `\n` is `enter` |
-| `click` | `x`,`y` or `target`; `button` (`left`/`right`/`middle`); `modifiers` (`"ctrl-shift"`); `count` (2 = double click) | `{clicked, count}`; hovers and renders first, like a real pointer. A `target` is pressed once two frames in a row drew it in the same place (up to 1 s), so a button still sliding in (a dialog's entrance) is pressed where it is, not where it was |
+| `click` | `x`,`y` or `target`; `button` (`left`/`right`/`middle`); `modifiers` (`"ctrl-shift"`; `"secondary"` as in `key`); `count` (2 = double click) | `{clicked, count}`; hovers and renders first, like a real pointer. A `target` is pressed once two frames in a row drew it in the same place (up to 1 s), so a button still sliding in (a dialog's entrance) is pressed where it is, not where it was |
 | `mouse_move` | `x`,`y` or `target`; `modifiers` | `{moved}`; carries a held button, so it also drags |
 | `mouse_down`, `mouse_up` | position optional (defaults to the pointer); `button`, `modifiers` | `{at, down}` |
 | `drag` | `from`, `to` (each `[x, y]`, `{"x","y"}`, `{"target"}` with an optional `dx`/`dy` offset from its centre, or a target name); `steps` (10), `step_ms`, `hold_ms`, `release` (true), `button`, `modifiers` | `{from, to, steps, released}` |
@@ -869,9 +892,10 @@ targets hierarchically so `query` can list a group: `titlebar/switcher`,
 
 Known limits: `Window::is_window_hovered` follows the real OS cursor, so
 hover logic gated on it needs a `gpui_automation::is_active()` bypass;
-the named-pipe transport is Windows-only; screenshots work on Windows and on
+the named-pipe transport is Windows-only; screenshots work on Windows, on
 Linux under X11 (a `GetImage` of the window, so an unscaled display captures
-at logical size), and the `screen` source only on Windows; and off Windows
+at logical size) and on macOS (Core Graphics, "Screenshots and window
+materials"), and the `screen` source on Windows and macOS; and off Windows
 `resize` goes through gpui, where the
 window manager may clamp a size larger than the display.
 

@@ -36,7 +36,7 @@
 {"cmd": "key", "keystroke": "escape"}
 
 // Outside the repository: a read-only file view of the library's declarations, hover in it.
-{"cmd": "click", "target": "code/src/long.ts/new/1/24", "modifiers": "ctrl"}
+{"cmd": "click", "target": "code/src/long.ts/new/1/24", "modifiers": "secondary"}
 {"cmd": "settle", "expect": [{"pointer": "/file_view/outside", "equals": true}, {"pointer": "/file_view/line_count", "equals": 12}, {"pointer": "/file_view/loading", "equals": false}, {"pointer": "/session/cursor/line", "equals": 10}, {"pointer": "/intel/notice", "equals": null}]}
 {"cmd": "screenshot", "name": "outside-file-view"}
 {"cmd": "mouse_move", "target": "file_view/code/10/27"}
@@ -56,7 +56,7 @@
 {"cmd": "key", "keystroke": "c"}
 {"cmd": "type", "text": "a draft"}
 {"cmd": "drag", "from": {"target": "code/src/a.ts/new/5/14"}, "to": {"target": "code/src/a.ts/new/5/16"}}
-{"cmd": "key", "keystroke": "ctrl-c"}
+{"cmd": "key", "keystroke": "secondary-c"}
 {"cmd": "key", "keystroke": "escape"}
 {"cmd": "settle", "expect": [{"pointer": "/stream/text_selection", "equals": null}, {"pointer": "/session/composer/text", "equals": "a draft"}]}
 {"cmd": "key", "keystroke": "escape"}

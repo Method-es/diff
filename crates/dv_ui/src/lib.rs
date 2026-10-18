@@ -21,6 +21,7 @@
 //! and Settings › Setup over the setup checks (PLAN §12).
 
 pub mod actions;
+pub mod app_menu;
 pub mod appearance;
 pub mod assets;
 pub mod automation;
@@ -61,13 +62,14 @@ pub use theme::{ActiveTheme, Appearance, DvTheme, Material};
 use gpui::App;
 
 /// Everything views need before the first window opens: gpui-component, dv's key bindings (after
-/// gpui-component's, so dv's win within a context), the bundled fonts, a first theme and dv's
-/// corrections to gpui-component's grammars (`syntax::register_languages`). The app must have
-/// been built with [`Assets`] as its asset source.
+/// gpui-component's, so dv's win within a context), macOS's menu bar, the bundled fonts, a first
+/// theme and dv's corrections to gpui-component's grammars (`syntax::register_languages`). The
+/// app must have been built with [`Assets`] as its asset source.
 pub fn init(cx: &mut App) -> anyhow::Result<()> {
     gpui_component::init(cx);
     syntax::register_languages();
     keymap::init(cx)?;
+    app_menu::init(cx);
     assets::load_fonts(cx)?;
     theme::apply(cx);
     Ok(())

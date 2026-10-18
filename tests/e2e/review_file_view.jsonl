@@ -37,7 +37,7 @@
 // button give the draft the keyboard instead; Esc in it discards it.
 {"cmd": "key", "keystroke": "c"}
 {"cmd": "type", "text": "half a thought"}
-{"cmd": "key", "keystroke": "ctrl-p"}
+{"cmd": "key", "keystroke": "secondary-p"}
 {"cmd": "type", "text": "util"}
 {"cmd": "settle"}
 {"cmd": "key", "keystroke": "enter"}
@@ -49,7 +49,7 @@
 {"cmd": "key", "keystroke": "escape"}
 {"cmd": "settle", "expect": [{"pointer": "/session/composer", "equals": null}, {"pointer": "/file_view/path", "equals": "src/app.ts"}]}
 // Ctrl F searches the file shown: value_4 and value_40 to value_49, from the cursor on.
-{"cmd": "key", "keystroke": "ctrl-f", "expect": [{"pointer": "/find/open", "equals": true}, {"pointer": "/find/focused", "equals": true}]}
+{"cmd": "key", "keystroke": "secondary-f", "expect": [{"pointer": "/find/open", "equals": true}, {"pointer": "/find/focused", "equals": true}]}
 {"cmd": "type", "text": "value_4"}
 {"cmd": "settle", "expect": [{"pointer": "/find/count", "equals": 11}, {"pointer": "/find/complete", "equals": true}, {"pointer": "/find/skipped", "equals": 0}, {"pointer": "/find/current", "equals": 2}, {"pointer": "/session/cursor/line", "equals": 40}]}
 {"cmd": "key", "keystroke": "enter", "expect": [{"pointer": "/find/current", "equals": 3}, {"pointer": "/session/cursor/line", "equals": 41}]}

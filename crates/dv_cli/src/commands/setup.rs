@@ -159,11 +159,6 @@ pub(crate) fn path(
     yes: bool,
     ctx: &mut Context,
 ) -> Result<Exit, CliError> {
-    if cfg!(target_os = "macos") {
-        return Err(CliError::unsupported(
-            "dv doesn't set up PATH on macOS yet: link dv into a folder on your PATH",
-        ));
-    }
     let seams = Seams::from_context(ctx);
     let dir = args.dir.as_ref().map(|dir| ctx.cwd.join(dir));
     let (name, _) = checks::this_machine_name(&seams);

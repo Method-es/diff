@@ -11,14 +11,14 @@
 {"cmd": "screenshot", "name": "old-side-card"}
 {"lsp_log": {}, "expect_result": [{"pointer": "", "contains": {"received": {"method": "textDocument/didOpen", "params": {"textDocument": {"text": "export function f(): number {\n  return 1;\n}\n\nexport const x = f();\n"}}}}}, {"pointer": "", "contains": {"received": {"method": "textDocument/didClose"}}}]}
 {"cmd": "key", "keystroke": "escape"}
-{"cmd": "click", "target": "code/src/a.ts/old/5/18", "modifiers": "ctrl"}
+{"cmd": "click", "target": "code/src/a.ts/old/5/18", "modifiers": "secondary"}
 {"cmd": "settle", "expect": [{"pointer": "/file_view", "equals": null}, {"pointer": "/session/cursor", "equals": {"path": "src/a.ts", "side": "old", "line": 1}}, {"pointer": "/stream/caret", "equals": {"path": "src/a.ts", "side": "old", "line": 1, "column": 17}}]}
 
 // A staged review: helper is defined in src/b.ts, which the server read from the working tree.
 {"cmd": "seed_repo", "name": "web", "steps": [{"write": "package.json", "text": "{\"name\": \"web\", \"devDependencies\": {\"typescript\": \"^7\"}}\n"}, {"write": "tsconfig.json", "text": "{}\n"}, {"write": "src/a.ts", "text": "import { helper, scale } from './b';\n\nexport function total(values: number[]): number {\n  let sum = 0;\n  for (const value of values) {\n    sum += value;\n  }\n  return scale(sum);\n}\n"}, {"write": "src/b.ts", "text": "/** Adds one to `x`. */\nexport function helper(x: number): number {\n  return x + 1;\n}\n\nexport function scale(x: number): number {\n  return x * 2;\n}\n"}, {"write": "src/c.ts", "text": "import { helper } from './b';\n\nexport const two = helper(1);\n"}, {"commit": "base"}, {"write": "src/a.ts", "text": "import { helper, scale } from './b';\n\nexport function total(values: number[]): number {\n  let sum = 0;\n  for (const value of values) {\n    sum += helper(value);\n  }\n  return scale(sum);\n}\n\nexport const answer = total([1, 2, 3]);\n"}, {"git": ["add", "src/a.ts"]}]}
 {"cmd": "open_review", "path": "${data_dir}/repos/web", "target": "staged"}
 {"cmd": "settle", "expect": {"pointer": "/intel/servers/0/state", "equals": "ready"}}
-{"cmd": "click", "target": "code/src/a.ts/new/6/14", "modifiers": "ctrl"}
+{"cmd": "click", "target": "code/src/a.ts/new/6/14", "modifiers": "secondary"}
 {"cmd": "settle", "expect": [{"pointer": "/file_view/path", "equals": "src/b.ts"}, {"pointer": "/file_view/worktree", "equals": true}, {"pointer": "/file_view/line_count", "equals": 8}, {"pointer": "/file_view/changed_lines", "equals": []}, {"pointer": "/session/cursor/line", "equals": 2}, {"pointer": "/history/back", "equals": 1}]}
 {"cmd": "screenshot", "name": "working-tree-file-view"}
 // Read-only: C opens no composer.

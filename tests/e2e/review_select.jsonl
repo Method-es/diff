@@ -11,7 +11,7 @@
 {"cmd": "drag", "from": {"target": "code/src/app.ts/new/3/8"}, "to": {"target": "code/src/app.ts/new/5/5"}}
 {"cmd": "settle", "expect": [{"pointer": "/stream/text_selection/text", "equals": "function sum(items: number[]): number {\n\tlet acc = 0;\n\tfor"}, {"pointer": "/stream/text_selection/side", "equals": "new"}, {"pointer": "/stream/text_selection/from", "equals": {"side": "new", "line": 3, "column": 8}}, {"pointer": "/stream/text_selection/to", "equals": {"side": "new", "line": 5, "column": 5}}, {"pointer": "/stream/caret", "equals": {"path": "src/app.ts", "side": "new", "line": 5, "column": 5}}, {"pointer": "/session/cursor", "equals": {"path": "src/app.ts", "side": "new", "line": 5}}]}
 {"cmd": "screenshot", "name": "select-drag"}
-{"cmd": "key", "keystroke": "ctrl-c", "expect": [{"pointer": "/system/requests/0", "equals": {"kind": "clipboard", "text": "function sum(items: number[]): number {\n\tlet acc = 0;\n\tfor"}}]}
+{"cmd": "key", "keystroke": "secondary-c", "expect": [{"pointer": "/system/requests/0", "equals": {"kind": "clipboard", "text": "function sum(items: number[]): number {\n\tlet acc = 0;\n\tfor"}}]}
 
 // A double-click takes the word, a triple-click the line; Ctrl C copies it with its tab.
 {"cmd": "click", "target": "code/src/app.ts/new/3/18", "count": 2}
@@ -19,7 +19,7 @@
 {"cmd": "screenshot", "name": "select-word"}
 {"cmd": "click", "target": "code/src/app.ts/new/4/3", "count": 3}
 {"cmd": "settle", "expect": [{"pointer": "/stream/text_selection/text", "equals": "\tlet acc = 0;"}]}
-{"cmd": "key", "keystroke": "ctrl-c", "expect": [{"pointer": "/system/requests", "len": 2}, {"pointer": "/system/requests/1/text", "equals": "\tlet acc = 0;"}]}
+{"cmd": "key", "keystroke": "secondary-c", "expect": [{"pointer": "/system/requests", "len": 2}, {"pointer": "/system/requests/1/text", "equals": "\tlet acc = 0;"}]}
 {"cmd": "screenshot", "name": "select-line"}
 
 // Esc clears it; a click puts the caret (before the character clicked) and the cursor.
@@ -29,7 +29,7 @@
 {"cmd": "screenshot", "name": "select-caret"}
 // A keyboard move takes the caret away; nothing selected, Ctrl C copies nothing.
 {"cmd": "key", "keystroke": "down", "expect": [{"pointer": "/stream/caret", "equals": null}, {"pointer": "/session/cursor/line", "equals": 7}]}
-{"cmd": "key", "keystroke": "ctrl-c", "expect": [{"pointer": "/system/requests", "len": 2}]}
+{"cmd": "key", "keystroke": "secondary-c", "expect": [{"pointer": "/system/requests", "len": 2}]}
 
 // The old side's column keeps to the old side.
 {"cmd": "drag", "from": {"target": "code/src/app.ts/old/3/1"}, "to": {"target": "code/src/app.ts/old/5/5"}}
@@ -40,7 +40,7 @@
 {"cmd": "drag", "from": {"target": "code/src/app.ts/new/4/2"}, "to": {"target": "code/src/app.ts/new/5/5"}}
 {"cmd": "settle", "expect": [{"pointer": "/stream/text_selection/side", "equals": null}, {"pointer": "/stream/text_selection/from", "equals": {"side": "new", "line": 4, "column": 2}}, {"pointer": "/stream/text_selection/to", "equals": {"side": "new", "line": 5, "column": 5}}, {"pointer": "/stream/text_selection/text", "equals": "let acc = 0;\n\tfor (const item of items) acc += item;\n\tfor"}]}
 {"cmd": "screenshot", "name": "select-unified"}
-{"cmd": "key", "keystroke": "ctrl-c", "expect": [{"pointer": "/system/requests/2/text", "equals": "let acc = 0;\n\tfor (const item of items) acc += item;\n\tfor"}]}
+{"cmd": "key", "keystroke": "secondary-c", "expect": [{"pointer": "/system/requests/2/text", "equals": "let acc = 0;\n\tfor (const item of items) acc += item;\n\tfor"}]}
 {"cmd": "key", "keystroke": "s", "expect": [{"pointer": "/session/view_mode", "equals": "split"}, {"pointer": "/stream/text_selection", "equals": null}]}
 
 // Light.
@@ -67,7 +67,7 @@
 {"cmd": "settle", "expect": [{"pointer": "/stream/text_selection/text", "equals": "éé"}]}
 {"cmd": "click", "target": "code/w.ts/new/2/13"}
 {"cmd": "settle", "expect": [{"pointer": "/stream/caret/column", "equals": 13}, {"pointer": "/stream/text_selection", "equals": null}]}
-{"cmd": "key", "keystroke": "ctrl-f"}
+{"cmd": "key", "keystroke": "secondary-f"}
 {"cmd": "type", "text": "ok"}
 {"cmd": "settle", "expect": [{"pointer": "/find/count", "equals": 3}]}
 {"cmd": "screenshot", "name": "select-wide-find"}

@@ -239,7 +239,7 @@ fn a_gh_that_isnt_there_is_missing() {
     );
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 #[test]
 fn setup_path_links_this_dv_and_puts_local_bin_on_the_shells_path() {
     let home = tempfile::tempdir().unwrap();

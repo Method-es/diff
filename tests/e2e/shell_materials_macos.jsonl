@@ -1,0 +1,22 @@
+{"scenario": {"window_size": "1440x900", "platforms": ["macos"], "description": "The empty shell on macOS (PLAN D8, DESIGN §3): Opaque is its only material, the default; a Mica or Acrylic setting (one made on Windows, say) is kept and resolves to Opaque. Dark and light, each also as the screen shows it (`source: screen`; a background window stays in front on macOS), to look at beside the window's own image (nothing compares them)"}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "settle", "expect": [{"pointer": "/settings/available_materials", "equals": ["opaque"]}, {"pointer": "/settings/material", "equals": "opaque"}, {"pointer": "/shell/window_material", "equals": "opaque"}]}
+
+// A translucent setting is kept but shows Opaque.
+{"cmd": "set_setting", "key": "material", "value": "acrylic", "expect_result": {"pointer": "/settings/material", "equals": "acrylic"}}
+{"cmd": "settle", "expect": [{"pointer": "/settings/resolved_material", "equals": "opaque"}, {"pointer": "/shell/window_material", "equals": "opaque"}, {"pointer": "/settings/save_error", "equals": null}]}
+{"cmd": "set_setting", "key": "material", "value": "mica", "expect_result": {"pointer": "/settings/material", "equals": "mica"}}
+{"cmd": "settle", "expect": [{"pointer": "/settings/resolved_material", "equals": "opaque"}, {"pointer": "/shell/window_material", "equals": "opaque"}]}
+
+{"cmd": "set_setting", "key": "mode", "value": "dark", "expect_result": {"pointer": "/settings/mode", "equals": "dark"}}
+{"cmd": "settle", "expect": [{"pointer": "/settings/resolved_mode", "equals": "dark"}]}
+{"cmd": "screenshot", "name": "shell-dark"}
+{"cmd": "screenshot", "name": "shell-dark-screen", "source": "screen"}
+
+{"cmd": "set_setting", "key": "mode", "value": "light", "expect_result": {"pointer": "/settings/mode", "equals": "light"}}
+{"cmd": "settle", "expect": [{"pointer": "/settings/resolved_mode", "equals": "light"}]}
+{"cmd": "screenshot", "name": "shell-light"}
+{"cmd": "screenshot", "name": "shell-light-screen", "source": "screen"}
+
+// The last choice was saved to settings.json: a restart comes back in it.
+{"restart": {}, "expect": [{"pointer": "/settings/material", "equals": "mica"}, {"pointer": "/settings/mode", "equals": "light"}, {"pointer": "/shell/window_material", "equals": "opaque"}]}

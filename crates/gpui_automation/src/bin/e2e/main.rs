@@ -186,6 +186,8 @@ fn real_main() -> Result<ExitCode> {
     // Linux: an Xvfb display of the run's own, ended with it (`display`).
     let display = display::Display::start(cli.host_display, &config.out_root.join("xvfb.log"))?;
     config.display_env = display.env();
+    // macOS draws nothing on a sleeping display.
+    let _awake = process::DisplayAwake::hold();
     // A background app must never take the foreground: watch for it across every scenario.
     let watch = config.background.then(foreground::Watch::start);
 

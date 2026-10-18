@@ -24,9 +24,9 @@
 
 // Finishing round 1 from this session snapshots the linked worktree: the interdiff since it is
 // empty (a snapshot of the main work tree would differ in src/a.ts and src/main_only.ts).
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": [{"pointer": "/session/sheet/verdict", "equals": "request_changes"}]}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "wait_for", "pointer": "/session/status", "equals": "changes_requested", "timeout_ms": 20000}
 {"cmd": "wait_for", "pointer": "/session/comparison", "equals": {"kind": "since_round", "round": 1}, "timeout_ms": 20000}
 {"cmd": "settle", "expect": [{"pointer": "/session/total", "equals": 0}, {"pointer": "/shell/empty_state", "equals": "no_changes_since"}, {"pointer": "/session/threads/0/placement", "equals": "not_in_comparison"}, {"pointer": "/session/threads/0/lines", "equals": {"start": 5, "end": 5}}]}

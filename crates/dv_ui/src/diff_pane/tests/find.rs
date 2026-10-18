@@ -94,7 +94,7 @@ fn ctrl_f_searches_every_file_both_sides_and_enter_goes_through_the_matches(
     let pane = pane(&shell, cx);
     // The last file is far below the viewport: not loaded until something asks for it.
     assert_eq!(state(&shell, "z.txt", cx), "unloaded");
-    press(cx, &shell, "ctrl-f");
+    press(cx, &shell, "secondary-f");
     assert!(find_focused(&shell, cx));
     assert!(find(&pane, cx).open);
     type_query(&shell, "needle", cx);
@@ -146,16 +146,16 @@ fn a_capital_makes_the_search_case_sensitive_and_unified_counts_a_line_once(
     let repo = find_fixture();
     let (_dir, shell, cx) = open_files(&repo, 10, cx);
     let pane = pane(&shell, cx);
-    press(cx, &shell, "ctrl-f");
+    press(cx, &shell, "secondary-f");
     type_query(&shell, "Needle", cx);
     assert_eq!(find(&pane, cx).count, 1);
     press(cx, &shell, "escape");
     // In unified view the gap's context line is one row: one match, not two.
-    press(cx, &shell, "s ctrl-f");
+    press(cx, &shell, "s secondary-f");
     type_query(&shell, "needle", cx);
     assert_eq!(find(&pane, cx).count, 3);
     // Nothing matches: no current one.
-    press(cx, &shell, "ctrl-a");
+    press(cx, &shell, "secondary-a");
     type_query(&shell, "haystack", cx);
     let found = find(&pane, cx);
     assert_eq!((found.count, found.current), (0, None));
@@ -185,12 +185,12 @@ fn ctrl_f_takes_a_one_line_selection_as_its_query(cx: &mut TestAppContext) {
         });
         cx.notify();
     });
-    press(cx, &shell, "ctrl-f");
+    press(cx, &shell, "secondary-f");
     let found = find(&pane, cx);
     assert_eq!(found.query, "Needle");
     assert_eq!(found.count, 1);
     // Ctrl F again keeps the bar and its query.
-    press(cx, &shell, "ctrl-f");
+    press(cx, &shell, "secondary-f");
     assert!(find_focused(&shell, cx));
     assert_eq!(find(&pane, cx).query, "Needle");
 }
@@ -215,7 +215,7 @@ fn the_first_match_is_the_next_one_in_the_rows_order_and_enter_searches_typing_f
         pane.click_line("a.txt", pos, false, cx);
     });
     assert_eq!(cursor(&pane, cx), new_line("a.txt", 2));
-    press(cx, &shell, "ctrl-f");
+    press(cx, &shell, "secondary-f");
     type_query(&shell, "two", cx);
     assert_eq!(find(&pane, cx).current, Some(1));
     assert_eq!(
@@ -224,7 +224,7 @@ fn the_first_match_is_the_next_one_in_the_rows_order_and_enter_searches_typing_f
     );
     // `Enter` right after typing, before the pause: the new query is searched and its first
     // match shown, not the old query's next.
-    press(cx, &shell, "ctrl-a");
+    press(cx, &shell, "secondary-a");
     cx.simulate_input("end");
     cx.simulate_keystrokes("enter");
     let found = find(&pane, cx);

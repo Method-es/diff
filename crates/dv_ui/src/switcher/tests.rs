@@ -353,7 +353,7 @@ fn ctrl_o_filters_moves_and_opens_by_keyboard(cx: &mut TestAppContext) {
     add_repo(&web, &shell, cx);
     let api_name = "api-server";
 
-    cx.simulate_keystrokes("ctrl-o");
+    cx.simulate_keystrokes("secondary-o");
     settle(cx, &shell, "the rows", |_, _| true);
     let view = switcher(&shell, cx).expect("Ctrl O opens the switcher");
     assert!(cx.update(|window, cx| view.read(cx).is_focused(window, cx)));
@@ -398,7 +398,7 @@ fn ctrl_o_filters_moves_and_opens_by_keyboard(cx: &mut TestAppContext) {
 
     // Opened again, it selects the open review's row; Esc closes it and the keyboard goes
     // back to the shell.
-    cx.simulate_keystrokes("ctrl-o");
+    cx.simulate_keystrokes("secondary-o");
     settle(cx, &shell, "the rows", |_, _| true);
     assert_eq!(selected(&shell, cx), Some(format!("{api_name}/staged")));
     cx.simulate_keystrokes("escape");
@@ -603,7 +603,7 @@ fn a_start_keeps_its_row_and_the_selection_and_enter_again_does_nothing(cx: &mut
             )
         });
         blocked.store(false, Ordering::SeqCst);
-        cx.simulate_keystrokes("ctrl-o");
+        cx.simulate_keystrokes("secondary-o");
         settle(cx, &shell, "the Start or Retry row", |shell, cx| {
             shell.switcher().is_some_and(|switcher| {
                 switcher
@@ -704,7 +704,7 @@ fn an_open_switcher_follows_a_connection_going_down_and_coming_back(cx: &mut Tes
     let added = reviews.update(cx, |reviews, cx| reviews.add_repo(location.clone(), cx));
     settle(cx, &shell, "the repo's row", |_, _| true);
     assert!(cx.foreground_executor().block_test(added).is_ok());
-    cx.simulate_keystrokes("ctrl-o");
+    cx.simulate_keystrokes("secondary-o");
     settle(cx, &shell, "the rows", |_, _| true);
     let listing = |cx: &mut VisualTestContext| {
         switcher(&shell, cx)

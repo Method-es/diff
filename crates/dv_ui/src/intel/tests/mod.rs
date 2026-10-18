@@ -818,7 +818,7 @@ fn the_keys_at_the_caret_ask_about_its_symbol(cx: &mut TestAppContext) {
     stream.update(cx, |pane, cx| {
         pane.show_place("src/a.ts", AnchorSide::New, 2, 25, cx)
     });
-    cx.simulate_keystrokes("ctrl-i");
+    cx.simulate_keystrokes("secondary-i");
     let intel = intel(&shell, cx);
     let card = intel.clone();
     wait(cx, &shell, "the hover", move |cx| {

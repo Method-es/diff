@@ -51,7 +51,7 @@
 {"cmd": "settle", "expect": {"pointer": "/intel/hover", "equals": null}}
 
 // Ctrl+click: helper is defined in src/b.ts, which the review doesn't change: the file view opens there.
-{"cmd": "click", "target": "code/src/a.ts/new/6/14", "modifiers": "ctrl"}
+{"cmd": "click", "target": "code/src/a.ts/new/6/14", "modifiers": "secondary"}
 {"cmd": "settle", "expect": [{"pointer": "/intel/definitions", "equals": 1}, {"pointer": "/file_view/path", "equals": "src/b.ts"}, {"pointer": "/session/cursor", "equals": {"path": "src/b.ts", "side": "new", "line": 2}}, {"pointer": "/stream/caret", "equals": {"path": "src/b.ts", "side": "new", "line": 2, "column": 17}}, {"pointer": "/history", "equals": {"back": 1, "forward": 0}}]}
 {"cmd": "screenshot", "name": "definition-file-view"}
 {"cmd": "key", "keystroke": "alt-left"}

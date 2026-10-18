@@ -132,7 +132,7 @@ pub(crate) fn running(pid: u32) -> bool {
             .expect("tasklist runs");
         String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\""))
     }
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
         match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
             // The state follows the command's closing parenthesis.
@@ -141,6 +141,17 @@ pub(crate) fn running(pid: u32) -> bool {
                 .is_some_and(|(_, rest)| !rest.trim_start().starts_with('Z')),
             Err(_) => false,
         }
+    }
+    // macOS has no /proc: `ps` prints the state, nothing for a pid that is gone.
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        let output = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .expect("ps runs");
+        let state = String::from_utf8_lossy(&output.stdout);
+        let state = state.trim();
+        !state.is_empty() && !state.starts_with('Z')
     }
 }
 

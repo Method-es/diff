@@ -690,7 +690,7 @@ impl DiffPane {
     }
 
     /// `Ctrl C`: the selected text, else the selected lines' text, through the system seam.
-    pub(super) fn copy(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn copy(&mut self, cx: &mut Context<Self>) {
         let text = self
             .text_selection()
             .map(|selection| selection.text)

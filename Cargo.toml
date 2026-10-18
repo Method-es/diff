@@ -74,6 +74,9 @@ anyhow = "1.0"
 # JSON lines (PLAN §5.1).
 base64 = "0.23"
 clap = { version = "4.5", features = ["derive", "env"] }
+# macOS window screenshots for automation (`gpui_automation::capture_macos`); already in the tree
+# through gpui.
+core-graphics = "0.24"
 dirs = "6"
 # dv.exe's and dv-gui.exe's icon and version resource (`crates/dv/build.rs`); already in the
 # tree through gpui's own manifest.
@@ -96,6 +99,10 @@ lsp-types = "0.97"
 # with the same AST before they reach it (PLAN §15).
 markdown = "1.0.0"
 notify = "8.2"
+# The AppKit calls gpui has no API for: the window number automation captures, and an
+# automation run's activation policy (`gpui_automation`, macOS only); already in the tree through
+# gpui.
+objc2 = "0.6"
 parking_lot = "0.12"
 png = "0.18"
 pretty_assertions = "1.4"

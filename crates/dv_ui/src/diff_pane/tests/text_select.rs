@@ -129,7 +129,7 @@ fn a_drag_selects_characters_across_lines_and_ctrl_c_copies_the_source_text(
     assert_eq!(cursor(&pane, cx), new_line("a.txt", 2));
     let caret = pane.read_with(cx, |pane, _| pane.caret()).unwrap();
     assert_eq!((caret.1.line, caret.1.column), (2, 13));
-    press(cx, &shell, "ctrl-c");
+    press(cx, &shell, "secondary-c");
     assert_eq!(clipboard(cx), ["beta\n\tgamma_delta"]);
     // Scrolled sideways and with a gap opened, it keeps its text.
     pane.update(cx, |pane, cx| {
@@ -235,7 +235,7 @@ fn ctrl_c_copies_a_line_selection_and_nothing_without_one(cx: &mut TestAppContex
     let repo = text_fixture();
     let (_dir, shell, cx) = open_text(&repo, cx);
     let pane = pane(&shell, cx);
-    press(cx, &shell, "ctrl-c");
+    press(cx, &shell, "secondary-c");
     assert!(clipboard(cx).is_empty());
     pane.update(cx, |pane, cx| {
         let at = |line| LinePos {
@@ -246,8 +246,36 @@ fn ctrl_c_copies_a_line_selection_and_nothing_without_one(cx: &mut TestAppContex
         pane.click_line("a.txt", at(2), false, cx);
         pane.click_line("a.txt", at(3), true, cx);
     });
-    press(cx, &shell, "ctrl-c");
+    press(cx, &shell, "secondary-c");
     assert_eq!(clipboard(cx), ["\tgamma_delta = 2;\nzeta é"]);
+}
+
+#[gpui::test]
+fn the_menus_copy_copies_the_streams_selection_too(cx: &mut TestAppContext) {
+    // macOS's Edit › Copy sends the fields' copy wherever the keyboard is (`crate::app_menu`):
+    // from the stream it copies the stream's selection, as `Ctrl C` there does.
+    let repo = text_fixture();
+    let (_dir, shell, cx) = open_text(&repo, cx);
+    let pane = pane(&shell, cx);
+    cx.dispatch_action(crate::actions::field::Copy);
+    assert!(clipboard(cx).is_empty());
+    pane.update(cx, |pane, cx| {
+        let at = |line| LinePos {
+            line,
+            side: AnchorSide::New,
+        };
+        pane.click_line("a.txt", at(2), false, cx);
+        pane.click_line("a.txt", at(3), true, cx);
+    });
+    cx.dispatch_action(crate::actions::field::Copy);
+    assert_eq!(clipboard(cx), ["\tgamma_delta = 2;\nzeta é"]);
+    // A drag's text the same way.
+    let from = char_point(&pane, "a.txt", "new", 1, 1, cx);
+    let to = char_point(&pane, "a.txt", "new", 2, 6, cx);
+    drag(cx, from, to);
+    let dragged = selected_text(&pane, cx).unwrap();
+    cx.dispatch_action(crate::actions::field::Copy);
+    assert_eq!(clipboard(cx).last(), Some(&dragged));
 }
 
 #[gpui::test]
@@ -336,9 +364,9 @@ fn copy_and_cut_in_a_text_field_go_through_the_clipboard_seam(cx: &mut TestAppCo
     // The composer's field.
     press(cx, &shell, "down c");
     cx.simulate_input("a draft");
-    press(cx, &shell, "ctrl-a ctrl-c");
+    press(cx, &shell, "secondary-a secondary-c");
     assert_eq!(clipboard(cx), ["a draft"]);
-    press(cx, &shell, "ctrl-a ctrl-x");
+    press(cx, &shell, "secondary-a secondary-x");
     assert_eq!(clipboard(cx), ["a draft", "a draft"]);
     let pane = pane(&shell, cx);
     assert_eq!(
@@ -347,9 +375,9 @@ fn copy_and_cut_in_a_text_field_go_through_the_clipboard_seam(cx: &mut TestAppCo
         Some("")
     );
     // The find field's too.
-    press(cx, &shell, "escape ctrl-f");
+    press(cx, &shell, "escape secondary-f");
     cx.simulate_input("omega");
-    press(cx, &shell, "ctrl-a ctrl-c");
+    press(cx, &shell, "secondary-a secondary-c");
     assert_eq!(clipboard(cx), ["a draft", "a draft", "omega"]);
 }
 
@@ -365,7 +393,7 @@ fn esc_in_the_code_keeps_a_draft_and_only_esc_in_the_composer_discards_it(cx: &m
     let from = char_point(&pane, "a.txt", "new", 1, 1, cx);
     let to = char_point(&pane, "a.txt", "new", 1, 5, cx);
     drag(cx, from, to);
-    press(cx, &shell, "ctrl-c");
+    press(cx, &shell, "secondary-c");
     assert_eq!(clipboard(cx), ["alph"]);
     // Esc in the stream clears the selection, then does nothing more: the draft stays.
     press(cx, &shell, "escape");

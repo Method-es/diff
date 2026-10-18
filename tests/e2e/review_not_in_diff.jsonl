@@ -53,7 +53,7 @@
 {"cmd": "click", "target": "comments_list/menu/reply"}
 {"cmd": "settle", "expect": [{"pointer": "/session/composer/reply_to", "equals": "${t2}"}, {"pointer": "/session/focused_thread", "equals": "${t2}"}]}
 {"cmd": "type", "text": "Two decimals again: fine as it was."}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": [{"pointer": "/session/composer", "equals": null}, {"pointer": "/session/threads/1/replies/0/body", "equals": "Two decimals again: fine as it was."}]}
 // Resolve from its card.
 {"cmd": "click", "target": "thread/${t2}/resolve"}
@@ -71,9 +71,9 @@
 // round 1 shows that file, and the section still heads the stream.
 {"cmd": "click", "target": "stream/line/src/hooks/use-auth.ts/new/2"}
 {"cmd": "settle", "expect": {"pointer": "/stream/focused", "equals": true}}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": {"pointer": "/session/sheet/verdict", "equals": "request_changes"}}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle"}
 {"cmd": "wait_for", "pointer": "/session/status", "equals": "changes_requested"}
 // The interdiff since round 1 is empty: the stream keeps the section, the empty state's words

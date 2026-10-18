@@ -35,20 +35,20 @@
 {"cmd": "settle", "expect": {"pointer": "/session/selection", "equals": {"path": "src/lib/cache.ts", "side": "new", "start_line": 1, "end_line": 3}}}
 {"cmd": "key", "keystroke": "c"}
 {"cmd": "type", "text": "Entries never leave this map: cap it, or sweep the expired ones."}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": [{"pointer": "/session/composer", "equals": null}, {"pointer": "/session/threads", "len": 1}, {"pointer": "/session/threads/0/state", "equals": "open"}, {"pointer": "/shell/status/review", "equals": "Open · round 1 · 1 open"}]}
 // A new thread isn't a verdict: the agent's wait keeps blocking.
 {"cmd": "state", "save": {"thread": "/session/threads/0/id"}, "expect": {"pointer": "/cli/spawned/0/running", "equals": true}}
 {"cmd": "screenshot", "name": "comment-dark-mica"}
 
 // Request changes: Ctrl Enter opens the sheet on Request changes, Tab to the summary, Ctrl Enter.
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": [{"pointer": "/session/sheet/verdict", "equals": "request_changes"}, {"pointer": "/session/sheet/can_submit", "equals": true}]}
 {"cmd": "key", "keystroke": "tab"}
 {"cmd": "type", "text": "One thing before this lands: the cache grows without bound."}
 {"cmd": "settle", "expect": {"pointer": "/session/sheet/summary", "equals": "One thing before this lands: the cache grows without bound."}}
 {"cmd": "screenshot", "name": "sheet-dark-mica"}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle"}
 {"cmd": "wait_for", "pointer": "/session/status", "equals": "changes_requested"}
 {"cmd": "settle", "expect": [{"pointer": "/session/round", "equals": 2}, {"pointer": "/session/comparison", "equals": {"kind": "since_round", "round": 1}}, {"pointer": "/shell/empty_state", "equals": "no_changes_since"}]}
@@ -96,13 +96,13 @@
 {"cmd": "key", "keystroke": "x"}
 {"cmd": "settle", "expect": [{"pointer": "/session/threads/0/state", "equals": "resolved"}, {"pointer": "/session/threads/0/placement", "equals": "moved"}, {"pointer": "/shell/status/review", "equals": "Ready for review · round 2 · 1 resolved · since round 1"}, {"pointer": "/cli/spawned/0/running", "equals": true}]}
 {"cmd": "screenshot", "name": "resolved-dark-mica"}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle", "expect": [{"pointer": "/session/sheet/verdict", "equals": "approve"}, {"pointer": "/session/sheet/can_submit", "equals": true}]}
 {"cmd": "key", "keystroke": "tab"}
 {"cmd": "type", "text": "Capped and evicting: thanks."}
 {"cmd": "settle"}
 {"cmd": "screenshot", "name": "approve-sheet-dark-mica"}
-{"cmd": "key", "keystroke": "ctrl-enter"}
+{"cmd": "key", "keystroke": "secondary-enter"}
 {"cmd": "settle"}
 {"cmd": "wait_for", "pointer": "/session/status", "equals": "approved"}
 {"cmd": "settle", "expect": [{"pointer": "/session/read_only", "equals": true}, {"pointer": "/session/rounds/1/verdict", "equals": "approve"}, {"pointer": "/session/ready_note", "equals": null}, {"pointer": "/session/comparison", "equals": {"kind": "all"}}]}
