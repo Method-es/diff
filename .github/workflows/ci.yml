@@ -179,7 +179,7 @@ jobs:
           key: linux-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
 
   macos:
-    name: macOS (script/check)
+    name: macOS (script/check --fast)
     runs-on: macos-15
     timeout-minutes: 150
     permissions:
@@ -202,16 +202,10 @@ jobs:
             target
           key: macos-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: macos-
-      - name: script/check
-        run: bash script/check
-      - name: The e2e scenarios' screenshots and logs
-        if: ${{ failure() }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: e2e-macos
-          path: target/e2e
-          retention-days: 7
-          if-no-files-found: ignore
+      # Without the e2e scenarios: the runner's screen is 1024x768, too small for their 1440x900
+      # windows. They run on the owner's Mac (script/check-mac, PLAN §13.2).
+      - name: script/check --fast
+        run: bash script/check --fast
       - name: Save the cache (main, once per Cargo.lock)
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true' }}
         run: rm -rf target/debug/incremental target/e2e target/tmp

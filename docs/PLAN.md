@@ -2158,8 +2158,10 @@ owns `~/.local/bin/dv` (§5.2's link rule).
 The repository is public, so GitHub's hosted runners cost nothing. Two workflows:
 
 - **`.github/workflows/ci.yml`**, on every push to main, every pull request, and for every
-  release tag (`release.yml` calls it): `script/check` on Windows (`windows-2025`) and macOS
-  (`macos-15`, Apple silicon), `script/check --linux` on Ubuntu 24.04 (the gates, the e2e
+  release tag (`release.yml` calls it): `script/check` on Windows (`windows-2025`),
+  `script/check --fast` on macOS (`macos-15`, Apple silicon: its runner's 1024×768 screen is too
+  small for the scenarios' 1440×900 windows, which `script/check-mac` runs on the owner's Mac),
+  `script/check --linux` on Ubuntu 24.04 (the gates, the e2e
   scenarios on the runner's own Xvfb with Mesa's software Vulkan, the headless crates and the
   static musl build; the real-WSL step needs Windows with WSL and is skipped), the workflows
   themselves (actionlint, and zizmor's security audits, pedantic; locally

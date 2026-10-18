@@ -343,6 +343,8 @@ fn a_seeded_repo_opens_as_a_review_and_the_agent_answers(cx: &mut TestAppContext
         .canonicalize()
         .unwrap();
     assert_eq!(opened_at, seeded_at);
+    // The app's spelling from here on.
+    let path = opened["path"].as_str().unwrap().to_string();
     let state = wait_until(&host, cx, "the repo's row", |state| {
         state["repos"][0]["working"].is_object()
     });
