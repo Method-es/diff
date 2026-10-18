@@ -92,6 +92,13 @@ jobs:
             target
           key: windows-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: windows-
+      # The runner's desktop is 1024x768, too small for the scenarios' 1440x900 windows.
+      - name: A 1920x1080 desktop for the e2e scenarios
+        shell: pwsh
+        run: |
+          Set-DisplayResolution -Width 1920 -Height 1080 -Force
+          Get-CimInstance Win32_VideoController |
+            Select-Object CurrentHorizontalResolution, CurrentVerticalResolution
       # The runner's own temp dir, whose name is long: the default one is spelled with an 8.3
       # short name (C:\Users\RUNNER~1\…), which git and the file system report long, so tests
       # that compare a fixture's path with what came back would see two spellings of one folder.
