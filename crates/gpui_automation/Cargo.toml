@@ -49,6 +49,9 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The e2e runner's Xvfb: ended with SIGTERM, tied to the runner's life (`PR_SET_PDEATHSIG`), and
+# a display's lock read for a live server (`bin/e2e/display.rs`).
+libc.workspace = true
 raw-window-handle.workspace = true
 x11rb.workspace = true
 

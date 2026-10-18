@@ -344,6 +344,22 @@ fn an_automation_run_reaches_wsl_only_with_a_scratch_home(_cx: &mut TestAppConte
     );
 }
 
+/// Off Windows the app's own WSL access asks `wsl.exe` nothing (inside WSL it would answer
+/// through interop): there are no distros, and a WSL location can't be opened.
+#[cfg(not(windows))]
+#[gpui::test]
+async fn an_app_off_windows_reaches_no_distro(cx: &mut TestAppContext) {
+    // A connection reports its state from a thread of its own.
+    cx.executor().allow_parking();
+    let error = WslAccess::System.distros().unwrap_err();
+    assert!(error.to_string().contains(wsl::NOT_WINDOWS), "{error}");
+    let locations = cx.new(|cx| Locations::new(WslAccess::System, cx));
+    let Err(error) = open(&locations, wsl("Ubuntu", "/home/kyle/api"), cx).await else {
+        panic!("a WSL location opened off Windows");
+    };
+    assert!(error.to_string().contains(wsl::NOT_WINDOWS), "{error}");
+}
+
 /// A connection to an in-process server on a host the test stops, as the user stops a distro
 /// (its launcher's host check reads `up`); `launches` counts the servers started.
 fn stoppable(up: Arc<AtomicBool>, launches: Arc<AtomicU32>) -> Arc<Connection> {

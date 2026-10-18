@@ -606,6 +606,38 @@ fn a_file_loaded_again_with_the_same_lines_keeps_its_gaps_and_the_place(cx: &mut
     assert_eq!(after.1.item_ix, before.1.item_ix);
 }
 
+#[gpui::test]
+fn a_file_arriving_above_the_start_shows_when_the_reader_hadnt_moved(cx: &mut TestAppContext) {
+    let repo = stream_fixture(80);
+    let (_dir, shell, cx) = open(&repo, cx);
+    let pane = pane(&shell, cx);
+    let blocks = |count: usize, cx: &mut VisualTestContext| {
+        let watched = pane.clone();
+        settle_drawn(cx, &shell, "the new file", move |_, cx| {
+            watched.read(cx).blocks.len() == count
+        });
+    };
+    // The stream at its start, untouched: a file the agent adds that sorts first (as a later
+    // batch of its edit lists it) is what the reader sees first.
+    pane.read_with(cx, |pane, _| {
+        assert_eq!(pane.top_file(), Some("a/long.txt"));
+        assert_eq!(pane.cursor(), None);
+    });
+    repo.write("0.txt", "new\n");
+    blocks(4, cx);
+    pane.read_with(cx, |pane, _| {
+        assert_eq!(pane.top_file(), Some("0.txt"));
+        assert_eq!(pane.list.logical_scroll_top().item_ix, 0);
+    });
+
+    // A reader who moved keeps their place: J to b.txt, then another file above it.
+    press(cx, &shell, "j j");
+    pane.read_with(cx, |pane, _| assert_eq!(pane.top_file(), Some("b.txt")));
+    repo.write("00.txt", "newer\n");
+    blocks(5, cx);
+    pane.read_with(cx, |pane, _| assert_eq!(pane.top_file(), Some("b.txt")));
+}
+
 /// The text of the line at the top of the viewport (its new side in split view).
 fn top_line(pane: &Entity<DiffPane>, cx: &mut VisualTestContext) -> Option<String> {
     pane.read_with(cx, |pane, _| {

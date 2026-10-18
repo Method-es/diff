@@ -693,8 +693,14 @@ mod tests {
                 events.borrow_mut().push(*event)
             })
         });
+        // A material other than the platform's default, which the file leaves in place.
+        let other = if Material::platform_default() == Material::Opaque {
+            Material::Acrylic
+        } else {
+            Material::Opaque
+        };
         settings.update(cx, |settings, cx| {
-            settings.set_material(Material::Opaque, cx);
+            settings.set_material(other, cx);
             settings.set_mode(Mode::Light, cx);
             // Setting the same value again is no change.
             settings.set_mode(Mode::Light, cx);
@@ -714,7 +720,7 @@ mod tests {
             saved,
             serde_json::json!({
                 "v": 1,
-                "material": "opaque",
+                "material": other.key(),
                 "mode": "light",
                 "panel_width": 420.0,
                 "theme": "Aura Dark"

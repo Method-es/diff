@@ -208,6 +208,10 @@ struct ReadingAnchor {
     block: usize,
     key: RowKey,
     offset: Pixels,
+    /// The stream showed its very start (its first row, unscrolled) and the reader hadn't
+    /// put the cursor anywhere: it stays at the start, whatever arrives above what was first
+    /// (an agent's new file sorting before it, listed in a later batch).
+    at_start: bool,
 }
 
 /// The stream over the open review's files (see the module docs).
@@ -1036,18 +1040,23 @@ impl DiffPane {
             block,
             key: self.blocks[block].rows[row].key(),
             offset: top.offset_in_item,
+            at_start: top.item_ix == 0 && top.offset_in_item <= px(0.) && self.cursor.is_none(),
         })
     }
 
     /// Puts the reading position back on the row `anchor` names, following its line when the
     /// file's diff was replaced (`line_maps`); a line that isn't shown puts the nearest one at
     /// the top, a row that is gone its file's header, and a file that is gone the file now in
-    /// its place.
+    /// its place. A stream the reader hadn't moved from its start stays at its start.
     fn restore_anchor(&mut self, anchor: Option<ReadingAnchor>) {
         let maps = std::mem::take(&mut self.line_maps);
         let Some(mut anchor) = anchor else {
             return;
         };
+        if anchor.at_start {
+            self.list.scroll_to(ListOffset::default());
+            return;
+        }
         if let Some(map) = maps.get(&anchor.path) {
             let moved = |line: usize| map.get(line).copied().unwrap_or(line);
             anchor.key = match anchor.key {

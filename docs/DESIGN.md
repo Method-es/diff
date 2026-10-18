@@ -93,7 +93,8 @@ is a split diff on an accent tile: a 224/256 square with radius 52 filled with t
 two code surfaces (`#15141b`, radius 18), each with three lines: `fg3` above and below, the old
 side's middle line `red`, the new side's `green`. It reads at 16 px (the tile and the two coloured
 lines) and on light and dark taskbars alike. The source is `crates/dv/resources/windows/dv.svg`;
-`dv.ico` holds it at 16, 20, 24, 32, 40, 48, 64 (bitmaps) and 256 (PNG), written and checked by
+`dv.ico` holds it at 16, 20, 24, 32, 40, 48, 64 (bitmaps) and 256 (PNG), and the Linux app's
+`crates/dv/resources/linux/dv.png` (its AppImage's icon) at 256, both written and checked by
 `crates/dv/tests/app_icon.rs`.
 
 ---
@@ -123,6 +124,15 @@ lines) and on light and dark taskbars alike. The source is `crates/dv/resources/
   together (`Shift`+wheel). Unified is offered and remembered per review.
 - The diff is one stream over all files (PLAN §6.7); the panel's file rows scroll the stream.
 - Below 1100px window width the panel auto-collapses into an overlay.
+- **Linux** (PLAN §13.1): dv draws the window's decorations where the platform lets it (Wayland,
+  X11 with a compositor). The title bar is the window's: a drag on it moves the window, a
+  double-click maximizes or restores it, a right-click opens the window manager's menu, and at
+  its right sit the caption buttons the window manager supports (minimize, maximize/restore,
+  close always), drawn as Windows' are: 46 wide, the bar's height, `control_hover` on hover,
+  Close red. Around the window gpui-component's frame: a 1px border and a 20px soft shadow
+  that are also its resize edges, gone on the sides it is tiled or maximized against. Where
+  the platform keeps the decorations (X11 without a compositor) the window manager draws its
+  own frame and buttons, and dv's bar shows none. The material is always Opaque (§3).
 
 ---
 
@@ -151,7 +161,8 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   600, the target label with its "vs" in `fg3`) with the location chip (`Ubuntu`, WSL repos only) and
   its `Ctrl O` keycap; source picker (`⇄ ▾`); centred command field (`Ctrl K`); `PRs Ctrl G`;
   overflow (`⋯`, a 28-square ghost button with the ellipsis in `fg2`: Settings, `Ctrl ,`, §4.3);
-  caption buttons (Windows) / traffic lights (macOS, left). The field is centred on the
+  caption buttons (Windows; Linux while dv draws the decorations, §2) / traffic lights (macOS,
+  left). The field is centred on the
   window unless the left group needs more than the half that leaves it: then the field moves
   right as far as the group needs (12 between them), never closer than 12 to the `⋯` and the
   caption buttons. The left group never runs under the field: once the field can't move further the

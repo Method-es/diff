@@ -1,5 +1,6 @@
 {"scenario": {"window_size": "1440x900", "description": "The screen around the stream: dv open on a seeded repo opens the switcher with its uncommitted changes, the keyboard filters and opens the working review, the file list (current file, viewed checkbox, filter), Ctrl B and the panel's resize, the source picker, the status bar, a WSL repo's row and banner (and after a restart its stopped distro's Start row, then with the distro running its failed connection's Retry row), a long repo name at the minimum width, a repo whose .git went away; screenshots in dark Mica, dark Opaque and light."}}
 {"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
 {"cmd": "settle"}
 {"expect": [{"pointer": "/switcher/open", "equals": false}, {"pointer": "/shell/empty_state", "equals": "no_review"}, {"pointer": "/shell/status/location", "equals": "No repo"}, {"pointer": "/file_list/shown", "equals": []}]}
 

@@ -20,6 +20,12 @@ use parking_lot::Mutex;
 pub const REFUSED: &str = "an automation run starts dv in a WSL distro only with DV_WSL_HOME set \
                            (a scratch home inside the distro)";
 
+/// Why an app off Windows reaches no distro: WSL is Windows', and a Linux or macOS app opens
+/// the repositories on its own machine (PLAN §13.1). Inside WSL `wsl.exe` would answer through
+/// interop, so [`WslAccess::System`] never asks it there.
+pub const NOT_WINDOWS: &str = "this app opens the repositories on its own machine; a WSL \
+                               distro's open from the Windows app";
+
 /// How the app reaches WSL (module docs). Cloning shares a stand-in's distros.
 #[derive(Clone)]
 pub enum WslAccess {
@@ -72,6 +78,7 @@ impl WslAccess {
     /// The installed distros and which run. Blocks while `wsl.exe` runs; never on a UI thread.
     pub fn distros(&self) -> Result<Vec<Distro>, WslError> {
         match self {
+            Self::System if !cfg!(windows) => Err(WslError::NotInstalled(NOT_WINDOWS.to_string())),
             Self::System => {
                 guard_tests();
                 dv_backend::wsl::distros()
@@ -83,6 +90,22 @@ impl WslAccess {
     /// How `distro`'s server starts.
     pub fn launcher(&self, distro: &str) -> Launcher {
         match self {
+            Self::System if !cfg!(windows) => {
+                let refuse: Arc<StartFn> = Arc::new(|_: &StartOptions<'_>| {
+                    Err(LaunchError {
+                        message: NOT_WINDOWS.to_string(),
+                        permanent: true,
+                    })
+                });
+                // Never running, so a listing reports the distro stopped rather than starting it.
+                let stopped: Arc<HostCheck> = Arc::new(|_| false);
+                Launcher::Custom {
+                    label: format!("dv in {distro}, which an app off Windows never starts"),
+                    start: refuse,
+                    reinstalls: false,
+                    running: Some(stopped),
+                }
+            }
             Self::System => {
                 guard_tests();
                 Launcher::wsl(distro)

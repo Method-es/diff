@@ -1,5 +1,6 @@
 {"scenario": {"window_size": "1440x900", "description": "A review open while the agent works: the agent saving the file being commented on leaves the composer and its keystrokes alone, its edits update the file list and the diffs live, a new file joins, a thread whose line it edited is relocated (found at the same line, so not moved), one whose function it rewrote turns outdated (its card heads its file with its original lines, the comments list flags it), and a commit of everything leaves the working tree clean with the outdated thread still listed. Screenshots of the outdated thread in dark Mica, dark Opaque and light."}}
 {"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
 {"cmd": "settle"}
 
 // Two edited files under review.

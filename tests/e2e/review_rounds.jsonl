@@ -1,5 +1,6 @@
 {"scenario": {"window_size": "1440x900", "description": "Rounds (PLAN §2.3, §8; DESIGN §4.1, §4.4): four threads, then Request changes closes round 1 and the stream shows the empty interdiff since round 1. The agent (repo_edit) moves a commented block, inserts lines above another commented line, rewrites a third file and leaves the fourth alone: the interdiff lists the three changed files, the moved threads show at their new lines (moved), the rewritten one is outdated, its card drawn where its code went (its trail: code changed since round 1), the untouched one is only in all changes. The agent addresses, replies and says done with a note (review_op): the ready banner. I toggles to all changes and back; X records the moved anchor; Approve finishes the review on all changes. Screenshots of the empty interdiff, the interdiff with its toggle, the ready banner, the outdated and the moved card in dark Mica, dark Opaque and light."}}
 {"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
 {"cmd": "settle"}
 
 // The agent's round 1 in api-server: a README edit, a new cache, an http change, users.ts.

@@ -1920,8 +1920,12 @@ setup**.
   `dv open` start the GUI detached (`crates/dv/src/launch.rs`): in a packaged build (an
   installed copy) `dv-gui.exe` when it is beside `dv.exe`, else — a development build always,
   so it never starts a `dv-gui.exe` an older build left in `target` — the same binary again
-  with the hidden `--no-detach`, `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` on Windows (its
-  own process group elsewhere), stdio closed, while the first returns 0 at once; `--automation`
+  with the hidden `--no-detach`, `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` on Windows (a
+  session of its own elsewhere, `setsid`, so closing the terminal sends it no hangup; on Linux
+  inside an AppImage the AppImage again, `$APPIMAGE`, since the mount the running copy came
+  from goes when it exits, and only while this executable lies in that AppImage's `$APPDIR`
+  (a terminal in another AppImage inherits its variables): `dv_cli::this_executable`; none of
+  the caller's descriptors past the standard three either), stdio closed, while the first returns 0 at once; `--automation`
   and `--no-detach` run the GUI in the process. The detached line names what it opens
   absolutely: a path, `--repo` and `--wsl` become `open <absolute path>` (`--review <id>`
   after it), a bare `dv` in a repository `open <its absolute path>`, the app's own options
@@ -1940,9 +1944,19 @@ setup**.
   window can't open, the fonts don't load) alike.
 - **macOS:** `dv.app` containing one `dv` binary; the CLI is a symlink to it.
 - **Linux:** one `dv` binary (GUI + CLI + backend), plus the static musl build used inside WSL.
+  The app is X11 and Wayland both (gpui takes Wayland when `WAYLAND_DISPLAY` is set, else
+  X11), with client-side decorations: dv's title bar moves the window and holds its caption
+  buttons, gpui-component's `Root` draws the frame and its resize edges (DESIGN §2); where the
+  platform keeps the decorations (X11 without a compositor) the window manager's own frame
+  shows. It opens local repositories only: WSL is Windows', and the app's WSL access answers
+  no distros and starts none there (`WslAccess::System` off Windows; inside WSL `wsl.exe`
+  would otherwise answer through interop). Its data dir is `$XDG_CONFIG_HOME/dv` (§13.3);
+  links, Reveal in folder and the folder picker go through gpui (`xdg-open` and its kin, then
+  the XDG desktop portal; the portal's file chooser), the clipboard is gpui's (X11 selections,
+  Wayland's data device).
 
 **Shapes.** The `dv` crate's `gui` feature brings the app (`dv_ui`, gpui, gpui's platform with
-its Linux `x11` feature); `automation` implies it. Three shapes, each linted by `script/check`
+its Linux `x11` and `wayland` features); `automation` implies it. Three shapes, each linted by `script/check`
 step 2:
 - **default** (`gui` + `automation`): development, the tests and the e2e runner;
 - **the shipped app** (`-p dv --no-default-features --features gui`): Windows, macOS, a Linux
@@ -1979,8 +1993,17 @@ Every gate runs locally through one script, `script/check` (bash; also used by a
    distro (Linux first: interop puts `wsl.exe` on its `PATH` too), the tests, the lint and the
    build run right there and the real-WSL step, which needs Windows, is skipped with a message;
    `script/build-linux` likewise builds where it runs on Linux and hops through `wsl.exe` only
-   from Windows. The Linux GUI build needs X11/Wayland/fontconfig development packages,
-   which take `sudo` to install in the distro, so it comes with phase 9's Linux GUI build and AppImage
+   from Windows
+7. `--linux-gui`: the Linux app (§13.1) inside WSL Ubuntu, in a target dir of its own on ext4
+   (`~/.cache/dv-target-gui`: gpui with X11 and Wayland, apart from step 6's headless one):
+   `cargo clippy -p dv -p dv_ui -p gpui_automation --all-targets -- -D warnings` and the shipped
+   shape's (`-p dv --no-default-features --features gui`), `cargo test -p dv -p dv_ui -p
+   gpui_automation` with no display in its environment (gpui's test platform), a plain `cargo
+   build -p dv -p mock_gh -p mock_lsp`, then every e2e scenario, which the runner starts on an
+   **Xvfb display of its own** (§14.2), never WSLg's; run on a Linux host, the same right there.
+   The distro needs the X11, Wayland and fontconfig development packages (`libxkbcommon-x11-dev
+   libfontconfig-dev libwayland-dev libx11-xcb-dev`), `xvfb`, and for the portal
+   `xdg-desktop-portal` with a backend (`xdg-desktop-portal-gtk`), all installed by the owner
 
 **The Linux build** WSL distros run (§5.2) is `script/build-linux [--aarch64]` (bash, like
 `script/check`): inside WSL Ubuntu, `rustup target add x86_64-unknown-linux-musl`, then `cargo
@@ -2033,6 +2056,20 @@ until the version is settled, then:
 It never runs the installer, `Update.exe` or a built dv but `dv.exe --version`, and stops when
 the checkout's drive would have under 30 GB free.
 
+**A Linux AppImage** is `script/package --linux-app`, a trial only (no Linux feed exists, so
+`--publish` with it is refused): the version as above; the Linux app in the shipped shape
+built inside WSL Ubuntu with the `dist` profile in the Linux GUI target dir
+(`~/.cache/dv-target-gui`, `CARGO_PROFILE_DIST_STRIP=symbols`), its `--version` checked
+there, staged alone in `target/package/linux-app`; then `vpk "[linux]" pack` on Windows —
+vpk's directive for packing another OS's app, no .NET needed in the distro — with pack id
+`dv`, `--mainExe dv`, `--runtime linux-x64`, the icon `crates/dv/resources/linux/dv.png`
+(`crates/dv/tests/app_icon.rs` keeps it the SVG at 256 px) and the category `Development`,
+into `target/package/try`: `dv.AppImage`, `dv-<version>-linux-full.nupkg`,
+`releases.linux.json`. The AppImage runs on Ubuntu 24.04 without FUSE 2 installed, and it
+starts the app there (on an Xvfb display: `dv` detaching through `$APPIMAGE`, the first-run
+screen up). The Linux app has no Velopack hooks or updates yet (the
+`velopack` crate is a Windows dependency, D9): it updates by replacing the AppImage.
+
 macOS has no local machine: macOS-only code is kept compiling by `cargo check --target
 aarch64-apple-darwin` where that works without the SDK, and is otherwise unverified until a Mac or
 phase 10's CI is available.
@@ -2041,7 +2078,10 @@ phase 10's CI is available.
 ### 13.3 Install layout
 Windows per-user `%LOCALAPPDATA%\dv\` (Velopack), settings in `%APPDATA%\dv\`; macOS
 `/Applications/dv.app`, `~/Library/Application Support/dv/`; Linux AppImage or tarball,
-`$XDG_CONFIG_HOME/dv/`. Every data path honours `--data-dir` / `DV_DATA_DIR` (tests, §14).
+`$XDG_CONFIG_HOME/dv/` (`~/.config/dv/` when it is unset). From an AppImage, `dv setup path`
+links `~/.local/bin/dv` to the AppImage itself (`$APPIMAGE`, while this executable lies in its
+`$APPDIR`), not to the executable inside its mount, which goes when the process that mounted
+it exits. Every data path honours `--data-dir` / `DV_DATA_DIR` (tests, §14).
 
 On Windows Velopack puts the app in `%LOCALAPPDATA%\dv\current\` (`dv.exe`, `dv-gui.exe`, the
 Linux builds; the same folder after every update), `Update.exe` beside `current`, downloaded
@@ -2182,7 +2222,16 @@ with and without its bytes, only looked at, read past what was asked, a director
   every launch gets `DV_GH` = `mock_gh` and `DV_DATA_DIR` = the scenario's data dir and no inherited
   `DV_WSL_HOME` (only a header's `env` names one, so dv reaches WSL through its stand-in), a scenario
   header's `gh` names the `mock_gh` scenario file (`DV_MOCK_GH`), and `{"gh_log": {}}` lines
-  assert on its call log (`DV_MOCK_GH_LOG`) (tests/e2e/README.md).
+  assert on its call log (`DV_MOCK_GH_LOG`) (tests/e2e/README.md). On Linux the runner starts
+  an Xvfb display for the run (`Xvfb :<n> -screen 0 2560x1600x24`, the first free `n` from 90,
+  ended with the run: `SIGTERM`, then `SIGKILL` after 5 s, and with the runner however it ends,
+  `PR_SET_PDEATHSIG`; a lock a dead server left is no obstacle) and every app on it under X11
+  alone (`DISPLAY=:<n>`, no `WAYLAND_DISPLAY`), so no window reaches the desktop of the person at the machine (WSLg's,
+  under WSL) and `screenshot` is an X11 `GetImage` of a display nothing covers; there the
+  window keeps the platform's frame (no compositor) and dv's caption buttons don't show.
+  `--host-display` keeps the runner's own display instead: an explicit exploratory look on a
+  real compositor, never a gate. A header's `platforms` keeps a scenario to the systems its
+  chrome belongs to (`setup` Windows', `setup_linux` Linux's).
 - **Screenshots of the window material:** the default capture (`PrintWindow`) includes Mica but
   not Acrylic's blur-behind, and a background window is inactive. A `screenshot` with `"source":
   "screen"` copies the window from the desktop instead; it only works in front, so the scenarios
@@ -2256,7 +2305,7 @@ Each phase ends with its e2e scenarios green and a screenshot review against DES
 | 6 | Onboarding, setup and doctor (§12): the first-run screen and Settings › Setup over one list of checks per environment (Windows and each distro): dv in the distro, the CLI on PATH, the agent skills (Claude Code, Codex, Cursor) and the out-of-date notice, git identity, `gh`; `dv setup` and `dv doctor` | first run on a fresh data dir → onboarding → review, on Windows with a WSL distro (sandboxed home); an out-of-date skill in the distro is noticed and updated from Settings › Setup |
 | 7 | Packaging + updates on Windows with Velopack (D9), local feed: `Setup.exe`, `dv-gui.exe`, dv's icon on the executables, the window and the shortcuts, the install hooks running `dv setup path` (§12), the Linux builds beside the installed `dv.exe` (§13.2); a development build never replaces the installed copy's `dv` in a distro | install from `Setup.exe` → PATH set, icon in the taskbar and Start → a WSL repo opens from the installed copy → a second local release updates it |
 | 8 | GitHub: open PR, pull threads, submit sheet with validation and file-comment fallback (§9) | Workflow C against `mock_gh`; owner's live check |
-| 9 | Polish: settings, palette, light themes, empty states, performance pass on a 2,000-file PR; the Linux GUI build and its AppImage, built in WSL (§13.2) | DESIGN review of every screen; perf budget (§17) met; the AppImage starts on a Linux desktop |
+| 9 | Polish: settings, palette, light themes, empty states, performance pass on a 2,000-file PR (the Linux app, its gate `script/check --linux-gui` and its trial AppImage are done, §13.1, §13.2) | DESIGN review of every screen; perf budget (§17) met |
 | 10 | *(last, optional)* GitHub Actions: CI matrix incl. macOS, release workflow publishing to GitHub Releases, update feed switched over | owner asks for it |
 
 ---

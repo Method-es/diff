@@ -9,11 +9,15 @@
 #                              Linux build (script/build-linux) and the real WSL from Windows:
 #                              the app's connection, `dv setup wsl` and the CLI run inside it;
 #                              run inside a distro, the first two there and no real-WSL step
+#   script/check --linux-gui   also step 7: the Linux app (dv's GUI shapes, dv_ui and
+#                              gpui_automation) linted and tested inside WSL Ubuntu, and the e2e
+#                              scenarios there on an Xvfb display the runner starts (never
+#                              WSLg's); run on a Linux host, right there
 set -euo pipefail
 
 usage() {
     cat <<'EOF'
-usage: script/check [--fast] [--foreground] [--linux]
+usage: script/check [--fast] [--foreground] [--linux] [--linux-gui]
 
   1. cargo fmt --all --check
   2. cargo clippy in dv's three shapes: default (gui + automation), the shipped app
@@ -24,17 +28,22 @@ usage: script/check [--fast] [--foreground] [--linux]
      and tests/e2e/foreground (takes the focus; hands off)    only with --foreground
   6. the headless crates and the headless dv tested and linted inside WSL Ubuntu,
      script/build-linux, then the real WSL (sandboxed under /tmp)  only with --linux
+  7. the Linux app inside WSL Ubuntu: clippy in its GUI shapes, the gpui crates' tests and
+     the e2e scenarios on an Xvfb display of the runner's own     only with --linux-gui
+     (its scenarios skipped with --fast)
 EOF
 }
 
 fast=0
 foreground=0
 linux=0
+linux_gui=0
 for arg in "$@"; do
     case "$arg" in
         --fast) fast=1 ;;
         --foreground) foreground=1 ;;
         --linux) linux=1 ;;
+        --linux-gui) linux_gui=1 ;;
         -h | --help)
             usage
             exit 0
@@ -205,6 +214,51 @@ if [[ "$linux" -eq 1 ]]; then
             ;;
         *)
             echo "script/check: --linux needs Windows (with WSL Ubuntu) or a Linux host" >&2
+            exit 1
+            ;;
+    esac
+fi
+
+if [[ "$linux_gui" -eq 1 ]]; then
+    # The Linux app (PLAN §13.1, §13.2), in a target dir of its own (gpui with X11 and Wayland,
+    # apart from step 6's headless one). The tests reach no display (gpui's test platform); the
+    # scenarios run on an Xvfb display the e2e runner starts and ends, never the desktop's
+    # (CLAUDE.md, "GUI runs"); their screenshots land in <that target dir>/e2e.
+    linux_gui_steps=(
+        "cargo clippy -p dv -p dv_ui -p gpui_automation --all-targets -- -D warnings"
+        "cargo clippy -p dv --no-default-features --features gui --all-targets -- -D warnings"
+        "env -u DISPLAY -u WAYLAND_DISPLAY cargo test -p dv -p dv_ui -p gpui_automation"
+    )
+    # The scenarios, as step 5 runs them; --fast skips them here too.
+    if [[ "$fast" -eq 0 ]]; then
+        linux_gui_steps+=(
+            "cargo build -p dv -p mock_gh -p mock_lsp"
+            "cargo run -p gpui_automation --bin e2e -- tests/e2e"
+        )
+    fi
+    case "$(uname -s)" in
+        Linux)
+            # The Linux GUI target dir here too, unless the caller named one.
+            export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/dv-target-gui}"
+            for command in "${linux_gui_steps[@]}"; do
+                step 7 "Linux: $command  (CARGO_TARGET_DIR=$CARGO_TARGET_DIR)"
+                bash -c "$command"
+            done
+            ;;
+        MINGW* | MSYS* | CYGWIN*)
+            if ! command -v wsl.exe > /dev/null 2>&1; then
+                echo "script/check: --linux-gui needs wsl.exe and WSL Ubuntu" >&2
+                exit 1
+            fi
+            win_root="$(cygpath -w "$root")"
+            for command in "${linux_gui_steps[@]}"; do
+                step 7 "WSL Ubuntu: $command"
+                MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu --cd "$win_root" --exec bash -lc \
+                    "CARGO_TARGET_DIR=\"\$HOME/.cache/dv-target-gui\" $command"
+            done
+            ;;
+        *)
+            echo "script/check: --linux-gui needs Windows (with WSL Ubuntu) or a Linux host" >&2
             exit 1
             ;;
     esac

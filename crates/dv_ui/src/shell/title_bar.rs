@@ -17,8 +17,9 @@
 //!
 //! The caption buttons are gpui `WindowControlArea`s, so Windows itself handles their clicks,
 //! hover and Snap Layouts on Maximize (the pattern of Zed's `platform_title_bar`). macOS draws
-//! its traffic lights over the left edge, which the bar leaves room for; Linux draws its own
-//! decorations.
+//! its traffic lights over the left edge, which the bar leaves room for. On Linux the bar moves
+//! the window itself and shows the caption buttons while dv draws the decorations
+//! (`super::frame`).
 
 use dv_core::Location;
 use gpui::{
@@ -94,16 +95,14 @@ impl Shell {
         // The left group stops short of the command field, which moves right when the group
         // needs it to (module docs, "Room").
         let needed = left_group_width(&label, left_inset, has_review, window, theme);
+        // The bar spans the window inside the frame Linux's client-side decorations draw.
+        let frame = gpui_component::window_paddings(window);
         let field = field_left(
-            window.viewport_size().width,
+            window.viewport_size().width - frame.left - frame.right,
             theme.sizes.command_field_width,
             needed,
             SETTINGS_BUTTON_ROOM
-                + if cfg!(target_os = "windows") && !window.is_fullscreen() {
-                    theme.sizes.caption_button_width * 3.
-                } else {
-                    px(0.)
-                },
+                + theme.sizes.caption_button_width * caption_buttons(window).len() as f32,
         );
         let room = field - FIELD_GAP;
         div()
@@ -119,6 +118,9 @@ impl Shell {
             .border_b_1()
             .border_color(c.line)
             .window_control_area(WindowControlArea::Drag)
+            .when(cfg!(target_os = "linux"), |bar| {
+                super::frame::moves_window(bar, window, cx)
+            })
             .child(
                 div()
                     .flex()
@@ -535,8 +537,8 @@ fn command_field(theme: &DvTheme) -> AnyElement {
         .automation_target("titlebar/command")
 }
 
-/// Minimize, maximize/restore and close: 46 wide and the title bar's height. Nothing on macOS
-/// and Linux, where the platform draws its own, or in fullscreen.
+/// Minimize, maximize/restore and close: 46 wide and the title bar's height, those
+/// [`caption_buttons`] names.
 #[derive(IntoElement)]
 struct WindowControls {
     glyph: Hsla,
@@ -579,6 +581,13 @@ impl WindowControls {
             // Keep the drag region from claiming the hit test.
             .occlude()
             .window_control_area(button.control_area())
+            // Windows handles the click through the control area; on Linux it is dv's.
+            .when(cfg!(target_os = "linux"), |this| {
+                this.on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    super::frame::caption_click(button.caption(), window);
+                })
+            })
             .hover(move |style| style.bg(hover_bg))
             .active(move |style| style.bg(hover_bg.opacity(0.8)))
             .child(
@@ -594,22 +603,70 @@ impl WindowControls {
 
 impl RenderOnce for WindowControls {
     fn render(self, window: &mut Window, _cx: &mut gpui::App) -> impl IntoElement {
-        let visible = cfg!(target_os = "windows") && !window.is_fullscreen();
-        let maximize = if window.is_maximized() {
-            CaptionButton::Restore
-        } else {
-            CaptionButton::Maximize
-        };
         div()
             .id("window-controls")
             .flex_none()
             .flex()
             .flex_row()
-            .when(visible, |this| {
-                this.child(self.button(CaptionButton::Minimize))
-                    .child(self.button(maximize))
-                    .child(self.button(CaptionButton::Close))
-            })
+            .children(
+                caption_buttons(window)
+                    .into_iter()
+                    .map(|button| self.button(button)),
+            )
+    }
+}
+
+/// The caption buttons `window` shows ([`caption_buttons_for`] on this OS).
+fn caption_buttons(window: &Window) -> Vec<CaptionButton> {
+    caption_buttons_for(
+        std::env::consts::OS,
+        CaptionState {
+            client_decorated: super::frame::client_decorated(window),
+            controls: window.window_controls(),
+            fullscreen: window.is_fullscreen(),
+            maximized: window.is_maximized(),
+        },
+    )
+}
+
+/// What a window's caption buttons depend on.
+#[derive(Clone, Copy, Debug)]
+struct CaptionState {
+    /// dv draws the window's decorations (`super::frame`; Linux).
+    client_decorated: bool,
+    /// The controls the window manager supports (Linux).
+    controls: gpui::WindowControls,
+    fullscreen: bool,
+    maximized: bool,
+}
+
+/// The caption buttons the title bar shows on `os` (`std::env::consts::OS`), left to right: on
+/// Windows all three; on Linux, while dv draws the window's decorations, those the window
+/// manager supports, Close always; none in fullscreen, and none on macOS, whose traffic lights
+/// are the system's.
+fn caption_buttons_for(os: &str, state: CaptionState) -> Vec<CaptionButton> {
+    let maximize = if state.maximized {
+        CaptionButton::Restore
+    } else {
+        CaptionButton::Maximize
+    };
+    if state.fullscreen {
+        Vec::new()
+    } else if os == "windows" {
+        vec![CaptionButton::Minimize, maximize, CaptionButton::Close]
+    } else if os == "linux" && state.client_decorated {
+        let supported = state.controls;
+        let mut buttons = Vec::new();
+        if supported.minimize {
+            buttons.push(CaptionButton::Minimize);
+        }
+        if supported.maximize {
+            buttons.push(maximize);
+        }
+        buttons.push(CaptionButton::Close);
+        buttons
+    } else {
+        Vec::new()
     }
 }
 
@@ -658,6 +715,15 @@ impl CaptionButton {
         }
     }
 
+    /// What a click does where the app handles it (Linux, `super::frame`).
+    fn caption(self) -> super::frame::Caption {
+        match self {
+            Self::Minimize => super::frame::Caption::Minimize,
+            Self::Maximize | Self::Restore => super::frame::Caption::Maximize,
+            Self::Close => super::frame::Caption::Close,
+        }
+    }
+
     fn control_area(self) -> WindowControlArea {
         match self {
             Self::Minimize => WindowControlArea::Min,
@@ -670,6 +736,83 @@ impl CaptionButton {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn state(client_decorated: bool, minimize: bool, maximize: bool) -> CaptionState {
+        CaptionState {
+            client_decorated,
+            controls: gpui::WindowControls {
+                fullscreen: true,
+                maximize,
+                minimize,
+                window_menu: true,
+            },
+            fullscreen: false,
+            maximized: false,
+        }
+    }
+
+    #[test]
+    fn caption_buttons_follow_the_platform_and_the_window_manager() {
+        use CaptionButton::{Close, Maximize, Minimize, Restore};
+
+        let every = state(false, true, true);
+        assert_eq!(
+            caption_buttons_for("windows", every),
+            [Minimize, Maximize, Close]
+        );
+        let maximized = CaptionState {
+            maximized: true,
+            ..every
+        };
+        assert_eq!(
+            caption_buttons_for("windows", maximized),
+            [Minimize, Restore, Close]
+        );
+        let fullscreen = CaptionState {
+            fullscreen: true,
+            ..every
+        };
+        assert_eq!(caption_buttons_for("windows", fullscreen), []);
+        // macOS: the traffic lights are the system's.
+        assert_eq!(caption_buttons_for("macos", state(true, true, true)), []);
+
+        // Linux: only while dv draws the decorations, and only what the window manager
+        // supports, Close always.
+        assert_eq!(caption_buttons_for("linux", every), [], "server-side");
+        assert_eq!(
+            caption_buttons_for("linux", state(true, true, true)),
+            [Minimize, Maximize, Close]
+        );
+        assert_eq!(
+            caption_buttons_for(
+                "linux",
+                CaptionState {
+                    maximized: true,
+                    ..state(true, true, true)
+                }
+            ),
+            [Minimize, Restore, Close]
+        );
+        assert_eq!(
+            caption_buttons_for("linux", state(true, false, true)),
+            [Maximize, Close]
+        );
+        assert_eq!(
+            caption_buttons_for("linux", state(true, false, false)),
+            [Close],
+            "a tiling compositor"
+        );
+        assert_eq!(
+            caption_buttons_for(
+                "linux",
+                CaptionState {
+                    fullscreen: true,
+                    ..state(true, true, true)
+                }
+            ),
+            []
+        );
+    }
 
     #[test]
     fn the_command_field_moves_right_only_as_far_as_the_left_group_needs() {

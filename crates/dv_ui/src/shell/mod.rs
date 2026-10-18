@@ -61,6 +61,7 @@
 //! saved in `settings.json` (DESIGN §2).
 
 mod file_view;
+mod frame;
 pub mod intel;
 pub mod pending;
 mod render;
@@ -78,8 +79,8 @@ use dv_core::{Location, Target};
 use futures::channel::oneshot;
 use gpui::{
     App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, ScrollHandle, Size,
-    Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowHandle, WindowOptions, point,
-    px, size,
+    Subscription, Task, TitlebarOptions, Window, WindowBounds, WindowDecorations, WindowHandle,
+    WindowOptions, point, px, size,
 };
 use gpui_component::Root;
 
@@ -1221,6 +1222,10 @@ pub fn window_options(window_size: Size<gpui::Pixels>, cx: &App) -> WindowOption
         }),
         window_min_size: Some(min_size),
         window_background: theme.material.window_background(),
+        // Linux: dv's title bar is the window's, and its frame gpui-component's `Root`
+        // (`frame`); the platform keeps its own where it can't do without (X11 with no
+        // compositor). Windows and macOS take their frame from `titlebar` above.
+        window_decorations: cfg!(target_os = "linux").then_some(WindowDecorations::Client),
         app_id: Some("dv".into()),
         ..Default::default()
     }

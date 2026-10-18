@@ -1,5 +1,6 @@
 {"scenario": {"window_size": "1440x900", "description": "The diff stream (DESIGN §4.1): the board's api-server with a CRLF README under autocrlf, a binary, a file too large to show, a rename, an untracked file, a deletion and a long file with gaps; opened from the switcher by keyboard; J/K files, N/P change blocks, the cursor and a Shift selection, S split/unified, E/Shift E gaps, PageDown with the pinned header, the agent staging everything under the reader, V collapsing a viewed file, Load anyway, the sideways scroll, the file menu's Copy path and line-number clicks; screenshots in dark Mica, dark Opaque and light."}}
 {"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
 {"cmd": "settle"}
 
 // The board's fixture (DESIGN §6), with nine changes of every kind the stream shows differently.

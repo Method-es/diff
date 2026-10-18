@@ -58,15 +58,18 @@ fn without_the_first_run_settings_shows_the_same_checks(cx: &mut TestAppContext)
         cx.services().setup.read(cx).is_settled()
     });
     assert_eq!(skill_state(cx, "skill-claude-code"), Some(State::Missing));
-    setup.update(cx, |setup, cx| {
-        setup.apply("Windows", "skill-claude-code", cx)
+    // This machine by its name: "Windows", "Linux", "macOS", or the distro dv runs inside.
+    let here = cx.update(|_, cx| {
+        cx.services().setup.read(cx).environments()[0]
+            .env
+            .name
+            .clone()
     });
+    setup.update(cx, |setup, cx| setup.apply(&here, "skill-claude-code", cx));
     settle(cx, &shell, "the install", |_, cx| {
         cx.services().setup.read(cx).is_settled()
     });
-    if cfg!(windows) {
-        assert_eq!(skill_state(cx, "skill-claude-code"), Some(State::Ok));
-    }
+    assert_eq!(skill_state(cx, "skill-claude-code"), Some(State::Ok));
 
     cx.simulate_keystrokes("escape");
     settle(cx, &shell, "settings closed", |shell, _| {
@@ -91,16 +94,20 @@ fn an_out_of_date_skill_is_noticed_once_and_updated(cx: &mut TestAppContext) {
     settle(cx, &shell, "the check", |_, cx| {
         cx.services().setup.read(cx).notice().is_some()
     });
-    let (here, notice) = cx.update(|_, cx| {
+    let (here, kind, notice) = cx.update(|_, cx| {
         let setup = cx.services().setup.read(cx);
-        (
-            setup.environments()[0].env.name.clone(),
-            setup.notice().unwrap(),
-        )
+        let env = &setup.environments()[0].env;
+        (env.name.clone(), env.kind, setup.notice().unwrap())
     });
+    // This machine is "on Windows" or "on Linux", but "in Ubuntu" when dv runs inside WSL.
+    let place = if kind == dv_cli::checks::Kind::Wsl {
+        "in"
+    } else {
+        "on"
+    };
     assert_eq!(
         notice.text,
-        format!("dv-review skill out of date on {here}")
+        format!("dv-review skill out of date {place} {here}")
     );
     assert_eq!(notice.action, "Update");
 

@@ -1,7 +1,8 @@
 //! The app icon, `resources/windows/dv.ico` (DESIGN §1.7): `build.rs` embeds it in dv.exe and
 //! dv-gui.exe as resource 1, the one gpui loads for its windows (the title bar, the taskbar,
 //! Alt Tab) and Explorer shows, and `script/package` gives it to the installer. It is
-//! `resources/windows/dv.svg` at the sizes Windows asks for, 16 to 256 px.
+//! `resources/windows/dv.svg` at the sizes Windows asks for, 16 to 256 px. The Linux app's
+//! `resources/linux/dv.png` is the same SVG at 256 px.
 //!
 //! This test renders the SVG and checks the icon against it. After changing the SVG, write the
 //! icon again, and look at it (each size, and on a light and a dark taskbar) with
@@ -22,6 +23,8 @@ const SIZES: [u32; 8] = [16, 20, 24, 32, 40, 48, 64, 256];
 /// Sizes up to this are stored as bitmaps, which every reader of icons understands; bigger
 /// ones as PNG, as Windows' own jumbo icons are.
 const LARGEST_BITMAP: u32 = 64;
+/// The Linux app's icon: one PNG, the size desktops scale from.
+const LINUX_ICON_SIZE: u32 = 256;
 /// How far a channel of the stored icon may be from the rendered SVG (a patch release of
 /// resvg antialiasing an edge a little differently).
 const TOLERANCE: u8 = 8;
@@ -258,6 +261,29 @@ fn the_icon_is_the_mark_at_every_size() {
             stored.size
         );
     }
+}
+
+/// The Linux app's icon, `resources/linux/dv.png`: the SVG at 256 px, which `script/package
+/// --linux-app` gives the AppImage (its `.desktop` entry and the dock).
+#[test]
+fn the_linux_icon_is_the_mark() {
+    let svg = std::fs::read(resources().join("dv.svg")).expect("reading dv.svg");
+    let rendered = render(&svg, LINUX_ICON_SIZE);
+    let path = resources().join("../linux/dv.png");
+    if std::env::var_os(WRITE_VAR).is_some() {
+        std::fs::create_dir_all(path.parent().expect("a folder")).expect("making its folder");
+        std::fs::write(&path, encode_png(&rendered)).expect("writing dv.png");
+    }
+    let stored = decode_png(&std::fs::read(&path).expect("reading dv.png"));
+    assert_eq!(
+        stored.size, LINUX_ICON_SIZE,
+        "{WRITE_VAR}=1 writes it again"
+    );
+    let difference = largest_difference(&stored, &rendered);
+    assert!(
+        difference <= TOLERANCE,
+        "the Linux icon is {difference} off the SVG: {WRITE_VAR}=1 writes it again"
+    );
 }
 
 #[test]

@@ -1,5 +1,6 @@
 {"scenario": {"window_size": "1440x900", "description": "PLAN §3 workflow A steps 1-3 by keyboard alone, then the agent's answer: the switcher shows the seeded api-server with its seven uncommitted changes, Enter opens the working review, V marks a file viewed (in the store), J and Shift Down select lines, C and typing compose, Ctrl Enter posts, Ctrl Enter opens the Finish round sheet on Request changes and Ctrl Enter finishes round 1 (snapshot, changes_requested, round 2, an empty interdiff since round 1; I shows all changes). The agent addresses and replies through review_op; the card shows it live; ] focuses the thread, R replies, X resolves. Screenshots of the composer, the sheet and the thread states in dark Mica, dark Opaque and light (unified); the review ends approved and read-only. No clicks."}}
 {"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
 {"cmd": "settle"}
 
 // Step 1: the agent's uncommitted work in api-server (the board's fixture, seven changes).

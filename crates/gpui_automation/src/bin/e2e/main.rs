@@ -5,6 +5,7 @@
 //! cargo run -p gpui_automation --bin e2e -- [options] <scenario.jsonl | dir | glob>...
 //! ```
 
+mod display;
 mod foreground;
 mod process;
 mod run;
@@ -43,6 +44,9 @@ options:
   --keep-data          keep each scenario's data dir after it passes
   --foreground         open the app's windows normally (focused, in front)
                        instead of in the background; see tests/e2e/README.md
+  --host-display       Linux: open the app on this session's display (WSLg's
+                       under WSL) instead of an Xvfb display the run starts;
+                       an exploratory look only: its windows appear there
   -v, --verbose        print every request and reply
   -h, --help           this help
 ";
@@ -57,6 +61,7 @@ struct Cli {
     ready_timeout: Duration,
     keep_data: bool,
     foreground: bool,
+    host_display: bool,
     verbose: bool,
     scenarios: Vec<PathBuf>,
 }
@@ -72,6 +77,7 @@ fn parse_cli(args: impl IntoIterator<Item = String>) -> Result<Option<Cli>> {
         ready_timeout: Duration::from_secs(60),
         keep_data: false,
         foreground: false,
+        host_display: false,
         verbose: false,
         scenarios: Vec::new(),
     };
@@ -91,6 +97,7 @@ fn parse_cli(args: impl IntoIterator<Item = String>) -> Result<Option<Cli>> {
             }
             "--keep-data" => cli.keep_data = true,
             "--foreground" => cli.foreground = true,
+            "--host-display" => cli.host_display = true,
             "-v" | "--verbose" => cli.verbose = true,
             flag if flag.starts_with('-') => bail!("unknown option {flag}\n\n{USAGE}"),
             path => cli.scenarios.push(path.into()),
@@ -151,7 +158,7 @@ fn real_main() -> Result<ExitCode> {
     let workspace = workspace_root();
     let target = target_dir(&workspace);
     let absolute = |path: PathBuf| std::path::absolute(&path).unwrap_or(path);
-    let config = Config {
+    let mut config = Config {
         app: absolute(
             cli.app
                 .unwrap_or_else(|| target.join("debug").join(exe("dv"))),
@@ -171,10 +178,14 @@ fn real_main() -> Result<ExitCode> {
         keep_data: cli.keep_data,
         background: !cli.foreground,
         verbose: cli.verbose,
+        display_env: Vec::new(),
     };
     // Held until the run ends: a second runner on the same output root would wipe this one's
     // scenario dirs.
     let _out_lock = run::lock_out_root(&config.out_root)?;
+    // Linux: an Xvfb display of the run's own, ended with it (`display`).
+    let display = display::Display::start(cli.host_display, &config.out_root.join("xvfb.log"))?;
+    config.display_env = display.env();
     // A background app must never take the foreground: watch for it across every scenario.
     let watch = config.background.then(foreground::Watch::start);
 
@@ -195,14 +206,15 @@ fn real_main() -> Result<ExitCode> {
     }
 
     println!(
-        "e2e: {} scenario(s) against {} in the {}",
+        "e2e: {} scenario(s) against {} in the {} on {}",
         scenarios.len(),
         config.app.display(),
         if config.background {
             "background"
         } else {
             "foreground"
-        }
+        },
+        display.description
     );
     let mut passed = 0;
     let mut skipped = 0;

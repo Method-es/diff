@@ -453,3 +453,38 @@ fn detach_probe() {
         _ => {}
     }
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_detached_app_holds_none_of_the_callers_descriptors() {
+    use std::os::fd::AsRawFd as _;
+
+    // A descriptor this process inherited without close-on-exec, as a caller's shell leaves
+    // one: `dup` makes such a copy of a pipe's end.
+    let (reader, _writer) = std::io::pipe().unwrap();
+    // SAFETY: `dup` takes no pointers; the copy is closed below.
+    let inherited = unsafe { libc::dup(reader.as_raw_fd()) };
+    assert!(inherited > 2, "dup: {}", std::io::Error::last_os_error());
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("fd");
+    let mut child = std::process::Command::new("/bin/sh");
+    child.args([
+        "-c",
+        r#"if [ -e "/proc/$$/fd/$1" ]; then echo open; else echo closed; fi > "$2""#,
+        "sh",
+        &inherited.to_string(),
+        &out.display().to_string(),
+    ]);
+    spawn_detached(child).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let said = loop {
+        match std::fs::read_to_string(&out) {
+            Ok(text) if text.ends_with('\n') => break text,
+            _ if Instant::now() > deadline => panic!("the detached child wrote nothing"),
+            _ => std::thread::sleep(Duration::from_millis(20)),
+        }
+    };
+    // SAFETY: `inherited` is the descriptor `dup` returned above, closed once.
+    unsafe { libc::close(inherited) };
+    assert_eq!(said.trim(), "closed");
+}

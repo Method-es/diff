@@ -157,6 +157,35 @@ is the person's machine: it takes the focus for a few seconds, keystrokes
 typed meanwhile reach dv, and a click elsewhere fails its screen captures.
 That is why it lives in `tests/e2e/foreground/` and runs only on demand.
 
+### Linux
+
+On Linux the runner starts an **Xvfb display of its own** for the whole run
+(`Xvfb :<n> -screen 0 2560x1600x24 -nolisten tcp`, the first `n` from 90 no
+live server holds: a `/tmp/.X<n>-lock` naming a dead process is no obstacle;
+its output in `<out>/xvfb.log`) and ends it with the run (`SIGTERM`, on which
+it removes its lock, then `SIGKILL` after 5 s). It also dies with the runner,
+however the runner ends (`PR_SET_PDEATHSIG`). Every app starts there under X11 alone: `DISPLAY=:<n>` and no
+`WAYLAND_DISPLAY`, so inside WSL no window reaches WSLg, whose windows open on
+the Windows desktop. `screenshot`'s `window` source is an X11 `GetImage` of the
+window (`capture_x11.rs`): exact, since nothing covers it on that display; at
+X11's scale 1 a 1440x900 window captures as 1440x900 (`GPUI_X11_SCALE_FACTOR`
+in a header's `env` renders at another scale). Xvfb has no compositor, so the
+window keeps the platform's decorations (none drawn: there is no window
+manager either) and dv's caption buttons don't show; the `screen` source is
+Windows'. Without Xvfb installed the runner says so and stops.
+
+`--host-display` keeps the display the runner was started with instead
+(WSLg's, under WSL: Wayland, with X11 through `env -u WAYLAND_DISPLAY`): for an
+explicit exploratory look at dv on a real compositor, a short scenario under
+`target/tmp/` that quits, never a gate. Under Wayland `screenshot` fails (the
+X11 capture needs an X11 window); `bounds`/`query` still answer.
+
+Every scenario but `setup`, `shell_caption_buttons` and `shell_materials`
+(Windows' chrome: `platforms: ["windows"]`) runs on Linux; `setup_linux` is
+`setup`'s Linux sibling. `script/check --linux-gui` runs them all in WSL
+Ubuntu, from the Linux GUI target dir (`~/.cache/dv-target-gui`), whose
+`e2e/` then holds the screenshots.
+
 ### dv's scenarios
 
 | Scenario | Covers |
@@ -168,6 +197,7 @@ That is why it lives in `tests/e2e/foreground/` and runs only on demand.
 | `review_chrome` | the screen around the stream (DESIGN §4.1): `open` on a seeded repo (the board's `api-server`) opens the switcher on its uncommitted changes; typing filters, `↑`/`↓` wrap, `Enter` opens the working review; the file list (rows, current file, viewed checkboxes through the store, the filter and `Esc`), `Ctrl B`, the panel's resize and double-click reset, the source picker, the status bar, a WSL repo's switcher row (through WSL's stand-in, which refuses to start anything) and the main area's banner ("couldn't open Ubuntu:/home/kyle/web", Details with why and the connection's diagnostics, Copy diagnostics through the clipboard seam, Dismiss), the title bar at 1100x700 (and with a long repository name), a repo whose `.git` went away while open (its switcher row says why and offers nothing to open), and after a `restart` the WSL repo, its distro stopped (`wsl_distros`), listed as "Ubuntu isn't running" with **Start Ubuntu**, whose click connects and, the stand-in booting nothing, leaves the row offering Start again with why it failed as its `error`; then, the distro running (`wsl_distros`), the failed connection's row offering **Retry**, whose click connects again; screenshots of the switcher, the review and the banner (and its Details) in dark Mica, dark Opaque and light, and of the stopped distro's row, its failed start and the Retry row |
 | `review_session` | the review plumbing without its screens: a seeded repo is `open`ed and listed with its uncommitted changes, its working review opens (named in full at once) and resumes, follows the agent's edits and commit live, and sees the agent's `review_op` through the watch; a WSL location is listed as unavailable (WSL's stand-in refuses to start anything); repos, review and seeded fixture survive a `restart` |
 | `setup` | Windows only. Setup (PLAN §12, DESIGN §4.3) on a fresh data dir with `DV_FIRST_RUN=1` and `mock_gh` signed in (`tests/fixtures/gh/auth_status.json`): the first-run screen over this machine's checks; a fake Claude Code folder (`home_file`), Check again, its skill's Install; Add to PATH writing the user `Path`'s stand-in; the git command copied through the clipboard seam; WSL's stand-in naming Ubuntu (listed, not reached), Debian (stopped; Start refused: the run reaches no distro but its sandbox's, why under its name) and `docker-desktop` and `podman-machine-default` (container tools' VMs, not listed); Continue (`Enter`) writing the marker and a review opening; Settings (`Ctrl ,`) showing a skill edited since as out of date and Update fixing it, `Esc` closing it; after a `restart`, no first run and the status bar's notice "dv-review skill out of date on Windows", whose Update fixes it; screenshots of the first-run screen, with the distros, Settings and the notice |
+| `setup_linux` | Linux only, `setup`'s sibling: the first-run screen over this machine's checks alone (no distros on Linux; the header empties `WSL_DISTRO_NAME`, so a run inside WSL names the machine `Linux` as a desktop would), in the scratch home with `mock_gh` signed in; a fake Claude Code folder, Check again, Install; Add to PATH linking `~/.local/bin/dv` to this dv and putting `~/.local/bin` on the shell's `PATH` through its startup file, the shell then asked again with the scratch home; the git command copied through the clipboard seam; Continue and a review opening; after a `restart` the notice "dv-review skill out of date on Linux" and its Update; screenshots of the first-run screen (dark, and set up in dark and light) and the notice |
 | `update` | dv's own update (PLAN D9, DESIGN §4.1): nothing shows in an automation run (it checks no feed); `update_ready` through the seam shows "dv <version> is ready" and Restart to update at the status bar's right beside an open review; with two other dv processes running from the install (the stand-in's `others`) its click opens the confirmation (`update.confirm`, `status/update/confirm`) and Not now keeps everything; a restart the stand-in fails reads "Update failed · details" (`update.failure`, its tooltip) with Retry; with an unsent comment (`J`, `C`, typed) the confirmation names it and Restart anyway records the restart (`update.restart_requested`) while dv keeps running, the draft intact; screenshots of the item in dark and light, both confirmations and the failure |
 | `backend_loopback` | a repo reached through the loopback `dv backend --stdio` (this `dv`'s own server, a child of the app), as a WSL repo is through its distro's (PLAN §5.2): `seed_repo` with `"backend": "loopback"`, its review opening and a comment posting through the connection (`state.backends`), the remote watch following the agent's edit, a `backend_kill` that reconnects by itself (the status bar's "loopback · reconnecting…", no banner) and a file written while it was down listed after the synthetic rescan, then `backend_block` and a kill that runs out of respawns (attempts 2 and 3: a death soon after a reconnect continues its count): `failed`, "loopback · disconnected" and the backend-down banner (Details, Copy diagnostics); meanwhile the open switcher's row reads "reconnecting…" keeping its rows, then offers **Retry** once the connection failed; unblocked, the banner's Retry connects again and the watch follows the agent once more; then `backend_stop` (the host stopped, as `wsl --shutdown` stops a distro): the respawn starts nothing, `stopped`, "loopback · stopped", the banner's **Start loopback** and the switcher's Start row, and the banner's Start boots it again; stopped once more, the switcher's Start row started with the start held (`backend_hold`): the row stays, inert (`starting`), with the selection, and `Enter` again does nothing, until the repo lists and its first row takes the selection; a review picked from the switcher while the connection reconnects opens once it is back, with no banner; one picked while the reconnect then fails waits as `shell.pending` (the backend banner the only banner, `shell.banner` `null`); with a round summary typed in the sheet meanwhile it waits on after the switcher's Retry row brings the connection back (the review under the sheet stays, the summary kept), and opens by itself once the sheet is cancelled, no banner left; and after a `restart` with `app_args: ["open", <repo>]` the repo is reached through the loopback again, where a review picked with no review open and its server killed at once (under the open) opens once the connection is back (generation 2, no banner); screenshots of the review over the loopback, while reconnecting, the switcher reconnecting and offering Retry, the banner and status bar in dark Mica, dark Opaque and light, the review reconnected, the stopped banner and switcher row, the switcher while its Start runs, and the pick waiting under the backend banner and then for the sheet |
 | `review_screen` | the diff stream (DESIGN §4.1, §5): the board's `api-server` with a CRLF README under `core.autocrlf`, a binary, a file too large to show, a rename, an untracked file, a deletion and a long file with gaps, opened from the switcher by keyboard; `J`/`K`, `N`/`P`, the cursor (`↑`/`↓`, `←`/`→`), a `Shift` selection and `Esc`, `S` to unified and back, gap rows and `E`/`Shift E`, `PageDown` with the pinned header, the agent staging everything under the reader (the gaps stay open, the place stays), the sideways scroll, line-number clicks and shift-clicks, the file menu's Copy path, `V` collapsing a viewed file and its chevron, "Load anyway"; screenshots of each state in dark Mica, dark Opaque and light |
@@ -374,6 +404,7 @@ e2e [options] <scenario.jsonl | directory | glob>...
   --ready-timeout-ms <n>  how long the app may take to start (default 60000)
   --keep-data             keep each scenario's data dir after it passes
   --foreground            focused windows in front instead of background runs
+  --host-display          Linux: this session's display instead of the run's Xvfb
   -v, --verbose           print every request and reply
 ```
 

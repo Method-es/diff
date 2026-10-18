@@ -4,8 +4,8 @@
 //! in a terminal. The app itself starts **detached**: `dv-gui.exe` (the windows-subsystem
 //! binary, PLAN §13.1) when a packaged build (an installed copy) has it beside this executable,
 //! else this same binary run again with the hidden `--no-detach`, with no
-//! console (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` on Windows, its own process group
-//! elsewhere), its standard streams closed and none of the caller's handles inherited
+//! console (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` on Windows, its own session,
+//! `setsid`, elsewhere), its standard streams closed and none of the caller's handles inherited
 //! ([`spawn_detached`]), while the first one returns 0 at once, also to a caller that captures
 //! its output. `--automation` (a driver talks to it over stdio) and `--no-detach` run the app
 //! in this process instead, as `dv-gui.exe` always does ([`launch`]).
@@ -274,9 +274,10 @@ pub fn current_is_repo(startup: &Startup, options: LocalBackendOptions) -> bool 
 }
 
 /// Starts the app with [`detached_args`] ([`detached_program`]), detached from this process's
-/// console and process group, its standard streams closed (module docs, [`spawn_detached`]).
+/// console and process group (its session, off Windows), its standard streams closed (module
+/// docs, [`spawn_detached`]).
 pub fn detach(args: &[OsString], startup: &Startup) -> std::io::Result<()> {
-    let exe = std::env::current_exe()?;
+    let exe = dv_cli::this_executable(&dv_cli::Env::Process)?;
     let program = detached_program(&exe, dv_cli::is_packaged(), Path::is_file);
     let mut command = std::process::Command::new(program);
     let here = current_is_repo(startup, LocalBackendOptions::default());
@@ -284,9 +285,10 @@ pub fn detach(args: &[OsString], startup: &Startup) -> std::io::Result<()> {
     spawn_detached(command)
 }
 
-/// Starts `command` detached: no console and a process group of its own, its standard streams
-/// closed, and none of this process's standard handles handed down. On Windows a child
-/// inherits every inheritable handle of its parent, and this process's stdout and stderr are
+/// Starts `command` detached: no console and a process group of its own (a session, off
+/// Windows), its standard streams closed, and none of this process's standard handles handed
+/// down. On Windows a child inherits every inheritable handle of its parent, and this
+/// process's stdout and stderr are
 /// whatever its caller gave it — a pipe, when the caller captures `dv open`'s output
 /// (`$(dv open .)`, an agent's shell tool) — so the app would hold that pipe open for as long
 /// as it runs, and the caller would wait for the window to close before seeing the end of the
@@ -303,13 +305,71 @@ pub(crate) fn spawn_detached(mut command: std::process::Command) -> std::io::Res
         command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
         keep_std_handles_from_children();
     }
+    // A session of its own: no controlling terminal, so closing the terminal `dv open` ran in
+    // sends the app no hangup. And none of the caller's other descriptors: what dv opens
+    // itself is close-on-exec already, but whatever this process inherited (a pipe its
+    // caller's shell left open as fd 3 and up) would otherwise stay open in the app.
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
-        command.process_group(0);
+        let limit = descriptor_limit();
+        // SAFETY: the closure runs in the child between fork and exec and calls only
+        // `setsid`, `syscall(close_range)` and `fcntl`, which are async-signal-safe and touch
+        // no memory of this process; `limit` was read before the fork.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                close_inherited_on_exec(limit);
+                Ok(())
+            });
+        }
     }
     // The child is never waited for: it outlives this process.
     command.spawn().map(drop)
+}
+
+/// One past the highest descriptor a process may have (`RLIMIT_NOFILE`'s soft limit), capped
+/// so the fallback loop of [`close_inherited_on_exec`] stays short.
+#[cfg(unix)]
+fn descriptor_limit() -> libc::c_int {
+    // SAFETY: `sysconf` takes no pointers.
+    let max = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
+    libc::c_int::try_from(max.clamp(256, 65_536)).unwrap_or(65_536)
+}
+
+/// Marks every descriptor from 3 up close-on-exec, so the program `exec` starts holds only its
+/// standard streams ([`spawn_detached`]). Marked rather than closed: the standard library's
+/// own pipe, which tells the parent whether `exec` failed, must stay open until then (it is
+/// close-on-exec already). `close_range` does it at once on Linux 5.11 and later; elsewhere
+/// each descriptor below `limit`. Only between fork and exec: async-signal-safe calls alone.
+#[cfg(unix)]
+unsafe fn close_inherited_on_exec(limit: libc::c_int) {
+    #[cfg(target_os = "linux")]
+    // SAFETY: `close_range` takes no pointers; on a kernel without it the call fails (ENOSYS,
+    // EINVAL) and the loop below does the same.
+    unsafe {
+        if libc::syscall(
+            libc::SYS_close_range,
+            3 as libc::c_uint,
+            libc::c_uint::MAX,
+            libc::CLOSE_RANGE_CLOEXEC,
+        ) == 0
+        {
+            return;
+        }
+    }
+    for fd in 3..limit {
+        // SAFETY: `fcntl` with these commands takes no pointers; a descriptor that isn't open
+        // fails with EBADF and is skipped.
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            if flags >= 0 && flags & libc::FD_CLOEXEC == 0 {
+                libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+            }
+        }
+    }
 }
 
 /// Makes this process's standard handles non-inheritable ([`spawn_detached`]). Best effort: a

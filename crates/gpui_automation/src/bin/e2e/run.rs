@@ -44,6 +44,9 @@ pub struct Config {
     /// foreground.
     pub background: bool,
     pub verbose: bool,
+    /// The display every app opens on (`display::Display::env`): a value to set, or `None`
+    /// to remove.
+    pub display_env: Vec<(&'static str, Option<String>)>,
 }
 
 pub enum Outcome {
@@ -142,6 +145,12 @@ impl Launcher<'_> {
             .env(GH_VAR, &self.config.mock_gh)
             .env(MOCK_GH_LOG_VAR, &self.gh_log)
             .env(GIT_CEILING_VAR, &self.out_dir);
+        for (name, value) in &self.config.display_env {
+            match value {
+                Some(value) => command.env(name, value),
+                None => command.env_remove(name),
+            };
+        }
         match &self.gh_scenario {
             Some(path) => command.env(MOCK_GH_VAR, path),
             // Never one inherited from the runner's environment: without a scenario file
@@ -965,7 +974,23 @@ mod tests {
             keep_data: false,
             background: true,
             verbose: false,
+            display_env: Vec::new(),
         }
+    }
+
+    #[test]
+    fn apps_open_on_the_run_display() {
+        let config = Config {
+            display_env: vec![
+                ("DISPLAY", Some(":90".to_string())),
+                ("WAYLAND_DISPLAY", None),
+            ],
+            ..config()
+        };
+        let plain = scenario(r#"{"cmd": "state"}"#);
+        let envs = envs(&launcher(&config, &plain).command());
+        assert_eq!(envs["DISPLAY"].as_deref(), Some(":90"));
+        assert_eq!(envs["WAYLAND_DISPLAY"], None, "removed, not inherited");
     }
 
     /// A launcher as `run_in` builds one, with the header's `gh` file resolved but not checked.

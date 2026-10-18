@@ -17,7 +17,8 @@ WSL; macOS and Linux supported. Agents read and answer reviews through the `dv` 
 ## Toolchain and platform
 
 - Rust 1.98.1 (pinned in `rust-toolchain.toml`), edition 2024, resolver 3.
-- Windows 11 is the primary platform. Linux is built and tested inside WSL Ubuntu (below). macOS is
+- Windows 11 is the primary platform. Linux, the headless build and the Linux app (X11 and
+  Wayland) alike, is built and tested inside WSL Ubuntu (below). macOS is
   kept compiling where cheap and is otherwise unverified (PLAN §13.2).
 - `git` and `gh` are on `PATH`. dv shells out to both and never links a git library (PLAN D4, D7).
 
@@ -130,6 +131,8 @@ script/check --fast          # the same without the e2e scenarios
 script/check --foreground    # also tests/e2e/foreground: takes the focus for a few seconds
 script/check --linux         # also step 6: the headless crates and dv tested and linted in WSL
                              # Ubuntu, script/build-linux --debug-only, the real WSL sandboxed under /tmp
+script/check --linux-gui     # also step 7: the Linux app in WSL Ubuntu (~/.cache/dv-target-gui):
+                             # clippy in its GUI shapes, dv/dv_ui/gpui_automation tests, e2e on Xvfb
 script/build-linux [--aarch64] [--debug-only]   # the static musl dv for WSL:
                              # target/{debug,release}/dv-linux-x86_64 (--debug-only: debug's alone;
                              # --out <dir> [--profile dist]: only there, script/package's form)
@@ -137,6 +140,9 @@ script/package [--version <semver>] [--aarch64]  # a trial Windows release (PLAN
                              # target/package/{linux,stage,try}; Setup.exe and a feed nothing reads
                              # (needs vpk; never run the installer it makes; --publish, which writes
                              # the installed app's feed target/package/releases, is the owner's)
+script/package --linux-app   # a trial AppImage of the Linux app: built in WSL Ubuntu (dist profile,
+                             # ~/.cache/dv-target-gui), `vpk "[linux]" pack` on Windows, into
+                             # target/package/try (dv.AppImage); a trial only, never --publish
 
 cargo build                  # the dv binary (default member)
 cargo build --workspace
@@ -232,10 +238,21 @@ App windows open on the owner's real desktop.
   and stay behind everything) or `--automation` scripts that end with `quit`. Never leave `dv.exe`
   or `mock_gh.exe` running; if a run fails, kill what you started (`taskkill //F //IM dv.exe` from
   bash). Scenarios that must take the focus (`tests/e2e/foreground/`) run only on demand.
+- **Linux GUI runs go on an Xvfb display, never WSLg's.** Inside WSL the desktop's display
+  (`WAYLAND_DISPLAY=wayland-0`, `DISPLAY=:0`) is WSLg's, whose windows open on the owner's
+  Windows desktop. The e2e runner on Linux starts an Xvfb display of its own for the run and
+  starts the app there under X11 alone (PLAN §14.2); run the Linux app only through it (from
+  the Linux GUI target dir: `CARGO_TARGET_DIR=$HOME/.cache/dv-target-gui cargo run -p
+  gpui_automation --bin e2e -- tests/e2e`, or `script/check --linux-gui`). Its `--host-display`
+  (WSLg's display) is for an explicit exploratory look the owner asked for: a short scenario
+  under `target/tmp/` that quits. `script/check --linux-gui` runs the Linux `cargo test`
+  with `DISPLAY` and `WAYLAND_DISPLAY` removed (gpui's test platform needs neither); do the
+  same by hand.
 - Background screenshots show the window inactive and miss Acrylic's blur (translucent surfaces
   come out over black); judge Acrylic and Mica's active tint from the foreground scenario's screen
   captures (tests/e2e/README.md, "Screenshots and window materials").
-- Never point the app at the real data dir. `%APPDATA%\dv` holds the first implementation's files.
+- Never point the app at the real data dir (nor, on Linux, the distro's `~/.config/dv`).
+  `%APPDATA%\dv` holds the first implementation's files.
   Every run uses `--data-dir` / `DV_DATA_DIR` under `target/` (the runner gives each scenario its
   own); under `--automation` without one, dv uses a fresh temp dir (removed when it exits), never
   the real one. dv reads that folder's `settings.json` leniently and keeps keys it doesn't know,

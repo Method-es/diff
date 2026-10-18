@@ -10,6 +10,7 @@
 #                                     agent's (CLAUDE.md)
 #   script/package --version <semver> that version instead
 #   script/package --aarch64          also the aarch64 Linux build (dv-linux-aarch64)
+#   script/package --linux-app        instead, a trial AppImage of the Linux app (below)
 #
 # 1. the version: the workspace's with the UTC time, `0.1.0-local.20261018093012`, or
 #    --version's; it must be newer than every release already in the folder this run writes
@@ -27,6 +28,13 @@
 #    dv-<version>-full.nupkg, from the second release there on dv-<version>-delta.nupkg, and
 #    releases.win.json with the older RELEASES
 #
+# --linux-app (a trial only, never with --publish): the version as in 1; the Linux app in the
+# shipped shape, built inside WSL Ubuntu with the dist profile in the Linux GUI target dir
+# (~/.cache/dv-target-gui), stripped, `dv --version` checked there; staged alone in
+# target/package/linux-app; then `vpk [linux] pack` (Velopack cross-packs an AppImage from
+# Windows) into target/package/try: dv.AppImage, dv-<version>-linux-full.nupkg and
+# releases.linux.json, the icon crates/dv/resources/linux/dv.png.
+#
 # It never runs the installer or Update.exe, and never runs a built dv but `dv.exe --version`.
 # vpk is a .NET tool: without it this exits 2 saying how to install it. It stops when D: would
 # have under 30 GB free.
@@ -41,12 +49,14 @@ usage: script/package [--publish] [--version <semver>] [--aarch64]
                       from (the owner's alone)
   --version <semver>  the release's version [default: the workspace's, -local.<UTC time>]
   --aarch64           also the aarch64 Linux build
+  --linux-app         instead, a trial AppImage of the Linux app (built in WSL Ubuntu)
 EOF
 }
 
 explicit=""
 publish=0
 aarch64=()
+linux_app=0
 while [[ $# -gt 0 ]]; do
     arg="$1"
     shift
@@ -61,6 +71,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --publish) publish=1 ;;
         --aarch64) aarch64=(--aarch64) ;;
+        --linux-app) linux_app=1 ;;
         -h | --help)
             usage
             exit 0
@@ -72,6 +83,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ "$linux_app" -eq 1 && "$publish" -eq 1 ]]; then
+    echo "script/package: --linux-app makes a trial AppImage; there is no Linux feed to publish" >&2
+    exit 2
+fi
 
 case "$(uname -s)" in
     MINGW* | MSYS* | CYGWIN*) ;;
@@ -137,6 +153,52 @@ if ! version="$(cargo run -q -p dv_package -- "${version_args[@]}")"; then
     exit 2
 fi
 echo "dv $version"
+
+if [[ "$linux_app" -eq 1 ]]; then
+    if ! command -v wsl.exe > /dev/null 2>&1; then
+        echo "script/package: --linux-app builds in WSL Ubuntu, and wsl.exe isn't here" >&2
+        exit 2
+    fi
+    linux_app_dir="$package/linux-app"
+    step 2 "WSL Ubuntu: cargo build -p dv --no-default-features --features gui --profile dist"
+    # The Linux GUI target dir (PLAN §13.2), on the distro's disk; the binary comes out to the
+    # checkout through /mnt. Stripped as script/build-linux strips its builds.
+    rm -rf "$linux_app_dir"
+    mkdir -p "$linux_app_dir" "$out"
+    MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu --cd "$(cygpath -w "$root")" --exec bash -lc "
+        set -euo pipefail
+        export CARGO_TARGET_DIR=\"\$HOME/.cache/dv-target-gui\"
+        DV_CHANNEL=release DV_VERSION='$version' CARGO_PROFILE_DIST_STRIP=symbols \
+            cargo build -p dv --no-default-features --features gui --profile dist
+        said=\"\$(\"\$CARGO_TARGET_DIR/dist/dv\" --version)\"
+        if [[ \"\$said\" != 'dv $version' ]]; then
+            echo \"script/package: the Linux app's --version says \\\"\$said\\\", not \\\"dv $version\\\"\" >&2
+            exit 1
+        fi
+        echo \"ok: \$said\"
+        cp \"\$CARGO_TARGET_DIR/dist/dv\" target/package/linux-app/dv"
+    ls -l "$linux_app_dir"
+
+    step 3 "vpk [linux] pack  (${out#"$root/"})"
+    # `[linux]`: vpk's directive for packing another OS's app from Windows. The main
+    # executable is the one dv binary, GUI and CLI alike (PLAN §13.1).
+    "$vpk" "[linux]" pack --skip-updates \
+        --packId dv \
+        --packVersion "$version" \
+        --packTitle dv \
+        --packAuthors dv \
+        --packDir "$(cygpath -w "$linux_app_dir")" \
+        --mainExe dv \
+        --icon "$(cygpath -w "$root/crates/dv/resources/linux/dv.png")" \
+        --runtime linux-x64 \
+        --categories Development \
+        --outputDir "$(cygpath -w "$out")"
+    echo
+    ls -l "$out"
+    printf '\nscript/package: the Linux app, dv %s, in %s (a trial)\n' "$version" \
+        "$(cygpath -w "$out")"
+    exit 0
+fi
 
 export DV_CHANNEL=release
 export DV_VERSION="$version"

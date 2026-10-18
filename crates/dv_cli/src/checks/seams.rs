@@ -90,7 +90,7 @@ impl Seams {
                 env.var(MACHINE_PATH_FILE_VAR),
             ),
             vars: env.clone(),
-            exe: std::env::current_exe().ok(),
+            exe: crate::this_executable(env).ok(),
             gh: env
                 .non_empty(GH_VAR)
                 .map_or_else(|| OsString::from("gh"), OsString::from),

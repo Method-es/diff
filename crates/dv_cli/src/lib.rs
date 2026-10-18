@@ -28,6 +28,7 @@ mod commands;
 mod context;
 pub mod dto;
 pub mod error;
+mod executable;
 mod identity;
 pub mod output;
 mod placement;
@@ -43,6 +44,7 @@ use clap::Parser as _;
 pub use args::{Cli, Command, GlobalArgs};
 pub use context::{Context, Env};
 pub use error::{CliError, Exit};
+pub use executable::{executable_for, this_executable};
 pub use identity::CLAUDE_CODE;
 pub use repo::{location, this_distro};
 
