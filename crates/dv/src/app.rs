@@ -31,6 +31,11 @@ pub fn run(cli: Cli, open: Startup, show_dialog: bool) -> Result<ExitCode> {
 
     let place = crate::data_dir::resolve(cli.data_dir.clone(), automation)?;
     let data_dir = crate::data_dir::prepare(&place)?;
+    // A panic's report goes beside the app's other files; an automation run's folder is
+    // removed when it ends, so there the default hook's stderr is the report.
+    if !automation {
+        crate::crash::install(&data_dir);
+    }
     log::info!(
         "data directory: {} ({})",
         data_dir.display(),

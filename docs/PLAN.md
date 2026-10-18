@@ -1949,7 +1949,10 @@ setup**.
   second: a caller capturing the output (`$(dv open .)`, an agent's shell tool) sees its end at
   once, not when the window closes. The detached GUI has no console, so a fatal startup error is
   a message box (`fatal.rs`): one before the app starts (the data dir) and one inside it (the
-  window can't open, the fonts don't load) alike.
+  window can't open, the fonts don't load) alike. A panic in the app (outside automation) is
+  appended to `crash.log` in the data dir (dv's version, the thread, the message and place, a
+  backtrace) before the process ends: a panic inside a window's callback can't unwind and
+  aborts, which on screen is the window vanishing (`crash.rs`).
 - **macOS:** `dv.app` containing one `dv` binary; the CLI is a symlink to it (`dv setup path`'s
   `~/.local/bin/dv`, §12.2). Built on the Mac itself (no cross-build from Windows): gpui's
   platform there takes `font-kit` (without it Core Text draws no text) and `runtime_shaders`

@@ -21,6 +21,8 @@ mod app;
 mod automation;
 mod cli;
 #[cfg(feature = "gui")]
+mod crash;
+#[cfg(feature = "gui")]
 mod data_dir;
 #[cfg(feature = "gui")]
 mod fatal;

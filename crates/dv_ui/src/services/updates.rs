@@ -182,10 +182,23 @@ impl Updates {
         }
     }
 
+    /// Restarts once the event that asked for it is handled: the binary's restart reads the
+    /// window's views (the review to reopen), and the click or key that asks arrives while one
+    /// of them is being updated, which gpui can't read meanwhile.
     fn restart_now(&mut self, cx: &mut Context<Self>) {
         self.restart_requested = true;
         self.failure = None;
         cx.notify();
+        let this = cx.weak_entity();
+        cx.defer(move |cx| {
+            this.update(cx, |updates, cx| updates.run_restart(cx)).ok();
+        });
+    }
+
+    fn run_restart(&mut self, cx: &mut Context<Self>) {
+        if !self.restart_requested {
+            return;
+        }
         let result = match &self.updater {
             Updater::None => Err("this dv has no updater".to_string()),
             Updater::Real { restart, .. } => restart(cx),
@@ -316,7 +329,35 @@ mod tests {
             updates.request_restart(Unsaved::default(), cx);
             updates.request_restart(Unsaved::default(), cx);
         });
+        cx.run_until_parked();
         assert_eq!(ran.get(), 1);
+    }
+
+    #[gpui::test]
+    fn a_restart_asked_for_from_inside_a_view_may_read_that_view(cx: &mut TestAppContext) {
+        // The status bar's Restart to update runs inside the shell's update, and the binary's
+        // restart reads the shell for the review to reopen.
+        let view = cx.new(|_| 7_u32);
+        let read = Rc::new(Cell::new(None));
+        let updates = cx.new(|_| Updates::new());
+        updates.update(cx, |updates, cx| {
+            let (view, read) = (view.clone(), read.clone());
+            updates.set_updater(Updater::Real {
+                others: Box::new(|| 0),
+                restart: Box::new(move |cx| {
+                    read.set(Some(*view.read(cx)));
+                    Ok(())
+                }),
+            });
+            updates.set_ready("2.0.0".into(), cx);
+        });
+        view.update(cx, |_, cx| {
+            updates.update(cx, |updates, cx| {
+                updates.request_restart(Unsaved::default(), cx)
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(read.get(), Some(7));
     }
 
     #[gpui::test]
@@ -329,6 +370,9 @@ mod tests {
             });
             updates.set_ready("2.0.0".into(), cx);
             updates.request_restart(Unsaved::default(), cx);
+        });
+        cx.run_until_parked();
+        updates.update(cx, |updates, cx| {
             assert_eq!(updates.failure(), Some("Update.exe isn't there"));
             assert!(!updates.restart_requested());
             updates.set_updater(Updater::Scripted {
@@ -336,6 +380,9 @@ mod tests {
                 fail: None,
             });
             updates.request_restart(Unsaved::default(), cx);
+        });
+        cx.run_until_parked();
+        updates.read_with(cx, |updates, _| {
             assert_eq!(updates.failure(), None);
             assert!(updates.restart_requested());
         });
