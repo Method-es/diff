@@ -37,7 +37,7 @@ use dv_backend::Launcher;
 use dv_backend::wsl::Distro;
 use dv_cli::checks::{self, Check, Environment, Kind, Seams, State, distro, id, skills};
 use futures::StreamExt as _;
-use gpui::{Context, Entity};
+use gpui::{AppContext as _, Context, Entity};
 use serde_json::json;
 
 use super::locations::{Locations, WslAccess};
@@ -768,8 +768,8 @@ impl Setup {
         cx.notify();
     }
 
-    /// Runs `work`, which blocks (git, `gh`, `wsl.exe`), on a thread of its own, counted as
-    /// busy, then `done` with its result.
+    /// Runs `work`, which blocks (git, `gh`, `wsl.exe`), on the background executor (in tests,
+    /// gpui's deterministic scheduler), counted as busy, then `done` with its result.
     fn run<T: Send + 'static>(
         &mut self,
         cx: &mut Context<Self>,
@@ -777,22 +777,12 @@ impl Setup {
         done: impl FnOnce(&mut Self, T, &mut Context<Self>) + 'static,
     ) {
         self.busy += 1;
-        let (sender, receiver) = futures::channel::oneshot::channel();
-        let started = std::thread::Builder::new()
-            .name("dv-setup".into())
-            .spawn(move || {
-                let _ = sender.send(work());
-            });
-        if let Err(error) = started {
-            log::warn!("couldn't start a setup check: {error}");
-        }
+        let job = cx.background_spawn(async move { work() });
         cx.spawn(async move |this, cx| {
-            let result = receiver.await;
+            let result = job.await;
             this.update(cx, |this, cx| {
                 this.busy -= 1;
-                if let Ok(result) = result {
-                    done(this, result, cx);
-                }
+                done(this, result, cx);
                 cx.notify();
             })
             .ok();

@@ -337,7 +337,12 @@ fn a_seeded_repo_opens_as_a_review_and_the_agent_answers(cx: &mut TestAppContext
 
     // `open` adds the repo, computes its row and opens the switcher on it.
     let opened = run(&host, "open", json!({"path": path}), cx).unwrap();
-    assert_eq!(opened["path"], path);
+    // The same folder, though maybe not the same spelling: a Windows temp dir can come as an 8.3
+    // short name (`RUNNER~1`) on one side and the long one on the other.
+    let opened_at = std::path::Path::new(opened["path"].as_str().unwrap())
+        .canonicalize()
+        .unwrap();
+    assert_eq!(opened_at, seeded_at);
     let state = wait_until(&host, cx, "the repo's row", |state| {
         state["repos"][0]["working"].is_object()
     });
