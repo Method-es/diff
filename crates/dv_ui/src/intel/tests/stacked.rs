@@ -367,7 +367,19 @@ fn an_abandoned_request_cancels_the_server_still_answering() {
         client
     };
     let (slow, quick) = (Fakes::default(), Fakes::default());
-    let typescript = start(hover_answer("const App", Duration::from_secs(3)), &slow);
+    // TypeScript holds its hover until the test lets it go, after the wait ended: only the
+    // cancel can end that wait with no answer.
+    let (release, gate) = std::sync::mpsc::channel::<()>();
+    let gate = Mutex::new(gate);
+    let typescript = start(
+        Arc::new(move |message| {
+            (message["method"] == "textDocument/hover").then(|| {
+                let _ = gate.lock().recv();
+                json!({"contents": {"kind": "markdown", "value": "const App"}})
+            })
+        }),
+        &slow,
+    );
     let tailwind = start(hover_answer("`.p-4`", Duration::ZERO), &quick);
     let (in_flight, arming) = InFlight::detached();
     let late = typescript.hover("a.tsx", dv_lsp::TextPosition::new(0, 0));
@@ -377,6 +389,7 @@ fn an_abandoned_request_cancels_the_server_still_answering() {
     let waiting = std::thread::spawn(move || late.wait());
     drop(in_flight);
     assert_eq!(waiting.join().unwrap().unwrap_err(), RequestError::Exited);
+    drop(release);
     let deadline = Instant::now() + Duration::from_secs(10);
     while slow.with_method("$/cancelRequest").is_empty() {
         assert!(

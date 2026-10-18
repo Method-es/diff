@@ -145,11 +145,17 @@ pub(crate) fn no_linux_build() -> PathBuf {
 
 /// `mock_gh`, the fake `gh` (PLAN §14.2), where cargo builds it beside this test executable
 /// (`target/debug/deps`'s parent): `cargo test --workspace` builds it with every crate, as
-/// `script/check` runs it.
+/// `script/check` runs it. A run of this crate's tests alone needs it built first.
 pub(crate) fn mock_gh() -> PathBuf {
     let exe = std::env::current_exe().unwrap();
     let dir = exe.parent().unwrap().parent().unwrap();
-    dir.join(format!("mock_gh{}", std::env::consts::EXE_SUFFIX))
+    let mock = dir.join(format!("mock_gh{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        mock.is_file(),
+        "{} isn't built: run `cargo build -p mock_gh` (or `cargo test --workspace`) first",
+        mock.display()
+    );
+    mock
 }
 
 /// The committed `src/app.ts`: twenty lines of distinct code.
@@ -185,6 +191,15 @@ pub(crate) fn edited_lines() -> Vec<String> {
     let mut lines = app_lines();
     lines[9] =
         "  const row = (await cache.get(id)) ?? (await db.query(\"select 1\", [id]));".to_string();
+    lines
+}
+
+/// [`edited_lines`] with two lines inserted on top and `formatName` (lines 17–19) gone.
+pub(crate) fn moved_lines() -> Vec<String> {
+    let mut lines = edited_lines();
+    lines.drain(16..19);
+    lines.insert(0, "// cache first".to_string());
+    lines.insert(1, "import { cache } from \"./cache\";".to_string());
     lines
 }
 

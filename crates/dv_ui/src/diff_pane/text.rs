@@ -319,6 +319,8 @@ mod tests {
         assert_eq!(shown.painted_of(1), 0);
         assert_eq!(shown.painted_of(2), 2);
         assert_eq!(shown.painted_of(4), 4);
+        // A byte paints at its source column less the scroll, the same column `column_at` names.
+        assert_eq!(column_at("a\tbc", 2) - 3, shown.painted_of(2));
         let wide = visible("名前x", &[], &[], 0, 10);
         assert_eq!(wide.map, [(0, 0), (3, 3), (6, 6)]);
         assert_eq!(wide.painted_of(3), 3);
@@ -487,18 +489,5 @@ mod tests {
         assert_eq!(char_offset(text, 7), Some(text.len()));
         assert_eq!(char_offset(text, 8), None);
         assert_eq!(char_offset(text, 0), None);
-    }
-
-    #[test]
-    fn a_scrolled_or_clipped_line_paints_the_columns_its_offsets_name() {
-        // Scrolled 3 columns in, clipped after 4: the painted slice starts at column 3, and a
-        // byte offset maps to the same column whatever the slice shows.
-        let text = "ab\tcdefgh";
-        let shown = visible(text, &[], &[], 3, 4);
-        assert_eq!(shown.text, "   c");
-        assert!(shown.clipped);
-        assert_eq!(column_at(text, 3), 6);
-        assert_eq!(column_at(text, 3) - 3, shown.text.len() - 1);
-        assert_eq!(caret_offset(text, 6.2), 3);
     }
 }

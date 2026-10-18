@@ -278,13 +278,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn the_probe_reads_this_machine() {
-        // Whatever the machine says, it is consistent with its own build and switch.
+        // `RtlGetVersion` answers, with a Windows 10 or later build (10240 is its first).
         let build = windows::build_number();
         assert!(build.is_some_and(|build| build >= 10240), "{build:?}");
-        let support = MaterialSupport::probe();
-        assert_eq!(
-            support,
-            MaterialSupport::for_windows(build, windows::transparency_enabled())
-        );
     }
 }

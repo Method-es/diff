@@ -320,8 +320,8 @@ async fn a_listing_never_starts_a_distro_that_isnt_running(cx: &mut TestAppConte
     locations.read_with(cx, |locations, _| assert!(locations.is_settled()));
 }
 
-#[gpui::test]
-fn an_automation_run_reaches_wsl_only_with_a_scratch_home(_cx: &mut TestAppContext) {
+#[test]
+fn an_automation_run_reaches_wsl_only_with_a_scratch_home() {
     // `DV_WSL_HOME` as dv_backend's one check reads it: only a scratch home lets an automation
     // run reach the machine's WSL, never a value that would fall back to the real home.
     for home in [

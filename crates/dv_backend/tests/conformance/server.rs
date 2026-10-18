@@ -25,6 +25,23 @@ struct Raw {
     lines: Receiver<Value>,
 }
 
+/// An `open` request's `path` and `env` for a fixture repo.
+type Opening = (String, Vec<(String, Option<String>)>);
+
+fn opening(repo: &FixtureRepo) -> Opening {
+    let env = repo
+        .env_overlay()
+        .into_iter()
+        .map(|(name, value)| {
+            (
+                name.into_string().unwrap(),
+                value.map(|value| value.into_string().unwrap()),
+            )
+        })
+        .collect();
+    (repo.path().to_str().unwrap().to_string(), env)
+}
+
 /// Where a raw server runs.
 enum Server {
     Thread(JoinHandle<io::Result<()>>),
@@ -108,25 +125,17 @@ impl Raw {
 
     /// Says hello and opens `repo`: its handle.
     fn open(&mut self, repo: &FixtureRepo) -> Value {
+        self.open_with(&opening(repo))
+    }
+
+    /// [`Raw::open`] with the request's `path` and `env` made beforehand ([`opening`]).
+    fn open_with(&mut self, (path, env): &Opening) -> Value {
         let proto = dv_backend::proto::PROTO;
         assert_eq!(
             self.reply(json!({"id": 1, "op": "hello", "proto": proto}))["proto"],
             proto
         );
-        let env: Vec<(String, Option<String>)> = repo
-            .env_overlay()
-            .into_iter()
-            .map(|(name, value)| {
-                (
-                    name.into_string().unwrap(),
-                    value.map(|value| value.into_string().unwrap()),
-                )
-            })
-            .collect();
-        self.reply(json!({
-            "id": 2, "op": "open", "path": repo.path().to_str().unwrap(), "env": env,
-        }))["repo"]
-            .clone()
+        self.reply(json!({"id": 2, "op": "open", "path": path, "env": env}))["repo"].clone()
     }
 
     /// The stdout of process `process` until it holds `child <n>` and `pid <n>`: the two pids.
@@ -206,21 +215,32 @@ fn a_spawn_racing_the_end_of_the_input_keeps_nothing() {
     let mut pidfiles = Vec::new();
     // A server of its own each round: one on a thread would kill a process it kept anyway once
     // its last reference went, which hides the race. The end of the input lands at staggered
-    // moments around the spawn.
-    for round in 0..60u64 {
-        let (mut raw, server) = as_a_process();
-        let handle = raw.open(&repo);
-        let pidfile = dir.path().join(format!("pid-{round}"));
-        raw.send(&json!({
-            "id": 3, "op": "spawn", "repo": handle, "spec": {
-                "program": helper(),
-                "args": ["pidfile", pidfile.to_str().unwrap(), "sleep", "600000"],
-            },
-        }));
-        std::thread::sleep(Duration::from_micros((round % 10) * 400));
-        raw.close();
-        server.finish();
-        pidfiles.push(pidfile);
+    // moments around the spawn, every stagger once in each batch of rounds run side by side.
+    let opening = opening(&repo);
+    for batch in 0..6u64 {
+        std::thread::scope(|scope| {
+            let rounds: Vec<_> = (0..10u64)
+                .map(|stagger| {
+                    let (opening, pidfile) =
+                        (&opening, dir.path().join(format!("pid-{batch}-{stagger}")));
+                    scope.spawn(move || {
+                        let (mut raw, server) = as_a_process();
+                        let handle = raw.open_with(opening);
+                        raw.send(&json!({
+                            "id": 3, "op": "spawn", "repo": handle, "spec": {
+                                "program": helper(),
+                                "args": ["pidfile", pidfile.to_str().unwrap(), "sleep", "600000"],
+                            },
+                        }));
+                        std::thread::sleep(Duration::from_micros(stagger * 400));
+                        raw.close();
+                        server.finish();
+                        pidfile
+                    })
+                })
+                .collect();
+            pidfiles.extend(rounds.into_iter().map(|round| round.join().unwrap()));
+        });
     }
     // A process kept past its server's end would have written its pid by now, and still run.
     std::thread::sleep(Duration::from_millis(500));
@@ -252,17 +272,8 @@ fn a_process_printing_faster_than_the_client_reads_waits_for_it() {
         assert_ne!(output.read_line(&mut line).unwrap(), 0, "the output ended");
         serde_json::from_str::<Value>(&line).unwrap()
     };
-    let env: Vec<(String, Option<String>)> = repo
-        .env_overlay()
-        .into_iter()
-        .map(|(name, value)| {
-            (
-                name.into_string().unwrap(),
-                value.map(|value| value.into_string().unwrap()),
-            )
-        })
-        .collect();
-    send(json!({"id": 1, "op": "open", "path": repo.path().to_str().unwrap(), "env": env}));
+    let (path, env) = opening(&repo);
+    send(json!({"id": 1, "op": "open", "path": path, "env": env}));
     let opened = next_line();
     send(json!({
         "id": 2, "op": "spawn", "repo": opened["ok"]["repo"],
@@ -283,14 +294,28 @@ fn a_process_printing_faster_than_the_client_reads_waits_for_it() {
             .and_then(|text| text.trim().parse().ok())
             .unwrap_or(0)
     };
-    std::thread::sleep(Duration::from_secs(2));
-    let stalled = flooded();
-    std::thread::sleep(Duration::from_secs(1));
+    // It has stalled once its count holds still between two looks; one that never stalls
+    // passes the bound below on the way.
+    let deadline = Instant::now() + WITHIN;
+    let mut stalled = flooded();
+    loop {
+        std::thread::sleep(Duration::from_millis(300));
+        let now = flooded();
+        assert!(
+            now < 16 * 1024 * 1024,
+            "the process printed {now} bytes nobody read"
+        );
+        if now > 0 && now == stalled {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the count never held still: {now}"
+        );
+        stalled = now;
+    }
+    std::thread::sleep(Duration::from_millis(300));
     let later = flooded();
-    assert!(
-        later < 16 * 1024 * 1024,
-        "the process printed {later} bytes nobody read"
-    );
     assert!(
         later - stalled <= 128 * 1024,
         "the process went on printing: {stalled} then {later} bytes"

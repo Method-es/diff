@@ -410,12 +410,17 @@ fn a_detaching_dv_checks_the_repository_and_the_review_first() {
 /// starts: `parent` (dv starting the app) or `child` (the app).
 const PROBE: &str = "DV_DETACH_PROBE";
 
+/// A file the child stays for, until the test removes it (or 20 s pass): the child is
+/// this test executable, which Windows keeps locked while it runs.
+const PROBE_MARKER: &str = "DV_DETACH_PROBE_MARKER";
+
 #[test]
 fn a_detached_app_leaves_the_callers_output_alone() {
     // This test is a caller that captures `dv open`'s output. It runs this test binary as the
     // parent, which starts a child through `spawn_detached`, as `dv` starts the app, and
-    // exits; the child stays a few seconds, as the app stays open. The end of the parent's
-    // output must come when the parent exits, not when the child does.
+    // exits; the child stays until the test is done with it, as the app stays open. The end of
+    // the parent's output must come when the parent exits, not when the child does.
+    let marker = tempfile::NamedTempFile::new().unwrap();
     let started = Instant::now();
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
@@ -425,6 +430,7 @@ fn a_detached_app_leaves_the_callers_output_alone() {
             "--test-threads=1",
         ])
         .env(PROBE, "parent")
+        .env(PROBE_MARKER, marker.path())
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -432,10 +438,14 @@ fn a_detached_app_leaves_the_callers_output_alone() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
     assert!(stdout.contains("detach_probe ... ok"), "{stdout}");
+    // Well short of the 20 s a child that held the output would make it wait: the child is
+    // still there (its marker is).
     assert!(
-        waited < Duration::from_millis(2_500),
+        waited < Duration::from_secs(10),
         "the caller waited {waited:?}: the detached child held its output open"
     );
+    // Removing the marker ends the child.
+    drop(marker);
 }
 
 #[test]
@@ -449,7 +459,13 @@ fn detach_probe() {
                 .env(PROBE, "child");
             spawn_detached(child).unwrap();
         }
-        Ok("child") => std::thread::sleep(Duration::from_secs(5)),
+        Ok("child") => {
+            let marker = std::env::var_os(PROBE_MARKER).map(std::path::PathBuf::from);
+            let until = Instant::now() + Duration::from_secs(20);
+            while marker.as_ref().is_some_and(|marker| marker.exists()) && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
         _ => {}
     }
 }

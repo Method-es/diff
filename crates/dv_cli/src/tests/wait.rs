@@ -134,9 +134,12 @@ fn wait_blocks_until_the_reviewer_finishes_the_round() {
         returned - started >= Duration::from_millis(400),
         "it blocked"
     );
+    // Woken by the watch: it returned before the 5 s re-check (`RECHECK`, timed from the
+    // wait's start) could have found the verdict, however late the verdict landed.
     assert!(
-        returned - appended < Duration::from_millis(1500),
-        "it woke {:?} after the verdict",
+        returned - started < Duration::from_secs(4),
+        "it returned {:?} after it started, {:?} after the verdict",
+        returned - started,
         returned - appended
     );
 }
@@ -332,8 +335,9 @@ fn the_re_check_comes_however_busy_the_store_is() {
     drop(events);
     busy.join().unwrap();
     assert_eq!(until, Until::Reload);
+    // A re-check each event postponed would come only 300 ms after the last, past 2.3 s.
     assert!(
-        took >= Duration::from_millis(300) && took < Duration::from_millis(1200),
+        took >= Duration::from_millis(300) && took < Duration::from_millis(1800),
         "{took:?}"
     );
 

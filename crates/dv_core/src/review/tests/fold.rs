@@ -804,28 +804,6 @@ fn file_level_anchors_fold_and_malformed_ones_are_refused() {
 }
 
 #[test]
-fn a_file_level_anchor_survives_the_log() {
-    let anchor = file_anchor("src/lib.rs", AnchorSide::New);
-    let event = event_at(
-        1,
-        EventBody::ThreadAdded {
-            id: ThreadId::generate(),
-            anchor: anchor.clone(),
-            body: "x".to_string(),
-            author: reviewer(),
-        },
-    );
-    let parsed = parse_log(&log_of(&[event]));
-    let [read] = &parsed.events[..] else {
-        panic!("{parsed:?}")
-    };
-    match &read.body {
-        EventBody::ThreadAdded { anchor: read, .. } => assert_eq!(read, &anchor),
-        other => panic!("{other:?}"),
-    }
-}
-
-#[test]
 fn the_review_starts_at_its_created_event() {
     let id = review_id();
     // Nothing before `created` applies, a second `created` is refused, and a log without one

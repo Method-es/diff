@@ -158,8 +158,10 @@ pub enum Action {
     /// runner from `DV_MOCK_GH_LOG`.
     GhLog,
     /// `{"lsp_log": {}}`: what every `mock_lsp` the scenario started has logged so far (the
-    /// messages it read, its starts and crashes), read by the runner.
-    LspLog,
+    /// messages it read, its starts and crashes), read by the runner. With `wait_ms`, the log
+    /// is read again until the line's `expect_result` holds, for that long at most: a message
+    /// the app sends off its UI thread, which no `state` shows.
+    LspLog { wait: Option<Duration> },
     /// Quit the app (unless a `quit` step already did) and start it again
     /// with the same data dir, `mock_gh` scenario and environment.
     Restart(Restart),
@@ -171,6 +173,13 @@ pub enum Action {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GhLogOptions {}
+
+/// `{"lsp_log": {"wait_ms"?: n}}`.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LspLogOptions {
+    wait_ms: Option<u64>,
+}
 
 /// `{"restart": {"app_args"?: [...], "data_dir"?: bool}}`.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -422,8 +431,13 @@ fn parse_step(line: usize, mut object: Map<String, Value>) -> Result<Step> {
         if timeout.is_some() {
             bail!("runner_timeout_ms doesn't apply to an lsp_log step (it reads a file)");
         }
-        serde_json::from_value::<GhLogOptions>(options).context("bad lsp_log")?;
-        return Ok(step(Action::LspLog));
+        let options = serde_json::from_value::<LspLogOptions>(options).context("bad lsp_log")?;
+        if options.wait_ms.is_some() && expect_result.is_none() {
+            bail!("an lsp_log step's wait_ms waits for its expect_result, so it needs one");
+        }
+        return Ok(step(Action::LspLog {
+            wait: options.wait_ms.map(Duration::from_millis),
+        }));
     }
     if let Some(restart) = object.remove("restart") {
         ensure_alone(&object, "restart")?;
@@ -546,7 +560,7 @@ fn check_step_order(steps: &[Step]) -> Result<()> {
     for step in steps {
         match &step.action {
             Action::Restart(_) => quit = false,
-            Action::GhLog | Action::LspLog if step.expect.is_none() => {}
+            Action::GhLog | Action::LspLog { .. } if step.expect.is_none() => {}
             _ if quit => bail!(
                 "line {}: after quit only a restart (or a gh_log without expect) may follow",
                 step.line
@@ -992,6 +1006,30 @@ mod tests {
             [("first".to_string(), "/0/argv/0".to_string())]
         );
         assert!(scenario.steps[2].expect.is_some());
+    }
+
+    #[test]
+    fn lsp_log_steps_parse_with_a_wait() {
+        let scenario = parse(
+            r#"{"lsp_log": {}}
+{"lsp_log": {"wait_ms": 3000}, "expect_result": {"pointer": "", "len": 1}}"#,
+        )
+        .unwrap();
+        assert_eq!(scenario.steps[0].action, Action::LspLog { wait: None });
+        assert_eq!(
+            scenario.steps[1].action,
+            Action::LspLog {
+                wait: Some(Duration::from_secs(3))
+            }
+        );
+        for (text, error) in [
+            (r#"{"lsp_log": {"wait_ms": 5}}"#, "needs one"),
+            (r#"{"lsp_log": {"path": "x"}}"#, "bad lsp_log"),
+            (r#"{"lsp_log": {"wait_ms": "soon"}}"#, "bad lsp_log"),
+        ] {
+            let err = format!("{:#}", parse(text).unwrap_err());
+            assert!(err.contains(error), "{text}: {err}");
+        }
     }
 
     #[test]

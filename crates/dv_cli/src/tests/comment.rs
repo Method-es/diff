@@ -8,16 +8,6 @@ use serde_json::{Value, json};
 
 use super::*;
 
-/// The working tree's `src/app.ts` with two lines inserted above everything and
-/// `formatName` (lines 17–19) gone.
-fn moved_lines() -> Vec<String> {
-    let mut lines = edited_lines();
-    lines.drain(16..19);
-    lines.insert(0, "// cache first".to_string());
-    lines.insert(1, "import { cache } from \"./cache\";".to_string());
-    lines
-}
-
 fn thread_of<'v>(json: &'v Value, id: &ThreadId) -> &'v Value {
     json["threads"]
         .as_array()

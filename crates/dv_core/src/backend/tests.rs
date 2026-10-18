@@ -387,7 +387,7 @@ fn a_timeout_kills_git() {
     let started = Instant::now();
     let err = backend
         .git(
-            &["-c", "alias.slow=!sleep 3", "slow"],
+            &["-c", "alias.slow=!sleep 20", "slow"],
             &GitOpts::new().with_timeout(Duration::from_millis(300)),
         )
         .unwrap_err();
@@ -401,8 +401,9 @@ fn a_timeout_kills_git() {
         ),
         "{err:?}"
     );
+    // Far sooner than the sleep: the timeout ended it.
     assert!(
-        started.elapsed() < Duration::from_secs(2),
+        started.elapsed() < Duration::from_secs(8),
         "{:?}",
         started.elapsed()
     );
@@ -412,13 +413,13 @@ fn a_timeout_kills_git() {
 #[test]
 fn a_timeout_also_bounds_a_process_git_leaves_holding_its_output() {
     // git exits at once, but the backgrounded `sleep` inherited its stdout and stderr, so the
-    // pipes stay open for five seconds.
+    // pipes stay open for twenty seconds.
     let repo = committed_repo();
     let backend = open(&repo);
     let started = Instant::now();
     let err = backend
         .git(
-            &["-c", "alias.bg=!sleep 5 &", "bg"],
+            &["-c", "alias.bg=!sleep 20 &", "bg"],
             &GitOpts::new().with_timeout(Duration::from_millis(300)),
         )
         .unwrap_err();
@@ -432,8 +433,9 @@ fn a_timeout_also_bounds_a_process_git_leaves_holding_its_output() {
         ),
         "{err:?}"
     );
+    // Far sooner than the sleep: the timeout ended the wait for the pipes.
     assert!(
-        started.elapsed() < Duration::from_secs(3),
+        started.elapsed() < Duration::from_secs(8),
         "{:?}",
         started.elapsed()
     );

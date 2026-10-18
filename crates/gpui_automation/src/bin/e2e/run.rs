@@ -26,6 +26,8 @@ pub const LSP_LOG_FILE: &str = "lsp_messages.jsonl";
 
 /// How long the app may take to answer `quit`, and then to exit.
 const QUIT_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
+/// How often an `lsp_log` step with `wait_ms` reads the log again.
+const LOG_POLL: Duration = Duration::from_millis(25);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct Config {
@@ -623,7 +625,7 @@ impl Session<'_> {
         if self.exited
             && !matches!(
                 step.action,
-                Action::Restart(_) | Action::GhLog | Action::LspLog
+                Action::Restart(_) | Action::GhLog | Action::LspLog { .. }
             )
         {
             // Scenario::parse rejects this; kept so a bad file can't hang here.
@@ -635,10 +637,21 @@ impl Session<'_> {
                 let calls = self.gh_log()?;
                 self.check_outcome(step, Ok(calls), "gh_log")?
             }
-            Action::LspLog => {
+            Action::LspLog { wait } => {
                 let path = self.launcher.lsp_log.clone();
                 self.log(&format!("> lsp_log {}", path.display()));
-                let messages = read_gh_log(&path)?;
+                let deadline = wait.map(|wait| Instant::now() + wait);
+                let expect = Step::expectations(&step.expect_result, &self.vars())?;
+                let messages = loop {
+                    let messages = read_gh_log(&path)?;
+                    let holds = check_all(&expect, &messages, "result").is_ok();
+                    match deadline {
+                        Some(deadline) if !holds && Instant::now() < deadline => {
+                            std::thread::sleep(LOG_POLL);
+                        }
+                        _ => break messages,
+                    }
+                };
                 self.log(&format!("< lsp_log {}", compact(&messages)));
                 self.check_outcome(step, Ok(messages), "lsp_log")?
             }

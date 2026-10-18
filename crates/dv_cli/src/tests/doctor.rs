@@ -173,11 +173,6 @@ fn git_and_gh_say_what_to_run() {
         text.stdout
     );
 
-    std::fs::write(
-        fixture.repo.home().join(".gitconfig"),
-        "[user]\n\tname = Kyle\n\temail = kyle@example.com\n",
-    )
-    .unwrap();
     let fixture = with_home(home.path(), Some(signed_in()));
     let (_, json) = doctor(&fixture);
     // A new fixture: its own home's configuration.

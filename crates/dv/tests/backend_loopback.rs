@@ -264,7 +264,7 @@ fn a_kill_mid_call_disconnects_and_the_connection_comes_back() {
         let backend = Arc::clone(&backend);
         move || {
             let started = Instant::now();
-            let result = backend.git(&["-c", "alias.slow=!sleep 3", "slow"], &GitOpts::default());
+            let result = backend.git(&["-c", "alias.slow=!sleep 30", "slow"], &GitOpts::default());
             let _ = tx.send((result, started.elapsed()));
         }
     });
@@ -280,7 +280,8 @@ fn a_kill_mid_call_disconnects_and_the_connection_comes_back() {
         error.to_string(),
         "lost the connection to dv in loopback: dv was killed"
     );
-    assert!(took < Duration::from_millis(2500), "at once: {took:?}");
+    // At the kill, not when git would have ended.
+    assert!(took < Duration::from_secs(10), "at once: {took:?}");
 
     // Reconnecting: calls fail at once, and a file changes while nobody watches.
     assert_eq!(
@@ -292,7 +293,11 @@ fn a_kill_mid_call_disconnects_and_the_connection_comes_back() {
         backend.worktree_len("a.txt"),
         Err(BackendError::Disconnected { .. })
     ));
-    assert!(started.elapsed() < Duration::from_millis(500));
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
     repo.write("while-down.txt", "x\n");
 
     assert_eq!(
@@ -337,16 +342,18 @@ fn respawns_that_fail_leave_the_connection_failed_until_retry() {
             launcher(None).start()
         }
     });
-    let connection = Connection::new("loopback", blockable);
+    // Three short waits stand in for PLAN §5.2's 1, 2 and 5 s (dv_backend's tests hold the
+    // schedule): what is under test is the respawns failing, then the retry.
+    let connection =
+        Connection::with_backoff("loopback", blockable, vec![Duration::from_millis(50); 3]);
     let (_subscription, rx) = states(&connection);
     let backend = open(&connection, &repo);
     let (handle, events) = watch(&backend, WatchSpec::WORKTREE);
     pids.lock().unwrap().push(server_pid(&connection));
     states_until(&rx, WITHIN, |state| *state == ConnectionState::Connected);
 
-    // Three respawns after 1 s, 2 s and 5 s, all blocked.
+    // Three respawns, all blocked.
     blocked.store(true, Ordering::SeqCst);
-    let killed = Instant::now();
     connection.kill();
     let failed = ConnectionState::Failed {
         error: "couldn't start dv: blocked by the test".into(),
@@ -362,11 +369,6 @@ fn respawns_that_fail_leave_the_connection_failed_until_retry() {
             ConnectionState::Reconnecting { attempt: 3 },
             failed.clone(),
         ]
-    );
-    assert!(
-        killed.elapsed() >= Duration::from_secs(8),
-        "the backoff: {:?}",
-        killed.elapsed()
     );
     let error = backend.worktree_len("a.txt").unwrap_err();
     assert!(

@@ -41,7 +41,12 @@ fn parse_errors_are_json_when_json_is_asked_for() {
     let fixture = Fixture::new();
     let ran = fixture.run(&["review", "list", "--bogus", "--json"]);
     let error = ran.error(Exit::Usage, "usage");
-    assert_eq!(error["message"], "unexpected argument '--bogus' found");
+    // clap's headline, without its `error: ` and on one line; its wording is clap's.
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.contains("--bogus") && !message.starts_with("error") && !message.contains('\n'),
+        "{message}"
+    );
     assert!(
         ran.stderr.contains("--bogus"),
         "clap's message on stderr: {}",
@@ -52,10 +57,7 @@ fn parse_errors_are_json_when_json_is_asked_for() {
     let ran = fixture.run(&["review", "list", "--bogus"]);
     assert_eq!(ran.exit, Exit::Usage);
     assert_eq!(ran.stdout, "");
-    assert!(
-        ran.stderr
-            .starts_with("error: unexpected argument '--bogus'")
-    );
+    assert!(ran.stderr.contains("--bogus"), "{}", ran.stderr);
 
     // --json anywhere, even where it doesn't parse.
     let ran = fixture.run(&["--json", "review", "wait", "--timeout", "never"]);
@@ -195,9 +197,10 @@ fn a_missing_argument_is_named_in_the_json_message() {
     let error = fixture
         .run(&["review", "new", "--base", "main", "--json"])
         .error(Exit::Usage, "usage");
-    assert_eq!(
-        error["message"],
-        "the following required arguments were not provided: --branch [<BRANCH>]"
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("the following required arguments") && message.contains("--branch"),
+        "{message}"
     );
     let error = fixture
         .run(&[

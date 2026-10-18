@@ -574,15 +574,30 @@ fn create_parent(path: &Path) {
     }
 }
 
-/// A directory with symlinks resolved where that keeps the path usable: macOS's `/var` is a
-/// link to `/private/var`, and git reports the resolved form. Windows keeps the path as given,
-/// because resolving it produces a `\\?\` path many tools reject.
+/// A directory in the form git reports it, symlinks resolved: macOS's `/var` is a link to
+/// `/private/var`, and on Windows a temp dir may be spelled with 8.3 short names
+/// (`C:\Users\RUNNER~1\…`) that git reports long. On Windows the canonical path is used only
+/// when it names a drive (`\\?\C:\…`), its `\\?\` prefix taken off because many tools reject
+/// it; one that resolves to a share (`\\?\UNC\…`) or a volume without a drive letter
+/// (`\\?\Volume{…}\…`) leaves the path as given.
 fn real_path(path: &Path) -> PathBuf {
+    let Ok(real) = std::fs::canonicalize(path) else {
+        return path.to_path_buf();
+    };
     if cfg!(windows) {
-        path.to_path_buf()
+        let text = real.to_string_lossy();
+        match text.strip_prefix(r"\\?\") {
+            Some(local) if is_drive_path(local) => PathBuf::from(local),
+            _ => path.to_path_buf(),
+        }
     } else {
-        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        real
     }
+}
+
+/// Whether `path` starts with a drive: `X:\`.
+fn is_drive_path(path: &str) -> bool {
+    matches!(path.as_bytes(), [letter, b':', b'\\', ..] if letter.is_ascii_alphabetic())
 }
 
 #[cfg(test)]

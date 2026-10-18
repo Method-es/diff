@@ -484,15 +484,6 @@ fn a_body_comes_from_a_file_or_stdin_as_written() {
     );
 }
 
-/// `src/app.ts` with two lines inserted on top and `formatName` (lines 17–19) gone.
-fn moved_lines() -> Vec<String> {
-    let mut lines = edited_lines();
-    lines.drain(16..19);
-    lines.insert(0, "// cache first".to_string());
-    lines.insert(1, "import { cache } from \"./cache\";".to_string());
-    lines
-}
-
 #[test]
 fn writes_on_a_moved_thread_record_where_it_is_now() {
     let fixture = Fixture::new();

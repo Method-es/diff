@@ -631,3 +631,15 @@ fn a_persistent_fixture_needs_a_new_or_empty_directory() {
     });
     assert!(message.contains("new or empty directory"), "{message}");
 }
+
+#[test]
+fn only_a_drive_path_counts_as_one() {
+    assert!(is_drive_path(r"C:\Users\x"));
+    assert!(is_drive_path(r"d:\"));
+    assert!(!is_drive_path(r"UNC\server\share\x"));
+    assert!(!is_drive_path(
+        r"Volume{0b1c2d3e-0000-0000-0000-100000000000}\x"
+    ));
+    assert!(!is_drive_path("C:"));
+    assert!(!is_drive_path(r"1:\x"));
+}

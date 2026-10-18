@@ -221,14 +221,39 @@ fn quick() -> Timeouts {
     }
 }
 
+/// Timeouts no test reaches: for tests that time how soon something other than a timeout ends
+/// a wait, with a bound well under these.
+fn patient() -> Timeouts {
+    Timeouts {
+        initialize: Duration::from_secs(5),
+        hover: Duration::from_secs(10),
+        definition: Duration::from_secs(10),
+        references: Duration::from_secs(10),
+        stop_grace: Duration::from_secs(10),
+    }
+}
+
 fn start(handler: Handler) -> (LspClient, Received, Arc<Mutex<Vec<ClientEvent>>>) {
     start_with_settings(handler, json!({}), 0)
+}
+
+fn start_patient(handler: Handler) -> (LspClient, Received, Arc<Mutex<Vec<ClientEvent>>>) {
+    start_with_timeouts(handler, json!({}), 0, patient())
 }
 
 fn start_with_settings(
     handler: Handler,
     settings: Value,
     chunk: usize,
+) -> (LspClient, Received, Arc<Mutex<Vec<ClientEvent>>>) {
+    start_with_timeouts(handler, settings, chunk, quick())
+}
+
+fn start_with_timeouts(
+    handler: Handler,
+    settings: Value,
+    chunk: usize,
+    timeouts: Timeouts,
 ) -> (LspClient, Received, Arc<Mutex<Vec<ClientEvent>>>) {
     let (spawn, received) = fake(chunk, handler);
     let (sink, seen) = events();
@@ -242,7 +267,7 @@ fn start_with_settings(
             settings,
         },
         sink,
-        quick(),
+        timeouts,
     )
     .expect("the fake starts");
     (client, received, seen)
@@ -419,7 +444,7 @@ fn a_dropped_request_is_cancelled_and_its_late_answer_ignored() {
 
 #[test]
 fn a_canceller_ends_a_wait_on_another_thread() {
-    let (client, received, _) = start(standard(utf8(), |_, _| {}));
+    let (client, received, _) = start_patient(standard(utf8(), |_, _| {}));
     client.open_document("a.ts", "typescript", "x").unwrap();
     let pending = client.hover("a.ts", TextPosition::new(0, 0));
     let id = pending.id().unwrap();
@@ -429,8 +454,12 @@ fn a_canceller_ends_a_wait_on_another_thread() {
     let started = std::time::Instant::now();
     canceller.cancel();
     assert_eq!(waiting.join().unwrap().unwrap_err(), RequestError::Exited);
-    // Well before the hover's own timeout.
-    assert!(started.elapsed() < Duration::from_millis(250));
+    // Well before the hover's own timeout (10 s here).
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
     let cancel = received.wait_for("the cancel", |m| m["method"] == "$/cancelRequest");
     assert_eq!(cancel["params"]["id"], id);
     assert!(client.shared.state.lock().pending.is_empty());
@@ -894,7 +923,7 @@ fn a_server_that_ends_while_starting() {
 #[test]
 fn stop_says_shutdown_and_exit_without_params() {
     // Like `tsc`: `exit` with params is ignored, so a stop only ends the server without them.
-    let (client, received, seen) = start(Box::new(|message: &Value, out: &mut Out| {
+    let (client, received, seen) = start_patient(Box::new(|message: &Value, out: &mut Out| {
         match message["method"].as_str() {
             Some("initialize") => out.reply(message, json!({"capabilities": {}})),
             Some("shutdown") if message.get("params").is_some() => out.send(json!({
@@ -909,8 +938,12 @@ fn stop_says_shutdown_and_exit_without_params() {
     }));
     let started = std::time::Instant::now();
     assert_eq!(client.stop(), ServerStatus::Stopped(Some(1)));
-    // Well within the grace: nothing had to be killed.
-    assert!(started.elapsed() < Duration::from_millis(250));
+    // Well within the grace (10 s here): nothing had to be killed.
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
     let ending: Vec<Value> = received
         .all()
         .into_iter()
@@ -944,7 +977,7 @@ fn wait_for_status(seen: &Mutex<Vec<ClientEvent>>, status: ServerStatus) {
 
 #[test]
 fn dropping_the_client_kills_the_server_and_ends_its_requests() {
-    let (client, received, seen) = start(standard(utf8(), |_, _| {}));
+    let (client, received, seen) = start_patient(standard(utf8(), |_, _| {}));
     client.open_document("a.ts", "typescript", "x").unwrap();
     let client = Arc::new(Mutex::new(Some(client)));
     let pending = client
@@ -962,8 +995,8 @@ fn dropping_the_client_kills_the_server_and_ends_its_requests() {
     client.lock().take();
     let (answer, waited) = waiter.join().unwrap();
     assert_eq!(answer.unwrap_err(), RequestError::Exited);
-    // Not the hover's whole timeout (300 ms here).
-    assert!(waited < Duration::from_millis(250), "{waited:?}");
+    // Not the hover's whole timeout (10 s here).
+    assert!(waited < Duration::from_secs(2), "{waited:?}");
     wait_for_status(&seen, ServerStatus::Stopped(None));
 }
 

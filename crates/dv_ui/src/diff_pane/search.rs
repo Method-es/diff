@@ -281,31 +281,4 @@ mod tests {
             Some(3)
         );
     }
-
-    /// How long matching a large review takes on the UI thread (run with `--ignored
-    /// --nocapture`): 200 files of 1,000 lines.
-    #[test]
-    #[ignore]
-    fn matching_a_large_review_is_quick() {
-        let lines: Vec<DiffLine> = (0..1_000)
-            .map(|i| {
-                line(
-                    LineKind::Context,
-                    Some(i + 1),
-                    Some(i + 1),
-                    &format!(
-                        "    let value_{i} = compute(input, {i}); // keeps the Request log short"
-                    ),
-                )
-            })
-            .collect();
-        for text in ["e", "value_5", "Request"] {
-            let started = std::time::Instant::now();
-            let mut count = 0;
-            for _ in 0..200 {
-                count += file_hits(&lines, &query(text), ViewMode::Split).len();
-            }
-            println!("{text:?}: {count} matches in {:?}", started.elapsed());
-        }
-    }
 }

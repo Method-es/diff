@@ -271,6 +271,63 @@ fn respawns_that_fail_leave_the_connection_failed_until_retry() {
 }
 
 #[test]
+fn each_respawn_waits_its_own_backoff() {
+    // Waits far enough apart that each gap shows which one it took: attempt `i` waits
+    // `backoff[i - 1]` after `Reconnecting { attempt: i }`, never the next one's.
+    let backoff = [
+        Duration::from_millis(50),
+        Duration::from_millis(400),
+        Duration::from_millis(1200),
+    ];
+    let switch = Switch::default();
+    let connection = Connection::with_backoff("switched", switch.launcher(), backoff.to_vec());
+    let (tx, rx) = mpsc::channel();
+    let _subscription = connection.subscribe(move |state| {
+        let _ = tx.send((Instant::now(), state.clone()));
+    });
+    connection.connect().unwrap();
+    let deadline = Instant::now() + WITHIN;
+    let next = || {
+        rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("the next state")
+    };
+    while next().1 != ConnectionState::Connected {}
+
+    switch.block(true);
+    connection.kill();
+    let states: Vec<(Instant, ConnectionState)> = (0..4).map(|_| next()).collect();
+    assert_eq!(
+        states
+            .iter()
+            .map(|(_, state)| state.clone())
+            .collect::<Vec<_>>(),
+        [
+            ConnectionState::Reconnecting { attempt: 1 },
+            ConnectionState::Reconnecting { attempt: 2 },
+            ConnectionState::Reconnecting { attempt: 3 },
+            ConnectionState::Failed {
+                error: "couldn't start dv: blocked by the test".into()
+            },
+        ]
+    );
+    for (i, wait) in backoff.iter().enumerate() {
+        let gap = states[i + 1].0 - states[i].0;
+        assert!(
+            gap >= *wait,
+            "attempt {} came {gap:?} after its state",
+            i + 1
+        );
+        if let Some(longer) = backoff.get(i + 1) {
+            assert!(
+                gap < *longer,
+                "attempt {} waited {gap:?}: the next attempt's wait",
+                i + 1
+            );
+        }
+    }
+}
+
+#[test]
 fn a_server_that_dies_on_every_start_ends_failed() {
     // Answers `hello`, then ends its output: each server dies right after it is up.
     let starts = Arc::new(AtomicU32::new(0));

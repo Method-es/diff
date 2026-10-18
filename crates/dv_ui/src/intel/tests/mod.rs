@@ -388,12 +388,15 @@ fn servers_start_once_the_list_shows_and_hover_reads_the_streams_text(cx: &mut T
 
 #[test]
 fn a_request_the_ui_abandons_is_cancelled_while_its_thread_waits() {
-    // The server never answers a hover.
+    // The server never answers a hover, and holds the first until the test lets it go, after
+    // the wait ended: only the cancel can end the wait before the hover's timeout.
     let fakes = Fakes::default();
     let made = fakes.clone();
-    let answer: Answer = Arc::new(|message| {
+    let (release, gate) = mpsc::channel::<()>();
+    let gate = Mutex::new(gate);
+    let answer: Answer = Arc::new(move |message| {
         if message["method"] == "textDocument/hover" {
-            std::thread::sleep(Duration::from_secs(3));
+            let _ = gate.lock().recv();
         }
         None
     });
@@ -413,14 +416,13 @@ fn a_request_the_ui_abandons_is_cancelled_while_its_thread_waits() {
     let pending = client.hover("a.ts", dv_lsp::TextPosition::new(0, 0));
     assert!(arming.arm(&pending));
     let waiting = std::thread::spawn(move || pending.wait());
-    let started = Instant::now();
     drop(in_flight);
     assert_eq!(
         waiting.join().unwrap().unwrap_err(),
         RequestError::Exited,
-        "the wait ends at once"
+        "the cancel ends the wait, not the hover's timeout"
     );
-    assert!(started.elapsed() < Duration::from_secs(2));
+    drop(release);
     // A request armed after the UI let go is cancelled by its own drop.
     let (in_flight, arming) = InFlight::detached();
     drop(in_flight);
@@ -785,9 +787,8 @@ fn the_servers_stop_after_the_linger_once_no_review_uses_them(cx: &mut TestAppCo
     assert_eq!(fakes.starts(), 1);
 }
 
-#[gpui::test]
-fn identifiers_are_found_at_and_after_a_word(cx: &mut TestAppContext) {
-    let _ = cx;
+#[test]
+fn identifiers_are_found_at_and_after_a_word() {
     let text = "let $el = foo_bar(42) + café;";
     assert_eq!(identifier_at(text, 4), Some(4..7), "a `$` is part of it");
     assert_eq!(identifier_at(text, 7), Some(4..7), "just after it");

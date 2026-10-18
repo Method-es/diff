@@ -389,7 +389,6 @@ impl Drop for Selection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetDesktopWindow;
 
     #[test]
     fn blank_detection_ignores_alpha() {
@@ -403,18 +402,5 @@ mod tests {
             .err()
             .expect("null hwnd must fail");
         assert!(err.to_string().contains("no longer exists"), "{err}");
-    }
-
-    #[test]
-    #[ignore = "captures the live desktop"]
-    fn captures_the_desktop() {
-        // SAFETY: `GetDesktopWindow` has no preconditions.
-        let hwnd = unsafe { GetDesktopWindow() } as isize;
-        let image = capture_client_area(hwnd, CaptureSource::Window).expect("capture");
-        assert!(image.width > 100 && image.height > 100);
-        assert_eq!(
-            image.rgba.len(),
-            image.width as usize * image.height as usize * 4
-        );
     }
 }

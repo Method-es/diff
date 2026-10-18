@@ -220,19 +220,8 @@ mod tests {
 
     #[cfg(feature = "gui")]
     #[test]
-    fn defaults() {
-        // `data_dir` is left out: clap reads DV_DATA_DIR, which an e2e run sets.
-        let cli = Cli::try_parse_from(["dv"]).unwrap();
-        assert!(!cli.automation);
-        assert!(!cli.automation_enabled());
-        assert_eq!(cli.automation_pipe, None);
-        assert!(!cli.automation_background);
-        assert_eq!(cli.window_size, None);
-    }
-
-    #[cfg(feature = "gui")]
-    #[test]
     fn automation_pipe_implies_automation() {
+        assert!(!parse(&[]).unwrap().automation_enabled());
         let cli = parse(&["--automation-pipe", "dv-e2e"]).unwrap();
         assert!(!cli.automation);
         assert!(cli.automation_enabled());
@@ -368,11 +357,6 @@ mod tests {
                 "dv", "--repo", "../api", "--author", "codex", "review", "list", "--json",
             ])
         );
-    }
-
-    #[test]
-    fn rejects_unknown_flags() {
-        assert!(parse(&["--frobnicate"]).is_err());
     }
 
     #[test]

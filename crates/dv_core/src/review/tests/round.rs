@@ -1,10 +1,12 @@
 //! Finishing a round (PLAN §2.3, §3 workflow A step 3): snapshot, `round_closed`, status by
 //! verdict, and who may.
 
+use crate::git::GitRepo;
 use crate::review::ops::{OpError, finish_round, open_review, set_status};
 use crate::review::snapshot::{self, SnapshotError};
 use crate::testing::git_repo;
 
+use super::store::{DeletesMidway, Trigger};
 use super::*;
 
 /// A repo with an edit in its working tree and a `working` review of it.
@@ -355,20 +357,13 @@ fn an_unborn_repo_closes_its_round_against_the_empty_tree() {
 #[test]
 fn a_review_deleted_while_its_round_is_snapshotted_leaves_no_ref() {
     let (repo, store, id) = working_review();
-    let git = git_repo(&repo);
-    // A clean filter slow enough for the delete to land while `git add` runs in the snapshot.
-    repo.git(&["config", "filter.slow.clean", "sleep 2; cat"]);
-    repo.write(".gitattributes", "*.slow filter=slow\n");
-    repo.write("big.slow", "content\n");
-
-    let deleting = {
-        let store = store.clone();
-        let id = id.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(700));
-            store.delete(&id).unwrap()
-        })
-    };
+    // Another process deletes the review once the snapshot's `git add` has run, so the delete
+    // looks for the review's refs before the snapshot makes its own.
+    let git = GitRepo::new(Arc::new(DeletesMidway::new(
+        &repo,
+        Trigger::Git("add"),
+        &id,
+    )));
     let result = finish_round(
         &store,
         &git,
@@ -377,7 +372,6 @@ fn a_review_deleted_while_its_round_is_snapshotted_leaves_no_ref() {
         None,
         &reviewer(),
     );
-    assert!(deleting.join().unwrap(), "the delete found the log");
     assert!(
         matches!(
             result,

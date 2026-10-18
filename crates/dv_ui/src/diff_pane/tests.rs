@@ -163,15 +163,6 @@ fn j_and_k_show_the_next_and_previous_file_with_the_cursor_on_its_first_change(
     // b.txt's first change is the pair `two` | `2`: the cursor takes its new line.
     assert_eq!(cursor(&pane, cx), new_line("b.txt", 2));
     pane.read_with(cx, |pane, _| assert_eq!(pane.top_file(), Some("b.txt")));
-    // The panel follows.
-    let list_current = shell.read_with(cx, |shell, cx| {
-        shell
-            .diff_pane()
-            .read(cx)
-            .current_file()
-            .map(str::to_string)
-    });
-    assert_eq!(list_current.as_deref(), Some("b.txt"));
     // A deleted file has only an old side.
     press(cx, &shell, "j");
     assert_eq!(

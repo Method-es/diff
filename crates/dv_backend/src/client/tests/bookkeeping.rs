@@ -135,8 +135,10 @@ fn the_idle_period_starts_when_the_last_watch_goes() {
     // A long quiet stretch: no calls while the review is read.
     std::thread::sleep(idle * 5 / 2);
     assert_eq!(connection.state(), ConnectionState::Connected);
-    drop(handle);
+    // Timed from before the drop, which starts the idle period and then joins the watch's
+    // delivery thread: a slow join mustn't count against the period.
     let dropped = Instant::now();
+    drop(handle);
     states_until(&rx, WITHIN, |state| *state == ConnectionState::Idle);
     let after = dropped.elapsed();
     assert!(

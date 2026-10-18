@@ -23,7 +23,13 @@ fn one_of_each() -> Vec<EventBody> {
             path: "src/lib.rs".to_string(),
             on: true,
         },
-        thread_added(&thread, reviewer()),
+        // A file-level anchor (lines 0..=0, no text or context, PLAN §2.5) round-trips too.
+        EventBody::ThreadAdded {
+            id: thread.clone(),
+            anchor: Anchor::file_level(1, "src/lib.rs".to_string(), None, AnchorSide::New),
+            body: "Why?".to_string(),
+            author: reviewer(),
+        },
         EventBody::ReplyAdded {
             thread: thread.clone(),
             id: comment.clone(),

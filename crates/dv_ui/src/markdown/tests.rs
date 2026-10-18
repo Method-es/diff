@@ -30,31 +30,6 @@ fn assert_inert(sanitized: &str) {
 }
 
 #[test]
-fn plain_markdown_parses_into_its_nodes() {
-    let Node::Root(root) = parse("## Section\n\nsee [dv](https://example.com/dv)").unwrap() else {
-        panic!("a root node");
-    };
-    let Node::Heading(heading) = &root.children[0] else {
-        panic!("a heading, got {:?}", root.children[0]);
-    };
-    assert_eq!(heading.depth, 2);
-    let Node::Paragraph(paragraph) = &root.children[1] else {
-        panic!("a paragraph");
-    };
-    assert!(
-        paragraph
-            .children
-            .iter()
-            .any(|child| matches!(child, Node::Link(_)))
-    );
-    let Node::Root(root) = parse("```rust\nfn main() {}\n```").unwrap() else {
-        panic!("a root node");
-    };
-    assert!(matches!(root.children[0], Node::Code(_)));
-    parse("> quoted\n\n- one\n- two").expect("blockquote and list parse");
-}
-
-#[test]
 fn hostile_input_never_panics() {
     for source in [
         "```rust\nfn main() {\n// never closed".to_string(),

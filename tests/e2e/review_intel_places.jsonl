@@ -30,7 +30,7 @@
 {"cmd": "bounds", "target": "code/src/long.ts/new/37/24"}
 {"cmd": "mouse_move", "target": "code/src/long.ts/new/37/24"}
 {"cmd": "settle", "expect": [{"pointer": "/intel/hover/open", "equals": true}, {"pointer": "/intel/hover/line", "equals": 37}]}
-// The token's top is at 828: the card ends 2 above it (y + h = 826), right of the panel.
+// The token's top is at 828: the card ends 2 above it (y + h = 826; the checks can't add, so its top at least 100 above the token), below the title bar (48) and right of the panel (288).
 {"cmd": "bounds", "target": "hover", "expect_result": [{"pointer": "/y", "lte": 726}, {"pointer": "/y", "gte": 48}, {"pointer": "/x", "gte": 288}]}
 {"cmd": "screenshot", "name": "hover-flipped"}
 {"cmd": "key", "keystroke": "escape"}

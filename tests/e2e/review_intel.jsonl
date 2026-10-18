@@ -26,13 +26,13 @@
 {"cmd": "settle", "expect": {"pointer": "/intel/hover/symbol", "equals": "helper"}}
 {"cmd": "mouse_move", "target": "code/src/a.ts/old/8/12"}
 {"cmd": "settle", "expect": [{"pointer": "/intel/hover/open", "equals": true}, {"pointer": "/intel/hover/symbol", "equals": "scale"}, {"pointer": "/intel/hover/side", "equals": "old"}, {"pointer": "/intel/hover/line", "equals": 8}]}
-// A hover the server is slow to answer (line 3's `total`) is cancelled once the pointer leaves it.
+// A hover the server is slow to answer (line 3's `total`, 4 s): once the request has reached the server, it waits with no card, and leaving the token cancels it.
 {"cmd": "mouse_move", "target": "code/src/a.ts/new/3/19"}
-{"cmd": "wait", "ms": 800}
-{"expect": [{"pointer": "/intel/hover/open", "equals": false}, {"pointer": "/intel/hover/line", "equals": 3}]}
+{"lsp_log": {"wait_ms": 3000}, "expect_result": {"pointer": "", "contains": {"received": {"method": "textDocument/hover", "params": {"position": {"line": 2, "character": 18}}}}}}
+{"expect": [{"pointer": "/intel/hover/open", "equals": false}, {"pointer": "/intel/hover/line", "equals": 3}, {"pointer": "/intel/hover/symbol", "equals": "total"}]}
 {"cmd": "mouse_move", "target": "stream/line/src/a.ts/new/9"}
 {"cmd": "settle", "expect": {"pointer": "/intel/hover", "equals": null}}
-{"lsp_log": {}, "expect_result": {"pointer": "", "contains": {"received": {"method": "$/cancelRequest"}}}}
+{"lsp_log": {"wait_ms": 3000}, "expect_result": {"pointer": "", "contains": {"received": {"method": "$/cancelRequest"}}}}
 // F12 with the pointer over the card: the card goes, and hovers go on working after it.
 {"cmd": "click", "target": "code/src/a.ts/new/6/14"}
 {"cmd": "mouse_move", "target": "stream/line/src/a.ts/new/9"}

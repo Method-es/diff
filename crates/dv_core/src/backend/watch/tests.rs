@@ -3,6 +3,7 @@
 //! a second of quiet.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -13,7 +14,12 @@ use crate::backend::{Backend, LocalBackend, WatchEvent, WatchHandle, WatchSpec};
 use crate::testing::{open, open_at};
 
 const QUIET: Duration = Duration::from_secs(1);
+/// How soon a change is reported once the watch is running: the bound
+/// `a_file_write_is_reported_within_two_seconds` holds the watcher to.
 const FIRES_WITHIN: Duration = Duration::from_secs(2);
+/// How long the other tests wait for an event they only sync on: far past [`FIRES_WITHIN`], so a
+/// busy machine's slow git or watcher start never reads as a missing event.
+const ARRIVES_WITHIN: Duration = Duration::from_secs(10);
 
 fn start(backend: &LocalBackend, spec: WatchSpec) -> (WatchHandle, Receiver<WatchEvent>) {
     let (tx, rx) = mpsc::channel();
@@ -102,6 +108,10 @@ fn a_file_write_is_reported_within_two_seconds() {
     let repo = committed(&[]);
     let backend = open(&repo);
     let (_handle, rx) = start(&backend, WatchSpec::ALL);
+    // A first change warms the watch up (its ignore rules read through git), so the bound
+    // below times the report alone.
+    repo.write("warm-up.txt", "x\n");
+    wait_for(&rx, ARRIVES_WITHIN, has_worktree_path("warm-up.txt"));
     repo.write("src/new.txt", "new\n");
     let events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("src/new.txt"));
     let last = events.last().unwrap();
@@ -122,7 +132,7 @@ fn files_written_straight_into_new_directories_are_reported() {
     // Each directory is new, so on inotify its watch is registered only after its own event.
     repo.write("a/b/c/deep.txt", "x\n")
         .write("a/b/sibling.txt", "x\n");
-    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("a/b/c/deep.txt"));
+    let mut events = wait_for(&rx, ARRIVES_WITHIN, has_worktree_path("a/b/c/deep.txt"));
     events.extend(settle(&rx));
     let paths = worktree_paths(&events);
     for expected in ["a", "a/b", "a/b/c", "a/b/c/deep.txt", "a/b/sibling.txt"] {
@@ -150,7 +160,7 @@ fn a_directory_moved_in_reports_its_contents_minus_ignored_ones() {
     settle(&rx);
 
     std::fs::rename(&moved, repo.path().join("moved")).unwrap();
-    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("moved/sub/b.txt"));
+    let mut events = wait_for(&rx, ARRIVES_WITHIN, has_worktree_path("moved/sub/b.txt"));
     events.extend(settle(&rx));
     let paths = worktree_paths(&events);
     for expected in ["moved", "moved/a.txt", "moved/sub", "moved/.gitignore"] {
@@ -174,7 +184,7 @@ fn ignored_paths_and_the_git_dir_are_not_reported() {
         .write("debug.log", "log\n")
         .config("dv.touch", "the git dir changes too");
     repo.write("sentinel.txt", "after the rest\n");
-    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+    let mut events = wait_for(&rx, ARRIVES_WITHIN, has_worktree_path("sentinel.txt"));
     events.extend(settle(&rx));
 
     let paths = worktree_paths(&events);
@@ -219,7 +229,7 @@ fn removing_an_ignored_directory_is_not_reported() {
     )
     .unwrap();
     repo.write("sentinel.txt", "after the rest\n");
-    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+    let mut events = wait_for(&rx, ARRIVES_WITHIN, has_worktree_path("sentinel.txt"));
     events.extend(settle(&rx));
     let paths = worktree_paths(&events);
     assert!(paths.contains(&"build"), "{paths:?}");
@@ -241,13 +251,13 @@ fn store_writes_are_reported_as_store_paths() {
     backend
         .store_append("reviews/r-1.jsonl", br#"{"kind":"created"}"#)
         .unwrap();
-    let mut events = wait_for(&rx, FIRES_WITHIN, has_store_path("reviews/r-1.jsonl"));
+    let mut events = wait_for(&rx, ARRIVES_WITHIN, has_store_path("reviews/r-1.jsonl"));
     backend
         .store_write_atomic("reviews/r-1.state.json", b"{}")
         .unwrap();
     events.extend(wait_for(
         &rx,
-        FIRES_WITHIN,
+        ARRIVES_WITHIN,
         has_store_path("reviews/r-1.state.json"),
     ));
     events.extend(settle(&rx));
@@ -274,7 +284,7 @@ fn a_store_only_watch_ignores_the_worktree() {
     let (_handle, rx) = start(&backend, WatchSpec::STORE);
     repo.write("ignored-by-spec.txt", "x\n");
     backend.store_append("reviews/r-2.jsonl", b"{}").unwrap();
-    let mut events = wait_for(&rx, FIRES_WITHIN, has_store_path("reviews/r-2.jsonl"));
+    let mut events = wait_for(&rx, ARRIVES_WITHIN, has_store_path("reviews/r-2.jsonl"));
     events.extend(settle(&rx));
     assert!(worktree_paths(&events).is_empty(), "{events:#?}");
 }
@@ -290,9 +300,13 @@ fn a_linked_worktree_watches_the_shared_store() {
     open(&repo)
         .store_append("reviews/r-3.jsonl", b"{}")
         .unwrap();
-    wait_for(&rx, FIRES_WITHIN, has_store_path("reviews/r-3.jsonl"));
+    wait_for(&rx, ARRIVES_WITHIN, has_store_path("reviews/r-3.jsonl"));
     std::fs::write(worktree.join("in-the-worktree.txt"), "x\n").unwrap();
-    wait_for(&rx, FIRES_WITHIN, has_worktree_path("in-the-worktree.txt"));
+    wait_for(
+        &rx,
+        ARRIVES_WITHIN,
+        has_worktree_path("in-the-worktree.txt"),
+    );
 }
 
 #[test]
@@ -315,7 +329,7 @@ fn a_worktree_the_os_cant_watch_leaves_the_store_watched() {
     open(&repo)
         .store_append("reviews/r-5.jsonl", b"{}")
         .unwrap();
-    let mut events = wait_for(&rx, FIRES_WITHIN, has_store_path("reviews/r-5.jsonl"));
+    let mut events = wait_for(&rx, ARRIVES_WITHIN, has_store_path("reviews/r-5.jsonl"));
     events.extend(settle(&rx));
     assert!(worktree_paths(&events).is_empty(), "{events:#?}");
     // A watch of the worktree alone has nothing to fall back on, so it fails.
@@ -331,7 +345,7 @@ fn dropping_the_handle_stops_events() {
     let backend = open(&repo);
     let (handle, rx) = start(&backend, WatchSpec::ALL);
     repo.write("before.txt", "x\n");
-    wait_for(&rx, FIRES_WITHIN, has_worktree_path("before.txt"));
+    wait_for(&rx, ARRIVES_WITHIN, has_worktree_path("before.txt"));
 
     drop(handle);
     // Everything delivered before the drop returned may still be queued.
@@ -373,7 +387,7 @@ fn dropping_the_handle_from_inside_its_sink_stops_the_watch() {
 
     repo.write("first.txt", "x\n");
     dropped
-        .recv_timeout(FIRES_WITHIN)
+        .recv_timeout(ARRIVES_WITHIN)
         .expect("the sink's drop of its own handle returned");
     // Everything the sink saw up to the drop.
     while events.try_recv().is_ok() {}
@@ -386,6 +400,99 @@ fn dropping_the_handle_from_inside_its_sink_stops_the_watch() {
     );
 }
 
+/// A stress check of the OS watcher's stop, slow and probabilistic, so run on demand (`cargo
+/// test -p dv_core -- --ignored never_wedges`), on Windows above all, whenever `notify` changes:
+/// a watch that stops while a change it hasn't delivered yet is queued must not arm another read
+/// of changes on the directory handle it closed. On Windows that handle's number may already
+/// name a directory another thread of this process is listing, and the read, synchronous on such
+/// a handle, wedges that listing and the watcher's own thread for good (notify 8's Windows
+/// backend does this). Writers keep changes queued and listers keep opening directories while
+/// watches start and stop; every one of them must still finish.
+#[test]
+#[ignore = "a 30 s stress check of the OS watcher's stop; run on demand"]
+fn stopping_watches_while_the_worktree_changes_never_wedges_a_directory_listing() {
+    const WRITERS: usize = 4;
+    const LISTERS: usize = 8;
+    let repo = committed(&[]);
+    for n in 0..WRITERS {
+        write_in(repo.path(), &format!("churn/{n}/keep.txt"));
+    }
+    for n in 0..LISTERS {
+        write_in(repo.path(), &format!("listed/{n}/keep.txt"));
+    }
+    let backend = Arc::new(open(&repo));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (done_tx, done) = mpsc::channel();
+    for n in 0..WRITERS {
+        let (stop, done_tx) = (Arc::clone(&stop), done_tx.clone());
+        let dir = repo.path().join(format!("churn/{n}"));
+        std::thread::spawn(move || {
+            let mut i = 0u32;
+            while !stop.load(Ordering::Relaxed) {
+                // A write another process holds up for a moment (a virus scanner) is no wedge.
+                let _ = std::fs::write(dir.join(format!("f{}.txt", i % 20)), i.to_string());
+                i += 1;
+            }
+            let _ = done_tx.send(());
+        });
+    }
+    for n in 0..LISTERS {
+        let (stop, done_tx) = (Arc::clone(&stop), done_tx.clone());
+        let dir = repo.path().join(format!("listed/{n}"));
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                if let Ok(entries) = std::fs::read_dir(&dir) {
+                    entries.for_each(drop);
+                }
+            }
+            let _ = done_tx.send(());
+        });
+    }
+    let (stopped_tx, stopped) = mpsc::channel();
+    let watchers: Vec<_> = (0..8u64)
+        .map(|n| {
+            let (backend, stop) = (Arc::clone(&backend), Arc::clone(&stop));
+            let ended = Ended(stopped_tx.clone());
+            std::thread::spawn(move || {
+                let _ended = ended;
+                let mut round = n;
+                while !stop.load(Ordering::Relaxed) {
+                    let handle = backend
+                        .watch(WatchSpec::WORKTREE, Box::new(|_| {}))
+                        .unwrap();
+                    std::thread::sleep(Duration::from_millis(2 + round % 5));
+                    drop(handle);
+                    round += 1;
+                }
+            })
+        })
+        .collect();
+    std::thread::sleep(Duration::from_secs(30));
+    stop.store(true, Ordering::Relaxed);
+    for _ in 0..WRITERS + LISTERS {
+        done.recv_timeout(Duration::from_secs(10))
+            .expect("a directory listing or a write is wedged");
+    }
+    for _ in 0..watchers.len() {
+        stopped
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a watch's start or stop is wedged");
+    }
+    // Every watcher thread has ended: the joins only pass on a panic.
+    for watcher in watchers {
+        watcher.join().unwrap();
+    }
+}
+
+/// Says on its channel that its thread ended, by a panic too, when dropped.
+struct Ended(mpsc::Sender<()>);
+
+impl Drop for Ended {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
+}
+
 #[test]
 fn gitignore_edits_apply_to_later_events() {
     let repo = committed(&[]);
@@ -394,10 +501,10 @@ fn gitignore_edits_apply_to_later_events() {
     settle(&rx);
 
     repo.write(".gitignore", "logs/\n");
-    wait_for(&rx, FIRES_WITHIN, has_worktree_path(".gitignore"));
+    wait_for(&rx, ARRIVES_WITHIN, has_worktree_path(".gitignore"));
     repo.write("logs/a.txt", "x\n");
     repo.write("sentinel.txt", "after the rest\n");
-    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+    let mut events = wait_for(&rx, ARRIVES_WITHIN, has_worktree_path("sentinel.txt"));
     events.extend(settle(&rx));
     let paths = worktree_paths(&events);
     assert!(
@@ -421,7 +528,7 @@ fn nested_gitignores_and_re_includes_follow_git() {
         .write("pkg/out/x.txt", "x\n")
         .write("pkg/keep.gen", "x\n");
     repo.write("sentinel.txt", "after the rest\n");
-    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+    let mut events = wait_for(&rx, ARRIVES_WITHIN, has_worktree_path("sentinel.txt"));
     events.extend(settle(&rx));
     let paths = worktree_paths(&events);
     assert!(
@@ -447,7 +554,7 @@ fn tracked_files_matching_an_ignore_rule_are_still_reported() {
     repo.write("build/keep.txt", "changed\n")
         .write("build/untracked.txt", "x\n");
     repo.write("sentinel.txt", "after the rest\n");
-    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+    let mut events = wait_for(&rx, ARRIVES_WITHIN, has_worktree_path("sentinel.txt"));
     events.extend(settle(&rx));
     let paths = worktree_paths(&events);
     assert!(paths.contains(&"build/keep.txt"), "{paths:?}");
@@ -469,7 +576,7 @@ fn info_exclude_and_the_global_excludes_file_apply() {
     repo.write("secret/key.txt", "x\n")
         .write("scratch.tmp", "x\n");
     repo.write("sentinel.txt", "after the rest\n");
-    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+    let mut events = wait_for(&rx, ARRIVES_WITHIN, has_worktree_path("sentinel.txt"));
     events.extend(settle(&rx));
     let paths = worktree_paths(&events);
     assert!(
@@ -500,7 +607,7 @@ fn core_excludes_file_replaces_the_default_global_excludes_file() {
 
     repo.write("a.ex", "x\n").write("b.xdg", "x\n");
     repo.write("sentinel.txt", "after the rest\n");
-    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+    let mut events = wait_for(&rx, ARRIVES_WITHIN, has_worktree_path("sentinel.txt"));
     events.extend(settle(&rx));
     let paths = worktree_paths(&events);
     assert!(!paths.contains(&"a.ex"), "{paths:?}");
@@ -535,7 +642,7 @@ fn info_exclude_edits_apply_to_later_events() {
         settle(&rx);
         write_in(&at, &format!("{dir}/x"));
         write_in(&at, "sentinel.txt");
-        let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+        let mut events = wait_for(&rx, ARRIVES_WITHIN, has_worktree_path("sentinel.txt"));
         events.extend(settle(&rx));
         let paths = worktree_paths(&events);
         assert!(paths.iter().all(|path| !path.starts_with(dir)), "{paths:?}");
@@ -553,7 +660,7 @@ fn core_ignorecase_decides_whether_patterns_match_another_case() {
 
         repo.write("Target/x", "build output\n");
         repo.write("sentinel.txt", "after the rest\n");
-        let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+        let mut events = wait_for(&rx, ARRIVES_WITHIN, has_worktree_path("sentinel.txt"));
         events.extend(settle(&rx));
         let paths = worktree_paths(&events);
         assert_eq!(
@@ -612,7 +719,7 @@ fn a_symbolic_link_to_a_directory_is_one_path_as_in_git() {
     assert!(symlink_dir(&target, &repo.path().join("foo")));
     std::fs::write(target.join("top.txt"), "changed through the target\n").unwrap();
     repo.write("sentinel.txt", "after the rest\n");
-    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+    let mut events = wait_for(&rx, ARRIVES_WITHIN, has_worktree_path("sentinel.txt"));
     events.extend(settle(&rx));
     let paths = worktree_paths(&events);
     for link in ["sym", "foo"] {
@@ -667,10 +774,10 @@ fn a_ref_move_without_a_worktree_change_fires_git_changed() {
 
     // A new branch, then a commit that changes no file: only refs move.
     repo.branch("feature");
-    let mut events = wait_for(&rx, FIRES_WITHIN, git_changed);
+    let mut events = wait_for(&rx, ARRIVES_WITHIN, git_changed);
     events.extend(settle(&rx));
     repo.git(&["commit", "-q", "--allow-empty", "-m", "nothing"]);
-    events.extend(wait_for(&rx, FIRES_WITHIN, git_changed));
+    events.extend(wait_for(&rx, ARRIVES_WITHIN, git_changed));
     events.extend(settle(&rx));
     assert!(worktree_paths(&events).is_empty(), "{events:#?}");
     assert!(
@@ -685,12 +792,12 @@ fn staging_fires_git_changed() {
     let backend = open(&repo);
     let (_handle, rx) = start(&backend, WatchSpec::ALL);
     repo.write("staged.txt", "x\n");
-    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("staged.txt"));
+    let mut events = wait_for(&rx, ARRIVES_WITHIN, has_worktree_path("staged.txt"));
     events.extend(settle(&rx));
     assert!(!events.iter().any(git_changed), "{events:#?}");
 
     repo.git(&["add", "staged.txt"]);
-    let events = wait_for(&rx, FIRES_WITHIN, git_changed);
+    let events = wait_for(&rx, ARRIVES_WITHIN, git_changed);
     assert!(worktree_paths(&events).is_empty(), "{events:#?}");
 }
 
@@ -721,7 +828,7 @@ fn dv_refs_and_lock_churn_do_not_fire_git_changed() {
         lock_churn(&git_dir, lock);
     }
     repo.write("sentinel.txt", "after the rest\n");
-    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+    let mut events = wait_for(&rx, ARRIVES_WITHIN, has_worktree_path("sentinel.txt"));
     events.extend(settle(&rx));
     assert!(!events.iter().any(git_changed), "{events:#?}");
 }
@@ -734,7 +841,7 @@ fn a_git_only_watch_reports_the_git_state_alone() {
     repo.write("not-watched.txt", "x\n");
     backend.store_append("reviews/r-7.jsonl", b"{}").unwrap();
     repo.branch("feature");
-    let mut events = wait_for(&rx, FIRES_WITHIN, git_changed);
+    let mut events = wait_for(&rx, ARRIVES_WITHIN, git_changed);
     events.extend(settle(&rx));
     for event in &events {
         assert!(
@@ -744,7 +851,7 @@ fn a_git_only_watch_reports_the_git_state_alone() {
     }
     // The file is untracked, so staging it changes the index.
     repo.git(&["add", "not-watched.txt"]);
-    wait_for(&rx, FIRES_WITHIN, git_changed);
+    wait_for(&rx, ARRIVES_WITHIN, git_changed);
 }
 
 #[test]
@@ -757,11 +864,11 @@ fn a_linked_worktree_reports_its_own_head_and_the_shared_refs() {
 
     // Its own HEAD, in `.git/worktrees/wt/`.
     git_in(&repo, &worktree, &["checkout", "-q", "--detach"]);
-    wait_for(&rx, FIRES_WITHIN, git_changed);
+    wait_for(&rx, ARRIVES_WITHIN, git_changed);
     settle(&rx);
     // A branch made from the main worktree, in the shared refs.
     repo.branch("from-main");
-    wait_for(&rx, FIRES_WITHIN, git_changed);
+    wait_for(&rx, ARRIVES_WITHIN, git_changed);
     settle(&rx);
 
     // The main worktree's own HEAD and index are not this worktree's state.
@@ -769,7 +876,7 @@ fn a_linked_worktree_reports_its_own_head_and_the_shared_refs() {
     repo.write("staged-in-main.txt", "x\n");
     repo.git(&["add", "staged-in-main.txt"]);
     write_in(&worktree, "sentinel.txt");
-    let mut events = wait_for(&rx, FIRES_WITHIN, has_worktree_path("sentinel.txt"));
+    let mut events = wait_for(&rx, ARRIVES_WITHIN, has_worktree_path("sentinel.txt"));
     events.extend(settle(&rx));
     assert!(!events.iter().any(git_changed), "{events:#?}");
 }

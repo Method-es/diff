@@ -63,7 +63,7 @@
 {"cmd": "key", "keystroke": "i"}
 {"cmd": "settle", "expect": [{"pointer": "/session/comparison", "equals": {"kind": "all"}}, {"pointer": "/session/total", "equals": 7}, {"pointer": "/stream/files/0/collapsed", "equals": false}, {"pointer": "/comments_list/rows/0/not_in_comparison", "equals": false}, {"pointer": "/shell/status/review", "equals": "Changes requested · round 2 · 1 open"}]}
 
-// The agent answers (review_op plays it until the CLI exists): addressed with a note, and a reply.
+// The agent answers through dv_core (review_op; workflow_a_agent plays it through the CLI): addressed with a note, and a reply.
 {"cmd": "review_op", "op": "address", "thread": "${thread}", "note": "Capped at 1,000 entries; the oldest goes first.", "author": "claude-code"}
 {"cmd": "review_op", "op": "reply", "thread": "${thread}", "body": "Added `cache.sweep()` and a test in `cache.test.ts`.", "author": "claude-code"}
 {"cmd": "wait_for", "pointer": "/session/threads/0/replies", "len": 1, "timeout_ms": 15000}

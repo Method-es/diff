@@ -157,12 +157,17 @@ fn diff_attribute_unset_is_binary() {
 
 #[test]
 fn binary_attribute_is_binary() {
+    // `binary` is a macro for `-diff -merge -text`. The file is untracked, so dv counts it
+    // itself: its own `check-attr` call must see the macro expand to an unset `diff`.
     let repo = FixtureRepo::new();
     repo.set_attributes("*.dat binary\n");
-    repo.write("data.dat", "looks like text\n");
     repo.commit("base");
-    repo.write("data.dat", "still looks like text\n");
+    repo.write("data.dat", "looks like text\n");
     let listed = Listed::of(&repo, Target::Working);
+    assert_eq!(
+        listed.summary(),
+        [("data.dat", FileStatus::Untracked, 0, 0)]
+    );
     assert!(listed.entry("data.dat").binary);
     assert!(matches!(listed.diff("data.dat"), FileDiff::Binary { .. }));
 }

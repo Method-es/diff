@@ -190,7 +190,7 @@ fn calls_run_concurrently_and_answer_in_the_order_they_finish() {
 
     raw.send(
         &json!({
-            "id": 2, "op": "git", "repo": handle, "args": ["-c", "alias.slow=!sleep 2", "slow"],
+            "id": 2, "op": "git", "repo": handle, "args": ["-c", "alias.slow=!sleep 1", "slow"],
         })
         .to_string(),
     );

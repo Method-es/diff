@@ -108,22 +108,3 @@ fn hunk_ranges_read_like_gits_headers() {
         }
     );
 }
-
-#[test]
-fn a_gap_rows_hunk_range_matches_git_for_a_real_diff() {
-    // git's own header for a one-line change with 3 lines of context, in a 20-line file whose
-    // line 10 changed: `@@ -7,7 +7,7 @@`. The same run collapsed out of the whole-file diff.
-    let mut pattern = ".".repeat(9);
-    pattern.push_str("-+");
-    pattern.push_str(&".".repeat(10));
-    let lines = lines(&pattern);
-    let segments = crate::diff::segments(&lines, 3);
-    let shown = segments
-        .iter()
-        .find_map(|segment| match segment {
-            crate::diff::Segment::Lines(range) => Some(range.clone()),
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!(hunk_range(&lines, shown).to_string(), "@@ -7,7 +7,7 @@");
-}

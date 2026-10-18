@@ -325,6 +325,8 @@ App windows open on the owner's real desktop.
     cargo test -p dv_backend --test wsl -- --test-threads=1
   # the same for `dv setup wsl` and the CLI run inside the distro:
   #   cargo test -p dv_cli --lib -- setup_wsl reexec doctor --test-threads=1
+  #     (dv_cli's tests run `mock_gh`: `cargo build -p mock_gh` first, unless a
+  #     `cargo test --workspace` built it)
   #   cargo test -p dv --test wsl_cli -- --test-threads=1
   #   cargo test -p dv_lsp --test wsl_shell -- --test-threads=1
   ```

@@ -455,16 +455,24 @@ fn a_cached_review_is_the_folded_one() {
     assert_eq!(cached.warnings.len(), 1);
 }
 
-/// A backend that deletes a review through another store right after the first read of one
-/// store file: another process deleting the review at that moment.
-struct DeletesOnRead {
+/// The call after which [`DeletesMidway`] deletes its victim.
+pub(super) enum Trigger {
+    /// The first read of this store file.
+    StoreRead(String),
+    /// The first git command with this argument, deleting once git is done.
+    Git(&'static str),
+}
+
+/// A backend that deletes a review through another store right after the first call its
+/// [`Trigger`] names: another process deleting the review at that moment.
+pub(super) struct DeletesMidway {
     inner: LocalBackend,
-    trigger: String,
+    trigger: Trigger,
     victim: Mutex<Option<(ReviewId, ReviewStore)>>,
 }
 
-impl DeletesOnRead {
-    fn new(repo: &FixtureRepo, trigger: String, victim: &ReviewId) -> Self {
+impl DeletesMidway {
+    pub(super) fn new(repo: &FixtureRepo, trigger: Trigger, victim: &ReviewId) -> Self {
         let deleter = ReviewStore::new(Arc::new(open(repo)));
         Self {
             inner: open(repo),
@@ -472,14 +480,25 @@ impl DeletesOnRead {
             victim: Mutex::new(Some((victim.clone(), deleter))),
         }
     }
+
+    /// Deletes the victim, the first time only.
+    fn delete(&self) {
+        if let Some((id, store)) = self.victim.lock().unwrap().take() {
+            assert!(store.delete(&id).unwrap(), "{id} existed");
+        }
+    }
 }
 
-impl Backend for DeletesOnRead {
+impl Backend for DeletesMidway {
     fn repo(&self) -> &RepoInfo {
         self.inner.repo()
     }
     fn git(&self, args: &[&str], opts: &GitOpts) -> Result<GitOutput, BackendError> {
-        self.inner.git(args, opts)
+        let output = self.inner.git(args, opts);
+        if matches!(self.trigger, Trigger::Git(arg) if args.contains(&arg)) {
+            self.delete();
+        }
+        output
     }
     fn worktree_read(&self, rel: &str) -> Result<Option<Vec<u8>>, BackendError> {
         self.inner.worktree_read(rel)
@@ -492,10 +511,8 @@ impl Backend for DeletesOnRead {
     }
     fn store_read(&self, rel: &str) -> Result<Option<Vec<u8>>, BackendError> {
         let read = self.inner.store_read(rel);
-        if rel == self.trigger
-            && let Some((id, store)) = self.victim.lock().unwrap().take()
-        {
-            assert!(store.delete(&id).unwrap(), "{id} existed");
+        if matches!(&self.trigger, Trigger::StoreRead(trigger) if trigger == rel) {
+            self.delete();
         }
         read
     }
@@ -532,9 +549,9 @@ fn log_rel(id: &ReviewId) -> String {
 fn a_cache_written_back_by_a_load_racing_a_delete_is_swept_by_list() {
     let (repo, store) = fixture_store();
     let review = store.create(Target::Working, reviewer()).unwrap();
-    let racing = ReviewStore::new(Arc::new(DeletesOnRead::new(
+    let racing = ReviewStore::new(Arc::new(DeletesMidway::new(
         &repo,
-        log_rel(&review.id),
+        Trigger::StoreRead(log_rel(&review.id)),
         &review.id,
     )));
     // The load read the log just before the delete, so its fold still answers, and it writes
@@ -559,9 +576,9 @@ fn a_review_deleted_while_the_list_loads_is_left_out() {
     let newer = store.create(Target::Staged, reviewer()).unwrap();
     // `list` loads the older review first (ids sort by creation time); reading its log deletes
     // the newer one, whose log `list` has already seen.
-    let racing = ReviewStore::new(Arc::new(DeletesOnRead::new(
+    let racing = ReviewStore::new(Arc::new(DeletesMidway::new(
         &repo,
-        log_rel(&older.id),
+        Trigger::StoreRead(log_rel(&older.id)),
         &newer.id,
     )));
     let ids: Vec<ReviewId> = racing

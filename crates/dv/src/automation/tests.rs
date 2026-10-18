@@ -533,8 +533,8 @@ fn a_seeded_repo_opens_as_a_review_and_the_agent_answers(cx: &mut TestAppContext
     });
 }
 
-#[gpui::test]
-fn seeded_repos_are_found_again_after_a_restart(cx: &mut TestAppContext) {
+#[test]
+fn seeded_repos_are_found_again_after_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("repos").join("kept");
     let fixture = FixtureRepo::persistent(&path);
@@ -547,7 +547,6 @@ fn seeded_repos_are_found_again_after_a_restart(cx: &mut TestAppContext) {
     // A directory that isn't a seeded repo is passed over.
     std::fs::create_dir_all(dir.path().join("repos").join("other")).unwrap();
     assert_eq!(repos::reopen_seeded(dir.path()).len(), 1);
-    let _ = cx;
 }
 
 #[gpui::test]
@@ -637,7 +636,6 @@ fn the_cli_commands_run_children_off_the_ui_thread(cx: &mut TestAppContext) {
             {"write": "a.txt", "text": "a
         "},
             {"commit": "base"},
-            {"config": ["dv.answer", "{\"schema\": 1}"]},
         ]}),
         cx,
     )
@@ -647,33 +645,9 @@ fn the_cli_commands_run_children_off_the_ui_thread(cx: &mut TestAppContext) {
     // app), and a test binary can't name the dv executable.
     host.update(cx, |host, _| host.cli_exe = Some(PathBuf::from("git")));
 
-    let reply = run_waiting(
-        &host,
-        "cli",
-        json!({"args": ["config", "--get", "dv.answer"], "cwd": path}),
-        cx,
-    )
-    .unwrap();
-    assert_eq!(
-        reply,
-        json!({"exit": 0, "stdout": "{\"schema\": 1}
-", "stderr": "", "json": {"schema": 1}})
-    );
-    // The seeded repo's environment, then the line's `env`.
-    let reply = run_waiting(
-        &host,
-        "cli",
-        json!({"args": ["var", "GIT_AUTHOR_IDENT"], "cwd": path}),
-        cx,
-    )
-    .unwrap();
-    assert!(
-        reply["stdout"]
-            .as_str()
-            .unwrap()
-            .starts_with("dv fixture <"),
-        "{reply}"
-    );
+    // One command through the host: the line's args, cwd and `env` reach the child (the name
+    // the line's, the email the seeded repo's), and its output comes back as the reply
+    // (agent_cli's tests cover the child itself).
     let reply = run_waiting(
         &host,
         "cli",
@@ -681,11 +655,13 @@ fn the_cli_commands_run_children_off_the_ui_thread(cx: &mut TestAppContext) {
         cx,
     )
     .unwrap();
+    assert_eq!(reply["exit"], 0, "{reply}");
+    assert_eq!(reply["stderr"], "", "{reply}");
     assert!(
         reply["stdout"]
             .as_str()
             .unwrap()
-            .starts_with("claude-code <"),
+            .starts_with("claude-code <fixture@dv.invalid> "),
         "{reply}"
     );
     // A command line that would open the app is refused before anything starts.

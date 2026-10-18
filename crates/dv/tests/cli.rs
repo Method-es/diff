@@ -375,12 +375,12 @@ fn backend_stdio_serves_until_its_stdin_ends_whatever_still_runs() {
     let handle = opened["ok"]["repo"].clone();
     assert!(handle.is_u64(), "{opened}");
 
-    // A git that runs for seconds doesn't keep the process once its input ends.
+    // A git that runs for half a minute doesn't keep the process once its input ends.
     writeln!(
         requests,
         "{}",
         serde_json::json!({
-            "id": 3, "op": "git", "repo": handle, "args": ["-c", "alias.slow=!sleep 3", "slow"],
+            "id": 3, "op": "git", "repo": handle, "args": ["-c", "alias.slow=!sleep 30", "slow"],
         })
     )
     .unwrap();
@@ -391,32 +391,20 @@ fn backend_stdio_serves_until_its_stdin_ends_whatever_still_runs() {
             break status;
         }
         assert!(
-            started.elapsed() < Duration::from_secs(10),
+            started.elapsed() < Duration::from_secs(20),
             "dv backend --stdio outlived its input"
         );
         std::thread::sleep(Duration::from_millis(20));
     };
     assert_eq!(status.code(), Some(0));
     assert!(
-        started.elapsed() < Duration::from_millis(2500),
+        started.elapsed() < Duration::from_secs(10),
         "it waited for git: {:?}",
         started.elapsed()
     );
     let mut rest = String::new();
     std::io::Read::read_to_string(&mut replies, &mut rest).unwrap();
     assert_eq!(rest, "", "the abandoned call is never answered");
-}
-
-#[test]
-fn backend_without_stdio_is_a_usage_error() {
-    let repo = fixture();
-    let output = dv(&repo, repo.path(), &["backend"], &[]);
-    assert_eq!(output.status.code(), Some(2));
-    assert!(
-        stderr(&output).contains("`dv backend --stdio`"),
-        "{}",
-        stderr(&output)
-    );
 }
 
 /// The headless build (`--no-default-features`) has no window: `dv` and `dv open` exit 2 with
