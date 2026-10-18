@@ -92,9 +92,14 @@ jobs:
             target
           key: windows-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: windows-
+      # The runner's own temp dir, whose name is long: the default one is spelled with an 8.3
+      # short name (C:\Users\RUNNER~1\…), which git and the file system report long, so tests
+      # that compare a fixture's path with what came back would see two spellings of one folder.
       - name: script/check
         shell: bash
-        run: bash script/check
+        run: |
+          export TMP="$RUNNER_TEMP" TEMP="$RUNNER_TEMP"
+          bash script/check
       - name: The e2e scenarios' screenshots and logs
         if: ${{ failure() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
