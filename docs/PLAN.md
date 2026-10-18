@@ -52,9 +52,9 @@ big-bang risk. Same stack as the sibling app means the sibling app's `gpui_autom
 directly (§14). Grep APIs under `~/.cargo/registry/src/*/gpui-pre-0.3.6/` and `gpui-component-0.6.6/`.
 
 ### D2. Rewrite in place, salvage deliberately
-Same repository, work on a `rewrite` branch with fresh crates (§4). Port code from the first
-implementation only through the salvage list (§15) — read it, keep what is listed, rewrite the rest.
-The old crates are deleted when v1 reaches parity on workflows A–C (§3).
+Same repository, fresh crates (§4), with the first implementation kept read-only under `legacy/`.
+Port code from it only through the salvage list (§15) — read it, keep what is listed, rewrite the
+rest. `legacy/` is deleted when v1 reaches parity on workflows A–C (§3).
 
 ### D3. The review is the unit you open
 A review owns exactly one fixed target. There is no "open a repo and guess which review" step.
