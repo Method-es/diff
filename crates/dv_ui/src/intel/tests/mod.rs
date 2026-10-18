@@ -388,8 +388,10 @@ fn servers_start_once_the_list_shows_and_hover_reads_the_streams_text(cx: &mut T
 
 #[test]
 fn a_request_the_ui_abandons_is_cancelled_while_its_thread_waits() {
-    // The server never answers a hover, and holds the first until the test lets it go, after
-    // the wait ended: only the cancel can end the wait before the hover's timeout.
+    // The fake holds each hover until the test lets that one go (then answers it with null),
+    // each after its request was given up: the first after the wait ended, so only the cancel
+    // can end that wait before the hover's timeout; the second after its drop, so it's still
+    // unanswered, and so cancelled, when it goes.
     let fakes = Fakes::default();
     let made = fakes.clone();
     let (release, gate) = mpsc::channel::<()>();
@@ -422,7 +424,7 @@ fn a_request_the_ui_abandons_is_cancelled_while_its_thread_waits() {
         RequestError::Exited,
         "the cancel ends the wait, not the hover's timeout"
     );
-    drop(release);
+    release.send(()).unwrap();
     // A request armed after the UI let go is cancelled by its own drop.
     let (in_flight, arming) = InFlight::detached();
     drop(in_flight);
@@ -430,6 +432,7 @@ fn a_request_the_ui_abandons_is_cancelled_while_its_thread_waits() {
     assert!(!arming.arm(&late));
     assert!(arming.is_abandoned());
     drop(late);
+    release.send(()).unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     while fakes.with_method("$/cancelRequest").len() < 2 {
         assert!(Instant::now() < deadline, "the hovers were never cancelled");
