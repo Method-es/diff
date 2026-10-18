@@ -2,10 +2,11 @@
 //! release feed, in the background, reported to `dv_ui::services::Updates`, whose status-bar
 //! item restarts into the update.
 //!
-//! **The feed** is a folder of `vpk pack` output: the one `script/package --publish` writes,
-//! the packaging checkout's `target\package\releases`, which every packaged build names as
-//! `DV_UPDATE_FEED`; or `settings.json`'s `update.feed` when set (a folder or a URL; empty
-//! turns updates off) ([`feed`]).
+//! **The feed** is the one the build names as `DV_UPDATE_FEED`, read through Velopack's
+//! `AutoSource`: a released build's is the repository on GitHub, read as its releases; a
+//! locally packaged one's the folder `script/package --publish` writes (the packaging
+//! checkout's `target\package\releases`); `settings.json`'s `update.feed` names another when
+//! set (a folder or a URL; empty turns updates off) ([`feed`]).
 //!
 //! **When:** a few seconds after the app starts, then every [`CHECK_EVERY`]; never under
 //! `--automation` (scenarios show the item through the seam), and never in a build that isn't

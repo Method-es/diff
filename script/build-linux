@@ -102,8 +102,8 @@ build() {
     local triple="$1" arch="$2" bin
     echo "==> rustup target add $triple"
     rustup target add "$triple" || return 1
-    echo "==> cargo build -p dv --no-default-features --profile $cargo_profile --target $triple"
-    cargo build -p dv --no-default-features --profile "$cargo_profile" --target "$triple" ||
+    echo "==> cargo build --locked -p dv --no-default-features --profile $cargo_profile --target $triple"
+    cargo build --locked -p dv --no-default-features --profile "$cargo_profile" --target "$triple" ||
         return 1
     bin="$CARGO_TARGET_DIR/$triple/$cargo_profile/dv"
     # Static: no program interpreter, so it runs in any distro of that architecture.

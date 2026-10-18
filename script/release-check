@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# What the release workflow checks about a tag before anything builds (docs/PLAN.md §13.4), so
+# that only a deliberate release of a commit on main can reach the feed:
+#
+#   script/release-check <tag> [--notes <file>]
+#
+# 1. the tag is `v<semver>`: `v0.2.0`, or a prerelease such as `v0.2.0-rc.1`
+# 2. its version without the prerelease is the workspace's (`[workspace.package]` in the tagged
+#    commit's Cargo.toml)
+# 3. it is an annotated tag: its message is the release notes (--notes writes them to <file>)
+# 4. its commit is on main (`origin/main` when there is one, else `main`)
+#
+# On success it prints `version=<semver>` and `prerelease=<true|false>` lines, which the
+# workflow appends to the step's outputs; on failure it says why and exits 1 (2 for usage). It
+# only reads the repository.
+set -euo pipefail
+
+usage() {
+    echo "usage: script/release-check <tag> [--notes <file>]" >&2
+}
+
+tag=""
+notes=""
+while [[ $# -gt 0 ]]; do
+    arg="$1"
+    shift
+    case "$arg" in
+        --notes)
+            if [[ $# -eq 0 || -z "$1" ]]; then
+                usage
+                exit 2
+            fi
+            notes="$1"
+            shift
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        -*)
+            echo "script/release-check: unknown argument: $arg" >&2
+            usage
+            exit 2
+            ;;
+        *)
+            if [[ -n "$tag" ]]; then
+                usage
+                exit 2
+            fi
+            tag="$arg"
+            ;;
+    esac
+done
+if [[ -z "$tag" ]]; then
+    usage
+    exit 2
+fi
+
+fail() {
+    echo "script/release-check: $tag: $*" >&2
+    exit 1
+}
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+# 1. SemVer 2.0's grammar, without build metadata (Velopack's versions carry none).
+number='(0|[1-9][0-9]*)'
+identifier='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+if [[ ! "$tag" =~ ^v$number\.$number\.$number(-$identifier(\.$identifier)*)?$ ]]; then
+    fail "not a release tag (v<major>.<minor>.<patch>, optionally -<prerelease>)"
+fi
+version="${tag#v}"
+core="${version%%-*}"
+prerelease=false
+if [[ "$version" == *-* ]]; then
+    prerelease=true
+fi
+
+# 3. An annotated tag is a tag object; a lightweight one points straight at the commit.
+if ! kind="$(git cat-file -t "refs/tags/$tag" 2> /dev/null)"; then
+    fail "no such tag here"
+fi
+if [[ "$kind" != tag ]]; then
+    fail "a lightweight tag; make an annotated one (git tag -a $tag) whose message is the notes"
+fi
+commit="$(git rev-parse "refs/tags/$tag^{commit}")"
+
+# 2. The tagged commit's own workspace version, not the working tree's.
+workspace="$(git show "$commit:Cargo.toml" |
+    sed -n '/^\[workspace.package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' | head -n 1)"
+if [[ -z "$workspace" ]]; then
+    fail "the tagged commit's Cargo.toml has no [workspace.package] version"
+fi
+if [[ "$core" != "$workspace" ]]; then
+    fail "the workspace's version at that commit is $workspace, not $core"
+fi
+
+# 4. On main: never a commit that only lives on another branch or nowhere at all.
+main_ref=main
+if git rev-parse --verify --quiet refs/remotes/origin/main > /dev/null; then
+    main_ref=origin/main
+fi
+if ! git rev-parse --verify --quiet "$main_ref" > /dev/null; then
+    fail "there is no $main_ref here to check the commit against"
+fi
+if ! git merge-base --is-ancestor "$commit" "$main_ref"; then
+    fail "its commit ${commit:0:12} isn't on $main_ref"
+fi
+
+if [[ -n "$notes" ]]; then
+    git tag -l --format='%(contents:subject)%0a%0a%(contents:body)' "$tag" > "$notes"
+fi
+
+echo "version=$version"
+echo "prerelease=$prerelease"

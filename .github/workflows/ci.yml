@@ -1,0 +1,226 @@
+# Every gate of script/check on GitHub's own runners (docs/PLAN.md §13.4): Windows, Linux and
+# macOS, plus the workflows' and the dependencies' own checks. It runs on pushes to main, on
+# pull requests, and for every release tag before anything is published (release.yml calls it).
+#
+# Security: the token is read-only in every job, no job has a secret, checkouts keep no
+# credentials, every action is pinned to a commit, and nothing runs on pull_request_target. The
+# caches are main's alone (a push to main saves one per Cargo.lock) and a release's run restores
+# none.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  workflows:
+    name: Workflows (actionlint, zizmor)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # actionlint's documented way to run it in a workflow (it has no action of its own).
+      - name: Download actionlint
+        id: actionlint
+        run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+      - name: actionlint
+        env:
+          ACTIONLINT: ${{ steps.actionlint.outputs.executable }}
+        run: '"$ACTIONLINT" -color'
+      - name: zizmor
+        uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
+        with:
+          persona: pedantic
+          advanced-security: false
+          version: 1.31.1
+
+  dependencies:
+    name: Dependencies (cargo-deny)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+          arguments: --all-features --locked
+
+  windows:
+    name: Windows (script/check)
+    runs-on: windows-2025
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (rust-toolchain.toml)
+        shell: bash
+        run: rustup toolchain install && rustc --version
+      - name: Restore main's cache
+        id: cache
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: windows-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: windows-
+      - name: script/check
+        shell: bash
+        run: bash script/check
+      - name: The e2e scenarios' screenshots and logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-windows
+          path: target/e2e
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Save the cache (main, once per Cargo.lock)
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true' }}
+        shell: bash
+        run: rm -rf target/debug/incremental target/e2e target/tmp
+      - if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: windows-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+
+  linux:
+    name: Linux (script/check --linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The app's system libraries, Xvfb and a software Vulkan driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-x11-dev libfontconfig-dev libwayland-dev libx11-xcb-dev \
+            xvfb mesa-vulkan-drivers libvulkan1
+      - name: rustup (act's runner image has none; GitHub's has)
+        if: ${{ env.ACT == 'true' }}
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+            sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version
+      - name: Restore main's cache
+        id: cache
+        if: ${{ !startsWith(github.ref, 'refs/tags/') && env.ACT != 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ~/.cache/dv-target
+            target
+          key: linux-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: linux-
+      - name: script/check --linux
+        run: bash script/check --linux
+      - name: The e2e scenarios' screenshots and logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-linux
+          path: target/e2e
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Save the cache (main, once per Cargo.lock)
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && env.ACT != 'true' && steps.cache.outputs.cache-hit != 'true' }}
+        run: rm -rf target/debug/incremental target/e2e target/tmp
+      - if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && env.ACT != 'true' && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ~/.cache/dv-target
+            target
+          key: linux-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+
+  macos:
+    name: macOS (script/check)
+    runs-on: macos-15
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version
+      - name: Restore main's cache
+        id: cache
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: macos-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: macos-
+      - name: script/check
+        run: bash script/check
+      - name: The e2e scenarios' screenshots and logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-macos
+          path: target/e2e
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Save the cache (main, once per Cargo.lock)
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true' }}
+        run: rm -rf target/debug/incremental target/e2e target/tmp
+      - if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: macos-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}

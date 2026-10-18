@@ -1,0 +1,15 @@
+# The workflows' pinned actions, kept current (docs/PLAN.md §13.4). Each bump is a pull request
+# that CI checks like any other, opened only once a version is two weeks old, so a compromised
+# release has time to be found and pulled first. The Rust dependencies are updated by hand
+# (Cargo.lock reviewed, cargo-deny in CI), never by a bot.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    groups:
+      actions:
+        patterns: ["*"]

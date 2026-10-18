@@ -1,0 +1,58 @@
+# cargo-deny, CI's dependencies job (docs/PLAN.md §13.4): every crate comes from crates.io,
+# carries a license on the list below, and has no open security advisory. A change to
+# Cargo.lock that brings in a crate from anywhere else, or a crate RustSec flags, fails CI and so
+# can't reach a release.
+
+[graph]
+all-features = true
+
+[advisories]
+# Yanked crates and every vulnerability fail; one that doesn't apply goes in `ignore` with why.
+# Unmaintained crates fail only when the workspace depends on one directly: the rest come through
+# gpui and its platform crates, which dv doesn't choose.
+yanked = "deny"
+unmaintained = "workspace"
+ignore = [
+    # zip 8 through velopack (=1.2.161, pinned to vpk, D9): extracting an attacker's archive can
+    # keep setuid bits or follow links out of the folder. Velopack extracts only the update
+    # package it downloaded from dv's own release feed and checked against the feed's SHA256.
+    # Goes when velopack moves to zip 9.
+    { id = "RUSTSEC-2026-0367", reason = "zip via velopack: extracts only dv's own checked packages" },
+    { id = "RUSTSEC-2026-0368", reason = "zip via velopack: extracts only dv's own checked packages" },
+    { id = "RUSTSEC-2026-0369", reason = "zip via velopack: extracts only dv's own checked packages" },
+]
+
+[licenses]
+confidence-threshold = 0.9
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "bzip2-1.0.6",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+[licenses.private]
+# The workspace's own crates (publish = false) are this repository's MIT.
+ignore = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

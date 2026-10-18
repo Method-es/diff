@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A local release of dv for Windows (docs/PLAN.md D9, §13.2, §13.3): the shipped shape built
+# A release of dv for Windows (docs/PLAN.md D9, §13.2, §13.3, §13.4): the shipped shape built
 # with its own profile, the Linux builds beside it, and `vpk pack` making the installer and the
 # update feed an installed copy updates from.
 #
@@ -12,48 +12,66 @@
 #   script/package --aarch64          also the aarch64 Linux build (dv-linux-aarch64)
 #   script/package --linux-app        instead, a trial AppImage of the Linux app (below)
 #
+# The release workflow (.github/workflows/release.yml, PLAN §13.4) adds three:
+#   --feed <url or folder>            the feed baked into the build instead of the local one
+#                                     (the workflow's: https://github.com/<owner>/<repo>)
+#   --linux-dir <dir>                 the Linux builds from <dir> (the workflow's Linux job)
+#                                     instead of building them here
+#   --out <dir>                       the release into <dir> instead of the trial folder; never
+#                                     the local feed, which only --publish writes
+#
 # 1. the version: the workspace's with the UTC time, `0.1.0-local.20261018093012`, or
 #    --version's; it must be newer than every release already in the folder this run writes
-#    (the trial folder, or the feed with --publish), which `dv_package` checks before anything
-#    builds (crates/dv_package: Velopack updates only to a newer one)
+#    (the trial folder, --out's, or the feed with --publish), which `dv_package` checks before
+#    anything builds (crates/dv_package: Velopack updates only to a newer one)
 # 2. the app, `cargo build -p dv --no-default-features --features gui --profile dist`, with
-#    DV_CHANNEL=release, DV_VERSION=<version> and DV_UPDATE_FEED=<the feed> baked in (always
-#    target/package/releases, a trial's too): target/dist/dv.exe and dv-gui.exe, never
-#    target/release (the owner's own build)
+#    DV_CHANNEL=release, DV_VERSION=<version> and DV_UPDATE_FEED=<the feed> baked in (the local
+#    feed target/package/releases, a trial's too, unless --feed names another):
+#    target/dist/dv.exe and dv-gui.exe, never target/release (the owner's own build)
 # 3. the Linux build the same way, `script/build-linux --profile dist --out
-#    target/package/linux`, never target/debug's or target/release's copy
+#    target/package/linux`, never target/debug's or target/release's copy; with --linux-dir,
+#    that folder's builds instead
 # 4. dv.exe, dv-gui.exe and dv-linux-* staged in target/package/stage
 # 5. `vpk pack` (pack id `dv`, main executable dv-gui.exe, the icon, a Start menu shortcut and no
-#    desktop one, no portable zip) into the trial folder or the feed: dv-win-Setup.exe,
+#    desktop one, no portable zip) into the output folder: dv-win-Setup.exe,
 #    dv-<version>-full.nupkg, from the second release there on dv-<version>-delta.nupkg, and
 #    releases.win.json with the older RELEASES
 #
-# --linux-app (a trial only, never with --publish): the version as in 1; the Linux app in the
-# shipped shape, built inside WSL Ubuntu with the dist profile in the Linux GUI target dir
-# (~/.cache/dv-target-gui), stripped, `dv --version` checked there; staged alone in
-# target/package/linux-app; then `vpk [linux] pack` (Velopack cross-packs an AppImage from
-# Windows) into target/package/try: dv.AppImage, dv-<version>-linux-full.nupkg and
-# releases.linux.json, the icon crates/dv/resources/linux/dv.png.
+# --linux-app (never with --publish): the version as in 1; the Linux app in the shipped shape
+# with the dist profile, stripped, its `dv --version` checked, staged alone in
+# target/package/linux-app; then `vpk pack` for linux-x64 into target/package/try (or --out):
+# dv.AppImage, dv-<version>-linux-full.nupkg and releases.linux.json, the icon
+# crates/dv/resources/linux/dv.png. From Windows it builds inside WSL Ubuntu in the Linux GUI
+# target dir (~/.cache/dv-target-gui) and cross-packs with `vpk [linux] pack`; on Linux (the
+# release workflow's Linux job) it builds and packs right there.
 #
-# It never runs the installer or Update.exe, and never runs a built dv but `dv.exe --version`.
-# vpk is a .NET tool: without it this exits 2 saying how to install it. It stops when D: would
-# have under 30 GB free.
+# It never runs the installer or Update.exe, and never runs a built dv but `dv --version`. vpk
+# is a .NET tool: without it this exits 2 saying how to install it. It stops when the checkout's
+# drive would have under 30 GB free (not on a GitHub Actions runner, whose disk is its own).
 set -euo pipefail
 
 usage() {
     cat <<'EOF'
-usage: script/package [--publish] [--version <semver>] [--aarch64]
+usage: script/package [--publish] [--version <semver>] [--aarch64] [--linux-app]
+                      [--feed <url or folder>] [--linux-dir <dir>] [--out <dir>]
 
-  builds a local release of dv (Setup.exe and an update feed) into target/package/try
+  builds a release of dv (Setup.exe and an update feed) into target/package/try
   --publish           into target/package/releases instead, the feed the installed app updates
                       from (the owner's alone)
   --version <semver>  the release's version [default: the workspace's, -local.<UTC time>]
   --aarch64           also the aarch64 Linux build
-  --linux-app         instead, a trial AppImage of the Linux app (built in WSL Ubuntu)
+  --linux-app         instead, a trial AppImage of the Linux app (built in WSL Ubuntu, or
+                      right here on Linux)
+  --feed <url|dir>    the feed baked into the build [default: target/package/releases]
+  --linux-dir <dir>   the Linux builds from <dir> instead of building them
+  --out <dir>         the release into <dir> instead of target/package/try (never the feed)
 EOF
 }
 
 explicit=""
+feed_arg=""
+linux_dir=""
+out_arg=""
 publish=0
 aarch64=()
 linux_app=0
@@ -61,12 +79,17 @@ while [[ $# -gt 0 ]]; do
     arg="$1"
     shift
     case "$arg" in
-        --version)
+        --version | --feed | --linux-dir | --out)
             if [[ $# -eq 0 || -z "$1" ]]; then
-                echo "script/package: --version needs a value" >&2
+                echo "script/package: $arg needs a value" >&2
                 exit 2
             fi
-            explicit="$1"
+            case "$arg" in
+                --version) explicit="$1" ;;
+                --feed) feed_arg="$1" ;;
+                --linux-dir) linux_dir="$1" ;;
+                --out) out_arg="$1" ;;
+            esac
             shift
             ;;
         --publish) publish=1 ;;
@@ -88,14 +111,37 @@ if [[ "$linux_app" -eq 1 && "$publish" -eq 1 ]]; then
     echo "script/package: --linux-app makes a trial AppImage; there is no Linux feed to publish" >&2
     exit 2
 fi
+if [[ -n "$out_arg" && "$publish" -eq 1 ]]; then
+    echo "script/package: --out and --publish name two different folders; pick one" >&2
+    exit 2
+fi
+if [[ "$linux_app" -eq 1 && (-n "$linux_dir" || ${#aarch64[@]} -gt 0) ]]; then
+    echo "script/package: --linux-dir and --aarch64 are the Windows release's" >&2
+    exit 2
+fi
 
+# Git Bash on Windows packs the Windows release and cross-packs the AppImage; Linux packs the
+# AppImage alone.
+on_windows=0
 case "$(uname -s)" in
-    MINGW* | MSYS* | CYGWIN*) ;;
+    MINGW* | MSYS* | CYGWIN*) on_windows=1 ;;
+    Linux)
+        if [[ "$linux_app" -ne 1 ]]; then
+            echo "script/package: packages the Windows app from Git Bash on Windows" \
+                "(on Linux, --linux-app packs the AppImage)" >&2
+            exit 2
+        fi
+        ;;
     *)
         echo "script/package: packages the Windows app; run it from Git Bash on Windows" >&2
         exit 2
         ;;
 esac
+
+# A path as vpk and the other native tools take it: Windows-style under Git Bash.
+native() {
+    if [[ "$on_windows" -eq 1 ]]; then cygpath -w "$1"; else printf '%s\n' "$1"; fi
+}
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
@@ -106,11 +152,14 @@ step() {
 
 # vpk: on PATH, else where `dotnet tool install -g` puts it.
 vpk="$(command -v vpk 2> /dev/null || true)"
-if [[ -z "$vpk" && -n "${USERPROFILE:-}" ]]; then
+if [[ -z "$vpk" && "$on_windows" -eq 1 && -n "${USERPROFILE:-}" ]]; then
     candidate="$(cygpath -u "$USERPROFILE")/.dotnet/tools/vpk.exe"
     if [[ -x "$candidate" ]]; then
         vpk="$candidate"
     fi
+fi
+if [[ -z "$vpk" && "$on_windows" -eq 0 && -x "$HOME/.dotnet/tools/vpk" ]]; then
+    vpk="$HOME/.dotnet/tools/vpk"
 fi
 if [[ -z "$vpk" ]]; then
     cat >&2 <<'EOF'
@@ -123,21 +172,33 @@ EOF
 fi
 
 package="$root/target/package"
-# The feed every packaged build names (DV_UPDATE_FEED), which the owner's installed copy reads;
-# only --publish writes it. A trial run writes its own folder, which nothing reads.
+# The local feed (DV_UPDATE_FEED unless --feed names another), which the owner's installed copy
+# reads; only --publish writes it. A trial run writes its own folder, which nothing reads.
 feed="$package/releases"
 if [[ "$publish" -eq 1 ]]; then
     out="$feed"
+elif [[ -n "$out_arg" ]]; then
+    mkdir -p "$out_arg"
+    out="$(cd "$out_arg" && pwd -P)"
+    if [[ -d "$feed" && "$out" == "$(cd "$feed" && pwd -P)" ]]; then
+        echo "script/package: --out names the local feed, which only --publish writes" >&2
+        exit 2
+    fi
 else
     out="$package/try"
+fi
+baked_feed="$(native "$feed")"
+if [[ -n "$feed_arg" ]]; then
+    baked_feed="$feed_arg"
 fi
 stage="$package/stage"
 linux="$package/linux"
 dist="$root/target/dist"
 
-# D: keeps 30 GB free (CLAUDE.md "Disk"); a release build adds a few.
+# The checkout's drive keeps 30 GB free (CLAUDE.md "Disk"); a release build adds a few. A
+# runner's disk is its own.
 free_kb="$(df -Pk "$root" | awk 'NR == 2 { print $4 }')"
-if [[ -n "$free_kb" && "$free_kb" -lt $((30 * 1024 * 1024)) ]]; then
+if [[ "${GITHUB_ACTIONS:-}" != true && -n "$free_kb" && "$free_kb" -lt $((30 * 1024 * 1024)) ]]; then
     echo "script/package: under 30 GB free where the checkout is; free some space first" >&2
     exit 1
 fi
@@ -145,68 +206,78 @@ fi
 step 1 "the version"
 base="$(sed -n '/^\[workspace.package\]/,/^\[/ s/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
 stamp="$(date -u +%Y%m%d%H%M%S)"
-version_args=(version --base "$base" --feed "$(cygpath -w "$out")" --stamp "$stamp")
+mkdir -p "$out"
+version_args=(version --base "$base" --feed "$(native "$out")" --stamp "$stamp")
 if [[ -n "$explicit" ]]; then
     version_args+=(--version "$explicit")
 fi
-if ! version="$(cargo run -q -p dv_package -- "${version_args[@]}")"; then
+if ! version="$(cargo run -q --locked -p dv_package -- "${version_args[@]}")"; then
     exit 2
 fi
 echo "dv $version"
 
 if [[ "$linux_app" -eq 1 ]]; then
-    if ! command -v wsl.exe > /dev/null 2>&1; then
-        echo "script/package: --linux-app builds in WSL Ubuntu, and wsl.exe isn't here" >&2
-        exit 2
-    fi
     linux_app_dir="$package/linux-app"
-    step 2 "WSL Ubuntu: cargo build -p dv --no-default-features --features gui --profile dist"
-    # The Linux GUI target dir (PLAN §13.2), on the distro's disk; the binary comes out to the
-    # checkout through /mnt. Stripped as script/build-linux strips its builds.
     rm -rf "$linux_app_dir"
-    mkdir -p "$linux_app_dir" "$out"
-    MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu --cd "$(cygpath -w "$root")" --exec bash -lc "
+    mkdir -p "$linux_app_dir"
+    # The build itself: the Linux GUI target dir (PLAN §13.2) on the distro's disk from Windows,
+    # the caller's (or that same folder) on Linux. Stripped as script/build-linux strips its
+    # builds.
+    build_linux_app='
         set -euo pipefail
-        export CARGO_TARGET_DIR=\"\$HOME/.cache/dv-target-gui\"
-        DV_CHANNEL=release DV_VERSION='$version' CARGO_PROFILE_DIST_STRIP=symbols \
-            cargo build -p dv --no-default-features --features gui --profile dist
-        said=\"\$(\"\$CARGO_TARGET_DIR/dist/dv\" --version)\"
-        if [[ \"\$said\" != 'dv $version' ]]; then
-            echo \"script/package: the Linux app's --version says \\\"\$said\\\", not \\\"dv $version\\\"\" >&2
+        export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/dv-target-gui}"
+        DV_CHANNEL=release DV_VERSION="$1" CARGO_PROFILE_DIST_STRIP=symbols \
+            cargo build --locked -p dv --no-default-features --features gui --profile dist
+        said="$("$CARGO_TARGET_DIR/dist/dv" --version)"
+        if [[ "$said" != "dv $1" ]]; then
+            echo "script/package: the Linux app'"'"'s --version says \"$said\", not \"dv $1\"" >&2
             exit 1
         fi
-        echo \"ok: \$said\"
-        cp \"\$CARGO_TARGET_DIR/dist/dv\" target/package/linux-app/dv"
+        echo "ok: $said"
+        cp "$CARGO_TARGET_DIR/dist/dv" target/package/linux-app/dv'
+    if [[ "$on_windows" -eq 1 ]]; then
+        if ! command -v wsl.exe > /dev/null 2>&1; then
+            echo "script/package: --linux-app builds in WSL Ubuntu, and wsl.exe isn't here" >&2
+            exit 2
+        fi
+        step 2 "WSL Ubuntu: cargo build -p dv --no-default-features --features gui --profile dist"
+        MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu --cd "$(cygpath -w "$root")" --exec bash -lc \
+            "unset CARGO_TARGET_DIR; $build_linux_app" bash "$version"
+        # `[linux]`: vpk's directive for packing another OS's app from Windows.
+        pack=("$vpk" "[linux]" pack)
+    else
+        step 2 "cargo build -p dv --no-default-features --features gui --profile dist"
+        bash -c "$build_linux_app" bash "$version"
+        pack=("$vpk" pack)
+    fi
     ls -l "$linux_app_dir"
 
-    step 3 "vpk [linux] pack  (${out#"$root/"})"
-    # `[linux]`: vpk's directive for packing another OS's app from Windows. The main
-    # executable is the one dv binary, GUI and CLI alike (PLAN §13.1).
-    "$vpk" "[linux]" pack --skip-updates \
+    step 3 "vpk pack for linux-x64  (${out#"$root/"})"
+    # The main executable is the one dv binary, GUI and CLI alike (PLAN §13.1).
+    "${pack[@]}" --skip-updates \
         --packId dv \
         --packVersion "$version" \
         --packTitle dv \
         --packAuthors dv \
-        --packDir "$(cygpath -w "$linux_app_dir")" \
+        --packDir "$(native "$linux_app_dir")" \
         --mainExe dv \
-        --icon "$(cygpath -w "$root/crates/dv/resources/linux/dv.png")" \
+        --icon "$(native "$root/crates/dv/resources/linux/dv.png")" \
         --runtime linux-x64 \
         --categories Development \
-        --outputDir "$(cygpath -w "$out")"
+        --outputDir "$(native "$out")"
     echo
     ls -l "$out"
-    printf '\nscript/package: the Linux app, dv %s, in %s (a trial)\n' "$version" \
-        "$(cygpath -w "$out")"
+    printf '\nscript/package: the Linux app, dv %s, in %s\n' "$version" "$(native "$out")"
     exit 0
 fi
 
 export DV_CHANNEL=release
 export DV_VERSION="$version"
-export DV_UPDATE_FEED
-DV_UPDATE_FEED="$(cygpath -w "$feed")"
+export DV_UPDATE_FEED="$baked_feed"
 
 step 2 "cargo build -p dv --no-default-features --features gui --profile dist  (target/dist)"
-cargo build -p dv --no-default-features --features gui --profile dist
+echo "the feed: $DV_UPDATE_FEED"
+cargo build --locked -p dv --no-default-features --features gui --profile dist
 said="$("$dist/dv.exe" --version)"
 if [[ "$said" != "dv $version" ]]; then
     echo "script/package: target/dist/dv.exe --version says \"$said\", not \"dv $version\"" >&2
@@ -214,9 +285,15 @@ if [[ "$said" != "dv $version" ]]; then
 fi
 echo "ok: $said"
 
-step 3 "script/build-linux --profile dist --out target/package/linux ${aarch64[*]}"
-rm -f "$linux"/dv-linux-*
-bash script/build-linux --profile dist --out "$linux" "${aarch64[@]}"
+if [[ -n "$linux_dir" ]]; then
+    step 3 "the Linux builds from $linux_dir"
+    linux="$(cd "$linux_dir" && pwd)"
+    ls -l "$linux"
+else
+    step 3 "script/build-linux --profile dist --out target/package/linux ${aarch64[*]}"
+    rm -f "$linux"/dv-linux-*
+    bash script/build-linux --profile dist --out "$linux" "${aarch64[@]}"
+fi
 
 step 4 "staging in target/package/stage"
 rm -rf "$stage"
@@ -254,6 +331,8 @@ echo
 ls -l "$out"
 if [[ "$publish" -eq 1 ]]; then
     printf '\nscript/package: dv %s published in %s\n' "$version" "$(cygpath -w "$out")"
+elif [[ -n "$out_arg" ]]; then
+    printf '\nscript/package: dv %s in %s\n' "$version" "$(cygpath -w "$out")"
 else
     printf '\nscript/package: dv %s in %s (a trial; the installed app reads only --publish'"'"'s)\n' \
         "$version" "$(cygpath -w "$out")"

@@ -155,18 +155,31 @@ material the platform can't show always resolves to Opaque (`dv_ui::platform`).
   status bar ("Update failed · details", why in its tooltip) with **Retry**. Never under
   `--automation` (scenarios make one ready through the seam, `update_ready`, `state.update`), and
   never in a build that isn't installed: `UpdateManager::new` fails there and updates are off,
-  silently. Until there is a release workflow (§16 phase 10) **the feed** is a local folder of
-  `vpk pack` output: the one `script/package --publish` writes, the packaging checkout's
-  `target\package\releases`, which every packaged build names (`DV_UPDATE_FEED`), so a release
-  the owner publishes is picked up by the installed copy, while a trial run (the default,
-  `target\package\try`) reaches nobody; `settings.json`'s `"update": {"feed": "<folder or URL>"}`
-  names another (empty turns updates off), and later the same code points at GitHub Releases.
+  silently. **The feed** is the one baked into the build (`DV_UPDATE_FEED`), read through
+  Velopack's `AutoSource`: a release from the release workflow (§13.4) names the repository,
+  `https://github.com/kylekz/diff`, which Velopack reads as GitHub Releases (its
+  `GithubSource`: the published releases, never drafts or prereleases, each one's
+  `releases.win.json` merged, so a delta in any of them is found); a local release names a
+  folder of `vpk pack` output, the one `script/package --publish` writes, the packaging
+  checkout's `target\package\releases`, so a release the owner publishes locally is picked up
+  by a locally packaged copy, while a trial run (the default, `target\package\try`) reaches
+  nobody. `settings.json`'s `"update": {"feed": "<folder or URL>"}` names another (empty turns
+  updates off): a locally packaged install moves to GitHub Releases with
+  `"feed": "https://github.com/kylekz/diff"`, since every released version is newer than every
+  `-local.` one.
 - Chosen over cargo-packager (the sibling app's tool; a classic NSIS wizard and an updater that re-downloads the
   whole installer and needs manifest signing keys) for delta updates and the simpler install flow.
 
-### D10. Code signing: none
-The owner builds and installs locally, which SmartScreen doesn't challenge (it checks files carrying a
-downloaded-from-the-internet mark). Revisit only if dv is ever distributed as a download.
+### D10. Code signing: none (yet)
+The executables and `Setup.exe` are unsigned. A locally built copy isn't challenged (SmartScreen
+checks files carrying a downloaded-from-the-internet mark); a `Setup.exe` downloaded from GitHub
+Releases is: SmartScreen warns ("Windows protected your PC", **More info** › **Run anyway**) until
+the file has a reputation, and Gatekeeper would ask the same of an unsigned macOS app. What
+stands in for a signature is the release workflow's build provenance (§13.4): every released
+file is attested through Sigstore as built by `release.yml` from the tagged commit
+(`gh attestation verify <file> --repo kylekz/diff`). Revisit when dv has users beyond the
+owner: a certificate on Windows (Azure Artifact Signing, or SignPath's free signing for
+open-source projects), an Apple Developer ID with notarization on macOS.
 
 ### D11. Code intelligence through the project's own language servers
 Hover, go to definition and find references come from standard language servers (LSP) that dv starts
@@ -1986,10 +1999,9 @@ step 2:
 
 The unit tests in `dv` that need gpui are gated on `gui`; `crates/dv/tests/*` run in every shape.
 
-### 13.2 Builds: local only
-**No GitHub Actions runs until phase 10** (owner's rule, 2026-10-04: a Windows gpui build is slow and
-burns paid minutes). Phase 0 deletes `.github/workflows/`; nothing is pushed expecting CI to check it.
-Every gate runs locally through one script, `script/check` (bash; also used by agents):
+### 13.2 Builds and gates
+Every gate runs locally through one script, `script/check` (bash; also used by agents), before a
+change is committed; CI (§13.4) runs the same script on GitHub's runners once it is pushed:
 
 1. `cargo fmt --all --check`
 2. `cargo clippy --workspace --all-targets -- -D warnings`, then `-p dv` again in the other two
@@ -2048,8 +2060,8 @@ names, `target/package/releases`, so the owner's installed copy updates to it. I
 until the version is settled, then:
 1. **the version** (`dv_package`, a never-shipped helper crate): the workspace's with a prerelease
    of the UTC time, `0.1.0-local.20261018093012`, or `--version`'s; it must be newer than every
-   release already in the folder it writes (`releases.*.json`: the trial folder, or the
-   published feed with `--publish`), since Velopack updates only to a newer version and `vpk
+   release already in the folder it writes (`releases.*.json` and the packages' names: the trial
+   folder, `--out`'s, or the published feed with `--publish`), since Velopack updates only to a newer version and `vpk
    pack` refuses another; later local releases are newer, and the workspace's own `0.1.0`
    once released is newer than all of them. So an explicit `--version` of the workspace's own
    (`--version 0.1.0`, or anything above `0.1.0-local.*`) published to the feed blocks every
@@ -2073,7 +2085,11 @@ until the version is settled, then:
    the feed: `dv-win-Setup.exe`, `dv-<version>-full.nupkg`, from the second release there on
    `dv-<version>-delta.nupkg`, `releases.win.json` and the older `RELEASES`.
 It never runs the installer, `Update.exe` or a built dv but `dv.exe --version`, and stops when
-the checkout's drive would have under 30 GB free.
+the checkout's drive would have under 30 GB free (not on a GitHub Actions runner). The release
+workflow (§13.4) runs it with three more: `--feed <url>` bakes that feed in instead of the local
+one, `--linux-dir <dir>` takes the Linux builds from its Linux job instead of building them, and
+`--out <dir>` writes the release there (never the local feed, which only `--publish` writes);
+`--linux-app` run on Linux builds and packs right there.
 
 **A Linux AppImage** is `script/package --linux-app`, a trial only (no Linux feed exists, so
 `--publish` with it is refused): the version as above; the Linux app in the shipped shape
@@ -2133,9 +2149,65 @@ On Windows Velopack puts the app in `%LOCALAPPDATA%\dv\current\` (`dv.exe`, `dv-
 Linux builds; the same folder after every update), `Update.exe` beside `current`, downloaded
 packages in `packages\`. The install hook puts `current` on the user `Path`, ahead of an older
 `dv.exe` there, and the uninstall hook takes it off (D9, §12.2); the Start menu's "dv" starts
-`dv-gui.exe`. The installed copy's updates come from its feed (D9: the packaging checkout's
-`target\package\releases`, or `settings.json`'s `update.feed`). In a WSL distro its Linux build
+`dv-gui.exe`. The installed copy's updates come from its feed (D9: GitHub Releases for a
+released copy, the packaging checkout's `target\package\releases` for a local one, or
+`settings.json`'s `update.feed`). In a WSL distro its Linux build
 owns `~/.local/bin/dv` (§5.2's link rule).
+
+### 13.4 CI and releases (GitHub Actions)
+The repository is public, so GitHub's hosted runners cost nothing. Two workflows:
+
+- **`.github/workflows/ci.yml`**, on every push to main, every pull request, and for every
+  release tag (`release.yml` calls it): `script/check` on Windows (`windows-2025`) and macOS
+  (`macos-15`, Apple silicon), `script/check --linux` on Ubuntu 24.04 (the gates, the e2e
+  scenarios on the runner's own Xvfb with Mesa's software Vulkan, the headless crates and the
+  static musl build; the real-WSL step needs Windows with WSL and is skipped), the workflows
+  themselves (actionlint, and zizmor's security audits, pedantic; locally
+  `script/check-workflows`), and the dependencies (cargo-deny, `deny.toml`: every crate from
+  crates.io with a license on its list, no yanked crate, no open RustSec vulnerability; one that
+  doesn't apply is ignored there with why). A failure keeps the e2e screenshots and logs as the
+  run's artifact for a week. The caches (Cargo's registry and the target dirs) are saved only
+  by a push to main.
+- **`.github/workflows/release.yml`**, on pushing a tag `v*`:
+  1. **the tag** (`script/release-check`): an annotated `v<semver>` (a prerelease such as
+     `v0.2.0-rc.1` too) whose version without the prerelease is the tagged commit's workspace
+     version, on a commit on main; the tag's message is the release notes;
+  2. **CI** in full on that commit (ci.yml), alongside
+  3. **the builds**, with no cache: the static musl `dv-linux-x86_64` (`script/build-linux
+     --profile dist`) and the AppImage (`script/package --linux-app`, `vpk pack` on the runner),
+     then the Windows release (`vpk download github` fetches the latest release's full
+     package, from which `vpk pack` makes the delta and against which `dv_package` checks the
+     version newer, then `script/package --version <v> --feed https://github.com/<repo>
+     --linux-dir … --out …`);
+  4. **publish**, in the `release` environment, which waits for the owner's approval: the
+     files' `SHA256SUMS`, their build provenance (`actions/attest-build-provenance`), then the
+     GitHub release, made as a draft with every file and then published, marked latest unless
+     it is a prerelease. Its files: `dv-win-Setup.exe`, `dv-<v>-full.nupkg` (and from the second
+     release on its delta), `releases.win.json`, `assets.win.json` and `RELEASES` (the feed),
+     `dv-linux-x86_64.AppImage`, `SHA256SUMS`.
+
+  A macOS release isn't made yet (§13.2, "A macOS release").
+
+**Making a release** (the owner's): bump `[workspace.package] version` in `Cargo.toml` (and
+`Cargo.lock`, which `cargo build` updates) in a commit on main and push it; then `git tag -a
+v<version> -m "<notes>"` and `git push origin v<version>`; once the run's builds are green,
+approve its `release` deployment. A prerelease tag (`v0.2.0-rc.1`) runs the same way and never
+reaches the feed.
+
+**What keeps a bad release out.** The workflows follow GitHub's hardening guidance, which
+zizmor checks: every token read-only but the publish job's, no secrets, checkouts that keep no
+credentials, every action pinned to a commit (Dependabot proposes bumps once a version is two
+weeks old, `.github/dependabot.yml`), no `pull_request_target`, outside values reaching scripts
+only through environment variables, release builds without caches and with `--locked`; the
+publish job, the only one that can write, runs no code from the repository. A tag runs its own
+commit's copy of `release.yml`, so `script/release-check` and the approval catch a mistaken tag,
+not a hostile one: what keeps those out is who can push a tag. The repository's settings (the
+owner's, applied once): a ruleset that lets only the owner create `v*` tags and nobody else
+update or delete one; a ruleset that keeps main from being force-pushed or deleted; the
+`release` environment, which admits only `v*` tags and waits for the owner; immutable releases
+(a published release's files and tag can't change); Actions limited to SHA-pinned actions, and
+workflows from outside contributors' pull requests waiting for approval. Nothing automated
+pushes a tag or approves a deployment.
 
 ---
 
@@ -2361,7 +2433,7 @@ Each phase ends with its e2e scenarios green and a screenshot review against DES
 | 7 | Packaging + updates on Windows with Velopack (D9), local feed: `Setup.exe`, `dv-gui.exe`, dv's icon on the executables, the window and the shortcuts, the install hooks running `dv setup path` (§12), the Linux builds beside the installed `dv.exe` (§13.2); a development build never replaces the installed copy's `dv` in a distro | install from `Setup.exe` → PATH set, icon in the taskbar and Start → a WSL repo opens from the installed copy → a second local release updates it |
 | 8 | GitHub: open PR, pull threads, submit sheet with validation and file-comment fallback (§9) | Workflow C against `mock_gh`; owner's live check |
 | 9 | Polish: settings, palette, light themes, empty states, performance pass on a 2,000-file PR (the Linux app, its gate `script/check --linux-gui` and its trial AppImage are done, §13.1, §13.2) | DESIGN review of every screen; perf budget (§17) met |
-| 10 | *(last, optional)* GitHub Actions: CI matrix incl. macOS, release workflow publishing to GitHub Releases, update feed switched over. macOS itself is verified already on the owner's Mac (`script/check-mac`, §13.2); its package (`.pkg`) waits for `vpk` on a Mac (§13.2) | owner asks for it |
+| 10 | GitHub Actions (§13.4): CI on Windows, Linux and macOS with the workflows' and the dependencies' checks; the release workflow publishing the Windows release and the AppImage to GitHub Releases after the owner's approval; the update feed on GitHub Releases. A macOS package (`.pkg`) waits for its updates' code and a signature (§13.2, D10) | a prerelease tag runs end to end: CI green on all three, the release published after approval, its provenance verified |
 
 ---
 

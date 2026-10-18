@@ -79,9 +79,15 @@ selection, which `dv_ui` copies through the clipboard seam) (PLAN D1). Don't gue
 - **GitHub only through `gh`** (PLAN D7), with `GH_PROMPT_DISABLED=1` and the `DV_GH` override.
   Tests and scenarios point `DV_GH` at `mock_gh`; nothing automated talks to GitHub. If `gh auth
   status` fails, ask the owner to run `gh auth login`.
-- **No CI.** There are deliberately no GitHub Actions workflows until PLAN §16 phase 10 (a Windows
-  gpui build burns paid minutes). Don't add `.github/workflows/` and don't push expecting anything
-  to check the change; verify locally with `script/check`.
+- **CI checks after the push, `script/check` before the commit.** `.github/workflows/ci.yml`
+  runs the gates on Windows, Linux and macOS for pushes to main and pull requests (PLAN §13.4);
+  it doesn't replace running `script/check` locally. A workflow change keeps to PLAN §13.4's
+  hardening (actions pinned to a commit, read-only tokens, no secrets, no
+  `pull_request_target`, outside values only through `env:`) and passes
+  `script/check-workflows` (actionlint and zizmor).
+- **Releases are the owner's.** No agent pushes a `v*` tag, approves the `release` environment,
+  runs or re-runs `release.yml`, edits or deletes a GitHub release, or changes the repository's
+  rulesets, environments or Actions settings without the owner asking for that change.
 - **Windows and the OS go through seams.** Every window opens through
   `dv_ui::automation::open_window`, and nothing calls `App::activate`, `Window::activate_window`,
   `Window::resize` or `Window::zoom_window` while `dv_ui::automation::is_background()` (each one
@@ -149,6 +155,12 @@ script/package [--version <semver>] [--aarch64]  # a trial Windows release (PLAN
 script/package --linux-app   # a trial AppImage of the Linux app: built in WSL Ubuntu (dist profile,
                              # ~/.cache/dv-target-gui), `vpk "[linux]" pack` on Windows, into
                              # target/package/try (dv.AppImage); a trial only, never --publish
+                             # (--feed, --linux-dir, --out: the release workflow's, PLAN §13.4)
+script/check-workflows       # actionlint + zizmor over .github (winget: rhysd.actionlint, zizmor.zizmor)
+script/release-check <tag>   # what release.yml checks about a tag: annotated v<semver> on main,
+                             # the workspace's version; read-only
+act push -W .github/workflows/ci.yml -j <job> -P ubuntu-24.04=catthehacker/ubuntu:act-24.04
+                             # a Linux CI job in Docker (act; Windows and macOS jobs can't run in it)
 
 cargo build                  # the dv binary (default member)
 cargo build --workspace

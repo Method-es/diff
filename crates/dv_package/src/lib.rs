@@ -8,8 +8,10 @@
 //!   `<version>-local.<yyyymmddhhmmss>` (`0.1.0-local.20261018093012`): later packages are
 //!   newer, and the workspace's own `0.1.0`, once released, is newer than all of them;
 //! - `script/package --version <semver>` names it instead;
-//! - either way it must be newer than every release already in the output feed
-//!   (`releases.<channel>.json`), else packaging stops before it builds anything.
+//! - either way it must be newer than every release already in the output folder (the versions
+//!   in its `releases.<channel>.json` files and in the names of its packages,
+//!   `dv-<version>[-<channel>]-full.nupkg`, which is all `vpk download github` leaves there for
+//!   the release workflow, PLAN §13.4), else packaging stops before it builds anything.
 
 use std::path::Path;
 
@@ -53,8 +55,26 @@ pub fn release_version(
     Ok(version)
 }
 
+/// The channels a package's file name can end with before `-full.nupkg` (Velopack leaves out
+/// the default, `win`).
+const CHANNELS: &[&str] = &["win", "linux", "osx"];
+
+/// The version in a Velopack package's file name, `dv-<version>[-<channel>]-full.nupkg` (or
+/// `-delta.nupkg`), or `None` for any other file.
+fn package_version(name: &str) -> Option<Result<Version, String>> {
+    let rest = name.strip_prefix("dv-")?;
+    let rest = rest
+        .strip_suffix("-full.nupkg")
+        .or_else(|| rest.strip_suffix("-delta.nupkg"))?;
+    let rest = CHANNELS
+        .iter()
+        .find_map(|channel| rest.strip_suffix(&format!("-{channel}")))
+        .unwrap_or(rest);
+    Some(Version::parse(rest).map_err(|error| format!("{name}: version {rest:?}: {error}")))
+}
+
 /// The newest release in the feed folder `dir`: the highest `Version` of every asset in its
-/// `releases.*.json` files (none there, or no folder: `None`).
+/// `releases.*.json` files and of every package there by its name (none, or no folder: `None`).
 pub fn newest_in_feed(dir: &Path) -> Result<Option<Version>, String> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -70,6 +90,13 @@ pub fn newest_in_feed(dir: &Path) -> Result<Option<Version>, String> {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
+        if let Some(version) = package_version(&name) {
+            let version = version?;
+            if newest.as_ref().is_none_or(|newest| version > *newest) {
+                newest = Some(version);
+            }
+            continue;
+        }
         if !(name.starts_with("releases.") && name.ends_with(".json")) {
             continue;
         }
@@ -165,6 +192,24 @@ mod tests {
             Ok(Some(v("0.1.0-local.20261018101500")))
         );
         std::fs::write(dir.path().join("releases.beta.json"), "{}").unwrap();
+        assert!(newest_in_feed(dir.path()).is_err());
+    }
+
+    #[test]
+    fn a_package_downloaded_alone_counts_by_its_name() {
+        // `vpk download github` leaves the latest release's full package and no feed file.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("dv-0.2.0-full.nupkg"), "").unwrap();
+        std::fs::write(dir.path().join("dv-0.1.0-rc.1-delta.nupkg"), "").unwrap();
+        std::fs::write(dir.path().join("dv-0.3.0-local.1-linux-full.nupkg"), "").unwrap();
+        std::fs::write(dir.path().join("dv-win-Setup.exe"), "").unwrap();
+        assert_eq!(newest_in_feed(dir.path()), Ok(Some(v("0.3.0-local.1"))));
+        assert_eq!(
+            package_version("dv-0.2.0-rc.1-full.nupkg"),
+            Some(Ok(v("0.2.0-rc.1")))
+        );
+        assert_eq!(package_version("other-0.2.0-full.nupkg"), None);
+        std::fs::write(dir.path().join("dv-two-full.nupkg"), "").unwrap();
         assert!(newest_in_feed(dir.path()).is_err());
     }
 }

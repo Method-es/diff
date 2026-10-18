@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# The GitHub Actions workflows checked (docs/PLAN.md §13.4): actionlint (syntax, expressions,
+# and every `run:` block through shellcheck when it is installed) and zizmor (the security
+# audits: template injection, credentials left in checkouts, excessive permissions, unpinned
+# actions, cache poisoning and the rest), both strict: the local run of what CI's workflows job
+# runs through their own actions. zizmor's online audits (impostor commits, known-vulnerable
+# actions) run when GH_TOKEN is set.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+missing=()
+for tool in actionlint zizmor; do
+    if ! command -v "$tool" > /dev/null 2>&1; then
+        missing+=("$tool")
+    fi
+done
+if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "script/check-workflows: not installed: ${missing[*]}" \
+        "(winget install rhysd.actionlint zizmor.zizmor)" >&2
+    exit 2
+fi
+
+echo "==> actionlint"
+actionlint
+echo "ok: actionlint"
+
+echo "==> zizmor"
+if [[ -n "${GH_TOKEN:-}" ]]; then
+    zizmor --pedantic .github
+else
+    zizmor --pedantic --offline .github
+fi
