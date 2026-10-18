@@ -796,7 +796,8 @@ so the UI falls back to refreshing those itself instead of also losing review up
    colours. Colours resolve at paint time from the theme, so theme changes repaint without recomputing
    and cached rows never go stale. Rows appear unhighlighted first and colour in when ready.
    `dv_ui::syntax` runs gpui-component's highlighter (every grammar of its `tree-sitter-languages`
-   set except SQL, whose crate pins `cc` below the version gpui's build locks) once per loaded file
+   set; SQL's crate wants `cc` ~1.2, so the lock keeps `cc` at the newest 1.2, and its Neovim-made
+   query gets dv's corrections for numbers, `NULL` and option keywords) once per loaded file
    side, in the language its path names (extension or a well-known name such as `Makefile`; none:
    plain). Capture names map to ten kinds — keyword, function, string, number, type, constant,
    property, punctuation, comment, plain — through one table (`kind_for_capture`), and the

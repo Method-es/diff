@@ -20,8 +20,8 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.6" }
 # card's selectable Markdown copies through the clipboard seam (`dv_ui::shell`).
 gpui-base = "=0.6.6"
 # The tree-sitter grammars `dv_ui::syntax` highlights diffs with (PLAN §6 step 4): every one of
-# gpui-component's `tree-sitter-languages` except SQL, whose grammar crate pins `cc` below the
-# 1.5 gpui's build already locks.
+# gpui-component's `tree-sitter-languages`. SQL's grammar crate (tree-sitter-sequel) wants `cc`
+# ~1.2, which every other build dependency accepts, so the lock keeps `cc` at the newest 1.2.
 gpui-component = { version = "=0.6.6", features = [
     "tree-sitter-astro",
     "tree-sitter-bash",
@@ -50,6 +50,7 @@ gpui-component = { version = "=0.6.6", features = [
     "tree-sitter-ruby",
     "tree-sitter-rust",
     "tree-sitter-scala",
+    "tree-sitter-sql",
     "tree-sitter-svelte",
     "tree-sitter-swift",
     "tree-sitter-toml",

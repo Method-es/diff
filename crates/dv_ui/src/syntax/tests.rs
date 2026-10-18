@@ -150,7 +150,8 @@ fn languages_come_from_names_and_extensions() {
         ("fix.patch", Some("diff")),
         ("notes.txt", None),
         ("LICENSE", None),
-        ("query.sql", None),
+        ("migrations/0042_add_email.sql", Some("sql")),
+        ("db/schema.PGSQL", Some("sql")),
         ("archive.tar.gz", None),
         (".gitignore", None),
     ];
@@ -213,6 +214,69 @@ fn rust_highlights_into_line_relative_kinds() {
     // Past the end and line 0 are empty, never a panic.
     assert!(side.line(0).is_empty());
     assert!(side.line(99).is_empty());
+}
+
+#[test]
+fn sql_highlights_a_migration() {
+    let lines = [
+        "-- Adds the email column.",
+        "ALTER TABLE users ADD COLUMN email varchar(255) NOT NULL DEFAULT '';",
+        "select count(*) from users where id = 42;",
+    ];
+    let side = highlight_side("migrations/0042_add_email.sql", &lines).expect("sql has a grammar");
+    assert!(
+        kinds(&side, 1, lines[0])
+            .iter()
+            .all(|(_, kind)| *kind == TokenKind::Comment),
+        "{:?}",
+        kinds(&side, 1, lines[0])
+    );
+    let alter = kinds(&side, 2, lines[1]);
+    for keyword in ["ALTER", "TABLE", "ADD", "COLUMN", "NOT", "DEFAULT"] {
+        assert!(
+            alter.contains(&(keyword.into(), TokenKind::Keyword)),
+            "{keyword}: {alter:?}"
+        );
+    }
+    assert!(
+        alter.contains(&("varchar".into(), TokenKind::Type)),
+        "{alter:?}"
+    );
+    assert!(
+        alter.contains(&("255".into(), TokenKind::Number)),
+        "{alter:?}"
+    );
+    assert!(
+        alter.contains(&("NULL".into(), TokenKind::Constant)),
+        "{alter:?}"
+    );
+    assert!(
+        alter.contains(&("''".into(), TokenKind::String)),
+        "{alter:?}"
+    );
+    // Lower-case keywords read the same, and a call is a function.
+    let select = kinds(&side, 3, lines[2]);
+    for keyword in ["select", "from", "where"] {
+        assert!(
+            select.contains(&(keyword.into(), TokenKind::Keyword)),
+            "{keyword}: {select:?}"
+        );
+    }
+    assert!(
+        select.contains(&("count".into(), TokenKind::Function)),
+        "{select:?}"
+    );
+    assert!(
+        select.contains(&("42".into(), TokenKind::Number)),
+        "{select:?}"
+    );
+    let decimal = ["select 1.5;"];
+    let side = highlight_side("q.sql", &decimal).expect("sql has a grammar");
+    let decimal = kinds(&side, 1, decimal[0]);
+    assert!(
+        decimal.contains(&("1.5".into(), TokenKind::Number)),
+        "{decimal:?}"
+    );
 }
 
 #[test]

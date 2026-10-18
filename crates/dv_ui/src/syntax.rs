@@ -222,6 +222,7 @@ pub fn language_for_path(path: &str) -> Option<&'static str> {
         "diff" | "patch" => "diff",
         "cmake" => "cmake",
         "mk" | "mak" => "make",
+        "sql" | "pgsql" => "sql",
         _ => return None,
     })
 }
@@ -244,12 +245,33 @@ const JSX_HIGHLIGHTS: &str = r#"
 (jsx_self_closing_element ["<" "/>"] @tag.delimiter)
 "#;
 
-/// Corrects gpui-component's TSX and JavaScript grammars in its language registry, once per
-/// process, before anything highlights with them (the diff stream, and comment Markdown's
+/// SQL's own captures ahead of tree-sitter-sequel's query, which is written for Neovim: its
+/// number patterns use Lua's `%d` (a literal `d` to tree-sitter's regular expressions) and come
+/// after its catch-all `(literal) @string`, so numbers would stay strings; and it lists `NULL`
+/// among the built-in types. The patterns go first, so they win for the same node.
+const SQL_HIGHLIGHTS: &str = r#"
+(keyword_null) @constant.builtin
+((literal) @number (#match? @number "^[-+]?[0-9]+$"))
+((literal) @float (#match? @float "^[-+]?[0-9]*\.[0-9]*$"))
+"#;
+
+/// SQL's query as dv highlights it: [`SQL_HIGHLIGHTS`] first, and the query's lists of
+/// qualifier and option keywords (`DEFAULT`, `UNSIGNED`, `AUTO_INCREMENT`, …), which it tags
+/// `@type.qualifier` and `@attribute` and which would read as a type and a property, tagged as
+/// keywords. Each of those tags names only that one list in the query.
+fn sql_highlights(query: &str) -> String {
+    let query = query
+        .replace("] @type.qualifier", "] @keyword")
+        .replace("] @attribute", "] @keyword");
+    format!("{SQL_HIGHLIGHTS}\n{query}")
+}
+
+/// Corrects gpui-component's TSX, JavaScript and SQL grammars in its language registry, once
+/// per process, before anything highlights with them (the diff stream, and comment Markdown's
 /// fenced code). gpui-component pairs the TSX grammar with tree-sitter-typescript's bare query,
 /// which only adds TypeScript's syntax to JavaScript's and so leaves most of a file plain: TSX
 /// takes the query `.ts` files use instead. Both TSX and JavaScript (`.jsx` included) gain
-/// [`JSX_HIGHLIGHTS`].
+/// [`JSX_HIGHLIGHTS`]; SQL takes [`sql_highlights`].
 pub fn register_languages() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
@@ -278,6 +300,10 @@ pub fn register_languages() {
                     ..javascript
                 },
             );
+        }
+        if let Some(sql) = registry.language("sql") {
+            let highlights = sql_highlights(&sql.highlights).into();
+            registry.register("sql", &LanguageConfig { highlights, ..sql });
         }
     });
 }
