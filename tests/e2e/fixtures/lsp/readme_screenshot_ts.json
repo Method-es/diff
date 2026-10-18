@@ -1,0 +1,35 @@
+{
+  "stderr": [
+    "mock_lsp: playing readme_screenshot_ts.json (TypeScript)"
+  ],
+  "requests": [
+    {
+      "method": "textDocument/hover",
+      "params": {
+        "textDocument": {
+          "uri": "*/src/components/ProductCard.tsx"
+        },
+        "position": {
+          "line": 17,
+          "character": 22
+        }
+      },
+      "result": {
+        "contents": {
+          "kind": "markdown",
+          "value": "```typescript\n(alias) function percentOff(price: number, compareAt?: number): number\nimport percentOff\n```\nWhole percent saved against `compareAt`, rounded down; 0 when not on sale."
+        },
+        "range": {
+          "start": {
+            "line": 17,
+            "character": 19
+          },
+          "end": {
+            "line": 17,
+            "character": 29
+          }
+        }
+      }
+    }
+  ]
+}
