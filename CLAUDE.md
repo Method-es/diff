@@ -11,8 +11,12 @@ WSL; macOS and Linux supported. Agents read and answer reviews through the `dv` 
 - `legacy/` holds the first implementation: **read-only reference**. Never build it, never edit it,
   never add it to the workspace. Code comes across only through the salvage list (PLAN §15): read
   it, keep what is listed, rewrite the rest.
-- Reference app for patterns: the owner's sibling GPUI app (where it lives: CLAUDE.local.md), same GPUI stack. Its code may
-  be copied freely (`gpui_automation` came from there); never modify anything in that checkout.
+- Reference app for patterns: the owner's sibling GPUI app, same GPUI stack (where it lives:
+  `CLAUDE.local.md`). Its code may be copied freely (`gpui_automation` came from there); never
+  modify anything in that checkout.
+- Machine-specific notes (the sibling app's path, the Mac's ssh destination for `DV_MAC_HOST`)
+  live in the git-ignored `CLAUDE.local.md` beside this file, never in the repository:
+  @CLAUDE.local.md
 
 ## Toolchain and platform
 
