@@ -99,7 +99,11 @@ lsp-types = "0.97"
 # The Markdown parser gpui-component's `TextView` uses; `dv_ui::markdown` sanitises comment bodies
 # with the same AST before they reach it (PLAN §15).
 markdown = "1.0.0"
-notify = "8.2"
+# The OS file watcher (`dv_core::backend::watch`, PLAN §5.3). 9's Windows backend never arms a
+# read of changes on the directory handle a stopping watch has closed; 8's does, and when that
+# handle's number already names another thread's directory listing the read wedges the listing
+# for good. Pinned exactly while 9 is a release candidate.
+notify = "=9.0.0-rc.6"
 # The AppKit calls gpui has no API for: the window number automation captures, and an
 # automation run's activation policy (`gpui_automation`, macOS only); already in the tree through
 # gpui.
