@@ -212,8 +212,9 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   (the switcher's three rows) and their open reviews; the current target is checked. `↑`/`↓`/`Enter`/
   `Esc`; picking one opens or resumes its review.
 - **Panel:** "Changes", the file count and the review's `+n −m`; under it, while the review offers
-  it (a live target — `working`, `staged`, a branch — not finished, with a closed round; PLAN §2.3),
-  a full-width segmented control **Since round n | All changes** with its `I` keycap (the
+  it (a live target — `working`, `staged`, a branch — not finished, with a closed round; or a
+  draft PR review whose PR has an earlier submitted review, reading **Since your last review**;
+  PLAN §2.3, §9.5), a full-width segmented control **Since round n | All changes** with its `I` keycap (the
   header's Split | Unified style; each segment as wide as its label, sharing the room left; in
   a panel narrower than 270 the second reads **All**, so the first keeps its round; the choice
   shows at once, the list follows when it lands); a thin
@@ -588,14 +589,32 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   main area takes it) or going to another place takes it away.
 
 ### 4.2 Finish review / Submit (`GlassSubmit`)
-- Sheet, 980 wide, centred, over `scrim`. Header: "Finish review", `PR #482`, checks state, close.
+- Sheet, 980 wide, centred, over `scrim`. Header: "Finish review", `PR #482`, the checks (the
+  strip's counts, §4.5), close.
 - Left: **Summary** with Write/Preview tabs (markdown), then **Verdict** as three radio cards —
-  Comment / Approve / Request changes (local reviews show Approve / Request changes only).
-- Right: **Comments to post** — each with an include checkbox, `path:line`, body excerpt. A comment
-  outside GitHub's hunks shows a yellow row: "Unchanged line outside the diff — GitHub's API can't
-  anchor it here", explanation, **Post as file comment** / **Skip this one**, with Undo after choosing.
+  Comment (`1`) / Approve (`2`) / Request changes (`3`) (local reviews show Approve / Request
+  changes only). On the viewer's own PR, Approve and Request changes are dimmed with "You can't
+  approve your own pull request" (PLAN §9.8); Request changes needs a summary, Comment a summary
+  or a comment, said under the verdicts while missing.
+- Right: **Comments to post** — each with an include checkbox, `path:line`, body excerpt; draft
+  replies to GitHub threads as "Reply to @login on `path:line`" (PLAN §9.6). A comment outside
+  GitHub's hunks shows a yellow row: "Unchanged line outside the diff — GitHub's API can't anchor
+  it here", explanation, **Post as file comment** / **Keep local**, with Undo after choosing; on a
+  file the PR doesn't touch, "Not in this PR" and **Keep local** alone; on a file GitHub shows
+  without lines (binary, renamed only, too large), **Post as file comment** / **Keep local**. A
+  pending review of the viewer's on GitHub that dv didn't start heads the list as a yellow row:
+  "You have a pending review on GitHub (3 comments). Submit or discard it there first", **Open on
+  GitHub**; Submit stays disabled until a refresh no longer finds it.
 - Footer: "Posting as `kylekz` via gh", blocker text when something needs fixing, Cancel, **Submit
-  review `Ctrl Enter`** (disabled until every comment is postable or skipped).
+  review `Ctrl Enter`** (disabled until every included comment is postable or decided).
+- **Posting** (PLAN §9.8): the primary reads "Posting 12 of 40…" and the sheet stays, as the
+  local sheet's "Finishing…" does. A comment GitHub refuses gets a red row with GitHub's message;
+  anything else (signed out, rate limited, offline) shows in the footer in `red`; both offer
+  **Retry** (continues where it stopped) and **Discard pending review** (a confirmation naming
+  how many comments it deletes from GitHub). "The PR moved" closes the sheet on a refresh, the
+  strip saying what changed.
+- Keys: `Tab` moves between the summary, the verdicts and the comments; in the comments `↑`/`↓`,
+  `Space` (include), `F` (post as file comment), `L` (keep local), `U` (undo the choice).
 - Local reviews use the same sheet titled "Finish round" with no GitHub rows: "Finish round n"
   over "`repo` · `working tree vs main` · 7 files `+n −m`" (the review's changes, which the round
   finishes, also while the stream shows an interdiff); the Summary (a 150-high field in
@@ -721,10 +740,49 @@ Setup unchanged.
   row under its cards. The switcher with no
   known repo says "No repositories yet"; a filter that matches nothing says so.
 - **Read-only (submitted PR review):** banner "Submitted to GitHub · view on GitHub", composer and
-  thread actions disabled, not hidden. A finished local review says "Approved · this review is
+  thread actions disabled, not hidden (a GitHub thread keeps Resolve / Unresolve and Open on
+  GitHub: GitHub's state, not the review's, PLAN §9.6). A finished local review says "Approved · this review is
   finished" (on `greenSoft` with a `green` outline at 35%; "Closed · …" in `fg2` on `layer`) with
   **Start a new review**, which opens a fresh review of the same target; `C`, `R`, `X` and
   `Ctrl Enter` do nothing on it.
+
+### 4.5 Pull requests (PLAN §9)
+- **PR picker** (`Ctrl G`, the title bar's **PRs**): an overlay like the switcher (same width,
+  surface and rows), for the repository in view. A field, "PR number, #n, owner/repo#n or URL",
+  then the repository's open PRs, those requesting your review first with a "Review requested"
+  chip (accent), each row: `#482` in `fg3` mono, the title, the author's login in `fg3`, a
+  `draft` chip when it is one, and "2h" for when it was updated. Typing filters by number and
+  title; a reference the field parses opens directly on `Enter`. While the list loads it shows
+  the session's last list, else a shimmer row; a failure shows the setup check's words ("Sign in
+  to GitHub: `gh auth login`") in place of the list, the field still working.
+- **PR strip** (§2: under the title bar, `chrome`, 34 high, PR reviews only): `#482` mono `fg3`,
+  the title `fg1` 13 semibold (truncated), the author, `base ← head` in mono 12 (`owner:head` for
+  a fork), the PR's state chip (Open accent, Draft grey, Merged violet, Closed red), the checks as
+  small counts (`✓ 12` green, `✗ 1` red, `● 2` yellow; a click opens the PR's checks page), then
+  on the right the round ("Round 2 · since your last review") and what moved in `fg2` ("2 new
+  commits since this draft's head", "Read 3 min ago"; in yellow "The PR moved: 2 new commits"
+  while a pending review holds the draft, and "Couldn't refresh · details" when the mirror is
+  stale), and the buttons **Refresh**
+  (`Ctrl R`, spinning while it runs), **Start round 3** (accent, only when the latest review is
+  submitted and the PR has newer commits) and **Open on GitHub** (an icon button).
+- **GitHub's threads** use the thread card (§4.1) with: GitHub's mark as the avatar (round, `fg2`
+  on `surface2`), the login as the name, an "on GitHub" tag, the time, and no state chip but
+  **Resolved** (green) or **Outdated** (yellow) when they apply; a resolved GitHub thread is
+  collapsed like a resolved local one. The actions row: **Reply** (`R`; on a submitted review
+  "Start round n+1 to reply" instead), **Resolve** / **Unresolve** (`X`, only where GitHub allows
+  the viewer), **Open on GitHub**. A draft reply sits at the
+  bottom of the card, framed like the composer, headed "Your reply · posts with your review",
+  with Edit and Delete; while it is posted to the pending review it reads "Posted to your pending
+  review" and can't be edited (PLAN §9.8). Comments of a pending review on GitHub that dv didn't
+  post show with a "Pending on GitHub" tag; dv's own posted drafts show once, as the drafts.
+- **Not in the diff** (§4.1) lists GitHub threads that don't relocate under "Outdated on GitHub",
+  each with the code GitHub shows for it (its diff hunk, mono, the commented lines marked).
+- **Comments list:** GitHub's threads in their own group, "On GitHub", after the review's own;
+  the status bar counts them apart ("2 open · 5 on GitHub").
+- **Switcher:** a repository's PR reviews in a "Pull requests" section, `#482 Title` with the
+  status chip (`draft` accent, `submitted` green); the title bar names a PR review the same way.
+- **After submitting:** the banner "Submitted to GitHub · View on GitHub" (§4.4) and, when the
+  PR has newer commits, **Start round n+1** beside it.
 
 ---
 
@@ -739,8 +797,8 @@ Setup unchanged.
 | `V` | toggle viewed on the current file (`V` then `J`: mark viewed and go next); each press flips the state the last one asked for, however fast they come |
 | `C` | comment on the selected lines, else the cursor's line (in the file view, any line of the file, changed or not), else (no cursor yet) the first line in view, where the cursor goes too (click a line number to put the cursor there, shift-click to select to it; a line's `+` does it all with the mouse, §4.1); a composer holding a draft takes the keyboard instead, wherever the cursor is. In an interdiff it comments on the new side only: on the old column (the round's snapshot, which no anchor names) it does nothing |
 | `Shift C` | comment on the whole of the current file: the composer heads the file (the header menu's Comment on file); a composer holding a draft takes the keyboard instead, as for `C`. Nothing on a finished review, or in an interdiff on a deleted file (its old column is the round's snapshot) |
-| `R` | reply to the focused thread (the reply composer opens in its card) |
-| `X` | resolve the focused thread, or reopen it when it is resolved |
+| `R` | reply to the focused thread (the reply composer opens in its card; on a GitHub thread, a draft reply that posts with your review) |
+| `X` | resolve the focused thread, or reopen it when it is resolved (a GitHub thread: resolve / unresolve on GitHub, where GitHub allows the viewer) |
 | `↑` / `↓` | move the cursor a line (the stream scrolls to keep it in view; it crosses into the next file) |
 | `Shift ↑` / `Shift ↓` | extend a selection from the cursor, within its file and side; a gap in the way opens a step towards the cursor rather than being selected unseen |
 | `←` / `→` | in split view, put the cursor on the old / new side (the new side until one is chosen, or a line number clicked). A file without lines on that side (a deletion, an addition) moves it to the other side while it is in that file only: the next file that has lines on the chosen side puts it back |
@@ -750,7 +808,8 @@ Setup unchanged.
 | `Ctrl Enter` | finish review / submit: the "Finish round" sheet, while no text field has the keyboard (in the composer: post comment) |
 | `Ctrl K` | palette: reviews, PRs, commands (files are `Ctrl P`'s) |
 | `Ctrl O` | switch repo / review (the switcher; again, or `Esc`, closes it) |
-| `Ctrl G` | open a PR |
+| `Ctrl G` | the PR picker (§4.5) |
+| `Ctrl R` | on a PR review: refresh it from GitHub (fetch, threads, checks, Viewed; PLAN §9.4) |
 | `Ctrl B` | toggle panel |
 | `Ctrl ,` | Settings › Setup (§4.3); again, or `Esc`, closes it |
 | `Enter` | on the first-run screen: Continue |
@@ -768,6 +827,7 @@ Setup unchanged.
 | `Enter` / `Esc` | in the file filter: show the first file left / clear the filter (both return to the diff) |
 | `Ctrl Enter` / `Esc` | in the composer: post / discard (both return to the diff; `Enter` is a newline) |
 | `↑` / `↓`, `1` / `2`, `Tab` | in the "Finish round" sheet: choose the verdict (Approve, Request changes) / move between the verdicts and the summary; `Ctrl Enter` finishes the round, `Esc` closes |
+| `1` / `2` / `3`, `Tab`, `Space`, `F`, `L`, `U` | in the PR "Finish review" sheet: the verdict (Comment, Approve, Request changes) / move between the summary, the verdicts and the comments / in the comments: include, post as file comment, keep local, undo (§4.2); `Ctrl Enter` submits, `Esc` closes |
 
 macOS uses `Cmd` for every `Ctrl` above (`⌘`+click for `Ctrl`+click; gpui's `secondary`
 modifier, which every row of `dv_ui::keymap` names). Single-letter keys are inactive while a text
