@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A release of dv for Windows (docs/PLAN.md D9, §13.2, §13.3, §13.4): the shipped shape built
 # with its own profile, the Linux builds beside it, and `vpk pack` making the installer and the
-# update feed an installed copy updates from.
+# update feed an installed copy updates from. On a Mac, the macOS release instead (below).
 #
 #   script/package                    a trial: the next version (below), x86_64 Linux build,
 #                                     into target/package/try, which no installed copy reads
@@ -45,6 +45,16 @@
 # target dir (~/.cache/dv-target-gui) and cross-packs with `vpk [linux] pack`; on Linux (the
 # release workflow's Linux job) it builds and packs right there.
 #
+# On macOS (the release workflow's macOS job; the owner's Mac has no .NET) it makes the macOS
+# release: the version as in 1; the app in the shipped shape with the dist profile and the same
+# DV_* values baked in, `dv --version` and `dv-gui --version` checked, `dv` and `dv-gui` staged in
+# target/package/mac-app; then `vpk pack` for this Mac's architecture (osx-arm64 on Apple
+# silicon) with the bundle's executable dv-gui, the icon crates/dv/resources/macos/dv.icns and
+# no portable zip, into target/package/try (or --out): dv-osx-Setup.pkg,
+# dv-<version>-osx-full.nupkg (and its delta), releases.osx.json and assets.osx.json. Sealed
+# with an ad-hoc signature, no certificate and no notarization (PLAN D10). --version, --feed and --out as above; --publish, --linux-app, --linux-dir and
+# --aarch64 are refused there.
+#
 # It never runs the installer or Update.exe, and never runs a built dv but `dv --version`. vpk
 # is a .NET tool: without it this exits 2 saying how to install it. It stops when the checkout's
 # drive would have under 30 GB free (not on a GitHub Actions runner, whose disk is its own).
@@ -55,7 +65,8 @@ usage() {
 usage: script/package [--publish] [--version <semver>] [--aarch64] [--linux-app]
                       [--feed <url or folder>] [--linux-dir <dir>] [--out <dir>]
 
-  builds a release of dv (Setup.exe and an update feed) into target/package/try
+  builds a release of dv (Setup.exe and an update feed) into target/package/try; on a Mac, the
+  macOS release (the .pkg and its feed) instead
   --publish           into target/package/releases instead, the feed the installed app updates
                       from (the owner's alone)
   --version <semver>  the release's version [default: the workspace's, -local.<UTC time>]
@@ -121,10 +132,19 @@ if [[ "$linux_app" -eq 1 && (-n "$linux_dir" || ${#aarch64[@]} -gt 0) ]]; then
 fi
 
 # Git Bash on Windows packs the Windows release and cross-packs the AppImage; Linux packs the
-# AppImage alone.
+# AppImage alone; macOS packs the macOS release alone.
 on_windows=0
+on_mac=0
 case "$(uname -s)" in
     MINGW* | MSYS* | CYGWIN*) on_windows=1 ;;
+    Darwin)
+        on_mac=1
+        if [[ "$linux_app" -eq 1 || "$publish" -eq 1 || -n "$linux_dir" || ${#aarch64[@]} -gt 0 ]]; then
+            echo "script/package: on macOS it makes the macOS release, with --version, --feed" \
+                "and --out alone (no local feed to --publish)" >&2
+            exit 2
+        fi
+        ;;
     Linux)
         if [[ "$linux_app" -ne 1 ]]; then
             echo "script/package: packages the Windows app from Git Bash on Windows" \
@@ -133,7 +153,8 @@ case "$(uname -s)" in
         fi
         ;;
     *)
-        echo "script/package: packages the Windows app; run it from Git Bash on Windows" >&2
+        echo "script/package: packages the Windows app from Git Bash on Windows, or the macOS" \
+            "app on a Mac" >&2
         exit 2
         ;;
 esac
@@ -274,6 +295,59 @@ fi
 export DV_CHANNEL=release
 export DV_VERSION="$version"
 export DV_UPDATE_FEED="$baked_feed"
+
+if [[ "$on_mac" -eq 1 ]]; then
+    mac_app="$package/mac-app"
+    case "$(uname -m)" in
+        arm64) runtime=osx-arm64 ;;
+        x86_64) runtime=osx-x64 ;;
+        *)
+            echo "script/package: no macOS runtime for $(uname -m)" >&2
+            exit 2
+            ;;
+    esac
+    step 2 "cargo build -p dv --no-default-features --features gui --profile dist  (target/dist)"
+    echo "the feed: $DV_UPDATE_FEED"
+    cargo build --locked -p dv --no-default-features --features gui --profile dist
+    for bin in dv dv-gui; do
+        said="$("$dist/$bin" --version)"
+        if [[ "$said" != "dv $version" ]]; then
+            echo "script/package: target/dist/$bin --version says \"$said\", not \"dv $version\"" >&2
+            exit 1
+        fi
+    done
+    echo "ok: $said"
+
+    step 3 "staging in target/package/mac-app"
+    rm -rf "$mac_app"
+    mkdir -p "$mac_app"
+    cp "$dist/dv" "$dist/dv-gui" "$mac_app/"
+    ls -l "$mac_app"
+
+    step 4 "vpk pack for $runtime  (${out#"$root/"})"
+    # The bundle's executable is dv-gui, which runs the app in its own process (the Dock, Finder
+    # and Velopack start it); dv beside it is the terminal's (PLAN §13.1). `--signAppIdentity -`
+    # is codesign's ad-hoc identity: no certificate, but the bundle is sealed as a whole, so it
+    # verifies (`codesign --verify --deep --strict`), where the linker's signatures alone leave
+    # it unsealed (PLAN D10). Nothing is notarized without --notaryProfile.
+    "$vpk" pack --skip-updates \
+        --packId dv \
+        --packVersion "$version" \
+        --packTitle dv \
+        --packAuthors dv \
+        --packDir "$mac_app" \
+        --mainExe dv-gui \
+        --icon "$root/crates/dv/resources/macos/dv.icns" \
+        --bundleId io.github.kylekz.dv \
+        --runtime "$runtime" \
+        --signAppIdentity - \
+        --noPortable \
+        --outputDir "$out"
+    echo
+    ls -l "$out"
+    printf '\nscript/package: the macOS app, dv %s, in %s\n' "$version" "$out"
+    exit 0
+fi
 
 step 2 "cargo build -p dv --no-default-features --features gui --profile dist  (target/dist)"
 echo "the feed: $DV_UPDATE_FEED"

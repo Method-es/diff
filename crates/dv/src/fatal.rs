@@ -8,7 +8,8 @@
 /// Logs `error` and, if `show_dialog`, shows it in a blocking message box (Windows only).
 pub fn report(error: &anyhow::Error, show_dialog: bool) {
     log::error!("dv couldn't start: {error:#}");
-    if show_dialog {
+    // Off Windows there is no box, and the log line is on stderr already.
+    if show_dialog && cfg!(windows) {
         show_message(&message(error));
     }
 }
@@ -67,12 +68,12 @@ fn show_box(message: &str, icon: windows_sys::Win32::UI::WindowsAndMessaging::ME
     }
 }
 
-/// Shows `message` in a blocking error box (Windows only: elsewhere the log line is the report).
+/// Shows `message` in a blocking error box (Windows only: elsewhere it is printed to stderr,
+/// which a terminal shows: `dv --no-detach`, or the app's binary run from one, whose logger
+/// may not be set up yet; the detached app's stderr goes nowhere).
 #[cfg(not(windows))]
 pub fn show_message(message: &str) {
-    log::error!("{message}");
-    // The log line is the report; the detached app's stderr goes nowhere, so `dv --no-detach`
-    // shows it in the terminal.
+    eprintln!("{message}");
 }
 
 #[cfg(test)]

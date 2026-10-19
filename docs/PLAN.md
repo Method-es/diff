@@ -119,14 +119,16 @@ material the platform can't show always resolves to Opaque (`dv_ui::platform`).
   admin, installs under `%LOCALAPPDATA%\dv\`), a `.pkg` on macOS and an AppImage on Linux, plus the
   full and delta update packages and a release feed, all from a build without the automation feature.
   `vpk` is a .NET tool (the .NET SDK 8 and `vpk` 1.2.161 are installed on the build machine);
-  `script/package` makes a Windows release (§13.2).
+  `script/package` makes a Windows release, and on a Mac the macOS one (§13.2).
 - **In the app:** the `velopack` crate, pinned to the `vpk` version (`=1.2.161`; Velopack's crate
-  and CLI go together), a Windows dependency of the `gui` feature (the default shape carries it;
-  the headless and musl builds don't). `VelopackApp::build()…run()` is the first call in `main` of
-  both Windows binaries (`crates/dv/src/installer.rs`; skipped for a command line that isn't all
-  Unicode, which its `env::args` would panic on: the hooks' arguments are ASCII). Its hooks,
-  which `Update.exe` runs on the main executable (`dv-gui.exe`) before anything else of dv and
-  which exit without a window, call `dv setup path`'s functions for the installed copy's folder,
+  and CLI go together), a Windows and macOS dependency of the `gui` feature (the default shape
+  carries it; the headless and musl builds don't). `VelopackApp::build()…run()` is the first
+  call in `main` of both binaries there (`crates/dv/src/installer.rs`; skipped for a command
+  line that isn't all Unicode, which its `env::args` would panic on: the hooks' arguments are
+  ASCII). Its hooks are Windows' alone (Velopack runs none on macOS, where the first-run screen's
+  Add to PATH links `~/.local/bin/dv`, §12.2): `Update.exe` runs them on the main executable
+  (`dv-gui.exe`) before anything else of dv, they exit without a window, and they call `dv
+  setup path`'s functions for the installed copy's folder,
   Velopack's stable `current` (never a versioned one): after install the `--yes` logic, before
   uninstall the `--remove` logic, so PATH stays app-owned (§12) and the installer has no logic of
   its own. **An update leaves PATH alone**: the folder doesn't change, and a user who took it off
@@ -134,13 +136,14 @@ material the platform can't show always resolves to Opaque (`dv_ui::platform`).
   installed acts on a hook; anything else does nothing. An agent never runs `Setup.exe`,
   `Update.exe` or a dv executable with `--veloapp-*` arguments; the hooks' logic is tested
   through the `Path` seam.
-- **Applying an update ends every dv process running from the install:** `Update.exe` stops
-  each process whose executable is under the install folder before it replaces the files —
+- **Applying an update ends every dv process running from the install:** Velopack's updater
+  stops each process whose executable is under the install folder before it replaces the files —
   other dv windows, with whatever they hold unsaved (drafts live in memory), and an agent's `dv
   review wait` or `dv comment reply`. So neither binary applies a downloaded update by itself at
   startup (auto-apply is off in both); an update applies only from **Restart to update**, which
-  first counts the other dv processes whose image is under the install's `current`
-  (a Toolhelp snapshot, `QueryFullProcessImageNameW`, this process left out) and, when there
+  first counts the other dv processes whose image is under the install's `current` (on macOS
+  the bundle's `Contents/MacOS`; a Toolhelp snapshot and `QueryFullProcessImageNameW` on
+  Windows, `proc_listallpids` and `proc_pidpath` on macOS; this process left out) and, when there
   are any or this window holds an unsent comment or the open Finish round sheet, asks: what
   will close ("2 other dv windows or commands running from this install", "your unsent comment
   in this window"), **Restart anyway** and **Not now** (DESIGN §4.1). Nothing is dropped
@@ -158,8 +161,11 @@ material the platform can't show always resolves to Opaque (`dv_ui::platform`).
   silently. **The feed** is the one baked into the build (`DV_UPDATE_FEED`), read through
   Velopack's `AutoSource`: a release from the release workflow (§13.4) names the repository,
   `https://github.com/kylekz/diff`, which Velopack reads as GitHub Releases (its
-  `GithubSource`: the published releases, never drafts or prereleases, each one's
-  `releases.win.json` merged, so a delta in any of them is found); a local release names a
+  `GithubSource`: the published releases, never drafts or prereleases, each one's feed for the
+  install's channel merged, `releases.win.json` on Windows and `releases.osx.json` on macOS, so
+  a delta in any of them is found); on macOS the updater is the bundle's `UpdateMac`, which
+  replaces the bundle in place (one in `/Applications` may ask for an administrator's password
+  through AppleScript; `~/Applications` doesn't). A local release names a
   folder of `vpk pack` output, the one `script/package --publish` writes, the packaging
   checkout's `target\package\releases`, so a release the owner publishes locally is picked up
   by a locally packaged copy, while a trial run (the default, `target\package\try`) reaches
@@ -171,15 +177,27 @@ material the platform can't show always resolves to Opaque (`dv_ui::platform`).
   whole installer and needs manifest signing keys) for delta updates and the simpler install flow.
 
 ### D10. Code signing: none (yet)
-The executables and `Setup.exe` are unsigned. A locally built copy isn't challenged (SmartScreen
-checks files carrying a downloaded-from-the-internet mark); a `Setup.exe` downloaded from GitHub
-Releases is: SmartScreen warns ("Windows protected your PC", **More info** › **Run anyway**) until
-the file has a reputation, and Gatekeeper would ask the same of an unsigned macOS app. What
-stands in for a signature is the release workflow's build provenance (§13.4): every released
-file is attested through Sigstore as built by `release.yml` from the tagged commit
-(`gh attestation verify <file> --repo kylekz/diff`). Revisit when dv has users beyond the
-owner: a certificate on Windows (Azure Artifact Signing, or SignPath's free signing for
-open-source projects), an Apple Developer ID with notarization on macOS.
+The executables, `Setup.exe` and the macOS `.pkg` carry no certificate's signature (dv runs on
+the owner's own machines). A locally built copy isn't challenged (SmartScreen and Gatekeeper check files
+carrying a downloaded-from-the-internet mark); a release downloaded from GitHub Releases is.
+On Windows SmartScreen warns ("Windows protected your PC", **More info** › **Run anyway**)
+until the file has a reputation. On macOS Gatekeeper refuses the downloaded `.pkg` once
+(System Settings › Privacy & Security › **Open Anyway**); the app it installs carries no
+quarantine mark, and neither does an update Velopack downloads, so neither is asked about
+again. The macOS app is sealed with an ad-hoc signature (`vpk pack --signAppIdentity -`,
+codesign's identity-less one: the bundle verifies, `codesign --verify --deep --strict`, but
+names no developer), so privacy grants (access to Documents, Desktop or Downloads) are tied to
+each build and macOS may ask again after an update; repositories elsewhere (`~/code`) never ask. What stands in for a signature is the
+release workflow's build provenance (§13.4): every released file is attested through Sigstore
+as built by `release.yml` from the tagged commit (`gh attestation verify <file> --repo
+kylekz/diff`). Revisit when dv has users beyond the owner: a certificate on Windows (Azure
+Artifact Signing, or SignPath's free signing for open-source projects), an Apple Developer ID
+with notarization on macOS. Signing changes no code: `vpk pack` takes the identities
+(`--signAppIdentity`, `--signInstallIdentity`, `--notaryProfile`, `--keychain`), the
+certificates and the notarization key become secrets of the `release` environment, and the
+signing moves behind the owner's approval (a job in that environment), since the builds run
+before it; an install without a certificate's signature updates to a signed release like any
+other.
 
 ### D11. Code intelligence through the project's own language servers
 Hover, go to definition and find references come from standard language servers (LSP) that dv starts
@@ -413,7 +431,7 @@ bringing dv to the front on the agent's working-tree review when the agent finis
 | `dv_cli` | lib | clap command tree, JSON output DTOs, setup/doctor checks, a WSL repository's commands run inside its distro (§10, §12) | never |
 | `dv_lsp` | lib | language servers where the repo lives: the LSP client, the language specs and their resolvers (§18.4) | never |
 | `dv_ui` | lib | views + services (§11) | yes |
-| `dv` | lib + bins `dv`, `dv-gui` | entry: GUI (the `gui` feature), CLI and `dv backend --stdio`; on Windows also the console/GUI split (`dv-gui` with `gui`), Velopack's hooks and updates (D9); three shapes, one of them headless (§13.1) | with `gui` |
+| `dv` | lib + bins `dv`, `dv-gui` | entry: GUI (the `gui` feature), CLI and `dv backend --stdio`; on Windows and macOS also the console/GUI split (`dv-gui` with `gui`) and Velopack's updates, on Windows its hooks (D9); three shapes, one of them headless (§13.1) | with `gui` |
 | `gpui_automation` | lib + bin `e2e` | ported from the sibling app (§14) | yes |
 | `mock_gh` | bin | fake `gh` for tests (§14.2) | no |
 | `mock_lsp` | bin | a scripted language server for tests (§18.7) | no |
@@ -1879,8 +1897,10 @@ Keyboard map and states: DESIGN §5.
    **macOS** this route needs no administrator, where the usual `/usr/local/bin` would, and zsh
    (its shell) reads `~/.zshrc` after `/etc/zprofile`'s `path_helper`, so `~/.local/bin` stays
    first. `dv setup path` applies
-   it, `--remove` takes it back; Velopack's install and uninstall hooks call them for
-   the installed copy's `current` folder (D9).
+   it, `--remove` takes it back; on Windows Velopack's install and uninstall hooks call them
+   for the installed copy's `current` folder (D9). Velopack runs no hooks on macOS: there the
+   first-run screen's **Add to PATH** (or `dv setup path`) links `~/.local/bin/dv` to the
+   bundle's `dv`, a path every update keeps.
 4. **Agent skills** (`skill-claude-code`, `skill-codex`, `skill-cursor`): per agent set up in
    the environment's home (§10.5), installed, missing, out of date (differs from this build's
    `SKILL.md`) or skipped (agent not installed); Install / Update is `dv setup agents`.
@@ -1966,13 +1986,22 @@ setup**.
   appended to `crash.log` in the data dir (dv's version, the thread, the message and place, a
   backtrace) before the process ends: a panic inside a window's callback can't unwind and
   aborts, which on screen is the window vanishing (`crash.rs`).
-- **macOS:** `dv.app` containing one `dv` binary; the CLI is a symlink to it (`dv setup path`'s
-  `~/.local/bin/dv`, §12.2). Built on the Mac itself (no cross-build from Windows): gpui's
+- **macOS:** `dv.app` with two binaries in `Contents/MacOS`, both thin `main`s as on Windows:
+  `dv-gui`, the bundle's executable, which the Dock, Finder and Velopack start and which runs
+  the app in its own process (a bundle whose executable detached and exited at once would
+  leave the Dock with a process that ended), and `dv`, the console program; the CLI is a
+  symlink to `dv` (`dv setup path`'s `~/.local/bin/dv`, §12.2; run from the app, whose
+  executable is `dv-gui`, it links the `dv` beside it, `dv_cli::this_executable`). A packaged
+  `dv` and `dv open` detach to `dv-gui` beside it, as on Windows, `dv` found through its links
+  (run as `~/.local/bin/dv`, it is still the bundle's: an app started outside the bundle would
+  find no install and no updates); a development build runs itself again. `dv-gui` refuses the
+  headless commands as `dv-gui.exe` does, its message on stderr (no message box off Windows),
+  and drops the `-psn_…` argument macOS has passed an app Finder starts. Built on the Mac itself (no cross-build from Windows): gpui's
   platform there takes `font-kit` (without it Core Text draws no text) and `runtime_shaders`
   (the Metal shaders compiled when the window opens, so a build needs neither Xcode nor its
   separately downloaded Metal toolchain; the Command Line Tools do), both in
-  `crates/dv/Cargo.toml`. `dv` and `dv open` detach as on Linux (its own session, stdio
-  closed). The app has a menu bar (`dv_ui::app_menu`: dv › About dv, Settings…, Services, Hide,
+  `crates/dv/Cargo.toml`. Detaching is as on Linux (its own session, stdio closed). The app
+  has a menu bar (`dv_ui::app_menu`: dv › About dv, Settings…, Services, Hide,
   Quit; Edit; Window › Minimize) and the Mac's own keys (`⌘Q`, `⌘H`, `⌥⌘H`, `⌘M`); its title
   bar keeps the native traffic lights in a transparent titlebar (DESIGN §2).
 - **Linux:** one `dv` binary (GUI + CLI + backend), plus the static musl build used inside WSL.
@@ -2103,7 +2132,7 @@ into `target/package/try`: `dv.AppImage`, `dv-<version>-linux-full.nupkg`,
 `releases.linux.json`. The AppImage runs on Ubuntu 24.04 without FUSE 2 installed, and it
 starts the app there (on an Xvfb display: `dv` detaching through `$APPIMAGE`, the first-run
 screen up). The Linux app has no Velopack hooks or updates yet (the
-`velopack` crate is a Windows dependency, D9): it updates by replacing the AppImage.
+`velopack` crate is a Windows and macOS dependency, D9): it updates by replacing the AppImage.
 
 **The macOS gate** is `script/check-mac [--sync-only] [-- <script/check arguments>]` (bash), run
 on Windows: the owner's Mac (`$DV_MAC_HOST` over SSH, key auth; Apple silicon; its
@@ -2124,23 +2153,29 @@ is unset (a workaround for AppKit's autofill heuristics), so running dv, a test 
 on the Mac leaves that one key in the defaults domain of the executable's name
 (`~/Library/Preferences/dv.plist` for a bare `dv`); dv writes no defaults itself.
 
-**A macOS release** isn't made yet. Velopack's `.pkg` and update packages come from `vpk
-[osx] pack`, which runs only on a Mac with the .NET SDK 8 and `vpk` installed (neither is on
-the owner's Mac); from Windows, `vpk [osx]` offers only `bundle` (a `.app` from a folder,
-per `vpk` 1.2.161's help), no installer and no feed. What a release
-needs: on the Mac, the shipped shape built with the `dist` profile (`DV_CHANNEL`, `DV_VERSION`,
-`DV_UPDATE_FEED` as on Windows), a stage folder with `dv`, then `vpk pack` with `--mainExe dv`,
-dv's icon as an `.icns` (made from `crates/dv/resources/windows/dv.svg`), `--packId dv`, the
-`osx` channel; unsigned and unnotarized (D10), so Gatekeeper asks once on first open of a
-downloaded copy (a local build has no quarantine mark). The `velopack` crate's hooks and
-updates are Windows-only in the code today (`crates/dv/src/installer.rs`, `updates.rs`) and
-would need their macOS half.
+**A macOS release** is `script/package` run on a Mac (the release workflow's macOS job, §13.4):
+`vpk pack` for macOS runs only on a Mac with the .NET SDK 8 and `vpk` installed, which the
+owner's Mac doesn't have (from Windows, `vpk [osx]` offers only `bundle`, per `vpk` 1.2.161's
+help), so a macOS release is made on GitHub's runner alone. The version as above; the app in
+the shipped shape with the `dist` profile and `DV_CHANNEL`, `DV_VERSION`, `DV_UPDATE_FEED`
+baked in as on Windows, `target/dist/dv --version` and `dv-gui --version` checked; `dv` and
+`dv-gui` staged in `target/package/mac-app`; then `vpk pack` with pack id `dv`, title `dv`,
+`--mainExe dv-gui` (§13.1, macOS), the icon `crates/dv/resources/macos/dv.icns` (the SVG on
+macOS's icon grid, 32 to 1024 px, kept so by `crates/dv/tests/app_icon.rs`), `--bundleId
+io.github.kylekz.dv`, the Mac's runtime (`osx-arm64` on Apple silicon), the default channel
+`osx` and `--noPortable`, into the trial folder or `--out`: `dv-osx-Setup.pkg`,
+`dv-<version>-osx-full.nupkg` (from the second release on its delta), `releases.osx.json`,
+`assets.osx.json`. The bundle is sealed with an ad-hoc signature (`--signAppIdentity -`), with
+no certificate and no notarization (D10). `--publish`, `--linux-app`, `--linux-dir` and
+`--aarch64` are refused there (no local macOS feed exists).
 
 
 ### 13.3 Install layout
 Windows per-user `%LOCALAPPDATA%\dv\` (Velopack), settings in `%APPDATA%\dv\`; macOS
-`/Applications/dv.app`, `~/Library/Application Support/dv/`; Linux AppImage or tarball,
-`$XDG_CONFIG_HOME/dv/` (`~/.config/dv/` when it is unset). From an AppImage, `dv setup path`
+`dv.app` in `/Applications` or `~/Applications` (the `.pkg` asks which; its `Contents/MacOS`
+holds `dv-gui`, `dv` and Velopack's `UpdateMac`, the same folder after every update, downloaded
+packages in `~/Library/Caches/velopack/dv`), `~/Library/Application Support/dv/`; Linux
+AppImage or tarball, `$XDG_CONFIG_HOME/dv/` (`~/.config/dv/` when it is unset). From an AppImage, `dv setup path`
 links `~/.local/bin/dv` to the AppImage itself (`$APPIMAGE`, while this executable lies in its
 `$APPDIR`), not to the executable inside its mount, which goes when the process that mounted
 it exits. Every data path honours `--data-dir` / `DV_DATA_DIR` (tests, §14).
@@ -2180,15 +2215,15 @@ The repository is public, so GitHub's hosted runners cost nothing. Two workflows
      then the Windows release (`vpk download github` fetches the latest release's full
      package, from which `vpk pack` makes the delta and against which `dv_package` checks the
      version newer, then `script/package --version <v> --feed https://github.com/<repo>
-     --linux-dir … --out …`);
+     --linux-dir … --out …`), and the macOS release on `macos-15` the same way (its channel
+     `osx`, `script/package --version <v> --feed … --out …`);
   4. **publish**, in the `release` environment, which waits for the owner's approval: the
      files' `SHA256SUMS`, their build provenance (`actions/attest-build-provenance`), then the
      GitHub release, made as a draft with every file and then published, marked latest unless
      it is a prerelease. Its files: `dv-win-Setup.exe`, `dv-<v>-full.nupkg` (and from the second
      release on its delta), `releases.win.json`, `assets.win.json` and `RELEASES` (the feed),
-     `dv-linux-x86_64.AppImage`, `SHA256SUMS`.
-
-  A macOS release isn't made yet (§13.2, "A macOS release").
+     `dv-osx-Setup.pkg`, `dv-<v>-osx-full.nupkg` (and its delta), `releases.osx.json` and
+     `assets.osx.json` (the macOS feed), `dv-linux-x86_64.AppImage`, `SHA256SUMS`.
 
 **Making a release** (the owner's): bump `[workspace.package] version` in `Cargo.toml` (and
 `Cargo.lock`, which `cargo build` updates) in a commit on main and push it; then `git tag -a
@@ -2435,7 +2470,7 @@ Each phase ends with its e2e scenarios green and a screenshot review against DES
 | 7 | Packaging + updates on Windows with Velopack (D9), local feed: `Setup.exe`, `dv-gui.exe`, dv's icon on the executables, the window and the shortcuts, the install hooks running `dv setup path` (§12), the Linux builds beside the installed `dv.exe` (§13.2); a development build never replaces the installed copy's `dv` in a distro | install from `Setup.exe` → PATH set, icon in the taskbar and Start → a WSL repo opens from the installed copy → a second local release updates it |
 | 8 | GitHub: open PR, pull threads, submit sheet with validation and file-comment fallback (§9) | Workflow C against `mock_gh`; owner's live check |
 | 9 | Polish: settings, palette, light themes, empty states, performance pass on a 2,000-file PR (the Linux app, its gate `script/check --linux-gui` and its trial AppImage are done, §13.1, §13.2) | DESIGN review of every screen; perf budget (§17) met |
-| 10 | GitHub Actions (§13.4): CI on Windows, Linux and macOS with the workflows' and the dependencies' checks; the release workflow publishing the Windows release and the AppImage to GitHub Releases after the owner's approval; the update feed on GitHub Releases. A macOS package (`.pkg`) waits for its updates' code and a signature (§13.2, D10) | a prerelease tag runs end to end: CI green on all three, the release published after approval, its provenance verified |
+| 10 | GitHub Actions (§13.4): CI on Windows, Linux and macOS with the workflows' and the dependencies' checks; the release workflow publishing the Windows and macOS releases (`Setup.exe`, a `.pkg` without a certificate, D10) and the AppImage to GitHub Releases after the owner's approval; the update feed on GitHub Releases, read by Windows and macOS installs | a prerelease tag runs end to end: CI green on all three, the release published after approval, its provenance verified |
 
 ---
 

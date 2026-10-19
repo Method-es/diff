@@ -2,7 +2,8 @@
 //! dv-gui.exe as resource 1, the one gpui loads for its windows (the title bar, the taskbar,
 //! Alt Tab) and Explorer shows, and `script/package` gives it to the installer. It is
 //! `resources/windows/dv.svg` at the sizes Windows asks for, 16 to 256 px. The Linux app's
-//! `resources/linux/dv.png` is the same SVG at 256 px.
+//! `resources/linux/dv.png` is the same SVG at 256 px, and the macOS app's
+//! `resources/macos/dv.icns` the SVG on macOS's icon grid at 32 to 1024 px.
 //!
 //! This test renders the SVG and checks the icon against it. After changing the SVG, write the
 //! icon again, and look at it (each size, and on a light and a dark taskbar) with
@@ -28,6 +29,22 @@ const LINUX_ICON_SIZE: u32 = 256;
 /// How far a channel of the stored icon may be from the rendered SVG (a patch release of
 /// resvg antialiasing an edge a little differently).
 const TOLERANCE: u8 = 8;
+/// The macOS icon's pictures: each one's ICNS type and size in pixels (the 1× and 2× ones of
+/// 16 to 512 points), all PNG.
+const MACOS_ENTRIES: [(&[u8; 4], u32); 8] = [
+    (b"ic11", 32),
+    (b"ic12", 64),
+    (b"ic07", 128),
+    (b"ic13", 256),
+    (b"ic08", 256),
+    (b"ic14", 512),
+    (b"ic09", 512),
+    (b"ic10", 1024),
+];
+/// macOS's icon grid: on a 1024 px canvas the tile is 824 px, centred, leaving room for the
+/// shadow the Dock and Finder draw around every icon. The SVG's tile spans 224 of its 256 units.
+const MACOS_TILE: f32 = 824.0 / 1024.0;
+const SVG_TILE: f32 = 224.0;
 const WRITE_VAR: &str = "DV_WRITE_ICON";
 const PREVIEW_VAR: &str = "DV_ICON_PREVIEW";
 /// The taskbars the preview puts the icon on: Windows 11's light and dark.
@@ -62,12 +79,24 @@ impl Picture {
 
 /// The SVG at `size` × `size`.
 fn render(svg: &[u8], size: u32) -> Picture {
+    render_scaled(svg, size, |tree| size as f32 / tree.size().width())
+}
+
+/// The SVG at `size` × `size` on macOS's icon grid: its tile [`MACOS_TILE`] of the canvas,
+/// centred.
+fn render_macos(svg: &[u8], size: u32) -> Picture {
+    render_scaled(svg, size, |_| size as f32 * MACOS_TILE / SVG_TILE)
+}
+
+/// The SVG on a `size` × `size` canvas, scaled by what `scale` says for its tree and centred.
+fn render_scaled(svg: &[u8], size: u32, scale: impl Fn(&usvg::Tree) -> f32) -> Picture {
     let tree = usvg::Tree::from_data(svg, &usvg::Options::default()).expect("the SVG parses");
     let mut pixmap = tiny_skia::Pixmap::new(size, size).expect("a pixmap");
-    let scale = size as f32 / tree.size().width();
+    let scale = scale(&tree);
+    let offset = (size as f32 - tree.size().width() * scale) / 2.0;
     resvg::render(
         &tree,
-        tiny_skia::Transform::from_scale(scale, scale),
+        tiny_skia::Transform::from_row(scale, 0.0, 0.0, scale, offset, offset),
         &mut pixmap.as_mut(),
     );
     let rgba = pixmap
@@ -169,6 +198,42 @@ fn encode_png(picture: &Picture) -> Vec<u8> {
         .write_image_data(&picture.rgba)
         .expect("the PNG's pixels");
     writer.finish().expect("the PNG's end");
+    out
+}
+
+/// An ICNS file of `pictures`, each a PNG under its type: the `icns` header with the file's
+/// length, then each entry's type, its length (with its 8 header bytes) and the PNG, the
+/// lengths big-endian.
+fn encode_icns(pictures: &[(&[u8; 4], Picture)]) -> Vec<u8> {
+    let mut entries = Vec::new();
+    for (kind, picture) in pictures {
+        let png = encode_png(picture);
+        entries.extend_from_slice(*kind);
+        entries.extend_from_slice(&(8 + png.len() as u32).to_be_bytes());
+        entries.extend_from_slice(&png);
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(b"icns");
+    out.extend_from_slice(&(8 + entries.len() as u32).to_be_bytes());
+    out.extend_from_slice(&entries);
+    out
+}
+
+/// The pictures of an ICNS file of PNG entries, with their types, in file order.
+fn decode_icns(bytes: &[u8]) -> Vec<([u8; 4], Picture)> {
+    let u32_at = |at: usize| u32::from_be_bytes(bytes[at..at + 4].try_into().expect("4 bytes"));
+    assert_eq!(&bytes[..4], b"icns", "an ICNS header");
+    assert_eq!(u32_at(4) as usize, bytes.len(), "the ICNS file's length");
+    let mut out = Vec::new();
+    let mut at = 8;
+    while at < bytes.len() {
+        let kind: [u8; 4] = bytes[at..at + 4].try_into().expect("4 bytes");
+        let len = u32_at(at + 4) as usize;
+        let image = &bytes[at + 8..at + len];
+        assert!(image.starts_with(b"\x89PNG"), "{kind:?} is a PNG");
+        out.push((kind, decode_png(image)));
+        at += len;
+    }
     out
 }
 
@@ -284,6 +349,45 @@ fn the_linux_icon_is_the_mark() {
         difference <= TOLERANCE,
         "the Linux icon is {difference} off the SVG: {WRITE_VAR}=1 writes it again"
     );
+}
+
+/// The macOS app's icon, `resources/macos/dv.icns`: the SVG on macOS's icon grid at every size
+/// [`MACOS_ENTRIES`] lists, which `script/package` gives the app bundle (the Dock, Finder).
+#[test]
+fn the_macos_icon_is_the_mark_on_the_grid() {
+    let svg = std::fs::read(resources().join("dv.svg")).expect("reading dv.svg");
+    let rendered: Vec<(&[u8; 4], Picture)> = MACOS_ENTRIES
+        .iter()
+        .map(|&(kind, size)| (kind, render_macos(&svg, size)))
+        .collect();
+    let path = resources().join("../macos/dv.icns");
+    if std::env::var_os(WRITE_VAR).is_some() {
+        std::fs::create_dir_all(path.parent().expect("a folder")).expect("making its folder");
+        std::fs::write(&path, encode_icns(&rendered)).expect("writing dv.icns");
+    }
+    let stored = decode_icns(&std::fs::read(&path).expect("reading dv.icns"));
+    let kinds: Vec<([u8; 4], u32)> = stored
+        .iter()
+        .map(|(kind, picture)| (*kind, picture.size))
+        .collect();
+    let wanted: Vec<([u8; 4], u32)> = MACOS_ENTRIES
+        .iter()
+        .map(|&(kind, size)| (*kind, size))
+        .collect();
+    assert_eq!(kinds, wanted, "{WRITE_VAR}=1 writes the icon again");
+    for ((_, stored), (_, rendered)) in stored.iter().zip(&rendered) {
+        let difference = largest_difference(stored, rendered);
+        assert!(
+            difference <= TOLERANCE,
+            "the {0}×{0} macOS icon is {difference} off the SVG: {WRITE_VAR}=1 writes it again",
+            stored.size
+        );
+    }
+    // The grid's margin: the canvas's edge is clear, its middle the tile.
+    let large = &rendered.last().expect("the 1024 px picture").1;
+    let alpha = |x: u32, y: u32| large.rgba[((y * 1024 + x) * 4 + 3) as usize];
+    assert_eq!(alpha(80, 512), 0, "outside the 824 px tile");
+    assert_eq!(alpha(120, 512), 0xff, "inside it");
 }
 
 #[test]

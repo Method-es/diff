@@ -9,11 +9,12 @@
 //!
 //! **The binaries** (PLAN §13.1): `dv` (`src/main.rs`, `dv.exe`) is a console program in every
 //! build, so the CLI prints and returns its exit code in a terminal; `dv-gui`
-//! (`src/bin/dv-gui.rs`, with `gui`) is the windows-subsystem binary that runs the app in its
-//! own process with no console: what the Start menu's shortcut and Velopack start, and what
-//! `dv.exe` starts for `dv` and `dv open` when it is beside it. On Windows both first hand
-//! their command line to Velopack ([`installer`], PLAN D9), whose install, update and
-//! uninstall hooks run there and exit.
+//! (`src/bin/dv-gui.rs`, with `gui`) runs the app in its own process: on Windows the
+//! windows-subsystem binary with no console, on macOS the app bundle's executable; what the
+//! Start menu's shortcut, the Dock and Velopack start, and what a packaged `dv` starts for `dv`
+//! and `dv open` when it is beside it. On Windows and macOS both first hand their command line
+//! to Velopack ([`installer`], PLAN D9), whose install, update and uninstall hooks run there and
+//! exit on Windows.
 
 #[cfg(feature = "gui")]
 mod app;
@@ -26,13 +27,13 @@ mod crash;
 mod data_dir;
 #[cfg(feature = "gui")]
 mod fatal;
-#[cfg(all(windows, feature = "gui"))]
+#[cfg(all(any(windows, target_os = "macos"), feature = "gui"))]
 mod installer;
 #[cfg(feature = "gui")]
 mod launch;
-#[cfg(all(windows, feature = "gui"))]
+#[cfg(all(any(windows, target_os = "macos"), feature = "gui"))]
 mod processes;
-#[cfg(all(windows, feature = "gui"))]
+#[cfg(all(any(windows, target_os = "macos"), feature = "gui"))]
 mod updates;
 #[cfg(any(not(feature = "gui"), test))]
 mod windowless;
@@ -58,9 +59,9 @@ pub enum Entry {
 
 /// Runs this process's command line as the binary `entry`.
 pub fn main(entry: Entry) -> ExitCode {
-    #[cfg(all(windows, feature = "gui"))]
+    #[cfg(all(any(windows, target_os = "macos"), feature = "gui"))]
     installer::run();
-    let args: Vec<OsString> = std::env::args_os().collect();
+    let args = without_process_serial(std::env::args_os().collect());
     let mut cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
         Err(error) => return parse_error(entry, &error, &args),
@@ -72,8 +73,8 @@ pub fn main(entry: Entry) -> ExitCode {
     }
 }
 
-/// A command line that doesn't parse: `dv.exe` says why in the terminal (PLAN §10.3);
-/// `dv-gui.exe`, which has none, in a message box.
+/// A command line that doesn't parse: `dv` says why in the terminal (PLAN §10.3); `dv-gui`,
+/// which has none, in a message box (the log, off Windows: `fatal`).
 fn parse_error(entry: Entry, error: &clap::Error, args: &[OsString]) -> ExitCode {
     #[cfg(feature = "gui")]
     if entry == Entry::Gui {
@@ -93,14 +94,13 @@ fn parse_error(entry: Entry, error: &clap::Error, args: &[OsString]) -> ExitCode
     dv_cli::output::parse_error(error, args, &mut ctx).into()
 }
 
-/// A headless command: run here by `dv.exe`; refused by `dv-gui.exe`, whose output would go
-/// nowhere.
+/// A headless command: run here by `dv`; refused by `dv-gui`, whose output would go nowhere.
 fn headless(entry: Entry, cli: &Cli, command: dv_cli::Command, args: &[OsString]) -> ExitCode {
     #[cfg(feature = "gui")]
     if entry == Entry::Gui {
         fatal::show_message(
-            "dv-gui.exe opens the app. The commands run from dv.exe in a terminal: `dv --help` \
-             lists them.",
+            "dv-gui opens the app. The commands run from dv in a terminal: `dv --help` lists \
+             them.",
         );
         return ExitCode::from(2);
     }
@@ -190,4 +190,37 @@ fn init_logging(level: &str) {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(level))
         .target(env_logger::Target::Stderr)
         .init();
+}
+
+/// `args` without the `-psn_…` process serial number macOS has passed an app that Finder or
+/// the Dock starts (`dv-gui`, PLAN §13.1), which no command line of dv's means. Elsewhere
+/// `args` as they are.
+fn without_process_serial(args: Vec<OsString>) -> Vec<OsString> {
+    if !cfg!(target_os = "macos") {
+        return args;
+    }
+    args.into_iter()
+        .enumerate()
+        .filter(|(at, arg)| *at == 0 || !arg.to_str().is_some_and(|arg| arg.starts_with("-psn_")))
+        .map(|(_, arg)| arg)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    #[test]
+    fn a_process_serial_number_is_dropped_on_macos() {
+        let line = |words: &[&str]| words.iter().map(OsString::from).collect::<Vec<_>>();
+        let started = line(&["dv-gui", "-psn_0_12345"]);
+        let expected = if cfg!(target_os = "macos") {
+            line(&["dv-gui"])
+        } else {
+            started.clone()
+        };
+        assert_eq!(super::without_process_serial(started), expected);
+        let open = line(&["dv-gui", "open", "/code/api"]);
+        assert_eq!(super::without_process_serial(open.clone()), open);
+    }
 }

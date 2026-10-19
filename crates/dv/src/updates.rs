@@ -1,6 +1,8 @@
-//! An installed dv's updates (docs/PLAN.md D9, §13.3): Velopack's `UpdateManager` over the
-//! release feed, in the background, reported to `dv_ui::services::Updates`, whose status-bar
-//! item restarts into the update.
+//! An installed dv's updates on Windows and macOS (docs/PLAN.md D9, §13.3): Velopack's
+//! `UpdateManager` over the release feed, in the background, reported to
+//! `dv_ui::services::Updates`, whose status-bar item restarts into the update. Each platform
+//! reads its own channel of the feed (`releases.win.json`, `releases.osx.json`), the one its
+//! install was packed with.
 //!
 //! **The feed** is the one the build names as `DV_UPDATE_FEED`, read through Velopack's
 //! `AutoSource`: a released build's is the repository on GitHub, read as its releases; a
@@ -10,17 +12,19 @@
 //!
 //! **When:** a few seconds after the app starts, then every [`CHECK_EVERY`]; never under
 //! `--automation` (scenarios show the item through the seam), and never in a build that isn't
-//! installed: `UpdateManager::new` fails there (no `Update.exe` above it) and updates are off,
-//! silently. A newer release is downloaded (its delta when there is one) and then shown; one
-//! downloaded before and not yet applied shows at once ([`check`]).
+//! installed: `UpdateManager::new` fails there (no `Update.exe` above it on Windows, no app
+//! bundle around it on macOS) and updates are off, silently. A newer release is downloaded
+//! (its delta when there is one) and then shown; one downloaded before and not yet applied
+//! shows at once ([`check`]).
 //!
 //! **Restart to update** first counts the other dv processes running from the install
 //! (`crate::processes`), which applying stops, and the service asks before it goes on when
 //! there are any or this window holds unsent text (`dv_ui::services::updates`). Then it hands
-//! the update to `Update.exe`, which waits for this process to quit, applies it and starts dv
-//! again on what this window had open, named absolutely (`crate::launch::open_args`): the
-//! restarted app starts in the install's folder, whatever folder this one started in
-//! ([`restart`]). The app then quits as it always does (settings flushed).
+//! the update to Velopack's updater (`Update.exe`; on macOS the bundle's `UpdateMac`), which
+//! waits for this process to quit, applies it and starts dv again on what this window had open,
+//! named absolutely (`crate::launch::open_args`): the restarted app starts in the install's
+//! folder, whatever folder this one started in ([`restart`]). The app then quits as it always
+//! does (settings flushed).
 
 use std::ffi::OsString;
 use std::path::PathBuf;

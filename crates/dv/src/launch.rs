@@ -1,9 +1,10 @@
 //! How `dv` (no subcommand) and `dv open` start the app (docs/PLAN.md §10.1, §13.1).
 //!
 //! `dv.exe` is a console program, so every headless command prints and returns its exit code
-//! in a terminal. The app itself starts **detached**: `dv-gui.exe` (the windows-subsystem
-//! binary, PLAN §13.1) when a packaged build (an installed copy) has it beside this executable,
-//! else this same binary run again with the hidden `--no-detach`, with no
+//! in a terminal. The app itself starts **detached**: `dv-gui` (on Windows the windows-subsystem
+//! binary, on macOS the app bundle's, PLAN §13.1) when a packaged build (an installed copy) has
+//! it beside this executable, else this same binary run again with the hidden `--no-detach`,
+//! with no
 //! console (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` on Windows, its own session,
 //! `setsid`, elsewhere), its standard streams closed and none of the caller's handles inherited
 //! ([`spawn_detached`]), while the first one returns 0 at once, also to a caller that captures
@@ -28,16 +29,20 @@ use dv_core::review::{ReviewId, ReviewStore, StoreError};
 
 use crate::cli::{Cli, OpenArgs};
 
-/// Which binary is running: `dv.exe`, the console program, or `dv-gui.exe`, the windowed one
-/// (PLAN §13.1).
+/// Which binary is running: `dv`, the console program, or `dv-gui`, the app's own (PLAN
+/// §13.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Entry {
     Console,
     Gui,
 }
 
-/// The windows-subsystem binary's file name beside `dv.exe`.
-pub const GUI_EXE: &str = "dv-gui.exe";
+/// The app's binary's file name beside `dv` (PLAN §13.1).
+pub const GUI_EXE: &str = if cfg!(windows) {
+    "dv-gui.exe"
+} else {
+    "dv-gui"
+};
 
 /// Where the app runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,7 +54,7 @@ pub enum Launch {
 }
 
 /// Where `cli` (a GUI command line: no subcommand, or `open`) runs the app when `entry` reads
-/// it: `dv-gui.exe` never detaches, being the detached app itself.
+/// it: `dv-gui` never detaches, being the detached app itself.
 pub fn launch(cli: &Cli, entry: Entry) -> Launch {
     if entry == Entry::Gui || cli.automation_enabled() || cli.no_detach {
         Launch::InProcess
@@ -247,15 +252,15 @@ fn app_options(args: &[OsString]) -> Vec<OsString> {
 }
 
 /// The program the detached app runs, for this executable `exe` (module docs): in a packaged
-/// build (`packaged`) on Windows, `dv-gui.exe` beside it when `exists` says it is there; else
-/// `exe` itself, so a development build never starts a `dv-gui.exe` an older build left.
+/// build (`packaged`) on Windows and macOS, `dv-gui` beside it when `exists` says it is there;
+/// else `exe` itself, so a development build never starts a `dv-gui` an older build left.
 pub fn detached_program(
     exe: &Path,
     packaged: bool,
     exists: impl Fn(&Path) -> bool,
 ) -> std::path::PathBuf {
     let gui = exe.with_file_name(GUI_EXE);
-    if cfg!(windows) && packaged && exists(&gui) {
+    if cfg!(any(windows, target_os = "macos")) && packaged && exists(&gui) {
         gui
     } else {
         exe.to_path_buf()

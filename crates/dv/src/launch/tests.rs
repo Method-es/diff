@@ -75,12 +75,12 @@ fn dv_gui_always_runs_the_app_in_its_own_process() {
 #[test]
 fn the_detached_app_is_dv_gui_beside_a_packaged_dv_and_itself_otherwise() {
     let exe = Path::new(r"C:\Users\me\AppData\Local\dv\current\dv.exe");
-    let gui = exe.with_file_name("dv-gui.exe");
+    let gui = exe.with_file_name(GUI_EXE);
     let with_gui = detached_program(exe, true, |path| path == gui);
-    if cfg!(windows) {
+    if cfg!(any(windows, target_os = "macos")) {
         assert_eq!(with_gui, gui);
     } else {
-        // macOS and Linux have one binary for both.
+        // Linux has one binary for both.
         assert_eq!(with_gui, exe);
     }
     // A packaged build without it: this executable again, as `--no-detach`.

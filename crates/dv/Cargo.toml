@@ -21,8 +21,9 @@ name = "dv"
 path = "src/main.rs"
 test = false
 
-# The windows-subsystem binary that runs the app in its own process (the Start menu's shortcut,
-# Velopack's main executable). Only with the app; on macOS and Linux `dv` is the one shipped.
+# The binary that runs the app in its own process: on Windows the windows-subsystem one (the
+# Start menu's shortcut), on macOS the app bundle's; Velopack's main executable on both. Only
+# with the app; Linux ships `dv` alone.
 [[bin]]
 name = "dv-gui"
 path = "src/bin/dv-gui.rs"
@@ -82,10 +83,13 @@ log.workspace = true
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 
-[target.'cfg(windows)'.dependencies]
-# Velopack's install, update and uninstall hooks and the app's updates (`installer`, `updates`,
-# PLAN D9): the app's, never the headless build's.
+# Velopack (PLAN D9): on Windows its install, update and uninstall hooks, and on Windows and
+# macOS an installed copy's updates (`installer`, `updates`): the app's, never the headless
+# build's.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 velopack = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
 # The fatal-error message box of the detached app, which has no console (`fatal.rs`), and the
 # flags and handle inheritance it is started detached with (`launch.rs`, PLAN §13.1), and the
 # other dv processes of an install an update would stop (`processes.rs`, PLAN D9).
@@ -97,8 +101,9 @@ windows-sys = { workspace = true, optional = true, features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
-# The detached app's own session and descriptors (`launch.rs`, PLAN §13.1): the app's, never
-# the headless build's.
+# The detached app's own session and descriptors (`launch.rs`, PLAN §13.1), and on macOS the
+# other dv processes of an install an update would stop (`processes.rs`): the app's, never the
+# headless build's.
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true, optional = true }
 

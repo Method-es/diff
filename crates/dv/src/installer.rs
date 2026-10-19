@@ -1,8 +1,10 @@
-//! Velopack in dv's Windows binaries (docs/PLAN.md D9, §12, §13.3): [`run`] is the first thing
-//! `main` does in `dv.exe` and `dv-gui.exe`.
+//! Velopack in dv's Windows and macOS binaries (docs/PLAN.md D9, §12, §13.3): [`run`] is the
+//! first thing `main` does in `dv` and `dv-gui`.
 //!
-//! **The hooks.** Velopack's `Update.exe` runs the main executable (`dv-gui.exe`) with
-//! `--veloapp-install`, `--veloapp-updated` or `--veloapp-uninstall` and the version as it
+//! **The hooks** are Windows': Velopack runs none on macOS, where `dv setup path` (the app's
+//! first-run screen offers it) links `~/.local/bin/dv` to the bundle's `dv` (PLAN §12.2), a
+//! path every update keeps. On Windows Velopack's `Update.exe` runs the main executable
+//! (`dv-gui.exe`) with `--veloapp-install`, `--veloapp-updated` or `--veloapp-uninstall` and the version as it
 //! installs, updates or uninstalls the app; `VelopackApp` runs the hook and exits, before
 //! anything else of dv runs, with no window. Each is `dv setup path`'s, called as a function
 //! ([`apply`]): after an install the installed copy's folder goes on the user `Path` (`dv setup
@@ -20,17 +22,21 @@
 //!
 //! A command line that isn't all Unicode skips Velopack (its builder reads `env::args`, which
 //! panics on one; the hooks' arguments are ASCII) ([`should_run`]). A development build isn't
-//! installed: Velopack finds no `Update.exe` above it and does nothing, and no test ever runs a
-//! binary with the hooks' arguments.
+//! installed: Velopack finds no `Update.exe` above it (no app bundle around it, on macOS) and
+//! does nothing, and no test ever runs a binary with the hooks' arguments.
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::path::Path;
+use std::path::PathBuf;
 
+#[cfg(windows)]
 use dv_cli::checks::{Seams, path};
 use velopack::VelopackApp;
 use velopack::locator::{LocationContext, auto_locate_app_manifest};
 
 /// What `Update.exe` is doing ([`apply`]).
+#[cfg(windows)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hook {
     Installed,
@@ -50,16 +56,20 @@ pub fn run() {
     if !should_run(&args) {
         return;
     }
-    VelopackApp::build()
-        .set_auto_apply_on_startup(false)
-        .on_after_install_fast_callback(|_| hook(Hook::Installed))
-        .on_after_update_fast_callback(|_| hook(Hook::Updated))
-        .on_before_uninstall_fast_callback(|_| hook(Hook::Uninstalling))
-        .run();
+    let mut app = VelopackApp::build().set_auto_apply_on_startup(false);
+    #[cfg(windows)]
+    {
+        app = app
+            .on_after_install_fast_callback(|_| hook(Hook::Installed))
+            .on_after_update_fast_callback(|_| hook(Hook::Updated))
+            .on_before_uninstall_fast_callback(|_| hook(Hook::Uninstalling));
+    }
+    app.run();
 }
 
 /// Runs `hook` for the installed copy, with the real user `Path` unless `DV_USER_PATH_FILE`
 /// names its stand-in (the seam, PLAN §12).
+#[cfg(windows)]
 fn hook(hook: Hook) {
     let cwd = std::env::current_dir().unwrap_or_default();
     let seams = Seams::from_env(&dv_cli::Env::Process, &cwd, Vec::new());
@@ -71,6 +81,7 @@ fn hook(hook: Hook) {
 
 /// `hook` for the installed copy in `dir` (`None`: this isn't one, and nothing happens),
 /// through `seams`; `None` when it does nothing.
+#[cfg(windows)]
 pub fn hook_in(
     hook: Hook,
     dir: Option<&Path>,
@@ -83,8 +94,9 @@ pub fn hook_in(
     }
 }
 
-/// The installed copy's folder, Velopack's `current`: `None` unless this is a packaged build
-/// that Velopack's locator finds installed.
+/// The installed copy's folder, Velopack's `current` on Windows and the bundle's
+/// `Contents/MacOS` on macOS: `None` unless this is a packaged build that Velopack's locator
+/// finds installed.
 pub fn installed_dir() -> Option<PathBuf> {
     if !dv_cli::is_packaged() {
         return None;
@@ -95,6 +107,7 @@ pub fn installed_dir() -> Option<PathBuf> {
 }
 
 /// What `hook` does to PATH for the installed copy in `dir` (module docs), through `seams`.
+#[cfg(windows)]
 pub fn apply(hook: Hook, dir: &Path, seams: &Seams) -> Result<path::Done, String> {
     match hook {
         Hook::Installed => path::add_dir(seams, Some(dir)),
@@ -103,7 +116,7 @@ pub fn apply(hook: Hook, dir: &Path, seams: &Seams) -> Result<path::Done, String
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use std::collections::BTreeMap;
 

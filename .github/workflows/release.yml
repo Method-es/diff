@@ -1,6 +1,6 @@
 # A release (docs/PLAN.md §13.4): pushing an annotated tag `v<version>` on a commit on main
-# builds the Windows release (Setup.exe and the Velopack update feed the installed app reads) and
-# the Linux AppImage on GitHub's runners, runs every CI gate on that commit, and then waits for
+# builds the Windows and macOS releases (Setup.exe, the .pkg, and the Velopack update feed the
+# installed app reads) and the Linux AppImage on GitHub's runners, runs every CI gate on that commit, and then waits for
 # the owner to approve the `release` environment before anything is published to GitHub
 # Releases.
 #
@@ -199,9 +199,71 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  macos:
+    name: macOS release
+    needs: verify
+    runs-on: macos-15
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain (rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 8.0.x
+      - name: vpk 1.2.161 (the velopack crate's version)
+        run: dotnet tool install -g vpk --version 1.2.161
+      - name: The latest release's full macOS package, for the delta and the version check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/package/out
+          "$HOME/.dotnet/tools/vpk" download github --repoUrl "https://github.com/$GITHUB_REPOSITORY" \
+            --channel osx --outputDir target/package/out --token "$GH_TOKEN"
+          # As on Windows: vpk says nothing when it finds no release or a download fails, so
+          # make sure the package is there whenever the latest release has a macOS feed.
+          latest="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts \
+            --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // ""')"
+          if [[ -n "$latest" ]] && gh release view "$latest" --repo "$GITHUB_REPOSITORY" \
+              --json assets --jq '.assets[].name' | grep -qx releases.osx.json &&
+            ! compgen -G 'target/package/out/dv-*-osx-full.nupkg' > /dev/null; then
+            echo "vpk didn't download the full macOS package of the latest release, $latest" >&2
+            exit 1
+          fi
+          ls -l target/package/out
+      - name: script/package (on macOS, the macOS release)
+        run: |
+          set -euo pipefail
+          bash script/package --version "$VERSION" --feed "https://github.com/$GITHUB_REPOSITORY" \
+            --out target/package/out
+      - name: This release's files (vpk's assets.osx.json and the feed)
+        run: |
+          set -euo pipefail
+          out=target/package/out
+          upload=target/package/upload
+          mkdir -p "$upload"
+          jq -r '.[].RelativeFileName' "$out/assets.osx.json" | while read -r name; do
+            cp "$out/$name" "$upload/"
+          done
+          cp "$out/releases.osx.json" "$out/assets.osx.json" "$upload/"
+          ls -l "$upload"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-macos
+          path: target/package/upload/
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: Publish (after the owner approves)
-    needs: [verify, ci, linux, windows]
+    needs: [verify, ci, linux, windows, macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment:
@@ -222,6 +284,10 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-linux
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-macos
           path: dist
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
