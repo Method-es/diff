@@ -437,10 +437,10 @@ fn a_seeded_repo_opens_as_a_review_and_the_agent_answers(cx: &mut TestAppContext
     assert_eq!(state["session"]["focused_thread"], Value::Null);
     assert_eq!(
         state["comments_list"],
-        json!({"show_resolved": false, "rows": [{
+        json!({"show_resolved": false, "show_annotations": false, "expanded": null, "rows": [{
             "id": thread, "state": "open", "outdated": false, "not_in_comparison": false,
             "pending": false, "location": "src/app.ts:2", "file_level": false, "summary": "Why 3?",
-            "snippet": null,
+            "snippet": null, "unlisted": false, "drawable": true,
         }], "menu": null})
     );
     let thread_state = &state["session"]["threads"][0];
@@ -508,6 +508,7 @@ fn a_seeded_repo_opens_as_a_review_and_the_agent_answers(cx: &mut TestAppContext
             "author": {"kind": "agent", "name": "claude-code"},
             "round": 1,
             "note": "Ready for another look.",
+            "annotations": 0,
             "open": false,
         })
     );

@@ -3618,11 +3618,13 @@ nothing waits on it.
   agent's question answered by the reviewer: acted on, replied to, addressed (§10.5), its
   `annotation` flag saying where it began. An agent's replies leave it an annotation (adding to
   its explanation). Deleting the reviewer's reply moves nothing back, as a deletion never moves
-  a state.
+  a state: the thread stays open, with no question in it, until the reviewer resolves it (the
+  agent's wait counts it as one of its own questions still waiting for the reviewer).
 - **No state changes.** Address, resolve and reopen on a thread in state `annotation` are
-  refused by `ops::set_thread_state` before its author checks (`OpError::Annotation`, the CLI's
-  exit 1 `rejected`: "an annotation waits on no one; reply to it to ask about it"), so the
-  reviewer and the agent hear the same thing; the fold skips such an event.
+  refused by `ops::set_thread_state` before its author checks (the fold's own
+  `Rejection::Annotation`, the CLI's exit 1 `rejected`: "an annotation waits on no one; reply
+  to it to ask about it"), so the reviewer and the agent hear the same thing; the fold skips
+  such an event.
 - **Editing and deleting** are the author's, as for any thread (`ops::edit_body`,
   `ops::delete_item`). The CLI gains them for whoever wrote an item: `dv comment edit <id> (--body |
   --body-file)` and `dv comment delete <id>` (a thread or a reply; `not_allowed` for anyone
@@ -3681,8 +3683,10 @@ nothing waits on it.
   file view alike. **Ask** (`R`) opens the reply composer in it; posting turns it into a thread
   card, open, which the agent reads once the round is finished, as any thread. Nothing else
   acts on it: reading one needs no acknowledgement, and a reply is always a question.
-- **`A`** shows or hides every annotation in the review, the stream and the file view: session
-  state (`ReviewUi`), shown whenever a review opens. It is a render filter only: placement, the
+- **`A`** shows or hides every annotation in the review, the stream and the file view: the
+  open review's state (`ReviewSession::annotations_shown`), never persisted, shown whenever a
+  review opens. An annotation the reviewer is writing a question in keeps its card, hidden,
+  outdated or not, until that composer closes (`ReviewSession::shows_card`). It is a render filter only: placement, the
   files loaded for threads and the comments list are the same either way.
 - **In an interdiff** since round n, only annotations written since (their first anchor's round
   after n) are drawn: one from an earlier round explained code the reviewer has read already.

@@ -53,6 +53,7 @@ fn summary(target: Target, worktree: &str, status: ReviewStatus) -> ReviewSummar
             open: 3,
             addressed: 0,
             resolved: 1,
+            annotation: 0,
         },
         pr: None,
         warnings: 0,

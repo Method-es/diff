@@ -135,8 +135,52 @@ pub fn add_thread(
             anchor,
             body: body.to_string(),
             author,
+            annotation: false,
         },
         check_not_finished,
+    )?;
+    Ok(id)
+}
+
+/// Adds an agent's annotation anchored at `anchor` (PLAN §19): a thread in state
+/// `annotation`, waiting on no one; returns its id. Only an agent annotates, and never a PR
+/// review, which is the reviewer's (PLAN §2.4).
+pub fn annotate(
+    store: &ReviewStore,
+    review: &ReviewId,
+    anchor: Anchor,
+    body: &str,
+    author: Author,
+) -> Result<ThreadId, OpError> {
+    if author.kind != AuthorKind::Agent {
+        return Err(OpError::NotAllowed {
+            actor: author.kind,
+            action: "annotate a change: annotations are an agent's".to_string(),
+        });
+    }
+    check_body(body, "annotation")?;
+    let id = ThreadId::generate();
+    let actor = author.kind;
+    commit(
+        store,
+        review,
+        EventBody::ThreadAdded {
+            id: id.clone(),
+            anchor,
+            body: body.to_string(),
+            author,
+            annotation: true,
+        },
+        |state| {
+            check_not_finished(state)?;
+            if state.is_pr_review() {
+                return Err(OpError::NotAllowed {
+                    actor,
+                    action: "annotate a PR review: PR reviews are the reviewer's".to_string(),
+                });
+            }
+            Ok(())
+        },
     )?;
     Ok(id)
 }
@@ -175,8 +219,10 @@ pub fn reply(
 /// as [`reply`] does. `false` when the thread was already in that state and nothing was
 /// written (the relocated anchor included).
 ///
-/// An agent asking to resolve or reopen is [`OpError::NotAllowed`] before the thread's state
-/// is looked at, so it is told that those are the reviewer's, whatever state the thread is in.
+/// An annotation is [`Rejection::Annotation`] first, whoever asks (PLAN §19.1: its state
+/// doesn't change, a reply asks about it). Otherwise an agent asking to resolve or reopen is
+/// [`OpError::NotAllowed`] before the thread's state is looked at, so it is told that those are
+/// the reviewer's, whatever state the thread is in.
 pub fn set_thread_state(
     store: &ReviewStore,
     review: &ReviewId,
@@ -186,19 +232,7 @@ pub fn set_thread_state(
     author: Author,
     relocated: Option<Anchor>,
 ) -> Result<bool, OpError> {
-    if author.kind == AuthorKind::Agent {
-        let action = match state {
-            ThreadState::Resolved => Some("resolve a thread: only the reviewer resolves threads"),
-            ThreadState::Open => Some("reopen a thread: only the reviewer reopens threads"),
-            ThreadState::Addressed => None,
-        };
-        if let Some(action) = action {
-            return Err(OpError::NotAllowed {
-                actor: author.kind,
-                action: action.to_string(),
-            });
-        }
-    }
+    let actor = author.kind;
     let note = note.map(str::trim).filter(|note| !note.is_empty());
     let outcome = commit(
         store,
@@ -210,7 +244,33 @@ pub fn set_thread_state(
             author,
             anchor: relocated,
         },
-        check_not_finished,
+        |review| {
+            if review
+                .thread(thread)
+                .is_some_and(|found| found.state == ThreadState::Annotation)
+            {
+                return Err(Rejection::Annotation {
+                    thread: thread.clone(),
+                }
+                .into());
+            }
+            if actor == AuthorKind::Agent {
+                let action = match state {
+                    ThreadState::Resolved => {
+                        Some("resolve a thread: only the reviewer resolves threads")
+                    }
+                    ThreadState::Open => Some("reopen a thread: only the reviewer reopens threads"),
+                    ThreadState::Addressed | ThreadState::Annotation => None,
+                };
+                if let Some(action) = action {
+                    return Err(OpError::NotAllowed {
+                        actor,
+                        action: action.to_string(),
+                    });
+                }
+            }
+            check_not_finished(review)
+        },
     )?;
     Ok(outcome == Outcome::Changed)
 }

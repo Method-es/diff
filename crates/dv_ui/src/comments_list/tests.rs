@@ -152,6 +152,8 @@ fn rows_list_waiting_threads_in_stream_order_and_copy_the_open_ones(cx: &mut Tes
                 file_level: false,
                 summary: "Why upper case?".to_string(),
                 snippet: None,
+                unlisted: false,
+                drawable: true,
             },
             CommentRow {
                 id: on_a.clone(),
@@ -163,6 +165,8 @@ fn rows_list_waiting_threads_in_stream_order_and_copy_the_open_ones(cx: &mut Tes
                 file_level: false,
                 summary: "Spell out two.".to_string(),
                 snippet: None,
+                unlisted: false,
+                drawable: true,
             },
         ]
     );
@@ -258,6 +262,8 @@ fn copy_as_prompt_says_when_a_thread_isnt_placed_yet() {
         file_level: false,
         summary: "Why?".to_string(),
         snippet: None,
+        unlisted: false,
+        drawable: true,
     };
     assert_eq!(super::prompt_location(&row), "src/a.rs:12");
     let waiting = CommentRow {
@@ -463,4 +469,124 @@ fn the_row_menu_closes_with_esc_an_overlay_the_panel_or_its_row(cx: &mut TestApp
         shell.comments_list().read(cx).rows(cx).is_empty()
     });
     assert_eq!(menu(cx), None);
+}
+
+/// The agent annotates line `line` of `path` as the CLI does (`ops::annotate`); the session
+/// reads it back.
+fn annotate(
+    shell: &Entity<Shell>,
+    path: &str,
+    line: u32,
+    body: &str,
+    cx: &mut VisualTestContext,
+) -> ThreadId {
+    let session = session(shell, cx);
+    let (store, review, anchor) = session.read_with(cx, |session, _| {
+        let anchor = session
+            .anchor_for(path, AnchorSide::New, line, line)
+            .expect("the lines are loaded");
+        (session.store().clone(), session.review_id().clone(), anchor)
+    });
+    let id = ops::annotate(&store, &review, anchor, body, Author::agent("claude-code"))
+        .expect("the agent annotates");
+    session.update(cx, |session, cx| session.reload_fold(cx));
+    let wanted = id.clone();
+    settle(cx, shell, "the annotation", move |shell, cx| {
+        shell
+            .session()
+            .is_some_and(|session| session.read(cx).review().thread(&wanted).is_some())
+    });
+    id
+}
+
+#[gpui::test]
+fn annotations_are_listed_apart_and_one_whose_code_is_gone_opens_in_its_row(
+    cx: &mut TestAppContext,
+) {
+    let repo = fixture();
+    let (_dir, shell, cx) = open(&repo, cx);
+    let note = annotate(&shell, "a.txt", 2, "Spelled out as a digit on purpose.", cx);
+    let asked = add_thread(&shell, "b.txt", 2, "Why upper case?", cx);
+    let list = shell.read_with(cx, |shell, _| shell.comments_list().clone());
+
+    // Waiting on no one: only the reviewer's thread until the annotations are asked for.
+    let ids = |cx: &mut VisualTestContext| -> Vec<ThreadId> {
+        list_rows(&shell, cx)
+            .into_iter()
+            .map(|row| row.id)
+            .collect()
+    };
+    assert_eq!(ids(cx), std::slice::from_ref(&asked));
+    list.update(cx, |list, cx| list.set_show_annotations(true, cx));
+    assert_eq!(ids(cx), [asked.clone(), note.clone()]);
+    let row = list_rows(&shell, cx).pop().expect("the annotation's row");
+    assert_eq!(row.state, ThreadState::Annotation);
+    assert!(row.drawable && !row.outdated);
+
+    // Its row shows the annotations again when `A` hid them.
+    let session = session(&shell, cx);
+    session.update(cx, |session, cx| session.set_annotations_shown(false, cx));
+    list.update(cx, |list, cx| list.reveal(&note, cx));
+    assert!(session.read_with(cx, |session, _| session.annotations_shown()));
+
+    // Its line rewritten, it explained code that is gone: no card, its text under its row.
+    repo.write("a.txt", "one\nTWO and more\nthree\n");
+    session.update(cx, |session, cx| session.rescan(cx));
+    let wanted = note.clone();
+    settle(
+        cx,
+        &shell,
+        "the annotation to go outdated",
+        move |shell, cx| {
+            shell.session().is_some_and(|session| {
+                let session = session.read(cx);
+                session
+                    .review()
+                    .thread(&wanted)
+                    .is_some_and(|thread| session.placement(thread).is_outdated())
+            })
+        },
+    );
+    let row = list_rows(&shell, cx).pop().expect("the annotation's row");
+    assert!(row.outdated && !row.drawable);
+    list.update(cx, |list, cx| list.reveal(&note, cx));
+    assert_eq!(
+        list.read_with(cx, |list, _| list.expanded().cloned()),
+        Some(note.clone())
+    );
+    list.update(cx, |list, cx| list.reveal(&note, cx));
+    assert_eq!(list.read_with(cx, |list, _| list.expanded().cloned()), None);
+}
+
+#[gpui::test]
+fn an_annotation_on_a_file_the_review_no_longer_changes_has_no_card(cx: &mut TestAppContext) {
+    let repo = fixture();
+    let (_dir, shell, cx) = open(&repo, cx);
+    let note = annotate(&shell, "a.txt", 1, "Kept the first line.", cx);
+    // The agent reverts the file: it leaves the review, the annotation's line still there.
+    repo.write("a.txt", "one\ntwo\nthree\n");
+    let session = session(&shell, cx);
+    session.update(cx, |session, cx| session.rescan(cx));
+    let wanted = note.clone();
+    settle(
+        cx,
+        &shell,
+        "the file to leave the review",
+        move |shell, cx| {
+            shell.session().is_some_and(|session| {
+                let session = session.read(cx);
+                session
+                    .review()
+                    .thread(&wanted)
+                    .is_some_and(|thread| session.placement(thread).is_unlisted())
+            })
+        },
+    );
+    // Not in the "Not in the diff" section, and listed as on an unchanged file without a menu.
+    let in_section = session.read_with(cx, |session, _| session.threads_not_in_diff().count());
+    assert_eq!(in_section, 0);
+    let list = shell.read_with(cx, |shell, _| shell.comments_list().clone());
+    list.update(cx, |list, cx| list.set_show_annotations(true, cx));
+    let row = list_rows(&shell, cx).pop().expect("the annotation's row");
+    assert!(row.unlisted && !row.drawable && !row.outdated);
 }

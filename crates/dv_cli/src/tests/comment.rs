@@ -341,6 +341,7 @@ fn a_thread_shows_in_full() {
             "id": id.as_str(),
             "review_id": review.id.as_str(),
             "state": "addressed",
+            "annotation": false,
             "placement": "moved",
             "outdated": false,
             "in_diff": true,

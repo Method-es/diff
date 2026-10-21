@@ -519,6 +519,7 @@ impl DiffPane {
                 let placement = session.placement(thread);
                 let inner = placement.placement();
                 !placement.is_pending()
+                    && session.shows_card(thread, &placement)
                     && ((thread.anchor.side == file.side
                         && inner.file() == Some(file.path.as_str()))
                         || inner.unlisted_path() == Some(file.path.as_str()))

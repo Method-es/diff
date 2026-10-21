@@ -1,6 +1,6 @@
 ---
 name: dv-review
-description: Address code review comments left in dv, the local diff reviewer, then hand the work back and wait for the verdict. Use when asked to address review comments, to act on a dv review, when the reviewer left comments on your changes, or to wait for the reviewer in a repository reviewed with dv.
+description: Address code review comments left in dv, the local diff reviewer, then hand the work back and wait for the verdict; or put your finished work up for review in dv with annotations that explain it. Use when asked to address review comments, to act on a dv review, when the reviewer left comments on your changes, to wait for the reviewer in a repository reviewed with dv, or to hand your work over for review in dv.
 ---
 
 # Answering a dv review
@@ -37,7 +37,8 @@ approves.
   and 4 show both). A short one-line note may go inline in single quotes; never in double
   quotes, where a POSIX shell runs whatever is in backticks and PowerShell reads a backtick as
   its escape character.
-- Don't start a review (`dv review new`) unless the user asks you to.
+- Don't start a review (`dv review new`) unless the user asks you to (asking you to hand your
+  work over for review in dv is asking: "Handing your work over", below).
 - Commit only if the user's instructions say so.
 
 ## The loop
@@ -199,6 +200,71 @@ EOF
 `dv comment add` asks the reviewer something on lines of a changed file (`--side old` for the
 lines as they were), or without `--lines` on the whole file (`--side old` for a deleted
 file).
+
+## Handing your work over
+
+When the user asks you to put your work up for review in dv (or their instructions say to),
+open the review yourself, explain your change in annotations beside the code, and hand it over:
+the reviewer then reads your reasons with the code instead of spending a round asking for them.
+Do this once the code is final. An annotation sits on the lines as they are when you write it,
+and one whose code you rewrite afterwards can't be shown any more.
+
+```sh
+dv review new --author <agent> --json
+```
+
+This opens the review of the working tree's changes, or resumes the one already open; add
+`--branch` when your work is committed on the branch checked out (the working tree is then
+clean, and there is nothing else to review). Keep `review.id`. If `created` is `false` and
+`rounds` isn't empty, the review is already under way: work through it with the loop above, and
+annotate only changes nobody asked for.
+
+Annotate what the reviewer would otherwise have to ask about, on the lines it concerns, or
+without `--lines` on why a whole file changed:
+
+```sh
+dv comment annotate --review <review-id> --author <agent> --file src/app.ts --lines 10:12 --body-file - <<'EOF'
+Reads through the cache first: this query ran on every request, and writes invalidate the entry.
+EOF
+dv comment annotate --review <review-id> --author <agent> --file src/app.ts --body-file - <<'EOF'
+Split out of `api.ts` so the cache can be tested without the server.
+EOF
+```
+
+What makes a good annotation, and only those are worth writing (too many, and the reviewer
+learns to skip them):
+
+- A decision, not a description: why this approach over the obvious one, a trade-off you took,
+  something you deliberately left out or out of scope, code that looks wrong but isn't, a
+  behaviour a caller will notice, what the tests cover and what they don't.
+- Never a restatement of the diff ("adds a function that…"), a mechanical change (renames,
+  formatting, imports, generated files, lockfiles), or praise of your own work.
+- Few: at most one per hunk, usually far fewer; a handful in a review of a dozen files. One to
+  three sentences each.
+
+The overview belongs in the hand-over's note, not in an annotation. Hand the review over as in
+step 4, without `--round` (no round has been finished yet), then wait as in step 5:
+
+```sh
+dv review done <review-id> --author <agent> --note-file - <<'EOF'
+- Reads users through a new cache, invalidated on write
+- Split the cache into its own module
+EOF
+```
+
+An annotation waits on no one: `dv comment list --status open` leaves it out, and `--status
+annotation` lists them. When the reviewer replies to one, it becomes an open thread you answer
+like any other. To correct an annotation, or withdraw one that turned out wrong:
+
+```sh
+dv comment edit <thread-id> --author <agent> --body-file - <<'EOF'
+Reads through the cache first; writes invalidate the entry.
+EOF
+dv comment delete <thread-id> --author <agent>
+```
+
+In a later round, explain a fix in its thread's reply and note, not in an annotation: an
+annotation is for a change nobody asked for.
 
 ## Exit codes
 

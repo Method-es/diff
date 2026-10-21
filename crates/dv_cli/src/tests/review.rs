@@ -54,7 +54,7 @@ fn list_shows_the_open_reviews_or_all() {
             "status": "open",
             "round": 1,
             "rounds": [],
-            "threads": {"open": 0, "addressed": 0, "resolved": 0},
+            "threads": {"open": 0, "addressed": 0, "resolved": 0, "annotation": 0},
             "worktree": root,
             "created_at": working.created_at,
             "updated_at": working.updated_at,
@@ -159,7 +159,7 @@ fn show_prints_the_review_with_its_rounds() {
     );
     assert_eq!(
         shown["threads"],
-        json!({"open": 1, "addressed": 0, "resolved": 0})
+        json!({"open": 1, "addressed": 0, "resolved": 0, "annotation": 0})
     );
     // The verdict's status change carries no note.
     assert_eq!(shown["status_note"], json!(null));

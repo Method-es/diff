@@ -134,7 +134,9 @@ fn megabytes(bytes: u64) -> String {
 }
 
 /// "3 open · 1 addressed · 1 resolved", leaving out what is zero; "no comments" when all are.
-pub fn thread_counts(counts: ThreadCounts) -> String {
+/// Then the agent's annotations (PLAN §19.3), "· 5 annotations", "· 5 annotations hidden"
+/// while `A` hides them (`shown` false).
+pub fn thread_counts(counts: ThreadCounts, shown: bool) -> String {
     let parts: Vec<String> = [
         (counts.open, "open"),
         (counts.addressed, "addressed"),
@@ -144,11 +146,21 @@ pub fn thread_counts(counts: ThreadCounts) -> String {
     .filter(|(count, _)| *count > 0)
     .map(|(count, what)| format!("{count} {what}"))
     .collect();
-    if parts.is_empty() {
+    let mut text = if parts.is_empty() {
         "no comments".to_string()
     } else {
         parts.join(" · ")
+    };
+    if counts.annotation > 0 {
+        let noun = if counts.annotation == 1 {
+            "annotation"
+        } else {
+            "annotations"
+        };
+        let hidden = if shown { "" } else { " hidden" };
+        text.push_str(&format!(" · {} {noun}{hidden}", counts.annotation));
     }
+    text
 }
 
 impl Shell {
@@ -198,7 +210,7 @@ impl Shell {
                     "{} · round {} · {}{since}",
                     status_label(review.status),
                     review.shown_round(),
-                    thread_counts(review.summary().threads),
+                    thread_counts(review.summary().threads, session.annotations_shown()),
                 )),
                 finish: !session.is_read_only(),
             };
@@ -499,12 +511,26 @@ mod tests {
             open,
             addressed,
             resolved,
+            annotation: 0,
         };
-        assert_eq!(thread_counts(counts(0, 0, 0)), "no comments");
-        assert_eq!(thread_counts(counts(3, 0, 1)), "3 open · 1 resolved");
+        assert_eq!(thread_counts(counts(0, 0, 0), true), "no comments");
+        assert_eq!(thread_counts(counts(3, 0, 1), true), "3 open · 1 resolved");
         assert_eq!(
-            thread_counts(counts(1, 2, 3)),
+            thread_counts(counts(1, 2, 3), true),
             "1 open · 2 addressed · 3 resolved"
+        );
+        // The agent's annotations, apart (PLAN §19.3).
+        let annotated = |annotation| ThreadCounts {
+            annotation,
+            ..counts(0, 0, 0)
+        };
+        assert_eq!(
+            thread_counts(annotated(5), true),
+            "no comments · 5 annotations"
+        );
+        assert_eq!(
+            thread_counts(annotated(1), false),
+            "no comments · 1 annotation hidden"
         );
     }
 }

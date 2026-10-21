@@ -15,7 +15,8 @@ use crate::actions::diff_pane::{
     ClearSelection, Comment, CommentOnFile, Copy, CursorDown, CursorLeft, CursorRight, CursorUp,
     ExpandGap, ExpandGapFully, Find, FindReferences, GoToDefinition, HoverAtCaret, NextChange,
     NextFile, NextThread, PageDown, PageUp, PreviousChange, PreviousFile, PreviousThread, Reply,
-    ResolveThread, SelectDown, SelectUp, ToggleComparison, ToggleSplit, ToggleViewed, ViewFile,
+    ResolveThread, SelectDown, SelectUp, ToggleAnnotations, ToggleComparison, ToggleSplit,
+    ToggleViewed, ViewFile,
 };
 use crate::actions::find;
 use crate::services::ViewMode;
@@ -104,6 +105,7 @@ impl DiffPane {
             ExpandGapFully => expand_fully,
             ToggleSplit => toggle_split,
             ToggleComparison => toggle_comparison,
+            ToggleAnnotations => toggle_annotations,
             ViewFile => view_current_file,
             CursorUp => cursor_up,
             CursorDown => cursor_down,
@@ -273,6 +275,17 @@ impl DiffPane {
         if let Some(session) = self.session.clone() {
             session.update(cx, |session, cx| session.toggle_comparison(cx));
         }
+    }
+
+    /// `A`: shows or hides the agent's annotations, in the stream and the file view alike (PLAN
+    /// §19.3). A hidden annotation that was the keyboard's thread takes no `R`: its card isn't
+    /// drawn (`start_reply`).
+    fn toggle_annotations(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        let shown = session.read(cx).annotations_shown();
+        session.update(cx, |session, cx| session.set_annotations_shown(!shown, cx));
     }
 
     /// Where the keys start from: the cursor's row, else the row at the top of the viewport.

@@ -93,7 +93,13 @@ pub(crate) fn done(
     args: &ReviewDoneArgs,
     ctx: &mut Context,
 ) -> Result<Exit, CliError> {
-    let agent = identity::require_agent(global, ctx, "dv review done")?;
+    let agent = identity::require_agent(
+        global,
+        ctx,
+        "dv review done",
+        "handoff",
+        "the reviewer finishes a round with `dv review submit`",
+    )?;
     let note = body::note(&args.note, ctx)?;
     let repo = Repo::open(global, ctx)?;
     let review = select::review(&repo, global, ctx, args.review.id.as_deref())?;

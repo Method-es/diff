@@ -42,6 +42,7 @@ pub(crate) fn list(
                 ThreadStatusArg::Open => thread.state == ThreadState::Open,
                 ThreadStatusArg::Addressed => thread.state == ThreadState::Addressed,
                 ThreadStatusArg::Resolved => thread.state == ThreadState::Resolved,
+                ThreadStatusArg::Annotation => thread.state == ThreadState::Annotation,
                 ThreadStatusArg::Outdated => outdated,
             })
     };

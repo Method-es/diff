@@ -172,6 +172,9 @@ impl ThreadCard {
 
 impl RenderOnce for ThreadCard {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        if self.thread.state == ThreadState::Annotation {
+            return self.render_annotation(cx);
+        }
         let theme = cx.dv_theme().clone();
         let c = &theme.colors;
         let name = format!("thread/{}", self.thread.id);
@@ -378,6 +381,7 @@ impl RenderOnce for ThreadCard {
             self.thread.created_at,
             self.now,
             true,
+            self.thread.annotation,
             &theme,
             cx,
         )];
@@ -393,6 +397,7 @@ impl RenderOnce for ThreadCard {
                 &reply.body,
                 reply.created_at,
                 self.now,
+                false,
                 false,
                 &theme,
                 cx,
@@ -419,6 +424,145 @@ impl RenderOnce for ThreadCard {
 }
 
 impl ThreadCard {
+    /// An annotation's card (DESIGN §4.1 "Annotation card", PLAN §19.3): quieter than a
+    /// thread's, since nothing waits on it — the diff's own surface, a `line` outline, no
+    /// shadow and a blue rule down its left edge; a header with the agent, "Annotation", the
+    /// anchor and **Ask**; the explanation and the agent's additions to it; the reply composer
+    /// once the reviewer asks.
+    fn render_annotation(self, cx: &mut App) -> AnyElement {
+        let theme = cx.dv_theme().clone();
+        let c = &theme.colors;
+        let name = format!("thread/{}", self.thread.id);
+        let anchor_text = match &self.path {
+            Some(path) => format!(
+                "{path} · {}",
+                shown_anchor_label(&self.thread.anchor, self.lines, self.moved)
+            ),
+            None => shown_anchor_label(&self.thread.anchor, self.lines, self.moved),
+        };
+        let on_reply = self.on_reply.clone().filter(|_| !self.read_only);
+        let ask = small_button(ElementId::Name(format!("{name}/ask").into()), "Ask", &theme)
+            .when(self.focused && !self.read_only, |this| {
+                this.child(kbd(keymap::label("r"), &theme))
+            })
+            .map(|this| match on_reply {
+                Some(on_reply) => this.on_click(move |_, window, cx| on_reply(window, cx)),
+                None => this.opacity(0.5).cursor_default(),
+            })
+            .automation_target(format!("{name}/ask"));
+        let header = div()
+            .flex()
+            .items_center()
+            .gap(theme.spacing.sm)
+            .h(px(28.))
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(16.))
+                    .rounded(theme.radii.small)
+                    .bg(c.blue_soft)
+                    .child(icon(DvIcon::Bot, px(10.), c.blue)),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(c.fg2)
+                    .child(SharedString::from(self.thread.author.name.clone())),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_spec(&theme.text.secondary)
+                    .text_color(c.fg3)
+                    .child("Annotation"),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .map(|this| {
+                        if self.path.is_some() {
+                            this.text_ellipsis_start()
+                        } else {
+                            this.text_ellipsis()
+                        }
+                    })
+                    .text_spec(&theme.text.secondary)
+                    .text_color(c.fg3)
+                    .child(anchor_text),
+            )
+            .child(ask);
+        let body = |id: String, text: &str| {
+            crate::markdown::view(ElementId::Name(id.into()), text, cx)
+                .text_size(theme.text.body.size)
+                .line_height(px(20.))
+                .text_color(c.fg2)
+        };
+        // The agent's own additions to its explanation, each under its name and time.
+        let additions = self
+            .thread
+            .replies
+            .iter()
+            .filter(|reply| !reply.is_deleted())
+            .map(|reply| {
+                div()
+                    .mt(theme.spacing.sm)
+                    .pt(theme.spacing.sm)
+                    .border_t_1()
+                    .border_color(c.line)
+                    .child(
+                        div()
+                            .text_spec(&theme.text.secondary)
+                            .text_color(c.fg3)
+                            .child(format!(
+                                "{} · {}",
+                                reply.author.name,
+                                relative_time(reply.created_at, self.now)
+                            )),
+                    )
+                    .child(body(format!("{name}/{}", reply.id), &reply.body))
+            })
+            .collect::<Vec<_>>();
+        let content = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .pl(theme.spacing.md)
+            .pr(theme.spacing.sm)
+            .pb(px(10.))
+            .child(header)
+            .child(body(format!("{name}/body"), &self.thread.body))
+            .children(additions)
+            .children(
+                self.reply
+                    .map(|composer| div().mt(theme.spacing.md).child(composer)),
+            );
+        div()
+            .id(ElementId::Name(format!("{name}/card").into()))
+            .w_full()
+            .flex()
+            .rounded(theme.radii.card)
+            .border_1()
+            .border_color(if self.focused { c.accent_ring } else { c.line })
+            .bg(c.code)
+            .overflow_hidden()
+            .text_spec(&theme.text.body)
+            .text_color(c.fg)
+            .when_some(self.on_focus.clone(), |this, focus| {
+                this.on_mouse_down(MouseButton::Left, move |_, window, cx| focus(window, cx))
+            })
+            .child(div().flex_none().w(px(2.)).bg(c.blue))
+            .child(content)
+            .automation_target(name)
+    }
+
     /// Resolve and Reopen as the state allows (PLAN §2.5), disabled on a finished review.
     fn actions(&self, name: &str, theme: &DvTheme) -> Vec<AnyElement> {
         let wanted: &[(&str, &str, ThreadState)] = match self.thread.state {
@@ -428,6 +572,8 @@ impl ThreadCard {
                 ("reopen", "Reopen", ThreadState::Open),
             ],
             ThreadState::Resolved => &[("reopen", "Reopen", ThreadState::Open)],
+            // Its own card (`render_annotation`) offers Ask instead.
+            ThreadState::Annotation => &[],
         };
         wanted
             .iter()
@@ -511,6 +657,9 @@ fn state_chip(thread: &Thread, theme: &DvTheme) -> AnyElement {
         ThreadState::Resolved => chip(c.green, c.green_soft, theme)
             .child(icon(DvIcon::CircleCheck, px(12.), c.green))
             .child(label),
+        ThreadState::Annotation => chip(c.blue, c.blue_soft, theme)
+            .child(icon(DvIcon::Bot, px(12.), c.blue))
+            .child(label),
     }
     .min_w_0()
     .flex_shrink_1()
@@ -519,6 +668,8 @@ fn state_chip(thread: &Thread, theme: &DvTheme) -> AnyElement {
 }
 
 /// One comment: the avatar, the author's name and role, the time, and the body as Markdown.
+/// `annotation`: the opening comment of a thread that began as the agent's annotation, which
+/// says so in a quiet tag (DESIGN §4.1).
 #[allow(clippy::too_many_arguments)]
 fn comment(
     id: ElementId,
@@ -527,6 +678,7 @@ fn comment(
     at: u64,
     now: u64,
     first: bool,
+    annotation: bool,
     theme: &DvTheme,
     cx: &App,
 ) -> Div {
@@ -564,6 +716,7 @@ fn comment(
                                 .child(SharedString::from(author.name.clone())),
                         )
                         .child(role)
+                        .when(annotation, |this| this.child(tag("annotation", theme)))
                         .child(
                             div()
                                 .text_spec(&theme.text.secondary)
@@ -644,6 +797,9 @@ pub struct ComposerBox {
     posting: bool,
     error: Option<Failure>,
     compact: bool,
+    /// Beside "Markdown" in the footer: what happens to the text ("claude-code reads it when
+    /// you finish the round", asking about an annotation).
+    hint: Option<String>,
     on_post: Handler,
     on_cancel: Handler,
 }
@@ -665,6 +821,7 @@ impl ComposerBox {
             posting: false,
             error: None,
             compact: false,
+            hint: None,
             on_post: Rc::new(on_post),
             on_cancel: Rc::new(on_cancel),
         }
@@ -684,6 +841,12 @@ impl ComposerBox {
     /// Inside a thread card: no heading, no card of its own.
     pub fn compact(mut self, compact: bool) -> Self {
         self.compact = compact;
+        self
+    }
+
+    /// Words beside "Markdown" in the footer.
+    pub fn hint(mut self, hint: Option<String>) -> Self {
+        self.hint = hint;
         self
     }
 }
@@ -730,9 +893,14 @@ impl RenderOnce for ComposerBox {
             .child(
                 div()
                     .flex_1()
+                    .min_w_0()
+                    .truncate()
                     .text_spec(&theme.text.secondary)
                     .text_color(c.fg3)
-                    .child("Markdown"),
+                    .child(match &self.hint {
+                        Some(hint) => format!("Markdown · {hint}"),
+                        None => "Markdown".to_string(),
+                    }),
             )
             .child(
                 small_button("composer-cancel", "Cancel", &theme)

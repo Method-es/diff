@@ -458,7 +458,7 @@ fn a_thread_in_a_file_the_stream_never_asked_for_is_placed(cx: &mut TestAppConte
         let thread = thread(session, &id);
         assert!(!session.placement(thread).is_pending());
         assert_eq!(session.location(thread), "z.rs:15");
-        let rows = crate::comments_list::rows(session, false);
+        let rows = crate::comments_list::rows(session, false, false);
         assert_eq!(rows[0].location, "z.rs:15");
         assert!(!rows[0].pending);
         let prompt = crate::comments_list::prompt_threads(session);
@@ -519,7 +519,7 @@ fn threads_the_interdiff_doesnt_show_are_named_where_they_stand_in_all_changes(
         assert!(placement.is_not_in_comparison() && placement.is_outdated());
         // On the old side, where it was written.
         assert_eq!(session.location(thread(&old)), "q.rs:2 (old)");
-        let rows = crate::comments_list::rows(session, false);
+        let rows = crate::comments_list::rows(session, false, false);
         let row = |id: &ThreadId| rows.iter().find(|row| &row.id == id).unwrap();
         assert!(row(&moved).not_in_comparison && !row(&moved).outdated);
         assert_eq!(row(&moved).location, "p.rs:15");

@@ -23,12 +23,18 @@ pub(crate) fn review_line(review: &ReviewDto) -> String {
     )
 }
 
-/// `1 open, 0 addressed, 2 resolved`.
+/// `1 open, 0 addressed, 2 resolved`, then `, 3 annotations` when there are any (PLAN §19).
 pub(crate) fn counts(counts: &ThreadCountsDto) -> String {
-    format!(
+    let mut text = format!(
         "{} open, {} addressed, {} resolved",
         counts.open, counts.addressed, counts.resolved
-    )
+    );
+    match counts.annotation {
+        0 => {}
+        1 => text.push_str(", 1 annotation"),
+        n => text.push_str(&format!(", {n} annotations")),
+    }
+    text
 }
 
 /// A thread's header line: `t-…  open  src/a.ts:12`.

@@ -10,7 +10,7 @@
 
 use dv_core::label::Labels;
 use dv_core::review::{
-    ListEntry, Review, ReviewId, ReviewSummary, StoreError, Thread, ThreadId, ops,
+    ItemId, ListEntry, Review, ReviewId, ReviewSummary, StoreError, Thread, ThreadId, ops,
 };
 
 use crate::args::GlobalArgs;
@@ -215,6 +215,50 @@ pub(crate) fn thread(
     }
     Err(CliError::not_found(format!(
         "no thread {id} in the reviews of {}",
+        repo.root()
+    )))
+}
+
+/// The review holding the thread or reply `id` (`dv comment edit | delete`), found as
+/// [`thread`] finds a thread: in `--review`'s review, else in every review of the repository.
+/// A deleted item, or a reply in a deleted thread, is not found.
+pub(crate) fn item(
+    repo: &Repo,
+    global: &GlobalArgs,
+    id: &str,
+) -> Result<(Review, ItemId), CliError> {
+    let id = ItemId::parse(id.trim()).map_err(|error| CliError::usage(error.to_string()))?;
+    let live = |review: &Review| match &id {
+        ItemId::Thread(thread) => review
+            .thread(thread)
+            .is_some_and(|thread| !thread.is_deleted()),
+        ItemId::Comment(reply) => review
+            .live_threads()
+            .any(|thread| thread.reply(reply).is_some_and(|reply| !reply.is_deleted())),
+    };
+    if let Some(review) = &global.review {
+        let review = load(repo, &parse(review, "--review")?)?;
+        return if live(&review) {
+            Ok((review, id))
+        } else {
+            Err(CliError::not_found(format!(
+                "no {id} in review {}",
+                review.id
+            )))
+        };
+    }
+    for summary in Listing::read(repo)?.summaries {
+        let review = match repo.store.load(&summary.id) {
+            Ok(loaded) => loaded.review,
+            Err(StoreError::UnknownReview { .. }) => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if live(&review) {
+            return Ok((review, id));
+        }
+    }
+    Err(CliError::not_found(format!(
+        "no {id} in the reviews of {}",
         repo.root()
     )))
 }

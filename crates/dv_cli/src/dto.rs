@@ -16,8 +16,9 @@
 //! | `review submit` | [`ReviewSubmitDoc`]: `review`, `round` (the round it closed) |
 //! | `review delete` | [`ReviewDeleteDoc`]: `deleted` (the id) |
 //! | `comment list` | [`CommentListDoc`]: `review_id`, `threads` |
-//! | `comment show`, `comment add` | [`CommentShowDoc`]: `thread` |
+//! | `comment show`, `comment add`, `comment annotate`, `comment edit` | [`CommentShowDoc`]: `thread` (an edited reply: [`ReplyDoc`]) |
 //! | `comment reply` | [`ReplyDoc`]: `reply`, `thread` |
+//! | `comment delete` | [`CommentDeleteDoc`]: `deleted` (the id), `thread` (`null` once the thread itself is deleted) |
 //! | `comment address`, `resolve`, `reopen` | [`ThreadChangeDoc`]: `changed`, `thread` |
 //! | `doctor` | [`DoctorDoc`]: `ok`, `environments: [{name, kind, running, note, checks: [{id, title, state, detail, fix}]}]` ([`Environment`], [`Check`]: `state` `ok`, `missing`, `out_of_date`, `failed` or `skipped`; `fix` `{action, command}` or `null`) |
 //! | `setup agents` | [`SetupAgentsDoc`]: `agents: [{agent, path, action, reason}]` |
@@ -30,10 +31,13 @@
 //! "working tree vs main", a `working` or `staged` review named by the `HEAD` of the worktree
 //! it was made in), `status`, `round` (the round in progress; a finished review's last),
 //! `rounds` (the closed ones: `{n, verdict, body, closed_at}`), `threads` (`{open, addressed,
-//! resolved}`), `worktree`, `created_at`, `updated_at`, `status_note` (the note the last status
+//! resolved, annotation}`, `annotation` the agent's annotations nobody asked about, PLAN §19), `worktree`, `created_at`, `updated_at`, `status_note` (the note the last status
 //! change carried, e.g. `dv review done --note`, or `null`).
 //!
-//! A thread ([`ThreadDto`]): `id`, `review_id`, `state` (`open`, `addressed`, `resolved`),
+//! A thread ([`ThreadDto`]): `id`, `review_id`, `state` (`open`, `addressed`, `resolved`, or
+//! `annotation`: an agent's explanation of its change, waiting on no one, PLAN §19),
+//! `annotation` (`true` for a thread an agent opened as an annotation, which it stays once the
+//! reviewer's reply opened it),
 //! `placement` (`unchanged`, `moved`, `edited`, `outdated` or `file`: where its code stands in
 //! the review's current diff, PLAN §8; `moved` also when it stands where an earlier write
 //! recorded it had moved to: `dv_core::review::shows_moved`; `edited` when it stands where it
@@ -223,6 +227,8 @@ pub struct ThreadCountsDto {
     pub open: u32,
     pub addressed: u32,
     pub resolved: u32,
+    /// Annotations nobody has asked about (PLAN §19).
+    pub annotation: u32,
 }
 
 impl ThreadCountsDto {
@@ -233,6 +239,7 @@ impl ThreadCountsDto {
             open: counts.open,
             addressed: counts.addressed,
             resolved: counts.resolved,
+            annotation: counts.annotation,
         }
     }
 }
@@ -465,6 +472,8 @@ pub struct ThreadDto {
     pub id: String,
     pub review_id: String,
     pub state: &'static str,
+    /// An agent opened it as an annotation (PLAN §19), asked about since or not.
+    pub annotation: bool,
     pub placement: &'static str,
     pub outdated: bool,
     /// Its file is among the review's changes. `false` for a thread on a file the review
@@ -518,6 +527,7 @@ impl ThreadDto {
             id: thread.id.to_string(),
             review_id: review.id.to_string(),
             state: thread.state.as_str(),
+            annotation: thread.annotation,
             placement: match located.placement {
                 _ if shows_moved(thread, &located.placement) => "moved",
                 _ if shows_edited(thread, &located.placement) => "edited",
@@ -699,12 +709,22 @@ pub struct WaitTimeoutDoc {
     pub outcome: &'static str,
 }
 
-/// `dv comment reply`.
+/// `dv comment reply`, and `dv comment edit` of a reply.
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct ReplyDoc {
     pub reply: ReplyDto,
     /// The thread with the reply.
     pub thread: ThreadDto,
+}
+
+/// `dv comment delete`.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct CommentDeleteDoc {
+    /// The id of the thread or reply deleted.
+    pub deleted: String,
+    /// The thread a deleted reply was in, as it is now; `null` once the thread itself is
+    /// deleted.
+    pub thread: Option<ThreadDto>,
 }
 
 /// `dv comment address`, `resolve` and `reopen`.

@@ -373,6 +373,9 @@ pub enum CommentCommand {
     /// Comment on lines of a file in the review, or on the whole file
     Add(CommentAddArgs),
 
+    /// Agent: explain your change on lines of a file, or on the whole file (an annotation)
+    Annotate(CommentAddArgs),
+
     /// Reply to a thread
     Reply(CommentReplyArgs),
 
@@ -384,6 +387,30 @@ pub enum CommentCommand {
 
     /// Reviewer: reopen a thread
     Reopen(ThreadIdArg),
+
+    /// Replace the text of a thread or reply you wrote
+    Edit(CommentEditArgs),
+
+    /// Delete a thread or reply you wrote
+    Delete(ItemIdArg),
+}
+
+/// `dv comment edit`.
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct CommentEditArgs {
+    #[command(flatten)]
+    pub item: ItemIdArg,
+
+    #[command(flatten)]
+    pub body: Body,
+}
+
+/// A thread's or a reply's id.
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct ItemIdArg {
+    /// The thread (t-…) or reply (c-…)
+    #[arg(value_name = "ID")]
+    pub id: String,
 }
 
 /// `dv comment list`.
@@ -409,6 +436,8 @@ pub enum ThreadStatusArg {
     Open,
     Addressed,
     Resolved,
+    /// An agent's annotation nobody has asked about (PLAN §19).
+    Annotation,
     Outdated,
 }
 

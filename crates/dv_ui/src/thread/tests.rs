@@ -27,6 +27,7 @@ fn thread(path: &str, side: AnchorSide, lines: (u32, u32), text: &[&str], body: 
         deleted_at: None,
         state: ThreadState::Open,
         last_change: None,
+        annotation: false,
         replies: Vec::new(),
     }
 }

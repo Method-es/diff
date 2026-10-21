@@ -607,7 +607,21 @@ fn ready_banner(
                     div()
                         .flex_none()
                         .child(format!("marked round {} ready", ready.round)),
-                ),
+                )
+                // The annotations it wrote that round, which the stream shows beside the code
+                // (PLAN §19.3).
+                .when(ready.annotations > 0, |this| {
+                    this.child(
+                        div()
+                            .flex_none()
+                            .font_weight(gpui::FontWeight::NORMAL)
+                            .text_color(c.fg2)
+                            .child(match ready.annotations {
+                                1 => "· 1 annotation".to_string(),
+                                n => format!("· {n} annotations"),
+                            }),
+                    )
+                }),
         )
         .child(
             div()

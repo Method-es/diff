@@ -122,7 +122,7 @@ fn shift_c_comments_on_the_current_file_and_its_card_heads_the_file(cx: &mut Tes
 
     // The comments list names it as the file.
     session.read_with(cx, |session, _| {
-        let rows = crate::comments_list::rows(session, false);
+        let rows = crate::comments_list::rows(session, false, false);
         let row = rows.iter().find(|row| row.id == id).expect("its row");
         assert!(row.file_level && !row.outdated);
         assert_eq!(row.location, "b.txt (file)");

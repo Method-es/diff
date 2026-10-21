@@ -414,9 +414,9 @@ impl DiffPane {
                     cx.subscribe(session, |this, _, event: &SessionEvent, cx| match event {
                         SessionEvent::FilesChanged => this.rebuild_all(cx),
                         SessionEvent::FileLoaded(path) => this.file_changed(path, cx),
-                        SessionEvent::ReviewChanged | SessionEvent::HistoryLoaded => {
-                            this.refresh_blocks(cx)
-                        }
+                        SessionEvent::ReviewChanged
+                        | SessionEvent::HistoryLoaded
+                        | SessionEvent::AnnotationsShown => this.refresh_blocks(cx),
                         SessionEvent::Error => cx.notify(),
                         SessionEvent::WorktreeChanged { .. } => {}
                     }),

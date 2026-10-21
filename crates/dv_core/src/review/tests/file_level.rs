@@ -42,6 +42,7 @@ fn file_thread(path: &str, side: AnchorSide) -> Thread {
         deleted_at: None,
         state: ThreadState::Open,
         last_change: None,
+        annotation: false,
         replies: Vec::new(),
     }
 }

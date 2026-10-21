@@ -73,13 +73,15 @@ pub fn opened_in(thread: &Thread) -> u32 {
 
 /// The comments the "Comments" column lists for `round`, the one being finished: the threads
 /// opened in it and earlier rounds' threads not yet resolved (the agent gets both with the
-/// round), in the order given.
+/// round), in the order given; never an annotation nobody asked about, which goes nowhere
+/// (PLAN §19.1).
 pub fn round_comments<'a>(
     threads: impl IntoIterator<Item = &'a Thread>,
     round: u32,
 ) -> Vec<&'a Thread> {
     threads
         .into_iter()
+        .filter(|thread| thread.state != ThreadState::Annotation)
         .filter(|thread| opened_in(thread) == round || thread.state != ThreadState::Resolved)
         .collect()
 }

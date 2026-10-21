@@ -192,6 +192,9 @@ pub enum SessionEvent {
     /// The watch saw these worktree paths change (`rescan`: anything may have, a reconnect's
     /// rescan); the language servers hear of them (PLAN §18.5, `crate::intel`).
     WorktreeChanged { paths: Arc<[String]>, rescan: bool },
+    /// The agent's annotations were shown or hidden (`A`, PLAN §19.3): which cards the stream
+    /// draws changed, nothing else.
+    AnnotationsShown,
 }
 
 /// One open review (see the module docs).
@@ -300,6 +303,13 @@ pub struct ReviewSession {
     watch: WatchState,
     /// The connection to the repository's `dv backend --stdio`, when it is a remote one.
     link: connection::Link,
+    /// Whether the stream draws the agent's annotations (`A`, PLAN §19.3): shown whenever a
+    /// review opens, never persisted.
+    annotations_shown: bool,
+    /// The thread the stream's reply composer answers, whose card stays drawn while it does
+    /// ([`ReviewSession::shows_card`]): a question being written about an annotation never
+    /// loses its card to `A` or to the agent rewriting its code.
+    replying_to: Option<ThreadId>,
 }
 
 impl EventEmitter<SessionEvent> for ReviewSession {}
@@ -374,6 +384,8 @@ impl ReviewSession {
             viewed_error: None,
             watch: WatchState::default(),
             link: connection::Link::new(connection),
+            annotations_shown: true,
+            replying_to: None,
         };
         session.follow_connection(cx);
         // The watch first, so it is registered as early as possible; what the first list reads
@@ -450,6 +462,28 @@ impl ReviewSession {
     /// What the files and diffs shown are: an interdiff or all changes.
     pub fn comparison(&self) -> Comparison {
         self.comparison
+    }
+
+    /// Whether the stream draws the agent's annotations (`A`, PLAN §19.3).
+    pub fn annotations_shown(&self) -> bool {
+        self.annotations_shown
+    }
+
+    /// Keeps `thread`'s card drawn while the stream's reply composer answers it (`None` once
+    /// it closes); see [`ReviewSession::shows_card`].
+    pub fn set_replying_to(&mut self, thread: Option<ThreadId>) {
+        self.replying_to = thread;
+    }
+
+    /// Shows or hides the agent's annotations in the stream and the file view (`A`, a click
+    /// on an annotation's row in the comments list): a render filter alone, so placement and
+    /// the files loaded for threads stay as they are.
+    pub fn set_annotations_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if self.annotations_shown != shown {
+            self.annotations_shown = shown;
+            cx.emit(SessionEvent::AnnotationsShown);
+            cx.notify();
+        }
     }
 
     /// The comparison asked for: what [`ReviewSession::comparison`] becomes once the listing

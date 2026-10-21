@@ -667,6 +667,7 @@ fn anchors_are_checked() {
             anchor,
             body: "x".to_string(),
             author: reviewer(),
+            annotation: false,
         }
     };
     let folded = fold_bodies(vec![
@@ -718,6 +719,7 @@ fn file_level_anchors_fold_and_malformed_ones_are_refused() {
         anchor,
         body: "About the whole file".to_string(),
         author: reviewer(),
+        annotation: false,
     };
     let bad = |edit: fn(&mut Anchor)| {
         let mut anchor = file_anchor("src/lib.rs", AnchorSide::New);
@@ -789,6 +791,7 @@ fn file_level_anchors_fold_and_malformed_ones_are_refused() {
             anchor: file_anchor("src/lib.rs", AnchorSide::New),
             body: "About the whole file".to_string(),
             author: reviewer(),
+            annotation: false,
         },
         reply_with(with_text),
         reply_with(file_anchor("src/renamed.rs", AnchorSide::New)),

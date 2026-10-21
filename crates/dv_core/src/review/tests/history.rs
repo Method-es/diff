@@ -559,6 +559,7 @@ fn removed_at_the_top_heads_the_file_and_a_round_says_nothing_of_a_path_it_wasnt
         deleted_at: None,
         state: ThreadState::Open,
         last_change: None,
+        annotation: false,
         replies: Vec::new(),
     };
     let placed = place_thread(&thread, &[], History::Read(&history), |_, _| {

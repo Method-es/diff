@@ -134,6 +134,7 @@ fn the_skill_is_named_and_says_when_to_use_it() {
         "address review comments",
         "dv review",
         "the reviewer left comments",
+        "hand your work over for review",
     ] {
         assert!(
             description.contains(trigger),
@@ -155,6 +156,8 @@ fn the_skill_is_named_and_says_when_to_use_it() {
         "dv review new",
         "PowerShell",
         "unseen_round",
+        "dv comment annotate",
+        "Do this once the code is final",
     ] {
         assert!(SKILL_MD.contains(rule), "{rule:?}");
     }
@@ -179,6 +182,12 @@ fn every_command_the_skill_shows_parses() {
             "dv review show <review-id> --json",
             "dv comment add --file src/app.ts --lines 10:12 --author <agent> --body-file -",
             "dv comment add --file src/app.ts --author <agent> --body-file -",
+            "dv review new --author <agent> --json",
+            "dv comment annotate --review <review-id> --author <agent> --file src/app.ts --lines 10:12 --body-file -",
+            "dv comment annotate --review <review-id> --author <agent> --file src/app.ts --body-file -",
+            "dv review done <review-id> --author <agent> --note-file -",
+            "dv comment edit <thread-id> --author <agent> --body-file -",
+            "dv comment delete <thread-id> --author <agent>",
         ],
         "the test below runs each of these in turn; update it with the skill"
     );
@@ -396,4 +405,84 @@ fn the_loop_the_skill_teaches_runs() {
     // The reviewer approves; the same wait says so.
     fixture.finish(&review.id, Verdict::Approve);
     assert_eq!(run(8, &thread).json()["outcome"], "approved");
+}
+
+/// The command lines of the skill's "Handing your work over" section, by their place in
+/// [`shown`].
+const NEW: usize = 12;
+const ANNOTATE_LINES: usize = 13;
+const ANNOTATE_FILE: usize = 14;
+const HAND_OVER: usize = 15;
+const EDIT: usize = 16;
+const DELETE: usize = 17;
+
+#[test]
+fn the_hand_over_the_skill_teaches_runs() {
+    let fixture = Fixture::new();
+    let shown = shown();
+    let run = |index: usize, thread: &str, review: &str| {
+        let shown = &shown[index];
+        let args = args(shown, thread, review, "codex", 0);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let ran = fixture.run_stdin(&args, &shown.stdin);
+        assert_eq!(ran.exit, Exit::Ok, "{}: {}", shown.line, ran.stderr);
+        ran
+    };
+
+    // The review, opened by the agent.
+    let json = run(NEW, "", "").json();
+    assert_eq!(json["created"], true);
+    let review = ReviewId::parse(json["review"]["id"].as_str().unwrap()).unwrap();
+    assert_eq!(json["review"]["rounds"], serde_json::json!([]));
+
+    // Annotations on lines and on the whole file, waiting on no one.
+    run(ANNOTATE_LINES, "", review.as_str());
+    run(ANNOTATE_FILE, "", review.as_str());
+    let loaded = fixture.load(&review);
+    let [on_lines, on_file] = [&loaded.threads[0], &loaded.threads[1]];
+    assert_eq!(on_lines.state, ThreadState::Annotation);
+    assert_eq!(on_lines.author, Author::agent("codex"));
+    assert_eq!(
+        (on_lines.anchor.start_line, on_lines.anchor.end_line),
+        (10, 12)
+    );
+    assert!(on_file.anchor.is_file_level());
+    let (on_lines, on_file) = (on_lines.id.clone(), on_file.id.clone());
+    assert_eq!(
+        fixture
+            .run(&["comment", "list", "--status", "open"])
+            .lines(),
+        ["no matching threads"]
+    );
+
+    // Corrected, and withdrawn.
+    run(EDIT, on_lines.as_str(), review.as_str());
+    run(DELETE, on_file.as_str(), review.as_str());
+    let loaded = fixture.load(&review);
+    assert_eq!(
+        loaded.thread(&on_lines).unwrap().body,
+        "Reads through the cache first; writes invalidate the entry."
+    );
+    assert!(loaded.thread(&on_file).unwrap().is_deleted());
+
+    // Handed over with the overview, before any round was finished.
+    run(HAND_OVER, "", review.as_str());
+    let loaded = fixture.load(&review);
+    assert_eq!(loaded.status, ReviewStatus::Ready);
+    assert_eq!(
+        loaded
+            .status_change
+            .and_then(|change| change.note)
+            .as_deref(),
+        Some(
+            "- Reads users through a new cache, invalidated on write\n- Split the cache into its own module"
+        )
+    );
+
+    // A review already under way is resumed, rounds and all: the loop, not a hand-over.
+    fixture.finish(&review, Verdict::RequestChanges);
+    let json = run(NEW, "", "").json();
+    assert_eq!(json["created"], false);
+    assert_eq!(json["review"]["id"], review.as_str());
+    assert_eq!(json["review"]["rounds"].as_array().unwrap().len(), 1);
 }

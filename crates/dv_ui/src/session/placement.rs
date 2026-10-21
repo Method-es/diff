@@ -437,10 +437,17 @@ impl ReviewSession {
     }
 
     /// Whether the stream draws `thread`, whose file of the review's changes is `entry`: its
-    /// file is listed, and it isn't an old-side thread in an interdiff (module docs).
+    /// file is listed, and it isn't an old-side thread in an interdiff (module docs), nor an
+    /// annotation written before the interdiff's round, about code the reviewer read already
+    /// (PLAN §19.3).
     pub(super) fn draws(&self, thread: &Thread, entry: &FileEntry) -> bool {
         let old_column = self.comparison.is_interdiff() && thread.anchor.side == AnchorSide::Old;
-        !old_column && self.file(&entry.path).is_some()
+        let read_already = thread.state == ThreadState::Annotation
+            && self
+                .comparison
+                .round()
+                .is_some_and(|since| thread.first_anchor().round <= since);
+        !old_column && !read_already && self.file(&entry.path).is_some()
     }
 
     /// The paths of the listed files the stream draws threads in: they load whatever the
@@ -576,17 +583,31 @@ impl ReviewSession {
     /// The live threads that show in `path`'s rows (inline, or as an outdated card heading
     /// it), in the order they were added.
     pub fn threads_in<'a>(&'a self, path: &'a str) -> impl Iterator<Item = &'a Thread> + 'a {
-        self.review
-            .live_threads()
-            .filter(move |thread| self.placement(thread).file() == Some(path))
+        self.review.live_threads().filter(move |thread| {
+            let placement = self.placement(thread);
+            placement.file() == Some(path) && self.shows_card(thread, &placement)
+        })
     }
 
     /// The live threads whose file left the review's list ([`ThreadPlacement::is_not_in_diff`]),
     /// in the order they were added: the stream's "Not in the diff" section (DESIGN §4.1).
     pub fn threads_not_in_diff(&self) -> impl Iterator<Item = &Thread> + '_ {
-        self.review
-            .live_threads()
-            .filter(move |thread| self.placement(thread).is_not_in_diff())
+        self.review.live_threads().filter(move |thread| {
+            let placement = self.placement(thread);
+            placement.is_not_in_diff() && self.shows_card(thread, &placement)
+        })
+    }
+
+    /// Whether the stream (and the file view) draws `thread`'s card where `placement` puts it:
+    /// every thread but an annotation nobody asked about that is hidden (`A`), outdated or on
+    /// a file the review no longer changes (PLAN §19.3): it explained code the reviewer can't
+    /// see beside it. One the reviewer is writing a question in stays, wherever it is placed,
+    /// until the composer closes. The interdiff's rule for annotations is
+    /// [`ReviewSession::draws`]'s.
+    pub fn shows_card(&self, thread: &Thread, placement: &ThreadPlacement) -> bool {
+        thread.state != ThreadState::Annotation
+            || self.replying_to.as_ref() == Some(&thread.id)
+            || (self.annotations_shown && !placement.is_outdated() && !placement.is_not_in_diff())
     }
 
     /// The listed file `thread` shows in, if any.

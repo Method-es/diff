@@ -29,6 +29,7 @@ fn one_of_each() -> Vec<EventBody> {
             anchor: Anchor::file_level(1, "src/lib.rs".to_string(), None, AnchorSide::New),
             body: "Why?".to_string(),
             author: reviewer(),
+            annotation: false,
         },
         EventBody::ReplyAdded {
             thread: thread.clone(),

@@ -212,6 +212,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("[", DIFF_PANE, diff_pane::PreviousThread, OutsideInputs),
     shortcut!("x", DIFF_PANE, diff_pane::ResolveThread, OutsideInputs),
     shortcut!("i", DIFF_PANE, diff_pane::ToggleComparison, OutsideInputs),
+    shortcut!("a", DIFF_PANE, diff_pane::ToggleAnnotations, OutsideInputs),
     shortcut!("f", DIFF_PANE, diff_pane::ViewFile, OutsideInputs),
     // The history (PLAN §18.1): the shell's, from wherever the main area has the keyboard.
     shortcut!("alt-left", DIFF_PANE, diff_pane::GoBack, OutsideInputs),

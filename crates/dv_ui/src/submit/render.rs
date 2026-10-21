@@ -410,6 +410,8 @@ impl FinishSheet {
                     ThreadState::Open => (DvIcon::MessageSquare, c.accent_text),
                     ThreadState::Addressed => (DvIcon::Check, c.blue),
                     ThreadState::Resolved => (DvIcon::CircleCheck, c.green),
+                    // `round_comments` leaves annotations out.
+                    ThreadState::Annotation => (DvIcon::Bot, c.blue),
                 };
                 let location = session.location(thread);
                 // Not placed yet: the line it was written on, quietly, as the comments list

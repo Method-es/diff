@@ -2,6 +2,7 @@
 //! store on fixture repos, the checked operations and concurrent writers.
 
 mod anchor;
+mod annotation;
 mod concurrency;
 mod event;
 mod excerpt;
@@ -72,6 +73,7 @@ fn thread_added(id: &ThreadId, author: Author) -> EventBody {
         anchor: anchor("src/lib.rs", 3),
         body: "Why?".to_string(),
         author,
+        annotation: false,
     }
 }
 

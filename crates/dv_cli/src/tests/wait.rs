@@ -60,7 +60,7 @@ fn wait_returns_at_once_when_the_agent_has_something_to_do() {
     );
     assert_eq!(
         json["threads"],
-        json!({"open": 1, "addressed": 0, "resolved": 0})
+        json!({"open": 1, "addressed": 0, "resolved": 0, "annotation": 0})
     );
     let ran = fixture.run(&["review", "wait"]);
     assert_eq!(

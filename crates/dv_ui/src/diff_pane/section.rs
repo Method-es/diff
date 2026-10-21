@@ -123,7 +123,11 @@ impl DiffPane {
             Some(block) => session
                 .review()
                 .live_threads()
-                .filter(|thread| session.placement(thread).file() == Some(block.path.as_str()))
+                .filter(|thread| {
+                    let placement = session.placement(thread);
+                    placement.file() == Some(block.path.as_str())
+                        && session.shows_card(thread, &placement)
+                })
                 .collect(),
             None => Vec::new(),
         }
@@ -145,6 +149,9 @@ impl DiffPane {
                 .map(str::to_string);
         }
         let placement = session.placement(found);
+        if !session.shows_card(found, &placement) {
+            return None;
+        }
         if placement.is_not_in_diff() {
             return Some(SECTION.to_string());
         }

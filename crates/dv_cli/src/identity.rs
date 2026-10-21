@@ -40,17 +40,21 @@ pub(crate) fn author(
     })
 }
 
-/// The agent a command that only agents run acts as (`dv review done`, `command`); without an
-/// agent identity it is a usage error (exit 2) that says how to give one.
+/// The agent a command that only agents run acts as (`command`: `dv review done`, `dv comment
+/// annotate`); without an agent identity it is a usage error (exit 2) that says how to give
+/// one: "`command` is an agent's `role`: pass --author …; `otherwise`", what the reviewer runs
+/// instead.
 pub(crate) fn require_agent(
     global: &GlobalArgs,
     ctx: &Context,
     command: &str,
+    role: &str,
+    otherwise: &str,
 ) -> Result<Author, CliError> {
     agent(global, ctx)?.ok_or_else(|| {
         CliError::usage(format!(
-            "`{command}` is an agent's handoff: pass --author <agent name> (claude-code, codex, \
-             …); the reviewer finishes a round with `dv review submit`"
+            "`{command}` is an agent's {role}: pass --author <agent name> (claude-code, codex, \
+             …); {otherwise}"
         ))
     })
 }

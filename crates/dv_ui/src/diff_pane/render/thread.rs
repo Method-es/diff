@@ -144,12 +144,19 @@ impl DiffPane {
         compact: bool,
         cx: &mut Context<Self>,
     ) -> ComposerBox {
+        // A reply to an annotation asks the agent about it (PLAN §19.3), who reads it once the
+        // round is finished.
+        let asking = self.asking_agent(composer, cx);
         let pane = cx.weak_entity();
         let cancel = pane.clone();
         ComposerBox::new(
             composer.input.clone(),
             composer.target.title(),
-            if compact { "Reply" } else { "Comment" },
+            match (compact, &asking) {
+                (true, Some(_)) => "Ask",
+                (true, None) => "Reply",
+                (false, _) => "Comment",
+            },
             move |window, cx| {
                 pane.update(cx, |this, cx| this.post_composer(window, cx))
                     .ok();
@@ -163,6 +170,22 @@ impl DiffPane {
         .posting(composer.posting)
         .error(composer.error.clone())
         .compact(compact)
+        .hint(asking.map(|agent| format!("{agent} reads it when you finish the round")))
+    }
+
+    /// The agent `composer` asks, when it replies to an annotation (PLAN §19.3).
+    pub(in super::super) fn asking_agent(
+        &self,
+        composer: &crate::thread::Composer,
+        cx: &gpui::App,
+    ) -> Option<String> {
+        let thread = composer.target.reply_to.as_ref()?;
+        let session = self.session.as_ref()?.read(cx);
+        session
+            .review()
+            .thread(thread)
+            .filter(|thread| thread.state == dv_core::review::ThreadState::Annotation)
+            .map(|thread| thread.author.name.clone())
     }
 
     /// Lays `element` out under the line `at` names: in split view in its side's half, over

@@ -10,7 +10,13 @@
 //! show carries a quiet "all changes" tag and names where it stands in all changes. A thread
 //! whose file's text hasn't landed yet shows the line it was written on, quietly, until it is
 //! placed (every file a thread shows in loads at once, so that is brief), and "Copy as prompt"
-//! says so beside it. Resolved threads are counted at the end and listed on demand.
+//! says so beside it. The agent's annotations (PLAN §19), waiting on no one, are counted
+//! after the waiting threads and listed on demand, as the resolved threads are at the end.
+//!
+//! A click on an annotation's row shows the annotations again when `A` hid them, then shows
+//! it as a thread's row does; one the stream never draws (outdated, or its file left the
+//! review) opens its whole text under the row instead. Its menu holds Ask alone (none for one
+//! the stream doesn't draw).
 //!
 //! A click on a row shows the thread in the stream ([`DiffPane::reveal_thread`]), which also
 //! focuses it, switching to all changes first for an "all changes" row; the focused thread's
@@ -21,8 +27,9 @@
 //! closes it.
 //!
 //! Automation targets: `comments_list`, `comments_list/copy`, `comments_list/resolved` (show or
-//! hide the resolved threads), `comments_list/<thread id>`, and the row menu's
-//! `comments_list/menu` with `/resolve`, `/reopen`, `/reply` and `/copy`.
+//! hide the resolved threads), `comments_list/annotations` (the annotations),
+//! `comments_list/<thread id>`, and the row menu's `comments_list/menu` with `/resolve`,
+//! `/reopen`, `/reply`, `/ask` and `/copy`.
 
 mod render;
 
@@ -57,26 +64,37 @@ pub struct CommentRow {
     pub summary: String,
     /// The first anchored line as it was, for an outdated thread.
     pub snippet: Option<String>,
+    /// It stands in a file the review doesn't change (PLAN §8).
+    pub unlisted: bool,
+    /// The stream can draw its card (shown or not): every thread but an annotation whose code
+    /// is gone or whose file left the review (PLAN §19.3).
+    pub drawable: bool,
 }
 
-/// Where a state's threads go in the list: addressed first, then open, then resolved.
+/// Where a state's threads go in the list: addressed first, then open, then the annotations,
+/// then resolved.
 fn group(state: ThreadState) -> u8 {
     match state {
         ThreadState::Addressed => 0,
         ThreadState::Open => 1,
-        ThreadState::Resolved => 2,
+        ThreadState::Annotation => 2,
+        ThreadState::Resolved => 3,
     }
 }
 
 /// The threads of `session`'s review: the addressed ones, then the open ones, each in stream
 /// order (the "Not in the diff" section's first, in the order they were added; then by file,
-/// then the line they show at; the ones the stream doesn't show last), then, with `resolved`,
-/// the resolved ones.
-pub fn rows(session: &ReviewSession, resolved: bool) -> Vec<CommentRow> {
+/// then the line they show at; the ones the stream doesn't show last), then, with
+/// `annotations`, the agent's annotations, then, with `resolved`, the resolved ones.
+pub fn rows(session: &ReviewSession, resolved: bool, annotations: bool) -> Vec<CommentRow> {
     let mut threads: Vec<(&Thread, ThreadPlacement)> = session
         .review()
         .live_threads()
-        .filter(|thread| resolved || thread.state != ThreadState::Resolved)
+        .filter(|thread| match thread.state {
+            ThreadState::Resolved => resolved,
+            ThreadState::Annotation => annotations,
+            ThreadState::Open | ThreadState::Addressed => true,
+        })
         .map(|thread| (thread, session.placement(thread)))
         .collect();
     let order = |thread: &Thread, placement: &ThreadPlacement| {
@@ -112,6 +130,9 @@ pub fn rows(session: &ReviewSession, resolved: bool) -> Vec<CommentRow> {
                     .then(|| thread.anchor.text.first().cloned())
                     .flatten()
                     .map(|line| line.trim().to_string()),
+                unlisted: placement.is_unlisted(),
+                drawable: thread.state != ThreadState::Annotation
+                    || !(outdated || placement.is_not_in_diff()),
             }
         })
         .collect()
@@ -122,7 +143,7 @@ pub fn rows(session: &ReviewSession, resolved: bool) -> Vec<CommentRow> {
 /// says that its lines are the ones it was written on, so an agent doesn't take them for
 /// where the code is now.
 pub fn prompt_threads(session: &ReviewSession) -> Vec<(&Thread, String)> {
-    rows(session, false)
+    rows(session, false, false)
         .into_iter()
         .filter(|row| row.state == ThreadState::Open)
         .filter_map(|row| Some((session.review().thread(&row.id)?, prompt_location(&row))))
@@ -154,6 +175,10 @@ pub struct CommentsList {
     session: Option<Entity<ReviewSession>>,
     diff_pane: Entity<DiffPane>,
     show_resolved: bool,
+    /// The agent's annotations are listed (PLAN §19.3).
+    show_annotations: bool,
+    /// The annotation whose whole text opens under its row: one the stream doesn't draw.
+    expanded: Option<ThreadId>,
     menu: Option<RowMenu>,
     _session_events: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
@@ -167,6 +192,8 @@ impl CommentsList {
             session: None,
             diff_pane,
             show_resolved: false,
+            show_annotations: false,
+            expanded: None,
             menu: None,
             _session_events: None,
             _subscriptions: subscriptions,
@@ -183,6 +210,8 @@ impl CommentsList {
         });
         self.session = session;
         self.show_resolved = false;
+        self.show_annotations = false;
+        self.expanded = None;
         self.menu = None;
         cx.notify();
     }
@@ -191,8 +220,29 @@ impl CommentsList {
     pub fn rows(&self, cx: &gpui::App) -> Vec<CommentRow> {
         self.session
             .as_ref()
-            .map(|session| rows(session.read(cx), self.show_resolved))
+            .map(|session| rows(session.read(cx), self.show_resolved, self.show_annotations))
             .unwrap_or_default()
+    }
+
+    /// Whether the agent's annotations are listed.
+    pub fn shows_annotations(&self) -> bool {
+        self.show_annotations
+    }
+
+    pub fn set_show_annotations(&mut self, show: bool, cx: &mut Context<Self>) {
+        if self.show_annotations != show {
+            self.show_annotations = show;
+            if !show {
+                self.expanded = None;
+            }
+            self.close_stale_menu(cx);
+            cx.notify();
+        }
+    }
+
+    /// The annotation whose whole text shows under its row.
+    pub fn expanded(&self) -> Option<&ThreadId> {
+        self.expanded.as_ref()
     }
 
     /// Whether the resolved threads are listed too.
@@ -220,12 +270,44 @@ impl CommentsList {
     }
 
     /// Shows `thread` in the stream (a click on its row): one the interdiff doesn't show is
-    /// shown in all changes, which the stream switches to first.
+    /// shown in all changes, which the stream switches to first. An annotation shows the
+    /// annotations again when they are hidden; one the stream never draws opens (or closes)
+    /// its whole text under its row instead (module docs).
     pub fn reveal(&mut self, thread: &ThreadId, cx: &mut Context<Self>) {
         self.close_menu(cx);
+        match self.annotation_drawable(thread, cx) {
+            Some(false) => {
+                self.expanded = match self.expanded.take() {
+                    Some(open) if &open == thread => None,
+                    _ => Some(thread.clone()),
+                };
+                cx.notify();
+                return;
+            }
+            Some(true) => self.show_annotations_in_stream(cx),
+            None => {}
+        }
         self.show_all_changes_for(thread, cx);
         self.diff_pane
             .update(cx, |pane, cx| pane.reveal_thread(thread, cx));
+    }
+
+    /// For an annotation, whether the stream can draw its card (`None`: not an annotation).
+    fn annotation_drawable(&self, thread: &ThreadId, cx: &gpui::App) -> Option<bool> {
+        let session = self.session.as_ref()?.read(cx);
+        let found = session
+            .review()
+            .thread(thread)
+            .filter(|found| found.state == ThreadState::Annotation)?;
+        let placement = session.placement(found);
+        Some(!(placement.is_outdated() || placement.is_not_in_diff()))
+    }
+
+    /// Shows the annotations in the stream again, when `A` hid them.
+    fn show_annotations_in_stream(&self, cx: &mut Context<Self>) {
+        if let Some(session) = &self.session {
+            session.update(cx, |session, cx| session.set_annotations_shown(true, cx));
+        }
     }
 
     /// Switches the stream to all changes when the interdiff shown doesn't draw `thread`.
@@ -283,6 +365,10 @@ impl CommentsList {
         if session.read(cx).is_read_only() {
             return;
         }
+        // Asking about an annotation needs its card: shown again when `A` hid it.
+        if self.annotation_drawable(thread, cx) == Some(true) {
+            self.show_annotations_in_stream(cx);
+        }
         self.show_all_changes_for(thread, cx);
         self.diff_pane
             .update(cx, |pane, cx| pane.reply_to_thread(thread, window, cx));
@@ -298,7 +384,7 @@ impl CommentsList {
         };
         let text = {
             let session = session.read(cx);
-            let Some(row) = rows(session, true)
+            let Some(row) = rows(session, true, true)
                 .into_iter()
                 .find(|row| &row.id == thread)
             else {

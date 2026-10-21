@@ -530,6 +530,7 @@ fn thread_on(anchor: Anchor) -> Thread {
         deleted_at: None,
         state: ThreadState::Open,
         last_change: None,
+        annotation: false,
         replies: Vec::new(),
     }
 }

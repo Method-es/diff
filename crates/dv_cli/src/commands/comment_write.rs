@@ -1,4 +1,5 @@
-//! `dv comment add`, `reply`, `address`, `resolve` and `reopen` (docs/PLAN.md §10.1, §2.5).
+//! `dv comment add`, `annotate`, `reply`, `address`, `resolve`, `reopen`, `edit` and `delete`
+//! (docs/PLAN.md §10.1, §2.5, §19).
 //!
 //! Who may do what is `dv_core::review::ops`'s rule: agents and the reviewer add, reply and
 //! address; only the reviewer resolves and reopens. A write on a thread records where
@@ -8,14 +9,15 @@
 
 use dv_core::diff::{FileDiff, FileEntry, FileStatus};
 use dv_core::review::{
-    AnchorPlace, AnchorSide, Author, ReviewId, ThreadState, anchor_selection, has_side, ops,
+    AnchorPlace, AnchorSide, Author, Comment, ItemId, Review, ReviewId, Thread, ThreadState,
+    anchor_selection, has_side, ops,
 };
 
 use super::format;
-use crate::args::{CommentAddArgs, CommentReplyArgs, GlobalArgs, Note, SideArg};
+use crate::args::{CommentAddArgs, CommentEditArgs, CommentReplyArgs, GlobalArgs, Note, SideArg};
 use crate::body;
 use crate::context::Context;
-use crate::dto::{CommentShowDoc, ReplyDoc, ThreadChangeDoc, ThreadDto};
+use crate::dto::{CommentDeleteDoc, CommentShowDoc, Located, ReplyDoc, ThreadChangeDoc, ThreadDto};
 use crate::error::{CliError, Exit, code};
 use crate::identity;
 use crate::output;
@@ -35,9 +37,46 @@ pub(crate) fn add(
     args: &CommentAddArgs,
     ctx: &mut Context,
 ) -> Result<Exit, CliError> {
-    let body = body::required(&args.body, "comment", ctx)?;
+    new_thread(global, args, false, ctx)
+}
+
+/// `dv comment annotate`: `comment add` for an agent's annotation (PLAN §19.2), an explanation
+/// of its change that waits on no one. Only an agent annotates: without an agent identity it is
+/// a usage error (exit 2), as `dv review done` is.
+pub(crate) fn annotate(
+    global: &GlobalArgs,
+    args: &CommentAddArgs,
+    ctx: &mut Context,
+) -> Result<Exit, CliError> {
+    new_thread(global, args, true, ctx)
+}
+
+/// [`add`]'s and [`annotate`]'s work: one path, so the two take the same files, sides and lines.
+fn new_thread(
+    global: &GlobalArgs,
+    args: &CommentAddArgs,
+    annotation: bool,
+    ctx: &mut Context,
+) -> Result<Exit, CliError> {
+    let what = if annotation { "annotation" } else { "comment" };
+    let body = body::required(&args.body, what, ctx)?;
+    // Checked before the repository is opened, so a reviewer hears at once that it isn't theirs.
+    let agent = annotation
+        .then(|| {
+            identity::require_agent(
+                global,
+                ctx,
+                "dv comment annotate",
+                "explanation of its change",
+                "the reviewer comments with `dv comment add`",
+            )
+        })
+        .transpose()?;
     let repo = Repo::open(global, ctx)?;
-    let author = identity::author(global, ctx, repo.backend.as_ref())?;
+    let author = match agent {
+        Some(agent) => agent,
+        None => identity::author(global, ctx, repo.backend.as_ref())?,
+    };
     let review = select::review(&repo, global, ctx, None)?;
     let file = repo.relative_path(&args.file, &review, ctx);
     let side = match args.side {
@@ -71,7 +110,8 @@ pub(crate) fn add(
         // A comment on the whole file goes on its new side; only a deleted file's is its old.
         None if side == AnchorSide::Old && entry.status != FileStatus::Deleted => {
             return Err(rejected(format!(
-                "{} isn't deleted: a comment on the whole file goes on its new side (leave                  `--side old` out, or name lines with `--lines`)",
+                "{} isn't deleted: a comment on the whole file goes on its new side (leave \
+                 `--side old` out, or name lines with `--lines`)",
                 entry.path
             )));
         }
@@ -93,7 +133,11 @@ pub(crate) fn add(
         }
     };
 
-    let id = ops::add_thread(&repo.store, &review.id, anchor, &body, author.clone())?;
+    let id = if annotation {
+        ops::annotate(&repo.store, &review.id, anchor, &body, author.clone())?
+    } else {
+        ops::add_thread(&repo.store, &review.id, anchor, &body, author.clone())?
+    };
     started_work(&repo, &review.id, &author);
     let review = select::load(&repo, &review.id)?;
     let thread = select::live_thread(&review, &id)?;
@@ -103,16 +147,123 @@ pub(crate) fn add(
     if global.json {
         output::json(ctx, &doc)?;
     } else {
+        let verb = if annotation { "annotated" } else { "added" };
         output::text(
             ctx,
             &[format!(
-                "added {}  {}",
+                "{verb} {}  {}",
                 doc.thread.id,
                 format::location(&doc.thread)
             )],
         )?;
     }
     Ok(Exit::Ok)
+}
+
+/// `dv comment edit <id> (--body | --body-file)`: replaces the text of a thread's opening
+/// comment or a reply; only its author may (PLAN §19.1, `ops::edit_body`).
+pub(crate) fn edit(
+    global: &GlobalArgs,
+    args: &CommentEditArgs,
+    ctx: &mut Context,
+) -> Result<Exit, CliError> {
+    let body = body::required(&args.body, "comment", ctx)?;
+    let repo = Repo::open(global, ctx)?;
+    let author = identity::author(global, ctx, repo.backend.as_ref())?;
+    let (review, item) = select::item(&repo, global, &args.item.id)?;
+    // Placed before the write, as `reply` and `address` do: a target that no longer resolves is
+    // exit 1 with nothing written. Editing text moves nothing.
+    let located = {
+        let (thread, _) = item_in(&review, &item)?;
+        locate_one(&repo, &review, thread, ctx)?
+    };
+    ops::edit_body(&repo.store, &review.id, &item, &body, &author)?;
+    started_work(&repo, &review.id, &author);
+    let review = select::load(&repo, &review.id)?;
+    let (thread, reply) = item_in(&review, &item)?;
+    let thread_dto = ThreadDto::new(&review, thread, &located);
+    match reply {
+        Some(reply) if global.json => output::json(
+            ctx,
+            &ReplyDoc {
+                reply: reply.into(),
+                thread: thread_dto,
+            },
+        )?,
+        None if global.json => output::json(ctx, &CommentShowDoc { thread: thread_dto })?,
+        _ => output::text(
+            ctx,
+            &[format!("edited {item}  {}", format::location(&thread_dto))],
+        )?,
+    }
+    Ok(Exit::Ok)
+}
+
+/// `dv comment delete <id>`: deletes a thread or a reply (a tombstone); only its author may
+/// (PLAN §19.1, `ops::delete_item`).
+pub(crate) fn delete(global: &GlobalArgs, id: &str, ctx: &mut Context) -> Result<Exit, CliError> {
+    let repo = Repo::open(global, ctx)?;
+    let author = identity::author(global, ctx, repo.backend.as_ref())?;
+    let (review, item) = select::item(&repo, global, id)?;
+    // A reply's thread is placed before the write, as `edit` does it.
+    let located = match &item {
+        ItemId::Thread(_) => None,
+        ItemId::Comment(_) => {
+            let (thread, _) = item_in(&review, &item)?;
+            Some(locate_one(&repo, &review, thread, ctx)?)
+        }
+    };
+    ops::delete_item(&repo.store, &review.id, &item, &author)?;
+    started_work(&repo, &review.id, &author);
+    let review = select::load(&repo, &review.id)?;
+    let thread = match located {
+        Some(located) => {
+            let (thread, _) = item_in(&review, &item)?;
+            Some(ThreadDto::new(&review, thread, &located))
+        }
+        None => None,
+    };
+    if global.json {
+        output::json(
+            ctx,
+            &CommentDeleteDoc {
+                deleted: item.to_string(),
+                thread,
+            },
+        )?;
+    } else {
+        output::text(ctx, &[format!("deleted {item}")])?;
+    }
+    Ok(Exit::Ok)
+}
+
+/// The live thread holding `item` in `review`, and the reply when `item` is one (a deleted
+/// reply is still found, so `delete` can name its thread).
+fn item_in<'r>(
+    review: &'r Review,
+    item: &ItemId,
+) -> Result<(&'r Thread, Option<&'r Comment>), CliError> {
+    let found = match item {
+        ItemId::Thread(id) => review.thread(id).map(|thread| (thread, None)),
+        ItemId::Comment(id) => review
+            .threads
+            .iter()
+            .find_map(|thread| thread.reply(id).map(|reply| (thread, Some(reply)))),
+    };
+    found
+        .filter(|(thread, _)| !thread.is_deleted())
+        .ok_or_else(|| CliError::not_found(format!("no {item} in review {}", review.id)))
+}
+
+/// Where `thread` stands now, as `comment show` places it.
+fn locate_one(
+    repo: &Repo,
+    review: &Review,
+    thread: &Thread,
+    ctx: &mut Context,
+) -> Result<Located, CliError> {
+    let mut located = placement::locate(repo, review, &[thread], ctx)?;
+    Ok(located.remove(0))
 }
 
 /// `dv comment reply <id> (--body | --body-file)`.

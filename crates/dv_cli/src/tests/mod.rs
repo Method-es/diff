@@ -3,6 +3,7 @@
 //! environment (so neither this machine's `CLAUDECODE` nor its git configuration leaks in),
 //! and checks the exit code, the JSON document and the text.
 
+mod annotate;
 mod backend;
 mod comment;
 mod comment_write;

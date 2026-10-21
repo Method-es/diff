@@ -8,6 +8,7 @@ use dv_test_support::FixtureRepo;
 use gpui::{Bounds, Entity, Pixels, TestAppContext, VisualTestContext};
 use pretty_assertions::assert_eq;
 
+mod annotations;
 mod file_comment;
 mod file_view;
 mod find;

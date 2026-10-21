@@ -455,6 +455,7 @@ fn a_ready_review_shows_the_agents_handoff_with_its_note(cx: &mut TestAppContext
             author: Some(Author::agent("claude-code")),
             round: 1,
             note: Some("Capped the cache.\n\nSee **cache.ts** for the sweep.".to_string()),
+            annotations: 0,
         })
     );
     // It heads the main area; "Show note" opens the whole note under it.

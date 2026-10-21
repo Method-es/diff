@@ -585,6 +585,11 @@ impl DiffPane {
             .as_ref()
             .and_then(|composer| self.target_block_path(&composer.target, cx));
         let composer = self.composer.take()?;
+        if composer.target.reply_to.is_some()
+            && let Some(session) = self.session.clone()
+        {
+            session.update(cx, |session, _| session.set_replying_to(None));
+        }
         if let Some(item) = item {
             self.set_item_focus(item, None);
         }
@@ -629,9 +634,19 @@ impl DiffPane {
     ) {
         // A reply waiting for its card is superseded by any composer.
         self.reply_when_shown = None;
-        let (rows, placeholder) = match target.reply_to {
-            Some(_) => (REPLY_ROWS, "Reply… (Markdown)"),
-            None => (COMPOSER_ROWS, "Leave a comment… (Markdown)"),
+        // A reply to an annotation asks its agent about it (PLAN §19.3).
+        let asking = target.reply_to.as_ref().and_then(|thread| {
+            let session = self.session.as_ref()?.read(cx);
+            session
+                .review()
+                .thread(thread)
+                .filter(|thread| thread.state == ThreadState::Annotation)
+                .map(|thread| thread.author.name.clone())
+        });
+        let (rows, placeholder) = match (&target.reply_to, asking) {
+            (Some(_), Some(agent)) => (REPLY_ROWS, format!("Ask {agent} about this…")),
+            (Some(_), None) => (REPLY_ROWS, "Reply… (Markdown)".to_string()),
+            (None, _) => (COMPOSER_ROWS, "Leave a comment… (Markdown)".to_string()),
         };
         let input = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -655,6 +670,12 @@ impl DiffPane {
         // The composer this one replaces (one without text, [`DiffPane::keep_composer`]) lets go
         // of its row first.
         self.release_composer(cx);
+        // Its card stays drawn while it answers it (`ReviewSession::shows_card`).
+        if let (Some(thread), Some(session)) = (&target.reply_to, self.session.clone()) {
+            session.update(cx, |session, _| {
+                session.set_replying_to(Some(thread.clone()))
+            });
+        }
         self.composer_focus = Some(input.focus_handle(cx));
         self.composer = Some(Composer {
             target: target.clone(),
@@ -812,8 +833,9 @@ impl DiffPane {
         self.close_composer(cx).is_some()
     }
 
-    /// `]` / `[`: focuses the next (previous) thread that isn't resolved, scrolling to it, on
-    /// into later (earlier) files.
+    /// `]` / `[`: focuses the next (previous) thread that waits on someone (open or
+    /// addressed: not resolved, nor an annotation, PLAN §19.3), scrolling to it, on into later
+    /// (earlier) files.
     pub(super) fn step_thread(&mut self, dir: Dir, cx: &mut Context<Self>) {
         let Some(session) = self.session.clone() else {
             return;
@@ -825,7 +847,7 @@ impl DiffPane {
                 .filter(|(_, id)| {
                     review
                         .thread(id)
-                        .is_some_and(|thread| thread.state != ThreadState::Resolved)
+                        .is_some_and(|thread| thread.state.is_waiting())
                 })
                 .collect()
         };
@@ -863,7 +885,7 @@ impl DiffPane {
             let waiting: Vec<ThreadId> = self
                 .block_threads(index, session.read(cx))
                 .into_iter()
-                .filter(|thread| thread.state != ThreadState::Resolved)
+                .filter(|thread| thread.state.is_waiting())
                 .map(|thread| thread.id.clone())
                 .collect();
             if waiting.is_empty() {
@@ -940,7 +962,8 @@ impl DiffPane {
         cx.notify();
     }
 
-    /// `X`: resolves the focused thread, or reopens it when it is resolved.
+    /// `X`: resolves the focused thread, or reopens it when it is resolved; nothing on an
+    /// annotation.
     pub(super) fn resolve_focused(&mut self, cx: &mut Context<Self>) {
         let Some(thread) = self.focused_thread.clone() else {
             return;
@@ -954,8 +977,11 @@ impl DiffPane {
         });
         match state {
             Some(ThreadState::Resolved) => self.set_thread_state(&thread, ThreadState::Open, cx),
-            Some(_) => self.set_thread_state(&thread, ThreadState::Resolved, cx),
-            None => {}
+            Some(ThreadState::Open | ThreadState::Addressed) => {
+                self.set_thread_state(&thread, ThreadState::Resolved, cx)
+            }
+            // An annotation's state doesn't change (PLAN §19.1): `R` asks about it.
+            Some(ThreadState::Annotation) | None => {}
         }
     }
 

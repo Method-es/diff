@@ -170,6 +170,8 @@ pub mod diff_pane {
             /// Switch between the interdiff since the last round and all changes (`I`, PLAN
             /// §2.3).
             ToggleComparison,
+            /// Show or hide the agent's annotations (`A`, PLAN §19.3).
+            ToggleAnnotations,
             /// Copy the selected text, else the selected lines (`Ctrl C`, PLAN §18.1).
             Copy,
             /// Open the find bar with its field focused, or focus it again with its text

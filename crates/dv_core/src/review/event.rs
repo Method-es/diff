@@ -86,11 +86,15 @@ pub enum EventBody {
     },
     /// The reviewer marked `path` viewed (`on`) or not viewed in `round`.
     Viewed { round: u32, path: String, on: bool },
+    /// A new thread. `annotation`: an agent's explanation of its own change rather than a
+    /// comment (PLAN §19), which starts in [`ThreadState::Annotation`]; left out when false.
     ThreadAdded {
         id: ThreadId,
         anchor: Anchor,
         body: String,
         author: Author,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        annotation: bool,
     },
     /// A reply. `anchor`: the thread's anchor re-taken where relocation found its text in the
     /// round the reply was written in, when it had moved (PLAN §8); the thread is attached

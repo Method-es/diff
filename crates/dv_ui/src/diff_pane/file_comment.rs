@@ -33,7 +33,9 @@ pub(super) fn heading_items(
         .filter(|thread| thread.anchor.is_file_level())
         .filter(|thread| {
             let placement = session.placement(thread);
-            placement.file() == Some(path) && !placement.is_pending()
+            placement.file() == Some(path)
+                && !placement.is_pending()
+                && session.shows_card(thread, &placement)
         })
         .map(|thread| InsertItem::Thread(thread.id.clone()))
         .collect();

@@ -486,18 +486,18 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   card because nothing waits on it. It stands where a thread card would (under the last line of
   its range on its side, the same insets in split and unified view; one on the whole file heads
   its file before the file's comments on the whole file) and stacks with cards on the same line
-  in the order they were added. `layer` fill, `line` outline, radius 10, no shadow, a 2px `blue`
-  rule down its left edge inside the radius; the focused one's outline `accentRing`. A 28-high
-  header: the agent's square avatar at 16 with its icon, the agent's name at 600 in `fg2`,
-  "Annotation" in `fg3`, the anchor in `fg3` (`new · lines 12–14`, "file", "· moved" as a
-  thread's), and at the right a small ghost **Ask** (with its `R` keycap while focused). The
-  body: Markdown at 13 in `fg2`, clamped to 3 lines with a 20-high fade into the card and **Show
-  more** in `accentText` under it (**Show less** once open); the agent's own replies follow as a
-  thread's replies, inside the same clamp. The file view draws it at its lines as the stream
-  does. **Ask** (or `R`) opens the reply composer in the card, its field reading "Ask
+  in the order they were added. `code` fill (the diff's own surface, so it reads as part of the
+  code rather than over it, whatever the line's tint), `line` outline, radius 10, no shadow, a
+  2px `blue` rule down its left edge inside the radius; the focused one's outline `accentRing`.
+  A 28-high header: the agent's square avatar at 16 with its icon, the agent's name at 600 in
+  `fg2`, "Annotation" in `fg3`, the anchor in `fg3` (`new · lines 12–14`, "file", "· moved" as
+  a thread's), and at the right a small **Ask** (with its `R` keycap while focused). The body:
+  Markdown at 13 in `fg2`, in full (the skill keeps an annotation to one to three sentences);
+  the agent's own additions follow, each over a hairline under its name and time in `fg3`. The
+  file view draws it at its lines as the stream does. **Ask** (or `R`) opens the reply composer in the card, its field reading "Ask
   claude-code about this…" and its footer saying "claude-code reads it when you finish the
   round" in `fg3` beside "Markdown"; posting turns the card into a thread card,
-  `open`, whose first comment keeps a quiet "Annotation" tag beside the agent tag. Hidden with
+  `open`, whose first comment keeps a quiet "annotation" tag beside the agent tag. Hidden with
   `A`, annotations aren't drawn at all (the status bar says they are hidden). In an interdiff
   only the annotations written since its round are drawn; an outdated one, or one whose file
   left the review, isn't drawn anywhere in the stream (never in the "Not in the diff" section),

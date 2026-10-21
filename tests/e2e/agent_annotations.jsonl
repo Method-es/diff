@@ -1,0 +1,79 @@
+{"scenario": {"window_size": "1440x900", "description": "PLAN §19 end to end, the agent played by the real dv CLI: it hands its work over (dv review new, three annotations, dv review done with an overview) before the reviewer opens anything; the reviewer opens the working review to the handoff banner and the annotation cards beside the code, hides and shows them with A, lists them in the comments list, asks about one (R), requests changes; the agent sees the question as an open thread, answers and addresses it; the reviewer resolves it. Screenshots in dark Mica and one light."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "settle"}
+
+// The agent's uncommitted work: a cache in front of the users route, and a test.
+{"cmd": "seed_repo", "name": "api-server", "steps": [{"write": "src/routes/users.ts", "text": "import { db } from \"../db\";\nimport type { User } from \"../types\";\n\nexport const users = Router();\n\nusers.get(\"/:id\", async (req, res) => {\n  const user = await db.users.find(req.params.id);\n  if (!user) return res.status(404).end();\n  res.json({ id: user.id, name: user.name });\n});\n"}, {"commit": "base"}, {"write": "src/routes/users.ts", "text": "import { db } from \"../db\";\nimport { cache } from \"../lib/cache\";\nimport type { User } from \"../types\";\n\nexport const users = Router();\n\nexport async function fetchUser(id: string): Promise<User | null> {\n  const key = `user:${id}`;\n  const hit = cache.get<User>(key);\n  if (hit) return hit;\n  const user = await db.users.find(id);\n  if (user) cache.set(key, user, 60_000);\n  return user;\n}\n\nusers.get(\"/:id\", async (req, res) => {\n  const user = await fetchUser(req.params.id);\n  if (!user) return res.status(404).json({ error: \"not_found\" });\n  res.json({ id: user.id, name: user.name });\n});\n"}, {"write": "src/lib/cache.ts", "text": "const entries = new Map<string, { value: unknown; until: number }>();\n\nexport const cache = {\n  get<T>(key: string): T | undefined {\n    const entry = entries.get(key);\n    return entry && entry.until > Date.now() ? (entry.value as T) : undefined;\n  },\n  set(key: string, value: unknown, ttl: number) {\n    entries.set(key, { value, until: Date.now() + ttl });\n  },\n};\n"}, {"write": "src/routes/users.test.ts", "text": "import { fetchUser } from \"./users\";\n\ntest(\"caches a user\", async () => {\n  expect(await fetchUser(\"a\")).toEqual(await fetchUser(\"a\"));\n});\n"}]}
+
+// The agent hands its work over, as the skill's "Handing your work over" teaches: it opens the
+// review, annotates what the reviewer would ask about, and marks it ready with an overview.
+{"cmd": "cli", "args": ["review", "new", "--author", "claude-code", "--json"], "cwd": "repos/api-server", "save": {"review": "/json/review/id"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/created", "equals": true}, {"pointer": "/json/review/target/kind", "equals": "working"}, {"pointer": "/json/review/rounds", "equals": []}]}
+{"cmd": "cli", "args": ["comment", "annotate", "--review", "${review}", "--author", "claude-code", "--file", "src/lib/cache.ts", "--lines", "1", "--body-file", "-", "--json"], "cwd": "repos/api-server", "stdin": "A plain `Map` with a deadline per entry: no dependency, and the process restarts often enough that nothing piles up for long.\n", "save": {"on_map": "/json/thread/id"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/thread/state", "equals": "annotation"}, {"pointer": "/json/thread/annotation", "equals": true}, {"pointer": "/json/thread/author", "equals": {"kind": "agent", "name": "claude-code"}}]}
+{"cmd": "cli", "args": ["comment", "annotate", "--review", "${review}", "--author", "claude-code", "--file", "src/routes/users.ts", "--lines", "7:14", "--body-file", "-", "--json"], "cwd": "repos/api-server", "stdin": "Pulled out of the route so the test can call it. Writes don't invalidate the entry yet: a renamed user shows the old name for up to a minute.\n", "save": {"on_fetch": "/json/thread/id"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/thread/anchor/current", "equals": {"path": "src/routes/users.ts", "side": "new", "start_line": 7, "end_line": 14}}]}
+{"cmd": "cli", "args": ["comment", "annotate", "--review", "${review}", "--author", "claude-code", "--file", "src/routes/users.test.ts", "--body-file", "-"], "cwd": "repos/api-server", "stdin": "Only the hit path is covered; the miss path needs a fake `db`.\n", "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/stdout", "contains": "src/routes/users.test.ts (file)"}]}
+// An annotation is the agent's: the reviewer's identity is refused.
+{"cmd": "cli", "args": ["comment", "annotate", "--file", "src/lib/cache.ts", "--body", "x", "--json"], "cwd": "repos/api-server", "expect_result": [{"pointer": "/exit", "equals": 2}, {"pointer": "/json/error/code", "equals": "usage"}]}
+{"cmd": "cli", "args": ["review", "done", "${review}", "--author", "claude-code", "--note-file", "-", "--json"], "cwd": "repos/api-server", "stdin": "- Users are read through a new in-memory cache (60 s)\n- `fetchUser` is its own function, with a test\n", "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/review/status", "equals": "ready"}, {"pointer": "/json/review/threads", "equals": {"open": 0, "addressed": 0, "resolved": 0, "annotation": 3}}]}
+// Nothing waits on an annotation.
+{"cmd": "cli", "args": ["comment", "list", "--review", "${review}", "--status", "open", "--json"], "cwd": "repos/api-server", "env": {"CLAUDECODE": "1"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/threads", "len": 0}]}
+
+// The reviewer opens the working review: the agent's, resumed, ready with its handoff.
+{"cmd": "open", "path": "${data_dir}/repos/api-server", "expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/switcher/selected", "equals": "api-server/working"}]}
+{"cmd": "settle"}
+{"cmd": "key", "keystroke": "enter"}
+{"cmd": "settle"}
+{"cmd": "wait_for", "pointer": "/session/total", "equals": 3}
+{"cmd": "settle", "expect": [{"pointer": "/session/review_id", "equals": "${review}"}, {"pointer": "/session/status", "equals": "ready"}, {"pointer": "/session/ready_note/annotations", "equals": 3}, {"pointer": "/session/annotations_shown", "equals": true}, {"pointer": "/session/threads", "len": 3}, {"pointer": "/session/threads/0/state", "equals": "annotation"}, {"pointer": "/session/threads/0/card", "equals": true}, {"pointer": "/comments_list/rows", "len": 0}, {"pointer": "/shell/status/review", "equals": "Ready for review · round 1 · no comments · 3 annotations"}]}
+{"cmd": "screenshot", "name": "annotations-dark-mica"}
+
+// `A` hides them, and shows them again.
+{"cmd": "key", "keystroke": "a"}
+{"cmd": "settle", "expect": [{"pointer": "/session/annotations_shown", "equals": false}, {"pointer": "/session/threads/0/card", "equals": false}, {"pointer": "/shell/status/review", "equals": "Ready for review · round 1 · no comments · 3 annotations hidden"}]}
+{"cmd": "screenshot", "name": "annotations-hidden-dark-mica"}
+{"cmd": "key", "keystroke": "a"}
+{"cmd": "settle", "expect": [{"pointer": "/session/annotations_shown", "equals": true}, {"pointer": "/session/threads/0/card", "equals": true}]}
+
+// The comments list counts them apart and lists them on demand.
+{"cmd": "click", "target": "comments_list/annotations"}
+{"cmd": "settle", "expect": [{"pointer": "/comments_list/show_annotations", "equals": true}, {"pointer": "/comments_list/rows", "len": 3}, {"pointer": "/comments_list/rows/0/state", "equals": "annotation"}]}
+
+// The reviewer asks about the stale-name trade-off: a click on its row focuses its card, `R`
+// opens the composer in it, posting makes it an open thread.
+{"cmd": "click", "target": "comments_list/${on_fetch}"}
+{"cmd": "settle", "expect": {"pointer": "/session/focused_thread", "equals": "${on_fetch}"}}
+{"cmd": "key", "keystroke": "r"}
+{"cmd": "settle", "expect": {"pointer": "/session/composer/reply_to", "equals": "${on_fetch}"}}
+{"cmd": "type", "text": "A minute of stale names is too long for the admin page: invalidate on write."}
+{"cmd": "screenshot", "name": "ask-dark-mica"}
+{"cmd": "key", "keystroke": "secondary-enter"}
+{"cmd": "settle"}
+{"cmd": "wait_for", "pointer": "/shell/status/review", "equals": "Ready for review · round 1 · 1 open · 2 annotations"}
+{"cmd": "set_setting", "key": "mode", "value": "light"}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "asked-light-mica"}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "settle"}
+
+// Request changes: the sheet's default follows the open question.
+{"cmd": "key", "keystroke": "secondary-enter"}
+{"cmd": "settle", "expect": [{"pointer": "/session/sheet/verdict", "equals": "request_changes"}, {"pointer": "/session/sheet/can_submit", "equals": true}]}
+{"cmd": "key", "keystroke": "secondary-enter"}
+{"cmd": "settle"}
+{"cmd": "wait_for", "pointer": "/session/status", "equals": "changes_requested"}
+
+// The agent sees the question as an open thread (its own annotation, the reviewer's reply on
+// it), answers and addresses it, and hands round 1 back.
+{"cmd": "cli", "args": ["comment", "list", "--review", "${review}", "--status", "open", "--json"], "cwd": "repos/api-server", "env": {"CLAUDECODE": "1"}, "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/threads", "len": 1}, {"pointer": "/json/threads/0/id", "equals": "${on_fetch}"}, {"pointer": "/json/threads/0/annotation", "equals": true}, {"pointer": "/json/threads/0/replies/0/author/kind", "equals": "reviewer"}]}
+{"cmd": "cli", "args": ["comment", "reply", "${on_fetch}", "--author", "claude-code", "--body", "Writes now drop the user's entry.", "--json"], "cwd": "repos/api-server", "expect_result": [{"pointer": "/exit", "equals": 0}]}
+{"cmd": "cli", "args": ["comment", "address", "${on_fetch}", "--author", "claude-code", "--note", "Invalidated on write", "--json"], "cwd": "repos/api-server", "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/thread/state", "equals": "addressed"}]}
+{"cmd": "cli", "args": ["review", "done", "${review}", "--round", "1", "--author", "claude-code", "--note", "Invalidated on write.", "--json"], "cwd": "repos/api-server", "expect_result": [{"pointer": "/exit", "equals": 0}, {"pointer": "/json/review/status", "equals": "ready"}]}
+
+// The reviewer resolves it (`X` on the focused thread); the other annotations stay as they were.
+{"cmd": "wait_for", "pointer": "/session/status", "equals": "ready", "timeout_ms": 15000}
+{"cmd": "click", "target": "comments_list/${on_fetch}"}
+{"cmd": "settle", "expect": {"pointer": "/session/focused_thread", "equals": "${on_fetch}"}}
+{"cmd": "key", "keystroke": "x"}
+{"cmd": "settle"}
+{"cmd": "wait_for", "pointer": "/session/threads/1/state", "equals": "resolved"}
+{"cmd": "settle", "expect": [{"pointer": "/session/threads/0/state", "equals": "annotation"}, {"pointer": "/session/threads/2/state", "equals": "annotation"}]}

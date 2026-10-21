@@ -2,7 +2,8 @@
 //!
 //! - Reading: [`status`], [`review`] (`list`, `show`) and [`comment`] (`list`, `show`).
 //! - Writing: [`review_write`] (`new`, `done`, `submit`, `close`, `delete`) and
-//!   [`comment_write`] (`add`, `reply`, `address`, `resolve`, `reopen`).
+//!   [`comment_write`] (`add`, `annotate`, `reply`, `address`, `resolve`, `reopen`, `edit`,
+//!   `delete`).
 //! - Waiting for the reviewer: [`wait`].
 //! - Setup (PLAN §12): the checks every environment lists, [`doctor`]; their fixes, [`setup`]
 //!   (`agents`, `path`, `all`); installing dv in a WSL distro, [`setup_wsl`].
@@ -59,6 +60,7 @@ pub(crate) fn run(
             CommentCommand::List(args) => comment::list(global, &args, ctx),
             CommentCommand::Show(args) => comment::show(global, &args.id, ctx),
             CommentCommand::Add(args) => comment_write::add(global, &args, ctx),
+            CommentCommand::Annotate(args) => comment_write::annotate(global, &args, ctx),
             CommentCommand::Reply(args) => comment_write::reply(global, &args, ctx),
             CommentCommand::Address(args) => comment_write::set_state(
                 global,
@@ -73,6 +75,8 @@ pub(crate) fn run(
             CommentCommand::Reopen(args) => {
                 comment_write::set_state(global, &args.id, ThreadState::Open, None, ctx)
             }
+            CommentCommand::Edit(args) => comment_write::edit(global, &args, ctx),
+            CommentCommand::Delete(args) => comment_write::delete(global, &args.id, ctx),
         },
         Command::Setup(args) => {
             let yes = args.yes.yes;

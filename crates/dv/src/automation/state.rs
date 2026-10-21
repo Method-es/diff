@@ -236,6 +236,7 @@ fn repo(row: &RepoRow) -> Value {
                     "open": summary.threads.open,
                     "addressed": summary.threads.addressed,
                     "resolved": summary.threads.resolved,
+                    "annotation": summary.threads.annotation,
                 },
             }),
             ReviewRow::Err { id, error } => json!({"id": id, "error": failure(Some(error))}),
@@ -331,6 +332,8 @@ pub fn session(shell: &Shell, cx: &App) -> Value {
         "comparison_available": session.comparison_available(),
         "comparison_error": failure(session.comparison_error()),
         "ready_note": ready_note(shell, cx),
+        // `A` (PLAN §19.3): whether the stream draws the agent's annotations.
+        "annotations_shown": session.annotations_shown(),
     })
 }
 
@@ -349,6 +352,7 @@ fn ready_note(shell: &Shell, cx: &App) -> Value {
             "author": ready.author.as_ref().map(author),
             "round": ready.round,
             "note": ready.note,
+            "annotations": ready.annotations,
             "open": shell.ready_note_open(),
         }),
         None => Value::Null,
@@ -417,10 +421,18 @@ pub fn comments_list(shell: &Shell, cx: &App) -> Value {
                 "file_level": row.file_level,
                 "summary": row.summary,
                 "snippet": row.snippet,
+                "unlisted": row.unlisted,
+                "drawable": row.drawable,
             })
         })
         .collect();
-    json!({"show_resolved": list.shows_resolved(), "rows": rows, "menu": list.menu_thread()})
+    json!({
+        "show_resolved": list.shows_resolved(),
+        "show_annotations": list.shows_annotations(),
+        "expanded": list.expanded(),
+        "rows": rows,
+        "menu": list.menu_thread(),
+    })
 }
 
 fn side(side: AnchorSide) -> &'static str {
@@ -760,6 +772,11 @@ fn thread_state(session: &ReviewSession, thread: &Thread) -> Value {
         // A comment on the whole file (lines 0, PLAN §8).
         "file_level": anchor.is_file_level(),
         "state": thread.state.as_str(),
+        // An agent opened it as an annotation (PLAN §19), asked about since or not.
+        "annotation": thread.annotation,
+        // Its card is drawn where it is placed (an annotation hidden, outdated or on a file the
+        // review no longer changes isn't, PLAN §19.3).
+        "card": session.shows_card(thread, &placement),
         "note": thread.last_change.as_ref().and_then(|change| change.note.clone()),
         "author": author(&thread.author),
         "body": thread.body,

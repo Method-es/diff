@@ -35,20 +35,24 @@ impl Render for CommentsList {
         let Some(session) = self.session.clone() else {
             return div().into_any_element();
         };
-        let all = super::rows(session.read(cx), true);
-        let waiting = all
-            .iter()
-            .filter(|row| row.state != ThreadState::Resolved)
-            .count();
-        let open = all
-            .iter()
-            .filter(|row| row.state == ThreadState::Open)
-            .count();
-        let resolved = all.len() - waiting;
+        let all = super::rows(session.read(cx), true, true);
+        let count = |state: ThreadState| all.iter().filter(|row| row.state == state).count();
+        let waiting = all.iter().filter(|row| row.state.is_waiting()).count();
+        let open = count(ThreadState::Open);
+        let resolved = count(ThreadState::Resolved);
+        let annotations = count(ThreadState::Annotation);
         let focused = self.diff_pane.read(cx).focused_thread().cloned();
-        let shown: Vec<&CommentRow> = all
+        let (waiting_rows, rest): (Vec<&CommentRow>, Vec<&CommentRow>) =
+            all.iter().partition(|row| row.state.is_waiting());
+        let annotation_rows: Vec<&CommentRow> = rest
             .iter()
-            .filter(|row| self.show_resolved || row.state != ThreadState::Resolved)
+            .copied()
+            .filter(|row| self.show_annotations && row.state == ThreadState::Annotation)
+            .collect();
+        let resolved_rows: Vec<&CommentRow> = rest
+            .iter()
+            .copied()
+            .filter(|row| self.show_resolved && row.state == ThreadState::Resolved)
             .collect();
 
         // Below `COPY_LABEL_FROM` the label doesn't fit beside the heading: the button keeps
@@ -88,11 +92,11 @@ impl Render for CommentsList {
             )
             .child(count_badge(&theme).child(waiting.to_string()))
             .child(copy);
-        let mut rows: Vec<AnyElement> = shown
+        let mut rows: Vec<AnyElement> = waiting_rows
             .iter()
             .map(|row| self.render_row(row, focused.as_ref() == Some(&row.id), &theme, cx))
             .collect();
-        if waiting == 0 && !self.show_resolved {
+        if waiting == 0 {
             rows.push(
                 div()
                     .px(theme.spacing.md)
@@ -101,6 +105,45 @@ impl Render for CommentsList {
                     .text_color(c.fg3)
                     .child("No open comments")
                     .into_any_element(),
+            );
+        }
+        if annotations > 0 {
+            let hover = c.control_hover;
+            let show = self.show_annotations;
+            rows.push(
+                div()
+                    .id("comments-annotations")
+                    .flex()
+                    .items_center()
+                    .gap(theme.spacing.sm)
+                    .w_full()
+                    .px(theme.spacing.md)
+                    .py(px(5.))
+                    .rounded(theme.radii.control)
+                    .text_spec(&theme.text.secondary)
+                    .text_color(c.fg2)
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(hover))
+                    .child(annotation_marker(&theme))
+                    .child(format!(
+                        "{annotations} {} · {}",
+                        if annotations == 1 {
+                            "annotation"
+                        } else {
+                            "annotations"
+                        },
+                        if show { "hide" } else { "show" }
+                    ))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.set_show_annotations(!show, cx)),
+                    )
+                    .automation_target("comments_list/annotations")
+                    .into_any_element(),
+            );
+            rows.extend(
+                annotation_rows
+                    .iter()
+                    .map(|row| self.render_row(row, focused.as_ref() == Some(&row.id), &theme, cx)),
             );
         }
         if resolved > 0 {
@@ -128,6 +171,11 @@ impl Render for CommentsList {
                     .on_click(cx.listener(move |this, _, _, cx| this.set_show_resolved(!show, cx)))
                     .automation_target("comments_list/resolved")
                     .into_any_element(),
+            );
+            rows.extend(
+                resolved_rows
+                    .iter()
+                    .map(|row| self.render_row(row, focused.as_ref() == Some(&row.id), &theme, cx)),
             );
         }
         div()
@@ -181,6 +229,7 @@ impl CommentsList {
                 .bg(c.blue)
                 .into_any_element(),
             ThreadState::Resolved => icon(DvIcon::CircleCheck, px(11.), c.green).into_any_element(),
+            ThreadState::Annotation => annotation_marker(theme),
         };
         // `path` and, quieter after it, `:line` or a comment on the whole file's ` (file)`.
         let split = if row.file_level {
@@ -209,6 +258,8 @@ impl CommentsList {
             flags.push(flag("outdated", c.yellow, FontWeight::MEDIUM));
         } else if row.state == ThreadState::Addressed {
             flags.push(flag("addressed", c.blue, FontWeight::MEDIUM));
+        } else if row.state == ThreadState::Annotation && row.unlisted {
+            flags.push(flag("unchanged file", c.fg3, FontWeight::NORMAL));
         }
         if row.not_in_comparison {
             flags.push(flag("all changes", c.fg3, FontWeight::NORMAL));
@@ -216,6 +267,26 @@ impl CommentsList {
         let id = row.id.clone();
         // The row whose menu is open keeps its hover tint while the pointer is on the menu.
         let menu_open = self.menu_thread() == Some(&row.id);
+        // An annotation the stream never draws has no menu: there is no card to act on.
+        let has_menu = row.drawable;
+        // Its whole text: the explanation and the agent's additions to it.
+        let expanded = (self.expanded.as_ref() == Some(&row.id)
+            && row.state == ThreadState::Annotation
+            && !row.drawable)
+            .then(|| {
+                self.session
+                    .as_ref()
+                    .and_then(|session| session.read(cx).review().thread(&row.id))
+                    .map(|thread| {
+                        let mut text = thread.body.clone();
+                        for reply in thread.replies.iter().filter(|reply| !reply.is_deleted()) {
+                            text.push_str("\n\n");
+                            text.push_str(&reply.body);
+                        }
+                        text
+                    })
+            })
+            .flatten();
         div()
             .id(ElementId::Name(format!("comment-row-{}", row.id).into()))
             .flex()
@@ -239,11 +310,13 @@ impl CommentsList {
                 let id = id.clone();
                 cx.listener(move |this, _, _, cx| this.reveal(&id, cx))
             })
-            .on_mouse_down(MouseButton::Right, {
-                let id = id.clone();
-                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                    this.open_menu(id.clone(), event.position, cx);
-                    cx.stop_propagation();
+            .when(has_menu, |this| {
+                this.on_mouse_down(MouseButton::Right, {
+                    let id = id.clone();
+                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        this.open_menu(id.clone(), event.position, cx);
+                        cx.stop_propagation();
+                    })
                 })
             })
             .debug_selector(move || format!("comment-row-{id}"))
@@ -296,13 +369,28 @@ impl CommentsList {
                     .pl(px(13.))
                     .truncate()
                     .text_spec(&theme.text.body)
-                    .text_color(if row.state == ThreadState::Resolved {
-                        c.fg3
-                    } else {
-                        c.fg
+                    .text_color(match row.state {
+                        ThreadState::Resolved => c.fg3,
+                        ThreadState::Annotation => c.fg2,
+                        ThreadState::Open | ThreadState::Addressed => c.fg,
                     })
                     .child(row.summary.clone()),
             )
+            .children(expanded.map(|body| {
+                div()
+                    .pl(px(13.))
+                    .pt(px(2.))
+                    .child(
+                        crate::markdown::view(
+                            ElementId::Name(format!("comment-row-{}/body", row.id).into()),
+                            &body,
+                            cx,
+                        )
+                        .text_spec(&theme.text.secondary)
+                        .text_color(c.fg2),
+                    )
+                    .automation_target(format!("comments_list/{}/body", row.id))
+            }))
             .children(row.snippet.clone().map(|snippet| {
                 div()
                     .pl(px(13.))
@@ -334,7 +422,11 @@ impl CommentsList {
         let (state, read_only) = found?;
         let c = &theme.colors;
         let writable = !read_only;
+        if state == ThreadState::Annotation {
+            return Some(self.render_annotation_menu(menu, writable, theme, cx));
+        }
         let states: &[(&'static str, &'static str, DvIcon, ThreadState)] = match state {
+            ThreadState::Annotation => &[],
             ThreadState::Open => &[(
                 "resolve",
                 "Resolve",
@@ -413,4 +505,52 @@ impl CommentsList {
             .into_any_element(),
         )
     }
+
+    /// An annotation's row menu (PLAN §19.3): Ask alone, disabled on a finished review; no
+    /// Resolve (nothing waits on it) and no Copy as prompt.
+    fn render_annotation_menu(
+        &self,
+        menu: super::RowMenu,
+        writable: bool,
+        theme: &DvTheme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let thread = menu.thread.clone();
+        let ask = menu_item(
+            ElementId::Name("comments-menu-ask".into()),
+            "Ask",
+            DvIcon::MessageSquare,
+            writable,
+            theme,
+        )
+        .debug_selector(|| "comments-menu-ask".into())
+        .when(writable, |this| {
+            this.on_click(cx.listener(move |this, _, window, cx| {
+                this.reply(&thread, window, cx);
+            }))
+        })
+        .automation_target("comments_list/menu/ask");
+        let panel = menu_panel("comments-menu", theme)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_menu(cx)))
+            .child(ask)
+            .automation_target("comments_list/menu");
+        deferred(
+            anchored()
+                .position(menu.position)
+                .snap_to_window_with_margin(px(8.))
+                .child(panel),
+        )
+        .with_priority(MENU_PRIORITY)
+        .into_any_element()
+    }
+}
+
+/// An annotation's mark in the list: a 6-square in `blue` (DESIGN §4.1).
+fn annotation_marker(theme: &DvTheme) -> AnyElement {
+    div()
+        .flex_none()
+        .size(px(6.))
+        .rounded(px(1.5))
+        .bg(theme.colors.blue)
+        .into_any_element()
 }

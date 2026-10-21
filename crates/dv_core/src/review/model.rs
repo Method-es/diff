@@ -155,12 +155,17 @@ impl ReviewStatus {
 /// A thread's state (PLAN §2.5): `open` (waiting on the agent or author) → `addressed` (the
 /// agent says done) → `resolved` (the reviewer confirmed), or back to `open` (reopened). The
 /// allowed moves are [`super::fold::check_thread_state`]'s.
+///
+/// `annotation` is an agent's explanation of its change (PLAN §19): waiting on no one, it
+/// counts in no open number. Only a `thread_added` marked as one starts there and nothing moves
+/// a thread to it; the reviewer's reply moves it to `open`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThreadState {
     Open,
     Addressed,
     Resolved,
+    Annotation,
 }
 
 impl ThreadState {
@@ -169,7 +174,14 @@ impl ThreadState {
             Self::Open => "open",
             Self::Addressed => "addressed",
             Self::Resolved => "resolved",
+            Self::Annotation => "annotation",
         }
+    }
+
+    /// Whether the thread waits on someone: open or addressed (neither resolved nor an
+    /// annotation nobody asked about).
+    pub fn is_waiting(self) -> bool {
+        matches!(self, Self::Open | Self::Addressed)
     }
 }
 
@@ -373,8 +385,13 @@ pub struct Thread {
     /// skipped) instead of reported as unknown (PLAN §7). Views hide deleted threads.
     pub deleted_at: Option<u64>,
     pub state: ThreadState,
-    /// The change that set `state`; `None` while the thread has never left `open`.
+    /// The change that set `state`; `None` while the thread has never left `open` (or the
+    /// state an annotation starts in) by a `thread_state` event.
     pub last_change: Option<StateChange>,
+    /// Whether an agent opened the thread as an annotation (PLAN §19), which it stays once the
+    /// reviewer's reply opened it.
+    #[serde(default)]
+    pub annotation: bool,
     /// Replies in the order they landed, deleted ones included (tombstones).
     pub replies: Vec<Comment>,
 }
@@ -539,6 +556,7 @@ impl Review {
                 ThreadState::Open => threads.open += 1,
                 ThreadState::Addressed => threads.addressed += 1,
                 ThreadState::Resolved => threads.resolved += 1,
+                ThreadState::Annotation => threads.annotation += 1,
             }
         }
         ReviewSummary {
@@ -582,4 +600,7 @@ pub struct ThreadCounts {
     pub open: u32,
     pub addressed: u32,
     pub resolved: u32,
+    /// Annotations nobody has asked about (PLAN §19).
+    #[serde(default)]
+    pub annotation: u32,
 }

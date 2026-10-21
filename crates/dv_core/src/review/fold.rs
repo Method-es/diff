@@ -60,6 +60,12 @@ pub enum Rejection {
     ReadOnlyThread { thread: ThreadId },
     #[error("a GitHub author can only write to threads mirrored from GitHub, not {thread}")]
     GithubOnLocalThread { thread: ThreadId },
+    /// An annotation waits on no one, so its state doesn't change: a reply asks about it
+    /// (PLAN §19.1).
+    #[error("thread {thread} is an annotation, which waits on no one: reply to it to ask about it")]
+    Annotation { thread: ThreadId },
+    #[error("only an agent writes an annotation, not {}", author.noun())]
+    AnnotationAuthor { author: AuthorKind },
     #[error("{} can't move a thread from {from} to {to}", author.noun())]
     ThreadTransition {
         from: ThreadState,
@@ -147,6 +153,8 @@ pub fn fold(id: &ReviewId, events: &[Event]) -> Result<Folded, FoldError> {
 /// - Only the reviewer resolves (from `open` or `addressed`) and reopens (back to `open`).
 /// - A thread mirrored from GitHub changes only through its GitHub author's events (PLAN §9.2),
 ///   and a GitHub author changes no other thread.
+/// - An annotation's state doesn't change this way, and nothing moves a thread to
+///   `annotation` (PLAN §19.1): a reviewer's reply is what opens one.
 ///
 /// `Ok(Outcome::Unchanged)` when the thread is already in `to` (except `addressed`, above).
 pub fn check_thread_state(
@@ -157,7 +165,12 @@ pub fn check_thread_state(
     by: AuthorKind,
 ) -> Result<Outcome, Rejection> {
     use AuthorKind::{Agent, Github, Reviewer};
-    use ThreadState::{Addressed, Open, Resolved};
+    use ThreadState::{Addressed, Annotation, Open, Resolved};
+    if from == Annotation {
+        return Err(Rejection::Annotation {
+            thread: thread.clone(),
+        });
+    }
     match (thread_author == Github, by == Github) {
         (true, false) => {
             return Err(Rejection::ReadOnlyThread {
@@ -169,14 +182,14 @@ pub fn check_thread_state(
                 thread: thread.clone(),
             });
         }
-        (true, true) => {
+        (true, true) if to != Annotation => {
             return Ok(if from == to {
                 Outcome::Unchanged
             } else {
                 Outcome::Changed
             });
         }
-        (false, false) => {}
+        (true, true) | (false, false) => {}
     }
     match (from, to, by) {
         (Open, Open, _) | (Resolved, Resolved, _) => Ok(Outcome::Unchanged),
@@ -386,9 +399,15 @@ impl Folder {
                 anchor,
                 body,
                 author,
+                annotation,
             } => {
                 if self.threads.contains_key(id) {
                     return Err(Rejection::DuplicateId { id: id.to_string() });
+                }
+                if *annotation && author.kind != AuthorKind::Agent {
+                    return Err(Rejection::AnnotationAuthor {
+                        author: author.kind,
+                    });
                 }
                 check_anchor(anchor, self.review.current_round())?;
                 self.threads.insert(id.clone(), self.review.threads.len());
@@ -401,8 +420,13 @@ impl Folder {
                     created_at: at,
                     edited_at: None,
                     deleted_at: None,
-                    state: ThreadState::Open,
+                    state: if *annotation {
+                        ThreadState::Annotation
+                    } else {
+                        ThreadState::Open
+                    },
                     last_change: None,
+                    annotation: *annotation,
                     replies: Vec::new(),
                 });
                 Outcome::Changed
@@ -432,6 +456,11 @@ impl Folder {
                     edited_at: None,
                     deleted_at: None,
                 });
+                // The reviewer's reply to an annotation asks about it: the reply is the move
+                // to `open` (PLAN §19.1), so the question is never lost between two events.
+                if current.state == ThreadState::Annotation && author.kind == AuthorKind::Reviewer {
+                    current.state = ThreadState::Open;
+                }
                 record_move(current, anchor.as_ref());
                 Outcome::Changed
             }

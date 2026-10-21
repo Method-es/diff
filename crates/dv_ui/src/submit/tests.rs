@@ -50,6 +50,7 @@ fn thread_in(id: &str, round: u32, moved_in: Option<u32>, state: ThreadState) ->
         deleted_at: None,
         state,
         last_change: None,
+        annotation: false,
         replies: Vec::new(),
     }
 }
@@ -85,6 +86,20 @@ fn the_comments_are_the_rounds_own_and_the_earlier_unresolved_ones() {
             2,
             None,
             ThreadState::Resolved,
+        ),
+        // The agent's annotations, of this round and the last, nobody asked about: nothing
+        // goes back to the agent with them (PLAN §19.1).
+        thread_in(
+            "t-01jbzv8m2e3q9w5x7y0z1a2b05",
+            2,
+            None,
+            ThreadState::Annotation,
+        ),
+        thread_in(
+            "t-01jbzv8m2e3q9w5x7y0z1a2b06",
+            1,
+            None,
+            ThreadState::Annotation,
         ),
     ];
     let listed: Vec<String> = round_comments(&threads, 2)

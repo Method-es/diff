@@ -34,7 +34,7 @@ fn status_names_the_repo_and_the_current_review() {
     assert_eq!(json["current"]["id"], review.id.as_str());
     assert_eq!(
         json["current"]["threads"],
-        json!({"open": 1, "addressed": 0, "resolved": 0})
+        json!({"open": 1, "addressed": 0, "resolved": 0, "annotation": 0})
     );
     assert_eq!(json["reviews"].as_array().unwrap().len(), 1);
     assert_eq!(json["reviews"][0], json["current"]);

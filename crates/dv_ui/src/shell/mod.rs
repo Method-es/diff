@@ -74,7 +74,7 @@ mod tests;
 
 use anyhow::{Context as _, Result};
 use dv_backend::ConnectionState;
-use dv_core::review::{Author, ReviewId, ReviewStatus};
+use dv_core::review::{Author, ReviewId, ReviewStatus, ThreadState};
 use dv_core::{Location, Target};
 use futures::channel::oneshot;
 use gpui::{
@@ -176,6 +176,8 @@ pub struct ReadyNote {
     pub round: u32,
     /// Markdown, `None` without one.
     pub note: Option<String>,
+    /// The annotations the agent wrote in that round that nobody has asked about (PLAN §19).
+    pub annotations: usize,
 }
 
 /// A review being opened.
@@ -636,12 +638,18 @@ impl Shell {
             .status_change
             .as_ref()
             .filter(|change| change.status == ReviewStatus::Ready);
+        let round = review.current_round();
         Some(ReadyNote {
             author: change.and_then(|change| change.author.clone()),
-            round: review.current_round(),
+            round,
             note: change
                 .and_then(|change| change.note.clone())
                 .filter(|note| !note.trim().is_empty()),
+            annotations: review
+                .live_threads()
+                .filter(|thread| thread.state == ThreadState::Annotation)
+                .filter(|thread| thread.first_anchor().round == round)
+                .count(),
         })
     }
 

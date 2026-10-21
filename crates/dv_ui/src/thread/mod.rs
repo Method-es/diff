@@ -212,6 +212,7 @@ pub fn state_label(thread: &Thread) -> String {
             _ => "Addressed by agent".to_string(),
         },
         ThreadState::Resolved => "Resolved".to_string(),
+        ThreadState::Annotation => "Annotation".to_string(),
     }
 }
 
@@ -285,6 +286,7 @@ pub fn prompt_heading(state: ThreadState) -> &'static str {
         ThreadState::Open => "Open review comment",
         ThreadState::Addressed => "Addressed review comment",
         ThreadState::Resolved => "Resolved review comment",
+        ThreadState::Annotation => "Agent's annotation",
     }
 }
 
