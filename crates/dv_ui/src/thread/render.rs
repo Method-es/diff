@@ -797,8 +797,8 @@ pub struct ComposerBox {
     posting: bool,
     error: Option<Failure>,
     compact: bool,
-    /// Beside "Markdown" in the footer: what happens to the text ("claude-code reads it when
-    /// you finish the round", asking about an annotation).
+    /// Beside "Markdown" in the footer: what happens to the text ("claude-code reads it with
+    /// the round", asking about an annotation).
     hint: Option<String>,
     on_post: Handler,
     on_cancel: Handler,

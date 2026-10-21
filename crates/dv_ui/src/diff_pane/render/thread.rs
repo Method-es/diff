@@ -170,7 +170,7 @@ impl DiffPane {
         .posting(composer.posting)
         .error(composer.error.clone())
         .compact(compact)
-        .hint(asking.map(|agent| format!("{agent} reads it when you finish the round")))
+        .hint(asking.map(|agent| format!("{agent} reads it with the round")))
     }
 
     /// The agent `composer` asks, when it replies to an annotation (PLAN §19.3).

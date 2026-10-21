@@ -495,8 +495,8 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   Markdown at 13 in `fg2`, in full (the skill keeps an annotation to one to three sentences);
   the agent's own additions follow, each over a hairline under its name and time in `fg3`. The
   file view draws it at its lines as the stream does. **Ask** (or `R`) opens the reply composer in the card, its field reading "Ask
-  claude-code about this…" and its footer saying "claude-code reads it when you finish the
-  round" in `fg3` beside "Markdown"; posting turns the card into a thread card,
+  claude-code about this…" and its footer saying "claude-code reads it with the round"
+  in `fg3` beside "Markdown" (the question goes to the agent when the round is finished); posting turns the card into a thread card,
   `open`, whose first comment keeps a quiet "annotation" tag beside the agent tag. Hidden with
   `A`, annotations aren't drawn at all (the status bar says they are hidden). In an interdiff
   only the annotations written since its round are drawn; an outdated one, or one whose file

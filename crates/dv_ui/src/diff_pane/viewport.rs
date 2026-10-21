@@ -244,6 +244,20 @@ impl DiffPane {
         }
     }
 
+    /// Scrolls up just enough that item `item`'s bottom sits `margin` rows above the viewport's
+    /// bottom, when it is below that: the end of a tall item (a card's composer) comes into view
+    /// while the rest of it stays where it is, its top going above the viewport if it must.
+    pub(super) fn reveal_item_bottom(&mut self, item: usize, margin: usize) {
+        let height = self.viewport_height();
+        let size = self.item_height(item);
+        let margin = margin as f32 * heights::CODE;
+        if let Some(y) = self.offset_of(item, height * 2.)
+            && y + size > height - margin
+        {
+            self.scroll_item_to(item, height - size - margin);
+        }
+    }
+
     /// The list offset `delta` pixels below (or above, negative) `from`, clamped to the list.
     pub(super) fn offset_by(&self, from: ListOffset, delta: f32) -> ListOffset {
         let last = self.item_count() - 1;

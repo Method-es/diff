@@ -292,6 +292,9 @@ pub struct DiffPane {
     /// A draft the comparison shown can't hold, asked for (`C`) while all changes are being
     /// listed: it takes the keyboard once its row is there (`threads`).
     focus_composer_after_listing: bool,
+    /// Frames to wait before the composer's row is brought wholly into view: it was just opened
+    /// or grew, and its height is known once the list has laid it out again (`threads`).
+    reveal_composer_in: u8,
     /// A reply asked for (the comments list's menu) before its thread's card was built: the
     /// reply composer opens in the card once it is (`threads`).
     reply_when_shown: Option<ThreadId>,
@@ -384,6 +387,7 @@ impl DiffPane {
             pending_thread: None,
             reveal_after_listing: None,
             focus_composer_after_listing: false,
+            reveal_composer_in: 0,
             reply_when_shown: None,
             opened_threads: HashSet::new(),
             thread_error: None,
@@ -458,6 +462,7 @@ impl DiffPane {
         self.pending_thread = None;
         self.reveal_after_listing = None;
         self.focus_composer_after_listing = false;
+        self.reveal_composer_in = 0;
         self.reply_when_shown = None;
         self.opened_threads.clear();
         self.thread_error = None;

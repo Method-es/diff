@@ -498,6 +498,26 @@ impl DiffPane {
         }
     }
 
+    /// Brings the whole composer into view once its row has been laid out at its new height
+    /// ([`DiffPane::focus_composer`], typing): a reply opened in a card near the viewport's
+    /// bottom grows the card past it, and `reveal_item` saw the card's height from before.
+    /// Runs as the stream is drawn, a frame after the composer opened or grew.
+    pub(super) fn reveal_laid_out_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reveal_composer_in == 0 {
+            return;
+        }
+        self.reveal_composer_in -= 1;
+        if self.reveal_composer_in > 0 {
+            // The next frame lays the row out.
+            cx.defer_in(window, |_, _, cx| cx.notify());
+            return;
+        }
+        if let Some(item) = self.composer_item() {
+            self.reveal_item_bottom(item, 1);
+            self.viewport_changed(cx);
+        }
+    }
+
     /// Gives the composer the keyboard and brings it into view, opening its file first when it
     /// is collapsed. A composer still without a row (its file failed to load) never takes the
     /// keyboard, which a field that isn't drawn would swallow: the stream keeps it, and `false`
@@ -519,6 +539,9 @@ impl DiffPane {
                     .input
                     .update(cx, |input, cx| input.focus(window, cx));
                 self.reveal_item(item, 1);
+                // A reply's card was measured without it: its full height is known once the
+                // list has laid it out again, and its end comes into view then.
+                self.reveal_composer_in = 2;
                 true
             }
             _ => {
@@ -663,6 +686,8 @@ impl DiffPane {
                         this.reveal_item(item, 1);
                         this.viewport_changed(cx);
                     }
+                    // Grown past the viewport's bottom: brought back once laid out again.
+                    this.reveal_composer_in = 2;
                 }
                 cx.notify();
             }

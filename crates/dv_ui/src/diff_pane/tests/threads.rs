@@ -664,3 +664,43 @@ fn a_lines_plus_comments_on_it_and_a_drag_from_it_on_the_lines_it_passes(cx: &mu
         line_target("b.txt", AnchorSide::Old, (2, 2))
     );
 }
+
+#[gpui::test]
+fn a_reply_opened_near_the_bottom_comes_wholly_into_view(cx: &mut TestAppContext) {
+    let repo = stream_fixture(80);
+    let (_dir, shell, cx) = open(&repo, cx);
+    // A card above gives the stream room to put this one's top low in the viewport.
+    add_thread(
+        &shell,
+        "a/long.txt",
+        AnchorSide::New,
+        (70, 70),
+        "Why a word?",
+        cx,
+    );
+    let thread = add_thread(&shell, "b.txt", AnchorSide::New, (2, 2), "Why a digit?", cx);
+    let pane = pane(&shell, cx);
+    // Its card's top just inside the viewport's bottom edge.
+    pane.update(cx, |pane, cx| pane.focus_thread(&thread, cx));
+    settle_drawn(cx, &shell, "the card focused", |_, _| true);
+    pane.update(cx, |pane, cx| {
+        let item = pane.thread_item(&thread).expect("its card");
+        let height = pane.viewport_height();
+        // Room for the card as it is, not for the composer it grows by.
+        pane.scroll_item_to(item, height - pane.item_height(item) - 10.);
+        pane.viewport_changed(cx);
+    });
+    draw(cx);
+    press(cx, &shell, "r");
+    settle_drawn(cx, &shell, "the composer laid out", |_, _| true);
+    let (bottom, height) = pane.read_with(cx, |pane, _| {
+        let item = pane.composer_item().expect("the composer's card");
+        let height = pane.viewport_height();
+        let top = pane.offset_of(item, height * 2.).expect("in view");
+        (top + pane.item_height(item), height)
+    });
+    assert!(
+        bottom <= height,
+        "the card ends at {bottom}, past the viewport's {height}"
+    );
+}
