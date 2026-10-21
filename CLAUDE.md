@@ -201,7 +201,7 @@ without the app, neither of which the runner may start. `script/check` does this
 dv status --json             # the repo, who you act as, the open reviews and the current one
 dv review list [--all]       # dv review show [<id>], dv comment list [--status open] [--file p]
 dv comment show <thread>     # --json on any command: one {"schema": 1, …} document on stdout
-dv comment reply <thread> --body-file -    # also add, address, resolve, reopen (PLAN §10.1)
+dv comment reply <thread> --body-file -    # also add, annotate, address, resolve, reopen (PLAN §10.1, §19)
 dv review new | done | submit | close | delete | wait     # wait: exit 3 on --timeout
 dv setup agents --home <dir> --yes         # the dv-review skill; never without --home in tests
 dv setup wsl <distro> --yes  # Windows: this build into the distro; only with DV_WSL_HOME=/tmp/… here

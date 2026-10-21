@@ -34,6 +34,8 @@ labels, "used to…") belongs in commit messages, never in comments.
 8. Read the code around a change as an editor would: select and find text, view whole files, and
    hover, go to definition and find references through the project's own language servers, run
    where the repo lives (§18).
+9. An agent explains its change as it hands it over: annotations beside the code, so round 1
+   isn't spent asking why (§19).
 
 **Non-goals (v1):** AI features inside dv, editing files (and so a language server's diagnostics,
 completion, rename and code actions, §18.1), committing or any other mutation of the user's repo
@@ -219,7 +221,7 @@ Repo          a clone at a Location: Local(<path>) | Wsl{distro, path}
      ├─ Target          fixed at creation, never changes (§2.2)
      ├─ Rounds          1..n snapshots of the target (§2.3)
      ├─ Viewed          per-round set of paths the reviewer marked viewed
-     ├─ Threads         anchored comment + replies + state (§2.5)
+     ├─ Threads         anchored comment + replies + state (§2.5); an agent's annotations (§19)
      └─ Status          §2.4
 ```
 
@@ -391,6 +393,9 @@ A round is the target as it stood when the reviewer last handed the review over.
 - **Authors:** `reviewer` (git identity), `agent` (`--author`, default from the skill: `claude-code`,
   `codex`, …), `github` (GitHub's threads on a PR: shown from the PR's mirror, never written to a
   review's log, read-only; their state is GitHub's, §9.6).
+- **Annotations** (§19): an agent's explanation of its own change, anchored as a comment is,
+  in state `annotation`: waiting on no one, counted apart from the threads. The reviewer's reply
+  turns one into an open thread, the agent's question as §10.5 treats it.
 
 ### 2.6 Promotion (later, not v1)
 When a branch reviewed as `branch feat vs main` becomes PR #n, dv offers to carry open threads into the
@@ -403,7 +408,9 @@ PR's draft review, re-anchored against the PR diff.
 ### A. Agent's local work (the core loop)
 1. The agent works in `~/code/api-server` (WSL). dv's switcher shows that repo with "uncommitted
    changes · 7 files".
-2. The reviewer picks **Review** → a `working` review opens (or resumes).
+2. The reviewer picks **Review** → a `working` review opens (or resumes). When the user asked the
+   agent to hand its work over, the agent opened that review first, annotated its change and
+   marked it ready (§19), so the reviewer starts with its reasons beside the code.
 3. They read, mark files viewed (`V`), comment (select lines, `C`), then **Request changes**
    (`Ctrl Enter`). Round 1 is snapshotted; status `changes_requested`.
 4. The agent (blocked in `dv review wait`) wakes, runs `dv comment list --status open`, fixes,
@@ -887,7 +894,7 @@ so the UI falls back to refreshing those itself instead of also losing review up
   the worktree root it was made in (`worktree`), which is what a `working` or `staged` target means.
 - **Events (v1):** `created{target, author, worktree}`, `round_closed{n, new_oid, old_oid, verdict?,
   body?}` (`body`: the round's summary, Markdown),
-  `viewed{round, path, on}`, `thread_added{id, anchor, body, author, github_thread?}`, `reply_added{thread, id, body,
+  `viewed{round, path, on}`, `thread_added{id, anchor, body, author, github_thread?, annotation?}`, `reply_added{thread, id, body,
   author, anchor?}`, `thread_state{thread, state, note?, author, anchor?}`, `body_edited{target_id,
   body}`, `deleted{target_id}`, `pr_linked{owner, repo, number}`, `submitted{github_review_id, url,
   event, head_oid?, merge_base_oid?}`, `pr_pending{github_review_id, commit}`, `pr_posted{thread, github_id}`,
@@ -902,7 +909,8 @@ so the UI falls back to refreshing those itself instead of also losing review up
   review on GitHub that submitting is building, `pr_posted` each draft posted into it (frozen
   from then on), `pr_discarded` the pending review deleted (the posted drafts thawed), and
   `submitted`'s `head_oid` and `merge_base_oid` the commits it went to GitHub against (§9.5; absent in
-  logs written before phase 8). Each line is `{"v":1, "eid", "at" (ms), "kind": …, …}`: the format version, a
+  logs written before phase 8). A `thread_added`'s `annotation: true` makes the thread an agent's
+  annotation (§19). Each line is `{"v":1, "eid", "at" (ms), "kind": …, …}`: the format version, a
   unique event id and the time, beside the kind and its fields (snake_case). Optional fields are left
   out when empty; unknown fields are ignored, so an optional addition needs no version bump.
 - **Writing:** one `store_append` per event (D5). A log whose last line lacks its newline ends in a
@@ -1476,7 +1484,7 @@ GitHub) thaws the drafts and appends `pr_discarded {}` (§7).
   outdated}`); `ReviewDto` gains `pr {owner, repo, number, url, state, head_oid, pr_round}` and
   `submissions [{github_review_id, url, event, at}]` (schema 1 grows).
 - **Agents read, never write, a PR review** (the owner's choice, 2026-10-19): every write an
-  agent's identity makes on a PR review (`comment add`, `reply`, `address`, `review done`) is
+  agent's identity makes on a PR review (`comment add`, `annotate`, `reply`, `address`, `review done`) is
   exit 1 `not_allowed` ("PR reviews are the reviewer's; read the threads with `dv comment
   list`"), as is any write to a `gh:` thread. The skill (§10.5) says so and shows reading a PR's
   feedback to fix it locally.
@@ -1554,9 +1562,13 @@ dv review submit [<id>] --verdict approve|request-changes|comment [--body <t> | 
 dv review refresh [<id>]                   a PR review: fetch the PR and refresh its mirror (§9.4)
 dv review close | delete <id>              reviewer
 
-dv comment list [--status open|addressed|resolved|outdated]… [--file <p>] [--oneline]
+dv comment list [--status open|addressed|resolved|annotation|outdated]… [--file <p>] [--oneline]
 dv comment show <id>                       the thread with the diff around its code now
 dv comment add --file <p> [--lines N[:M]] [--side old|new] (--body <t> | --body-file <f|->)
+dv comment annotate --file <p> [--lines N[:M]] [--side old|new] (--body <t> | --body-file <f|->)
+                                           agent: explain a change (§19)
+dv comment edit <id> (--body <t> | --body-file <f|->)
+dv comment delete <id>                     the item's author (§19.1)
 dv comment reply <id> (--body <t> | --body-file <f|->)
 dv comment address <id> [--note <t> | --note-file <f|->]
                                            agent
@@ -1617,7 +1629,8 @@ Global flags: `--repo <path>` (also `\\wsl.localhost\<distro>\<path>`), `--wsl <
   any worktree.
 - **Writes** go through `review::ops` (or the store's delete), so the CLI writes what the GUI
   would and nothing else (§2.4: only `.git/dv/**` and `refs/dv/**`). A finished review (approved,
-  closed) takes no comment writes (`add`, `reply`, `address`, `resolve`, `reopen`: exit 1
+  closed) takes no comment writes (`add`, `annotate`, `reply`, `address`, `resolve`, `reopen`,
+  `edit`, `delete`: exit 1
   `finished`, §2.4), as the GUI shows it read-only, and moves to no other status (`review done
   <id>` racing the reviewer's approval, `review close` after it, `review submit`: exit 1
   `finished` too, so an agent always hears the one stop signal). A finished review is no longer
@@ -1653,6 +1666,10 @@ Global flags: `--repo <path>` (also `\\wsl.localhost\<distro>\<path>`), `--wsl <
     on its new side, or with `--side old` on a deleted file's old side (`rejected` on a deleted
     file's new side and on any other file's old side, saying which to use), which reads
     none of the file's text, so a binary or too large file takes one too.
+  - `comment annotate` is `comment add` for an agent's annotation (§19): the same files, sides,
+    lines, file-level anchor and text, `annotation: true` on its `thread_added`. It is an
+    agent's: without an agent identity it is exit 2 (`usage`, saying to pass `--author`), as
+    `review done` is.
   - `comment reply | address | resolve | reopen` place the thread first and record its
     relocated anchor when it moved (§8); a target that no longer resolves is exit 1 before
     anything is written, as for `comment list`.
@@ -1680,7 +1697,7 @@ Global flags: `--repo <path>` (also `\\wsl.localhost\<distro>\<path>`), `--wsl <
   can't be watched). A review deleted meanwhile is exit 1 (`not_found`); `--timeout`
   (seconds, fractions allowed) running out is exit 3. It prints why it returned: `{"schema": 1,
   "outcome": <the status>, "review": …, "round": <the last closed round> | null, "threads":
-  {open, addressed, resolved}}`, or `{"schema": 1, "outcome": "timeout"}`; the text is the
+  {open, addressed, resolved, annotation}}`, or `{"schema": 1, "outcome": "timeout"}`; the text is the
   review's line, the last closed round (`round 1 closed: request_changes`) with its summary in
   full, indented (§10.3), and what to do next ("1 open thread: run `dv comment list --status
   open`, …, then `dv review done <id> --round <n>`", naming the review and the round; with no
@@ -1771,8 +1788,9 @@ the candidates listed: every open review of the repository (`id`, label, status,
 `no_review` (none did). Never a silent "newest draft" guess. A named review that doesn't exist is
 exit 1 (`not_found`); a finished one may still be named.
 
-Commands that take a thread id (`comment show | reply | address | resolve | reopen`) find the
-thread's review themselves (thread ids are unique across a repository's reviews), so an agent
+Commands that take a thread id (`comment show | reply | address | resolve | reopen`, and
+`comment edit | delete`, whose id may be a reply's, §19.1) find the thread's review themselves
+(thread and reply ids are unique across a repository's reviews), so an agent
 never needs `--review` for them; `--review` narrows the search to that review, `$DV_REVIEW`
 doesn't. A deleted thread is not found.
 
@@ -1783,9 +1801,10 @@ doesn't. A deleted thread is not found.
   every key present (`null` when empty). A review: `id`, `target` (`kind`, the spec's fields,
   `label`; a `working` or `staged` target is labelled with the `HEAD` of the worktree the review
   was made in, `dv_core::label::Labels`, as the GUI's switcher labels it), `status`, `round`, `rounds` (`{n, verdict, body, closed_at}`), `threads` (`{open,
-  addressed, resolved}`), `worktree`, `created_at`, `updated_at`, `status_note` (the note the last
+  addressed, resolved, annotation}`, §19), `worktree`, `created_at`, `updated_at`, `status_note` (the note the last
   status change carried, `{status, note, author, at}`, or `null`). A thread: `id`, `review_id`,
-  `state`, `placement` (`unchanged`; `moved` — relocated now, or standing where an earlier
+  `annotation` (`true` for one an agent opened as an annotation, which it stays once a reply
+  opened it, §19), `state` (`open`, `addressed`, `resolved`, `annotation`), `placement` (`unchanged`; `moved` — relocated now, or standing where an earlier
   write recorded its move, `review::shows_moved`; `edited` — standing where it was written, its
   text changed there, `review::shows_edited`; `outdated`; or `file`, a comment on the whole
   file standing in it), `outdated`, `file_level` (`true` for a comment on the whole file: its
@@ -1806,7 +1825,8 @@ doesn't. A deleted thread is not found.
   `body`, `author: {kind, name}`, `created_at`, `note` (the last state change's), `replies: [{id,
   author, body, created_at}]`. The writes print: `review new` `{created, review}`; `review done` and `close`
   `{changed, review}`; `review submit` `{review, round}`; `review delete` `{deleted}`; `comment
-  add` `{thread}`; `comment reply` `{reply, thread}`; `comment address | resolve | reopen`
+  add`, `comment annotate` and `comment edit` `{thread}` (an edited reply: `{reply, thread}`);
+  `comment delete` `{deleted, thread}` (`thread` `null` once the thread itself is deleted); `comment reply` `{reply, thread}`; `comment address | resolve | reopen`
   `{changed, thread}`; `setup agents` `{agents: [{agent, path, action: installed | updated |
   unchanged | skipped, reason}]}`; `setup wsl` `{distro, arch, build, installed, linked,
   path}`; `doctor` `{ok, environments: [{name, kind: windows | macos | linux | wsl, running,
@@ -1976,12 +1996,17 @@ rules: threads read as dv prints them, `--json` when parsing (`status`, `review 
 `review wait`, whose ids and round numbers the agent keeps), `--author <agent>` on every write, `<agent>` being the agent's own
 name, which every example writes as that placeholder (Claude Code is recognised by `CLAUDECODE`
 anyway), never `resolve` or `reopen`, no `dv review new` unless the
-user asks, text through `--body-file -` / `--note-file -` and a short note inline only in single
+user asks (handing work over, below, is the user asking), text through `--body-file -` / `--note-file -` and a short note inline only in single
 quotes (double quotes run backticks in a POSIX shell, and a backtick is PowerShell's escape), a
 disagreement is a reply with reasons and still an address with a note saying so;
 and what each exit code means (1 `finished`: stop; 1 `unseen_round`: read the round, then `done
 --round`; 2 with candidates: pick with `--review`, with none: tell the user; 4: dv couldn't
 reach the WSL distro the repository is in, so tell the user what the message says is missing).
+Its **Handing work over** section (§19.2) is the start of the loop when the user asks the agent
+to put its work up for review in dv (or the project's instructions say to): `dv review new
+--json` (keep `review.id`), annotations with `dv comment annotate` and what makes a good one,
+`dv review done <id> --note-file -` with the overview, then `dv review wait`; the description
+triggers on "review in dv", "hand it over for review" too.
 Every
 command line in it works as written: a test parses each fenced command and runs the loop
 against a fixture repo (`crates/dv_cli/src/tests/skill.rs`).
@@ -2821,6 +2846,7 @@ Each phase ends with its e2e scenarios green and a screenshot review against DES
 | 8 | GitHub (§9, in the order of §9.12): which repository and running `gh`, opening a PR into a draft that follows its head, the PR mirror, GitHub's threads shown with reply and resolve, the PR picker and strip, Start round n+1 with its interdiff, submitting through a pending review with validation against GitHub's hunks and the file-comment fallback, Viewed sync both ways, the CLI (`--pr`, `submit`, `refresh`; agents read only) | Workflow C end to end against `mock_gh` and the fixture GitHub; the owner's live check (§9.11) |
 | 9 | Polish: settings, palette, light themes, empty states, performance pass on a 2,000-file PR (the Linux app, its gate `script/check --linux-gui` and its trial AppImage are done, §13.1, §13.2) | DESIGN review of every screen; perf budget (§17) met |
 | 10 | GitHub Actions (§13.4): CI on Windows, Linux and macOS with the workflows' and the dependencies' checks; the release workflow publishing the Windows and macOS releases (`Setup.exe`, a `.pkg` without a certificate, D10) and the AppImage to GitHub Releases after the owner's approval; the update feed on GitHub Releases, read by Windows and macOS installs | a prerelease tag runs end to end: CI green on all three, the release published after approval, its provenance verified |
+| 11 | Annotations (§19, in the order of §19.5; built before phase 8): `comment annotate`, `comment edit` / `delete`, the `annotation` state and a reviewer's reply opening it, the skill's handing-over section, the annotation card, `A`, the counts | the `agent_annotations` scenario green, its screenshots reviewed against DESIGN §4.1 |
 
 ---
 
@@ -3555,3 +3581,157 @@ Each step is its own commit with its own scenarios:
 
 **Budgets:** a hover shows within 150 ms of the delay ending, once its server is ready; a file
 view opens within 100 ms for a local repo and 300 ms for a WSL one.
+
+---
+
+## 19. Annotations
+
+An agent that hands its work over can explain it up front: short notes anchored on the lines (or
+the file) they are about, saying why the change is the way it is. The reviewer reads the reasons
+beside the code instead of spending round 1 asking for them, and asks only about what the
+annotations leave open (the owner's idea, 2026-10-22). An annotation is a thread of its own kind,
+so anchoring, relocation, placement and the CLI's reading need nothing new; what differs is that
+nothing waits on it.
+
+### 19.1 The model
+- **A kind of thread.** `thread_added` with `annotation: true` (§7) opens one
+  (`Thread::annotation`, which it keeps for good); its anchor is a comment's (§2.5: a line
+  range on one side, or the whole file), relocated, placed, followed through renames and round
+  history exactly as a thread is (§8). Only an agent writes one: the fold skips an annotation by
+  any other author with a warning, and `ops::annotate` refuses the reviewer
+  (`OpError::NotAllowed`). `ops::annotate` refuses a PR review itself (`NotAllowed`: PR reviews
+  are the reviewer's, §2.4), ahead of §9.10's rule for every agent write, and a finished review
+  as every write is refused (§2.4); an agent's first write on a `changes_requested` review moves
+  it to `in_progress` as any other does.
+- **Its state is `annotation`** (`ThreadState::Annotation`): waiting on no one. Only
+  `thread_added` starts a thread there, and nothing moves one to it: a `thread_state` naming
+  `annotation` is skipped by the fold and refused by `ops`. It counts in no open number (the
+  panel's "Open comments", the switcher's badge, `threads.open` in the CLI, `]`/`[`), blocks
+  nothing, never defaults the "Finish round" sheet to Request changes and is in neither its
+  "Comments" nor "Copy as prompt". `ThreadCounts` gains `annotation`, the threads in that
+  state (the count's key is the state's name, as the other three are). For the CLI's documents
+  the new `state` value is growth (§10.3): the existing values keep their meaning.
+- **A reviewer's reply asks about it.** A `reply_added` by the reviewer on a thread in state
+  `annotation` moves it to `open` in the fold (the reply is the move: no `thread_state` event,
+  no note, `last_change` left as it was), so a question is never lost between two events. From
+  then on it is an ordinary thread an agent opened, which the skill already treats as the
+  agent's question answered by the reviewer: acted on, replied to, addressed (§10.5), its
+  `annotation` flag saying where it began. An agent's replies leave it an annotation (adding to
+  its explanation). Deleting the reviewer's reply moves nothing back, as a deletion never moves
+  a state.
+- **No state changes.** Address, resolve and reopen on a thread in state `annotation` are
+  refused by `ops::set_thread_state` before its author checks (`OpError::Annotation`, the CLI's
+  exit 1 `rejected`: "an annotation waits on no one; reply to it to ask about it"), so the
+  reviewer and the agent hear the same thing; the fold skips such an event.
+- **Editing and deleting** are the author's, as for any thread (`ops::edit_body`,
+  `ops::delete_item`). The CLI gains them for whoever wrote an item: `dv comment edit <id> (--body |
+  --body-file)` and `dv comment delete <id>` (a thread or a reply; `not_allowed` for anyone
+  else's, `finished` on a finished review), so an agent can correct or withdraw an annotation
+  that turned out wrong.
+- **Older builds** ignore the field and fold an annotation as an agent's open thread. That is
+  acceptable as it was for file-level anchors (§7): the app, its CLI and the distro's dv are one
+  build. The fold's snapshot cache changes version with this (§7), so a cache an older build
+  wrote is rebuilt.
+
+### 19.2 The agent's side
+- **`dv comment annotate`** (§10.1) is `comment add` with the annotation flag: the review's
+  changed files only, the same sides, lines and file-level anchor, the same text rules, the
+  same crossing into a distro (§10.4, `--body-file` read on Windows). An agent identity is
+  required (exit 2 without one, as for `review done`). It prints what `comment add` prints
+  (`--json` `{thread}`, else one line, `annotated <id>  <place>`). The text documents' counts
+  (`status`, `review show`, `review wait`) add "n annotations" when there are any.
+- **Handing work over** (the skill's section, §10.5), when the user asks the agent to put its
+  work up for review in dv or the project's instructions say to, once the code is final:
+  annotations are written last, because one whose code the agent then rewrites goes outdated
+  and is never drawn (§19.3). As the skill writes it (every write with `--author <agent>`,
+  which also makes `review new` open the review as the agent rather than the reviewer):
+  1. `dv review new --author <agent> --json` (the working tree's review; `--branch` when the
+     work is committed on the branch checked out, whose working tree is then clean) opens the
+     review, or resumes the target's open one (§2.4); keep `review.id`. A resumed review that
+     has rounds (`created` false, `rounds` not empty) is the loop already: the agent works
+     through its open threads as §10.5 says, annotating only changes nobody asked for, and
+     hands back with `--round`.
+  2. `dv comment annotate --review <review-id> --author <agent> --file src/app.ts --lines
+     12:14 --body-file -` for each thing worth explaining; `--lines` left out for why a whole
+     file changed.
+  3. `dv review done <review-id> --author <agent> --note-file -` with the overview: what changed
+     and how it fits together, a Markdown list. No `--round` before a round has closed (nothing
+     unseen, §2.4).
+  4. `dv review wait <review-id> --timeout 600 --json`, then the usual loop.
+- **What makes a good annotation** (the skill's words, and they matter more than the code: an
+  agent that annotates everything trains the reviewer to skip them):
+  - **Decisions, not descriptions.** Why this approach over the obvious one, a trade-off taken,
+    something deliberately left out or out of scope, code that looks wrong but isn't, a
+    behaviour a caller will notice, what the tests cover and what they don't.
+  - **Never** a restatement of the diff ("adds a function that…"), mechanical changes (renames,
+    formatting, imports, generated files, lockfiles), or a verdict on its own work.
+  - **Few.** At most one per hunk and usually far fewer: a handful in a review of a dozen
+    files. One to three sentences each. The overview belongs in `done`'s note, not in an
+    annotation.
+  - **Later rounds:** a fix for a thread is explained in its reply and its address note; an
+    annotation is for a change nobody asked for.
+- **Reading.** `comment list` lists annotations with the rest (state `annotation`; `--status
+  annotation` keeps only them), `--status open` leaves them out until the reviewer asks about
+  one, and `review wait`'s text says nothing to do about them. `dv status`, `review show` and
+  `review wait` count them in `threads.annotation`.
+
+### 19.3 The reviewer's side (DESIGN §4.1)
+- **The annotation card**: quieter than a thread card (no shadow, no state chip), under the last
+  line of its range as a card is, or heading its file for the whole file, in the stream and the
+  file view alike. **Ask** (`R`) opens the reply composer in it; posting turns it into a thread
+  card, open, which the agent reads once the round is finished, as any thread. Nothing else
+  acts on it: reading one needs no acknowledgement, and a reply is always a question.
+- **`A`** shows or hides every annotation in the review, the stream and the file view: session
+  state (`ReviewUi`), shown whenever a review opens. It is a render filter only: placement, the
+  files loaded for threads and the comments list are the same either way.
+- **In an interdiff** since round n, only annotations written since (their first anchor's round
+  after n) are drawn: one from an earlier round explained code the reviewer has read already.
+  This is the interdiff's drawing rule (§8's rule after placement, `session::placement`'s
+  `draws`), so such an annotation's comments-list row carries the "all changes" tag and a click
+  on it switches to all changes, as for a thread the interdiff doesn't draw. All changes draws
+  every one.
+- **An outdated annotation** isn't drawn in the stream (no card heading its file, none in the
+  "Not in the diff" section): it explained code that is gone. Nor is one whose file left the
+  review, even where `place_unlisted` finds its lines (§8): it explained a change the review no
+  longer holds. The file view doesn't draw them either. The comments list keeps both, marked
+  outdated or "Unchanged file"; a click on such a row opens its whole text in the row (a
+  disclosure, nothing scrolls), and it has no menu. Once asked about, an annotation is a thread
+  and shows as any outdated thread does.
+- **Every place that reads a thread's state** decides about the new one; the compiler flags a
+  `match` but not a comparison, so phase 11 goes through each: the "Finish round" sheet's
+  "Comments" (`submit::round_comments`, which keeps every unresolved thread) and its default
+  verdict; the comments list's waiting and resolved counts, its order and its row menu (an
+  annotation's offers **Ask** alone; no Resolve, no Copy as prompt); the stream's
+  `is_thread_open`, `]`/`[` and `X` (nothing on an annotation); the switcher's badge; the CLI's
+  `--status` filters, counts and `review wait`'s next steps; the status bar.
+- The comments list, the status bar and the handoff banner count annotations apart from the
+  threads (DESIGN §4.1, §4.4).
+
+### 19.4 Testing
+- **`dv_core`:** the fold (an annotation's state; one by the reviewer skipped; the reviewer's
+  reply opening it, an agent's leaving it; `thread_state` on it, and one naming `annotation`,
+  skipped; edits and deletes; the counts; the cache version) and `ops` (`annotate`'s refusals:
+  the reviewer, a PR review, a finished review; `set_thread_state`'s `Annotation` ahead of
+  `NotAllowed`).
+- **`dv_cli`:** `annotate`'s errors are `comment add`'s (one code path, tested once through
+  each), the identity rule, `--status annotation`, the `annotation` flag and the counts in
+  every document and text, the crossing of `--body-file` (§10.4's tests); `comment edit` and
+  `comment delete` (the author's, anyone else's `not_allowed`, a finished review's
+  `finished`). The skill test runs the handing-over section's commands as written against a
+  fixture repo, a fresh review and a resumed one with rounds.
+- **`dv_ui`:** the card in the stream and the file view, `A`, the interdiff, outdated and
+  unlisted rules, the comments list's group, rows and menu, the "Finish round" sheet leaving
+  annotations out, Ask turning a card into a thread.
+- **e2e** `tests/e2e/agent_annotations.jsonl`: the agent (`cli` with `CLAUDECODE`) opens the
+  working review, annotates a range and a whole file and hands over; the reviewer opens it to
+  the handoff banner and the cards (screenshots, light and dark), hides and shows them with
+  `A`, asks about one; the agent's `comment list --status open` shows the question, it replies
+  and addresses, the reviewer resolves. Screenshot review against DESIGN §4.1.
+
+### 19.5 Order
+1. `dv_core`: the field, the state, the fold's rules, `ops::annotate`, the counts.
+2. `dv_cli`: `comment annotate`, `comment edit` and `delete`, `--status annotation`, the DTOs
+   and text, the skill's section.
+3. `dv_ui`: the card, Ask, `A`, the interdiff, outdated and unlisted rules, every state reader
+   of §19.3's list, the status bar and the banner.
+4. The e2e scenario, the screenshot review, a review of the whole change.

@@ -240,8 +240,14 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   one-line summary of a comment; an outdated thread says "outdated" in `yellow` and shows its original first line in
   mono; a thread the interdiff doesn't show carries a quiet "all changes" tag in `fg3`, and its
   `path:line` and "outdated" are where it stands in all changes), then
-  "n resolved · show", which lists the resolved ones too; with none waiting, "No open
-  comments". A click on a row shows and focuses the thread in the diff — an "all changes" row
+  "n annotations · show" (PLAN §19), which lists the agent's annotations under it — a 6-square
+  `blue` dot, `path:line` as for a thread (an outdated one flagged "outdated" in `yellow`, one an
+  interdiff doesn't draw carrying the "all changes" tag), the first line — and "n resolved ·
+  show", which lists the resolved ones too; with none waiting, "No open comments" above them. A
+  click on an annotation's row shows the annotations again when `A` hid them, then focuses it
+  as a thread's row does; one the stream never draws (outdated, or its file left the review)
+  opens its whole text under the row instead, nothing scrolling. An annotation's row menu holds
+  **Ask** alone (none for one the stream doesn't draw). A click on a row shows and focuses the thread in the diff — an "all changes" row
   switches the stream to all changes first; the focused thread's row is `sel`. A right click on
   a row opens its menu at the pointer, in the file menu's style (the `overlay` panel, 200 wide,
   items a control high with their glyphs; the row keeps its hover tint meanwhile): the card's
@@ -476,6 +482,27 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   reply field reads "Reply…" (with `R` on the focused thread) and opens the reply composer in
   its place. On a finished review the actions and the field stay, disabled ("Replies are closed
   on a finished review").
+- **Annotation card** (PLAN §19): an agent's explanation of its change, quieter than a thread
+  card because nothing waits on it. It stands where a thread card would (under the last line of
+  its range on its side, the same insets in split and unified view; one on the whole file heads
+  its file before the file's comments on the whole file) and stacks with cards on the same line
+  in the order they were added. `layer` fill, `line` outline, radius 10, no shadow, a 2px `blue`
+  rule down its left edge inside the radius; the focused one's outline `accentRing`. A 28-high
+  header: the agent's square avatar at 16 with its icon, the agent's name at 600 in `fg2`,
+  "Annotation" in `fg3`, the anchor in `fg3` (`new · lines 12–14`, "file", "· moved" as a
+  thread's), and at the right a small ghost **Ask** (with its `R` keycap while focused). The
+  body: Markdown at 13 in `fg2`, clamped to 3 lines with a 20-high fade into the card and **Show
+  more** in `accentText` under it (**Show less** once open); the agent's own replies follow as a
+  thread's replies, inside the same clamp. The file view draws it at its lines as the stream
+  does. **Ask** (or `R`) opens the reply composer in the card, its field reading "Ask
+  claude-code about this…" and its footer saying "claude-code reads it when you finish the
+  round" in `fg3` beside "Markdown"; posting turns the card into a thread card,
+  `open`, whose first comment keeps a quiet "Annotation" tag beside the agent tag. Hidden with
+  `A`, annotations aren't drawn at all (the status bar says they are hidden). In an interdiff
+  only the annotations written since its round are drawn; an outdated one, or one whose file
+  left the review, isn't drawn anywhere in the stream (never in the "Not in the diff" section),
+  the comments list keeping its row. On a finished review **Ask** stays,
+  disabled.
 - **Composer:** a card under the selected lines (or the cursor's line), outlined in
   `accentRing`: "Comment on new · lines 12–14" with the comment glyph, a multi-line Markdown
   field (3 rows, growing to 12; `Enter` is a newline), why the last post failed in `red`, and a
@@ -552,7 +579,8 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   (PLAN §5.1) is up, so the review's own state shows, "· refreshes when focused" when its watch
   couldn't start; then, after a `|`, the review's
   status, round and thread counts ("Changes requested · round 2 · 3 open · 1 resolved", "no comments"
-  when there are none; an interdiff adds "· since round 1"); at the right, each language
+  when there are none; then the agent's annotations, "· 5 annotations", "· 5 annotations
+  hidden" while `A` hides them; an interdiff adds "· since round 1"); at the right, each language
   server of the review's worktree (PLAN §18.5) — a 7 dot and its name and state in `fg2`, 22 high,
   `controlHover` under the pointer: green "TypeScript ready", yellow "TypeScript loading 40%" (its
   progress), "TypeScript restarting…" and "TypeScript waiting for the connection", `fg3` "TypeScript starting…", red
@@ -622,7 +650,7 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   two cards, **Approve** (`1`, "The work is done; the review closes") and **Request changes**
   (`2`, "The agent has more to do; the round goes back to it"), Request changes chosen while a
   thread is open, else Approve; on the right "Comments" — those opened this round and earlier
-  ones not yet resolved (with their round: the one a thread was opened in, which a move recorded
+  ones not yet resolved, never an annotation nobody asked about (PLAN §19.1) (with their round: the one a thread was opened in, which a move recorded
   in a later round, PLAN §8, doesn't change), each with its state glyph, `path:line` where it
   shows now (as the comments list names it, `fg3` while not placed yet) and first line; the footer "Finishing round n as `name`", why the last attempt failed in `red`, Cancel
   and the primary button named by the verdict with `Ctrl Enter`. The verdicts have the keyboard
@@ -710,7 +738,8 @@ Setup unchanged.
   through it, so its note's fade ends in exactly its colour), with a `blue` outline at 35%,
   radius 6, 12 in from the region's edges —
   the agent's glyph in `blue`, "`claude-code` marked round 2 ready" (the name at 600; a long
-  name truncates, "marked round n ready" and the disclosure never do), the first line of its
+  name truncates, "marked round n ready" and the disclosure never do), "· 5 annotations" in
+  `fg2` when the review holds annotations written in that round (PLAN §19), the first line of its
   note (`dv review done --note`, PLAN §7) as plain text in `fg2`, and a **Show note** disclosure
   that opens the whole note under it as Markdown (the first line then leaves the header),
   growing to 240 high, then scrolling, so the stream keeps its room; its `md` inset at the foot
@@ -792,13 +821,14 @@ Setup unchanged.
 |---|---|
 | `J` / `K` | next / previous file: its header at the top, the cursor on its first change (the "Not in the diff" section isn't a file: `J` from it goes to the first file) |
 | `N` / `P` | next / previous block of changed lines, on into the next files |
-| `]` / `[` | focus the next / previous thread that isn't resolved (open or addressed), scrolling to it, on into the next files (in an interdiff, the threads it shows) |
+| `]` / `[` | focus the next / previous thread that isn't resolved (open or addressed), scrolling to it, on into the next files (in an interdiff, the threads it shows); annotations are passed over |
+| `A` | show / hide the agent's annotations in the stream and the file view (PLAN §19.3; shown whenever a review opens) |
 | `I` | switch between the interdiff since the last round and all changes (the panel's toggle; while the review offers it, PLAN §2.3) |
 | `V` | toggle viewed on the current file (`V` then `J`: mark viewed and go next); each press flips the state the last one asked for, however fast they come |
 | `C` | comment on the selected lines, else the cursor's line (in the file view, any line of the file, changed or not), else (no cursor yet) the first line in view, where the cursor goes too (click a line number to put the cursor there, shift-click to select to it; a line's `+` does it all with the mouse, §4.1); a composer holding a draft takes the keyboard instead, wherever the cursor is. In an interdiff it comments on the new side only: on the old column (the round's snapshot, which no anchor names) it does nothing |
 | `Shift C` | comment on the whole of the current file: the composer heads the file (the header menu's Comment on file); a composer holding a draft takes the keyboard instead, as for `C`. Nothing on a finished review, or in an interdiff on a deleted file (its old column is the round's snapshot) |
-| `R` | reply to the focused thread (the reply composer opens in its card; on a GitHub thread, a draft reply that posts with your review) |
-| `X` | resolve the focused thread, or reopen it when it is resolved (a GitHub thread: resolve / unresolve on GitHub, where GitHub allows the viewer) |
+| `R` | reply to the focused thread (the reply composer opens in its card; on a GitHub thread, a draft reply that posts with your review; on an annotation, Ask: posting opens it as a thread) |
+| `X` | resolve the focused thread, or reopen it when it is resolved (a GitHub thread: resolve / unresolve on GitHub, where GitHub allows the viewer); nothing on an annotation |
 | `↑` / `↓` | move the cursor a line (the stream scrolls to keep it in view; it crosses into the next file) |
 | `Shift ↑` / `Shift ↓` | extend a selection from the cursor, within its file and side; a gap in the way opens a step towards the cursor rather than being selected unseen |
 | `←` / `→` | in split view, put the cursor on the old / new side (the new side until one is chosen, or a line number clicked). A file without lines on that side (a deletion, an addition) moves it to the other side while it is in that file only: the next file that has lines on the chosen side puts it back |
