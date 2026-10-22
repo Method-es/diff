@@ -12,6 +12,7 @@
 //! Automation targets: `setup/check_again`, `setup/<environment>/start`,
 //! `setup/<environment>/<check>/fix` and `…/copy`, `setup/<environment>/<check>` for a row.
 
+pub mod appearance;
 pub mod settings;
 
 #[cfg(test)]

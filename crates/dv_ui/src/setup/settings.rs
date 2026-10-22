@@ -1,10 +1,11 @@
 //! Settings (`Ctrl ,`, DESIGN §4.3): a sheet over the scrim, centred like the "Finish round"
-//! sheet, whose one page is **Setup**: the setup screen's cards for every environment (`super`)
-//! with **Check again**. Opening it checks everything again (the distros' running state, a
-//! skill edited meanwhile). `Esc`, its close button or a click on the scrim closes it.
+//! sheet, scrolling through two pages: **Appearance** (the mode and the material,
+//! [`super::appearance`]) and **Setup**, the setup screen's cards for every environment
+//! (`super`) with **Check again**. Opening it checks everything again (the distros' running
+//! state, a skill edited meanwhile). `Esc`, its close button or a click on the scrim closes it.
 //!
-//! Automation targets: `settings` (the sheet), `settings/close`, and the page's own
-//! (`setup/…`, `super`).
+//! Automation targets: `settings` (the sheet), `settings/close`, and the pages' own
+//! (`settings/appearance`, `settings/mode/…`, `settings/material/…`; `setup/…`, `super`).
 
 use gpui::{
     Context, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
@@ -29,6 +30,7 @@ pub enum SettingsEvent {
 pub struct SettingsView {
     focus_handle: FocusHandle,
     _observe: gpui::Subscription,
+    _settings: gpui::Subscription,
 }
 
 impl EventEmitter<SettingsEvent> for SettingsView {}
@@ -37,9 +39,11 @@ impl SettingsView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let setup = cx.services().setup.clone();
         setup.update(cx, |setup, cx| setup.check_again(cx));
+        let settings = cx.services().settings.clone();
         Self {
             focus_handle: cx.focus_handle(),
             _observe: cx.observe(&setup, |_, _, cx| cx.notify()),
+            _settings: cx.observe(&settings, |_, _, cx| cx.notify()),
         }
     }
 
@@ -102,7 +106,8 @@ impl Render for SettingsView {
                     .flex_col()
                     .gap(theme.spacing.md)
                     .p(theme.spacing.xl)
-                    .child(div().mb(px(6.)).child(super::heading(
+                    .child(super::appearance::page(&theme, cx))
+                    .child(div().mt(theme.spacing.xl).mb(px(6.)).child(super::heading(
                         "Setup",
                         &theme.text.title,
                         &setup,

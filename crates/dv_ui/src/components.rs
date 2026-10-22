@@ -328,6 +328,58 @@ pub fn small_icon_button(
         .child(icon(glyph, px(13.), c.fg))
 }
 
+/// A segmented control's frame (the file header's Split | Unified, DESIGN §1.5): 28 high, its
+/// [`segment`]s side by side on `ctrl` inside a `ctrl_line` outline.
+pub fn segmented(theme: &DvTheme) -> Div {
+    let c = &theme.colors;
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(2.))
+        .h(theme.sizes.control_height)
+        .p(px(2.))
+        .rounded(theme.radii.segmented)
+        .border_1()
+        .border_color(c.ctrl_line)
+        .bg(c.ctrl)
+}
+
+/// One segment of a [`segmented`] control: the chosen one lifted on `seg_on` with the control
+/// shadow, the others hovering; a disabled one (`enabled` false) in `fg3`, taking no clicks.
+/// Give it its label and, when enabled and not chosen, an `on_click`.
+pub fn segment(
+    id: impl Into<gpui::ElementId>,
+    on: bool,
+    enabled: bool,
+    theme: &DvTheme,
+) -> Stateful<Div> {
+    let c = &theme.colors;
+    let hover = c.control_hover;
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap(theme.spacing.sm)
+        .h(theme.sizes.control_xsmall_height)
+        .px(theme.spacing.md)
+        .rounded(theme.radii.chip)
+        .text_spec(&theme.text.secondary)
+        .font_weight(FontWeight::MEDIUM)
+        .whitespace_nowrap()
+        .text_color(match (on, enabled) {
+            (_, false) => c.fg3,
+            (true, true) => c.fg,
+            (false, true) => c.fg2,
+        })
+        .when(on, |this| {
+            this.bg(c.seg_on).shadow(theme.shadows.control.clone())
+        })
+        .when(!on && enabled, |this| {
+            this.cursor_pointer().hover(move |style| style.bg(hover))
+        })
+}
+
 /// A plain text tooltip, in gpui-component's style (mapped from the theme), for an element's
 /// `.tooltip(…)`.
 pub fn tooltip(

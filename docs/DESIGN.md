@@ -660,7 +660,7 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   text, so `Ctrl O` and the source picker open over it, not in its place. It hangs 92 below the
   title bar in a 900-high window, less in a shorter one (24 at 700).
 
-### 4.3 Onboarding (`GlassOnboarding`) and Settings › Setup
+### 4.3 Onboarding (`GlassOnboarding`) and Settings
 One screen of grouped rows rather than the board's numbered steps: the checks (PLAN §12) are
 independent of each other (only a distro's own checks wait for dv to be installed there, which
 its card says), so a wizard's order would only add clicks, and the same cards serve Settings ›
@@ -693,8 +693,14 @@ Setup unchanged.
   reads ok.
 - **Settings** (`Ctrl ,`, the title bar's `⋯`): a sheet over the scrim like the "Finish round"
   sheet (`overlay`, radius 12, up to 900 wide, hung as §4.2's), its header "Settings" with a
-  close button; its one page, "Setup" (13/600), is the cards above with Check again, scrolling
-  when tall. Opening it checks everything again; `Esc`, the close button or a click on the scrim
+  close button. Its body scrolls through two pages, each a 13/600 title over its cards:
+  **Appearance**, one card with a row per setting (its name in 600, what it does in `fg2`
+  secondary, its control on the right, a header-style segmented control): **Mode** System |
+  Dark | Light and **Material** Mica | Acrylic | Opaque, each applied as it is clicked. A
+  material the platform can't show is a disabled segment in `fg3`, and a `yellow` line under
+  the row says why ("Mica and Acrylic need Windows 11 with Transparency effects on…"; on macOS
+  and Linux, that dv is Opaque there) and, when the setting is one of them, that dv shows
+  Opaque meanwhile, keeping the setting. Then **Setup**, the cards above with Check again. Opening it checks everything again; `Esc`, the close button or a click on the scrim
   closes it, the keyboard back where it was.
 - **The out-of-date notice** sits at the status bar's right: the warning triangle and
   "dv-review skill out of date in Ubuntu" ("on Windows" for this machine; "not installed in
@@ -841,7 +847,7 @@ Setup unchanged.
 | `Ctrl G` | the PR picker (§4.5) |
 | `Ctrl R` | on a PR review: refresh it from GitHub (fetch, threads, checks, Viewed; PLAN §9.4) |
 | `Ctrl B` | toggle panel |
-| `Ctrl ,` | Settings › Setup (§4.3); again, or `Esc`, closes it |
+| `Ctrl ,` | Settings: Appearance and Setup (§4.3); again, or `Esc`, closes it |
 | `Enter` | on the first-run screen: Continue |
 | `Esc` | close the top overlay, else a comments row's menu, else the language server's details, else the hover card, else the file menu, else close an empty composer (one holding a draft is passed over: only `Esc` in the composer discards a draft, so a press in the code to select text to quote, `Ctrl C` and `Esc` never lose it), else close the find bar, else clear the selection (the lines and the text both), else the code notice (a place that can't be shown), else, in the file view, close it (back to the stream where it was); in the find field it closes the bar first, and in the composer it discards the draft once a comments row's menu or a language server's details over it have closed (the field has the keyboard, so the stream's chain doesn't run) |
 | `F` | the current file whole in the file view, at the cursor's line when the cursor is in it (a line on the other side only, a removed one, maps to the next line of the side shown) (the header menu's View file); nothing in the file view itself; with a draft in the file view's composer, the draft takes the keyboard instead |

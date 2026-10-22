@@ -231,3 +231,47 @@ fn codex_and_cursor_share_one_install(cx: &mut TestAppContext) {
         assert_eq!(setup.failure(&here, "skill-cursor"), None);
     });
 }
+
+#[gpui::test]
+fn settings_appearance_changes_the_mode_and_the_material(cx: &mut TestAppContext) {
+    use crate::platform::MaterialSupport;
+    use crate::services::Mode;
+    use crate::test_support::bounds;
+    use crate::theme::{ActiveTheme as _, Appearance, Material};
+
+    let (_dir, shell, cx) = open_shell(cx);
+    cx.simulate_keystrokes("secondary-,");
+    settle(cx, &shell, "settings", |shell, _| {
+        shell.settings().is_some()
+    });
+    let click = |name: &'static str, cx: &mut gpui::VisualTestContext| {
+        let at = bounds(cx, name).unwrap_or_else(|| panic!("{name} is drawn"));
+        cx.simulate_click(at.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+    };
+    let chosen = |cx: &mut gpui::VisualTestContext| {
+        cx.update(|_, cx| {
+            let settings = cx.services().settings.read(cx);
+            (settings.mode(), settings.material())
+        })
+    };
+
+    click("settings-mode-light", cx);
+    click("settings-material-acrylic", cx);
+    assert_eq!(chosen(cx), (Mode::Light, Material::Acrylic));
+    cx.update(|_, cx| {
+        let theme = cx.dv_theme();
+        assert_eq!(
+            (theme.appearance, theme.material),
+            (Appearance::Light, Material::Acrylic)
+        );
+    });
+
+    // A material the platform can't show takes no click; the one chosen stays, shown Opaque.
+    cx.update(|_, cx| crate::appearance::set_support(MaterialSupport::OPAQUE_ONLY, cx));
+    click("settings-material-mica", cx);
+    assert_eq!(chosen(cx), (Mode::Light, Material::Acrylic));
+    assert_eq!(cx.update(|_, cx| cx.dv_theme().material), Material::Opaque);
+    click("settings-material-opaque", cx);
+    assert_eq!(chosen(cx), (Mode::Light, Material::Opaque));
+}

@@ -40,9 +40,15 @@
 {"cmd": "key", "keystroke": "secondary-,"}
 {"cmd": "settle", "timeout_ms": 30000, "expect": [{"pointer": "/setup/settings_open", "equals": true}, {"pointer": "/setup/environments/0/checks/1/state", "equals": "out_of_date"}, {"pointer": "/setup/environments/0/checks/1/fix/action", "equals": "Update"}]}
 {"cmd": "screenshot", "name": "settings-out-of-date"}
-{"cmd": "set_setting", "key": "mode", "value": "light"}
+// Settings › Appearance changes the mode and the material as they're clicked, and saves them.
+{"cmd": "click", "target": "settings/mode/light"}
+{"cmd": "settle", "expect": [{"pointer": "/settings/mode", "equals": "light"}, {"pointer": "/settings/resolved_mode", "equals": "light"}]}
 {"cmd": "screenshot", "name": "settings-out-of-date-light"}
-{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "click", "target": "settings/mode/dark"}
+{"cmd": "click", "target": "settings/material/acrylic"}
+{"cmd": "settle", "expect": [{"pointer": "/settings/mode", "equals": "dark"}, {"pointer": "/settings/material", "equals": "acrylic"}]}
+{"cmd": "click", "target": "settings/material/mica"}
+{"cmd": "settle", "expect": [{"pointer": "/settings/material", "equals": "mica"}]}
 {"cmd": "click", "target": "setup/Windows/skill-claude-code/fix"}
 {"cmd": "settle", "timeout_ms": 30000, "expect": [{"pointer": "/setup/environments/0/checks/1/state", "equals": "ok"}]}
 {"cmd": "key", "keystroke": "escape", "expect": [{"pointer": "/setup/settings_open", "equals": false}]}
