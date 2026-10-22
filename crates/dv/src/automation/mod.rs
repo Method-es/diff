@@ -6,7 +6,7 @@
 //! `state` ([`state`]): `app`, `data_dir`, `settings`, `shell`, `system`, `repos` (the known
 //! repositories), `switcher` and `source_picker` (the title bar's overlays), `file_list` (the
 //! panel), `session` (the open review, or `null`), `stream` (the diff stream, or `null`),
-//! `comments_list`, `find`, `file_view`, `file_finder`, `history`, `intel` (code
+//! `comments_list`, `find`, `file_view`, `file_finder`, `palette`, `history`, `intel` (code
 //! intelligence: the language servers, the hover card, the references), `cli` (the
 //! `cli_spawn` children not yet joined), `backends` (the connections to `dv backend
 //! --stdio` servers), `setup` (the first-run screen, Settings and every environment's
@@ -182,6 +182,7 @@ impl AutomationHost for DvAutomation {
             "find": state::find(self.shell.read(cx), window, cx),
             "file_view": state::file_view(self.shell.read(cx), cx),
             "file_finder": state::file_finder(self.shell.read(cx), window, cx),
+            "palette": state::palette(self.shell.read(cx), window, cx),
             "history": state::history(self.shell.read(cx)),
             "intel": state::intel(self.shell.read(cx), cx),
             "comments_list": state::comments_list(self.shell.read(cx), cx),

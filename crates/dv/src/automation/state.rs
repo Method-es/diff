@@ -549,6 +549,35 @@ pub fn file_finder(shell: &Shell, window: &Window, cx: &App) -> Value {
     })
 }
 
+/// `state.palette`: the palette (`Ctrl K`): whether it is open, the query, the first rows in
+/// order (each its key, section and label), the selected row's key, and whether its field has
+/// the keyboard.
+pub fn palette(shell: &Shell, window: &Window, cx: &App) -> Value {
+    let Some(palette) = shell.palette() else {
+        return json!({"open": false, "query": null, "rows": [], "selected": null});
+    };
+    let palette = palette.read(cx);
+    let rows: Vec<Value> = palette
+        .rows()
+        .iter()
+        .take(dv_ui::palette::STATE_ROWS)
+        .map(|row| {
+            json!({
+                "key": row.key,
+                "section": row.section.key(),
+                "label": row.label(),
+            })
+        })
+        .collect();
+    json!({
+        "open": true,
+        "query": palette.query(),
+        "rows": rows,
+        "selected": palette.selected_key(),
+        "focused": palette.is_focused(window, cx),
+    })
+}
+
 /// `state.history`: how many positions are behind and ahead (`Alt ←` / `Alt →`).
 pub fn history(shell: &Shell) -> Value {
     let (back, forward) = shell.history().counts();

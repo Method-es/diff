@@ -37,6 +37,7 @@ pub mod icons;
 pub mod intel;
 pub mod keymap;
 pub mod markdown;
+pub mod palette;
 pub mod platform;
 pub mod services;
 pub mod session;

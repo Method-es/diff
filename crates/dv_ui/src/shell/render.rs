@@ -57,6 +57,7 @@ impl Render for Shell {
         let overlay_open = self.switcher.is_some()
             || self.source_picker.is_some()
             || self.file_finder.is_some()
+            || self.palette.is_some()
             || self.settings.is_some()
             || self.sheet.is_some();
         // The first-run screen stands in for the columns and the status bar (`setup`).
@@ -68,6 +69,8 @@ impl Render for Shell {
             .on_action(cx.listener(Self::toggle_panel))
             .on_action(cx.listener(Self::finish_review))
             .on_action(cx.listener(Self::toggle_file_finder))
+            .on_action(cx.listener(Self::toggle_palette))
+            .on_action(cx.listener(Self::open_folder))
             .on_action(cx.listener(Self::on_go_back))
             .on_action(cx.listener(Self::on_go_forward))
             .on_action(cx.listener(Self::copy_field))
@@ -432,6 +435,7 @@ impl Shell {
         let menu_open = self.switcher.is_some()
             || self.source_picker.is_some()
             || self.file_finder.is_some()
+            || self.palette.is_some()
             || self.settings.is_some();
         let priority = if menu_open && self.sheet.is_some() {
             SCRIM_OVER_SHEET_PRIORITY

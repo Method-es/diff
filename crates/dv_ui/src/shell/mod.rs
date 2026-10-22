@@ -63,6 +63,7 @@
 mod file_view;
 mod frame;
 pub mod intel;
+mod palette;
 pub mod pending;
 mod render;
 mod setup;
@@ -92,6 +93,7 @@ use crate::failure::Failure;
 use crate::file_finder::FileFinder;
 use crate::file_list::{FileList, FileListEvent};
 use crate::history::History;
+use crate::palette::Palette;
 use crate::platform;
 use crate::services::ActiveServices as _;
 use crate::services::LocationsEvent;
@@ -266,6 +268,7 @@ pub struct Shell {
     _intel_subscriptions: Vec<Subscription>,
     /// The file finder (`Ctrl P`), a menu like the switcher.
     file_finder: Option<Overlay<FileFinder>>,
+    palette: Option<Overlay<Palette>>,
     switcher: Option<Overlay<Switcher>>,
     source_picker: Option<Overlay<SourcePicker>>,
     /// The "Finish round" sheet (DESIGN §4.2).
@@ -426,6 +429,7 @@ impl Shell {
             pending_goto: None,
             _intel_subscriptions: Vec::new(),
             file_finder: None,
+            palette: None,
             switcher: None,
             source_picker: None,
             sheet: None,
@@ -974,18 +978,17 @@ impl Shell {
     /// keyboard: `Some` with where the keyboard was before it opened, `None` when no menu was
     /// open.
     fn take_menu(&mut self) -> Option<Option<FocusHandle>> {
-        match (
-            self.switcher.take(),
-            self.source_picker.take(),
-            self.file_finder.take(),
-            self.settings.take(),
-        ) {
-            (Some(menu), _, _, _) => Some(menu.return_focus),
-            (None, Some(menu), _, _) => Some(menu.return_focus),
-            (None, None, Some(menu), _) => Some(menu.return_focus),
-            (None, None, None, Some(menu)) => Some(menu.return_focus),
-            (None, None, None, None) => None,
-        }
+        // One is open at a time; each is taken either way.
+        [
+            self.switcher.take().map(|menu| menu.return_focus),
+            self.source_picker.take().map(|menu| menu.return_focus),
+            self.file_finder.take().map(|menu| menu.return_focus),
+            self.palette.take().map(|menu| menu.return_focus),
+            self.settings.take().map(|menu| menu.return_focus),
+        ]
+        .into_iter()
+        .flatten()
+        .next()
     }
 
     /// Closes the open menu, the keyboard going back to where it was before the menu opened;

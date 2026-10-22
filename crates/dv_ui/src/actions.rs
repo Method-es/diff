@@ -45,6 +45,30 @@ pub mod shell {
             FindFile,
             /// Open Settings, or close it (`Ctrl ,`, DESIGN §4.3).
             ToggleSettings,
+            /// Open the palette, or close it (`Ctrl K`, DESIGN §4.1).
+            TogglePalette,
+            /// Add a repository through the folder picker (the switcher's "Open folder…").
+            OpenFolder,
+        ]
+    );
+}
+
+/// The palette (`Ctrl K`, DESIGN §4.1), dispatched in the `Palette` key context while it is
+/// open.
+pub mod palette {
+    use gpui::actions;
+
+    actions!(
+        palette,
+        [
+            /// Select the next row (`↓`), wrapping to the first.
+            SelectNext,
+            /// Select the previous row (`↑`), wrapping to the last.
+            SelectPrevious,
+            /// Open or run the selected row (`Enter`).
+            Confirm,
+            /// Close without doing anything (`Esc`).
+            Dismiss,
         ]
     );
 }

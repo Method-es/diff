@@ -159,15 +159,25 @@ impl Shell {
                     .left(field)
                     .flex()
                     .items_center()
-                    .child(div().relative().child(command_field(theme)).children(
-                        self.file_finder.as_ref().map(|overlay| {
-                            hang_centred(
-                                overlay.view.clone().into_any_element(),
-                                theme.sizes.command_field_width,
-                                crate::file_finder::FINDER_WIDTH,
-                            )
-                        }),
-                    )),
+                    .child(
+                        div()
+                            .relative()
+                            .child(command_field(theme, cx))
+                            .children(self.file_finder.as_ref().map(|overlay| {
+                                hang_centred(
+                                    overlay.view.clone().into_any_element(),
+                                    theme.sizes.command_field_width,
+                                    crate::file_finder::FINDER_WIDTH,
+                                )
+                            }))
+                            .children(self.palette.as_ref().map(|overlay| {
+                                hang_centred(
+                                    overlay.view.clone().into_any_element(),
+                                    theme.sizes.command_field_width,
+                                    crate::palette::PALETTE_WIDTH,
+                                )
+                            })),
+                    ),
             )
             .automation_target("titlebar")
     }
@@ -507,8 +517,8 @@ fn mark(left_inset: Pixels, theme: &DvTheme) -> AnyElement {
         .automation_target("titlebar/mark")
 }
 
-/// The command field (`Ctrl K`, PLAN §11 `palette`); it opens nothing yet.
-fn command_field(theme: &DvTheme) -> AnyElement {
+/// The command field (`Ctrl K`, PLAN §11 `palette`): a click opens the palette, or closes it.
+fn command_field(theme: &DvTheme, cx: &mut Context<Shell>) -> AnyElement {
     let c = &theme.colors;
     div()
         .id("titlebar-command")
@@ -531,6 +541,15 @@ fn command_field(theme: &DvTheme) -> AnyElement {
         .text_spec(&theme.text.body)
         .text_color(c.fg3)
         .occlude()
+        .cursor_pointer()
+        .hover(|style| style.border_color(c.line2))
+        .on_click(cx.listener(|this, _, window, cx| {
+            if this.palette.is_some() {
+                this.close_menu(window, cx);
+            } else {
+                this.open_palette(window, cx);
+            }
+        }))
         .child(icon(DvIcon::Search, px(14.), c.fg3))
         .child(
             div()

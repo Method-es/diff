@@ -18,8 +18,8 @@ use gpui::{
 };
 
 use crate::actions::{
-    app, composer, diff_pane, field, file_finder, file_list, find, first_run, settings, sheet,
-    shell, source_picker, switcher,
+    app, composer, diff_pane, field, file_finder, file_list, find, first_run, palette, settings,
+    sheet, shell, source_picker, switcher,
 };
 
 /// Key context of the shell's root element: everything in the main window.
@@ -33,6 +33,8 @@ pub const SWITCHER: &str = "Switcher";
 pub const SOURCE_PICKER: &str = "SourcePicker";
 /// Key context of the open file finder (inside [`SHELL`]).
 pub const FILE_FINDER: &str = "FileFinder";
+/// Key context of the open palette (inside [`SHELL`]).
+pub const PALETTE: &str = "Palette";
 /// Key context of the panel's file list (inside [`SHELL`]).
 pub const FILE_LIST: &str = "FileList";
 /// Key context of the composer, a new thread's or a reply's (inside [`DIFF_PANE`]).
@@ -136,6 +138,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("secondary-b", SHELL, shell::TogglePanel),
     shortcut!("secondary-p", SHELL, shell::FindFile),
     shortcut!("secondary-,", SHELL, shell::ToggleSettings),
+    shortcut!("secondary-k", SHELL, shell::TogglePalette),
     // Settings and the first-run screen have the keyboard themselves (no text field).
     shortcut!("escape", SETTINGS, settings::Dismiss),
     shortcut!("enter", FIRST_RUN, first_run::Continue),
@@ -158,6 +161,11 @@ pub const SHORTCUTS: &[Shortcut] = &[
     ),
     shortcut!("enter", FILE_FINDER, file_finder::Confirm),
     shortcut!("escape", FILE_FINDER, file_finder::Dismiss),
+    // The palette: as the switcher, its filter field has the keyboard.
+    shortcut!("down", PALETTE, palette::SelectNext, AheadOfInputs),
+    shortcut!("up", PALETTE, palette::SelectPrevious, AheadOfInputs),
+    shortcut!("enter", PALETTE, palette::Confirm),
+    shortcut!("escape", PALETTE, palette::Dismiss),
     // The source picker has the keyboard itself (no text field).
     shortcut!("down", SOURCE_PICKER, source_picker::SelectNext),
     shortcut!("up", SOURCE_PICKER, source_picker::SelectPrevious),

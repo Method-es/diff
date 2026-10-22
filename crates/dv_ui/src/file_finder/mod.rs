@@ -22,7 +22,7 @@
 //!
 //! Automation targets: `file_finder`, `file_finder/input`, `file_finder/row/<path>`.
 
-mod render;
+pub(crate) mod render;
 
 #[cfg(test)]
 mod tests;

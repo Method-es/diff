@@ -245,7 +245,7 @@ impl FileFinder {
 
 /// A path: its directory in `fg3`, its name at 500, what the query's words match in
 /// `accentText` at 600.
-fn path_text(path: &str, query: &str, theme: &DvTheme) -> StyledText {
+pub(crate) fn path_text(path: &str, query: &str, theme: &DvTheme) -> StyledText {
     let (dir, _) = split_path(path);
     let matched = super::matched(path, query);
     let mut cuts: Vec<usize> = vec![0, dir.len(), path.len()];

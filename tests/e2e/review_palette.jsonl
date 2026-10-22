@@ -1,0 +1,38 @@
+{"scenario": {"window_size": "1440x900", "description": "Ctrl K (DESIGN §4.1 \"Palette\"): a click on the title bar's command field or Ctrl K opens the palette over commands, reviews and files (`palette`), its field focused and its first command selected; typing filters by every word, Enter runs a stream command in the main area (Next file), a file row opens the file view, a review row lists the repository's targets, and Esc closes it with the keyboard back; screenshots of the palette empty, filtered to files and in light mode."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "settle"}
+{"cmd": "seed_repo", "name": "web", "steps": [{"write": "src/app.ts", "text": "export const app = 1;\n"}, {"write": "src/util.ts", "text": "export const util = 1;\n"}, {"write": "README.md", "text": "# web\n"}, {"commit": "base"}, {"write": "src/app.ts", "text": "export const app = 2;\n"}, {"write": "README.md", "text": "# web\n\nA small app.\n"}]}
+{"cmd": "open_review", "path": "${data_dir}/repos/web"}
+{"cmd": "settle", "expect": [{"pointer": "/session/total", "equals": 2}, {"pointer": "/file_list/current_file", "equals": "README.md"}, {"pointer": "/palette/open", "equals": false}]}
+
+// A click on the command field opens the palette: every command, then the repository's targets.
+{"cmd": "click", "target": "titlebar/command"}
+{"cmd": "settle", "expect": [{"pointer": "/palette/open", "equals": true}, {"pointer": "/palette/focused", "equals": true}, {"pointer": "/palette/selected", "equals": "command/shell::FindFile"}, {"pointer": "/palette/rows/0/section", "equals": "commands"}]}
+{"cmd": "screenshot", "name": "palette"}
+// Every word filters; Enter runs Next file in the main area and closes the palette.
+{"cmd": "type", "text": "next file"}
+{"cmd": "settle", "expect": [{"pointer": "/palette/rows", "equals": [{"key": "command/diff_pane::NextFile", "section": "commands", "label": "Next file"}]}]}
+{"cmd": "key", "keystroke": "enter"}
+{"cmd": "settle", "expect": [{"pointer": "/palette/open", "equals": false}, {"pointer": "/file_list/current_file", "equals": "src/app.ts"}]}
+
+// Ctrl K: a typed name lists the review's files too; a click on one opens it in the file view.
+{"cmd": "key", "keystroke": "secondary-k"}
+{"cmd": "type", "text": "util"}
+{"cmd": "settle", "expect": [{"pointer": "/palette/rows", "equals": [{"key": "file/src/util.ts", "section": "files", "label": "src/util.ts"}]}, {"pointer": "/palette/selected", "equals": "file/src/util.ts"}]}
+{"cmd": "screenshot", "name": "palette-files"}
+{"cmd": "click", "target": "palette/row/file/src/util.ts"}
+{"cmd": "settle", "expect": [{"pointer": "/palette/open", "equals": false}, {"pointer": "/file_view/path", "equals": "src/util.ts"}]}
+
+// The repository's targets by name; Esc closes the palette, Ctrl K again too.
+{"cmd": "key", "keystroke": "secondary-k"}
+{"cmd": "type", "text": "web staged"}
+{"cmd": "settle", "expect": [{"pointer": "/palette/rows/0/key", "equals": "review/web/staged"}, {"pointer": "/palette/rows/0/label", "equals": "web · Staged changes"}]}
+{"cmd": "key", "keystroke": "escape"}
+{"cmd": "settle", "expect": [{"pointer": "/palette/open", "equals": false}]}
+{"cmd": "set_setting", "key": "mode", "value": "light"}
+{"cmd": "key", "keystroke": "secondary-k"}
+{"cmd": "settle", "expect": [{"pointer": "/palette/open", "equals": true}]}
+{"cmd": "screenshot", "name": "palette-light"}
+{"cmd": "key", "keystroke": "secondary-k"}
+{"cmd": "settle", "expect": [{"pointer": "/palette/open", "equals": false}]}

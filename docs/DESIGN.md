@@ -160,7 +160,8 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
 ### 4.1 Review (`GlassReview`)
 - **Title bar:** dv mark; switcher button "`api-server` · working tree vs main" (the repo's name at
   600, the target label with its "vs" in `fg3`) with the location chip (`Ubuntu`, WSL repos only) and
-  its `Ctrl O` keycap; source picker (`⇄ ▾`); centred command field (`Ctrl K`); `PRs Ctrl G`;
+  its `Ctrl O` keycap; source picker (`⇄ ▾`); centred command field (`Ctrl K`; a click opens the
+  palette, its outline `line2` on hover); `PRs Ctrl G`;
   overflow (`⋯`, a 28-square ghost button with the ellipsis in `fg2`: Settings, `Ctrl ,`, §4.3);
   caption buttons (Windows; Linux while dv draws the decorations, §2) / traffic lights (macOS,
   left: the native ones in a transparent titlebar, centred on the bar at 12 from its left edge,
@@ -434,6 +435,24 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   open, `Esc` close). No match: "No files match “x”" with "Every word must be in the file's path."
   in `fg3`. A click on a row or `Enter` opens it in the file view; `Esc`, a click on the scrim or
   `Ctrl P` again closes it.
+- **Palette** (`Ctrl K`, or a click on the title bar's command field; PLAN §11 `palette`): the
+  file finder's look and place, its field's placeholder the command field's words ("Go to file,
+  review or command"). Its rows sit under section labels (12/600 in `fg3`, the first 22 high, the
+  rest 30, bottom-aligned), in this order: **Commands**, the shell's and the stream's actions by
+  name (a `chevron-right` glyph, the title, the action's keycap at the right), the stream's only
+  while a review is open; **Reviews**, every repository's targets and open reviews as the
+  switcher lists them (the switcher's glyph, the repository's name at 500, the label in `fg2`,
+  an open review's status chip and "round n" in `fg3`); **Files**, once something is typed with
+  a review open, the file finder's first five matches as its rows show them. A command passes
+  when every typed word is in its title or the few other words it is known by; reviews filter
+  as in the switcher. 30-high rows radius 6, the selected one on `sel`; the first row is
+  selected and `↑`/`↓` move across the sections, wrapping. A 40-high footer holds the keys (`↑`
+  `↓` move, `Enter` open, `Esc` close). Nothing left: "Nothing matches “x”" with "Every word must
+  be in a command, a review or a file's path." in `fg3`. `Enter` or a click runs a command as
+  its key would (a stream command once the main area has the keyboard back), opens a review, or
+  opens a file in the file view; `Esc`, a click on the scrim or `Ctrl K` again closes it. Over
+  the "Finish round" sheet it lists neither the review's commands nor its files, which would act
+  under the sheet.
 - **Interdiff** (round n+1 of a live target, PLAN §2.3): the stream, the file list and its
   totals are what changed since round n (its snapshot → now); `I` or the panel's toggle switches
   to all changes and back, the reading position staying where the same file and line still
@@ -842,7 +861,7 @@ Setup unchanged.
 | `E` / `Shift E` | expand the gap nearest the cursor by one step towards it / fully |
 | `S` | toggle split / unified (remembered per review) |
 | `Ctrl Enter` | finish review / submit: the "Finish round" sheet, while no text field has the keyboard (in the composer: post comment) |
-| `Ctrl K` | palette: reviews, PRs, commands (files are `Ctrl P`'s) |
+| `Ctrl K` | the palette: commands, reviews and, as you type, the review's files (§4.1; again, or `Esc`, closes it) |
 | `Ctrl O` | switch repo / review (the switcher; again, or `Esc`, closes it) |
 | `Ctrl G` | the PR picker (§4.5) |
 | `Ctrl R` | on a PR review: refresh it from GitHub (fetch, threads, checks, Viewed; PLAN §9.4) |
@@ -859,7 +878,7 @@ Setup unchanged.
 | `Shift F12` | find the references of the symbol at the caret: the panel's References tab |
 | `Ctrl F` | the find bar, its field focused (the selected text in it when that is one line); again, the field focused with its text selected (§4.1 "Find") |
 | `Enter` / `Shift Enter`, `Esc` | in the find bar: the next / previous match, wrapping; close it (the keyboard back to the stream) |
-| `↑` / `↓`, `Enter` | in the switcher, the source picker and the file finder: move (wrapping), open |
+| `↑` / `↓`, `Enter` | in the switcher, the source picker, the file finder and the palette: move (wrapping), open |
 | `Enter` / `Esc` | in the file filter: show the first file left / clear the filter (both return to the diff) |
 | `Ctrl Enter` / `Esc` | in the composer: post / discard (both return to the diff; `Enter` is a newline) |
 | `↑` / `↓`, `1` / `2`, `Tab` | in the "Finish round" sheet: choose the verdict (Approve, Request changes) / move between the verdicts and the summary; `Ctrl Enter` finishes the round, `Esc` closes |
