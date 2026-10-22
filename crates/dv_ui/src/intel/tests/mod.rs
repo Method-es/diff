@@ -324,6 +324,22 @@ fn wait(
     settle(cx, shell, what, |_, cx| done(cx));
 }
 
+/// Waits until the fake servers have read `count` messages of `method`: they read on threads of
+/// their own, so a notification the client sent may not have reached them yet.
+fn wait_for_messages(fakes: &Fakes, method: &str, count: usize, cx: &mut VisualTestContext) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        cx.run_until_parked();
+        let seen = fakes.with_method(method).len();
+        if seen >= count {
+            assert_eq!(seen, count, "{method}");
+            return;
+        }
+        assert!(Instant::now() < deadline, "{method}: {seen} of {count}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 fn location(path: &str, line: u32, column: u32) -> Value {
     json!({"uri": format!("${{root}}/{path}"), "range": {
         "start": {"line": line, "character": column},
@@ -901,7 +917,7 @@ fn another_sides_text_is_closed_once_answered_and_its_definition_stays_on_that_s
         opened[0]["params"]["textDocument"]["text"],
         "import { helper } from './b';\nexport const one = 1;\n"
     );
-    assert_eq!(fakes.with_method("textDocument/didClose").len(), 1);
+    wait_for_messages(&fakes, "textDocument/didClose", 1, cx);
     // Its definition in the same file is on the old side, where it was asked.
     intel.update(cx, |intel, cx| {
         intel.definition(at_old, Pane::Stream, &diff, cx)
@@ -922,7 +938,7 @@ fn another_sides_text_is_closed_once_answered_and_its_definition_stays_on_that_s
         intel.hover(at_new, Pane::Stream, Default::default(), &diff, cx)
     });
     wait(cx, &shell, "the second hover", |_| true);
-    assert_eq!(fakes.with_method("textDocument/didClose").len(), 2);
+    wait_for_messages(&fakes, "textDocument/didClose", 2, cx);
     let closes = fakes.with_method("textDocument/didClose").len();
     // The agent edits it: the open document is closed, so the next request reads it afresh.
     let servers = cx.update(|_, cx| cx.services().language_servers.clone());
