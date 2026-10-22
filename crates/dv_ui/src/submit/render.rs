@@ -169,27 +169,15 @@ impl FinishSheet {
             .map(|(ix, verdict)| self.render_verdict(*verdict, ix + 1, theme, cx))
             .collect();
         let segment = |key: &'static str, label: &'static str, tab: SummaryTab| {
-            let on = self.tab == tab;
-            let hover = c.control_hover;
-            div()
-                .id(ElementId::Name(format!("sheet-{key}").into()))
-                .flex()
-                .items_center()
-                .h(theme.sizes.control_xsmall_height)
-                .px(theme.spacing.md)
-                .rounded(theme.radii.chip)
-                .text_spec(&theme.text.secondary)
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(if on { c.fg } else { c.fg2 })
-                .when(on, |this| {
-                    this.bg(c.seg_on).shadow(theme.shadows.control.clone())
-                })
-                .when(!on, |this| {
-                    this.cursor_pointer().hover(move |style| style.bg(hover))
-                })
-                .child(label)
-                .on_click(cx.listener(move |this, _, window, cx| this.set_tab(tab, window, cx)))
-                .automation_target(format!("sheet/{key}"))
+            crate::components::segment(
+                ElementId::Name(format!("sheet-{key}").into()),
+                self.tab == tab,
+                true,
+                theme,
+            )
+            .child(label)
+            .on_click(cx.listener(move |this, _, window, cx| this.set_tab(tab, window, cx)))
+            .automation_target(format!("sheet/{key}"))
         };
         let summary_focused = self.summary.read(cx).focus_handle(cx).is_focused(window);
         let summary: AnyElement = match self.tab {
@@ -263,16 +251,7 @@ impl FinishSheet {
                     .mb(theme.spacing.md)
                     .child(div().text_spec(&theme.text.title).child("Summary"))
                     .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(2.))
-                            .h(theme.sizes.control_height)
-                            .p(px(2.))
-                            .rounded(theme.radii.segmented)
-                            .border_1()
-                            .border_color(c.ctrl_line)
-                            .bg(c.ctrl)
+                        crate::components::segmented(theme)
                             .child(segment("write", "Write", SummaryTab::Write))
                             .child(segment("preview", "Preview", SummaryTab::Preview)),
                     ),

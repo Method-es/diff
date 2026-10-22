@@ -115,40 +115,14 @@ impl DiffPane {
         };
         let segment = |key: &'static str, label: &'static str, glyph: DvIcon, mode: ViewMode| {
             let on = self.mode == mode;
-            div()
-                .id(id(key))
-                .flex()
-                .items_center()
-                .gap(theme.spacing.sm)
-                .h(theme.sizes.control_xsmall_height)
-                .px(theme.spacing.md)
-                .rounded(theme.radii.chip)
-                .text_spec(&theme.text.secondary)
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(if on { c.fg } else { c.fg2 })
-                // The board lifts the chosen segment with the control shadow (visible in light).
-                .when(on, |this| {
-                    this.bg(c.seg_on).shadow(theme.shadows.control.clone())
-                })
-                .when(!on, |this| {
-                    this.cursor_pointer().hover(move |style| style.bg(hover))
-                })
+            crate::components::segment(id(key), on, true, theme)
                 .child(icon(glyph, px(14.), if on { c.fg } else { c.fg2 }))
                 .child(label)
                 .on_click(cx.listener(move |this, _, _, cx| this.set_view_mode(mode, cx)))
                 .automation_target(format!("{base}/{key}"))
         };
-        let segmented = div()
+        let segmented = crate::components::segmented(theme)
             .flex_none()
-            .flex()
-            .items_center()
-            .gap(px(2.))
-            .h(theme.sizes.control_height)
-            .p(px(2.))
-            .rounded(theme.radii.segmented)
-            .border_1()
-            .border_color(c.ctrl_line)
-            .bg(c.ctrl)
             .child(segment("split", "Split", DvIcon::Columns, ViewMode::Split))
             .child(segment(
                 "unified",

@@ -149,7 +149,6 @@ impl FileList {
         theme: &DvTheme,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let c = &theme.colors;
         let (asked, last) = {
             let session = session.read(cx);
             let last = session.review().last_round().map(|round| round.n);
@@ -158,7 +157,6 @@ impl FileList {
                 last.filter(|_| session.comparison_available())?,
             )
         };
-        let hover = c.control_hover;
         // In a narrow panel "All changes" says "All", so "Since round n" keeps its round.
         let (since, all) = comparison_labels(last, cx.services().settings.read(cx).panel_width());
         let segment = |key: &'static str, label: String, comparison: Comparison| {
@@ -168,43 +166,25 @@ impl FileList {
             };
             let session = session.clone();
             // Each segment starts at its label's width and shares what room is left.
-            div()
-                .id(ElementId::Name(format!("comparison-{key}").into()))
-                .flex_auto()
-                .min_w_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .h(theme.sizes.control_xsmall_height)
-                .px(theme.spacing.sm)
-                .rounded(theme.radii.chip)
-                .text_spec(&theme.text.secondary)
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(if on { c.fg } else { c.fg2 })
-                .when(on, |this| {
-                    this.bg(c.seg_on).shadow(theme.shadows.control.clone())
-                })
-                .when(!on, |this| {
-                    this.cursor_pointer().hover(move |style| style.bg(hover))
-                })
-                .child(div().min_w_0().truncate().child(label))
-                .on_click(move |_, _, cx| {
-                    session.update(cx, |session, cx| session.set_comparison(comparison, cx))
-                })
-                .debug_selector(move || format!("comparison-{key}"))
-                .automation_target(format!("file_list/comparison/{key}"))
+            crate::components::segment(
+                ElementId::Name(format!("comparison-{key}").into()),
+                on,
+                true,
+                theme,
+            )
+            .flex_auto()
+            .min_w_0()
+            .justify_center()
+            .px(theme.spacing.sm)
+            .child(div().min_w_0().truncate().child(label))
+            .on_click(move |_, _, cx| {
+                session.update(cx, |session, cx| session.set_comparison(comparison, cx))
+            })
+            .debug_selector(move || format!("comparison-{key}"))
+            .automation_target(format!("file_list/comparison/{key}"))
         };
         Some(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(2.))
-                .h(theme.sizes.control_height)
-                .p(px(2.))
-                .rounded(theme.radii.segmented)
-                .border_1()
-                .border_color(c.ctrl_line)
-                .bg(c.ctrl)
+            crate::components::segmented(theme)
                 .child(segment("since", since, Comparison::SinceRound(last)))
                 .child(segment("all", all, Comparison::All))
                 .child(

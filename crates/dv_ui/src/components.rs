@@ -333,7 +333,6 @@ pub fn small_icon_button(
 pub fn segmented(theme: &DvTheme) -> Div {
     let c = &theme.colors;
     div()
-        .flex_none()
         .flex()
         .items_center()
         .gap(px(2.))
