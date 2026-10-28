@@ -48,6 +48,7 @@ use std::sync::Arc;
 
 use dv_backend::{Connection, ConnectionKey};
 use dv_core::diff::file_list;
+use dv_core::git::branches::Branch;
 use dv_core::label::{LabelContext, Labels};
 use dv_core::review::{
     Author, Home, HomeError, ListEntry, LoadedReview, ReviewId, ReviewStore, ReviewSummary, home,
@@ -134,6 +135,10 @@ pub struct RepoRow {
     /// Its reviews, newest first.
     pub reviews: Vec<ReviewRow>,
     pub labels: LabelContext,
+    /// Its local branches, the most recently committed first, each with its stack base: what
+    /// the switcher's branch picker offers (DESIGN §4.1). Empty until a refresh read them, or
+    /// when it couldn't.
+    pub branches: Vec<Branch>,
     /// When it was last used, for the order rows are listed in.
     pub last_used: u64,
 }
@@ -179,6 +184,7 @@ impl RepoRow {
             working: None,
             reviews: Vec::new(),
             labels: LabelContext::default(),
+            branches: Vec::new(),
             last_used: repo.last_used(),
         }
     }
@@ -189,6 +195,8 @@ struct Scan {
     working: Result<WorkingSummary, Failure>,
     reviews: Result<Vec<ReviewRow>, Failure>,
     labels: LabelContext,
+    /// Empty when they couldn't be read: the picker then offers none, the row the rest.
+    branches: Vec<Branch>,
     toplevel: String,
     /// The repository's location as its backend resolved it: its worktree root.
     root: Location,
@@ -630,6 +638,7 @@ impl Reviews {
             Refreshed::Scanned(scan) => {
                 resolved = Some(scan.root);
                 row.labels = scan.labels;
+                row.branches = scan.branches;
                 row.unreachable = None;
                 row.stopped = None;
                 row.retry = false;
@@ -1041,10 +1050,17 @@ fn scan(backend: Arc<dyn Backend>) -> Scan {
             additions: files.iter().map(|file| u64::from(file.additions)).sum(),
             deletions: files.iter().map(|file| u64::from(file.deletions)).sum(),
         });
+    let branches = repo
+        .branches(labels.default_base.as_deref())
+        .unwrap_or_else(|error| {
+            log::warn!("couldn't list the branches of {toplevel}: {error}");
+            Vec::new()
+        });
     Scan {
         working,
         reviews,
         labels,
+        branches,
         toplevel,
         root,
     }
