@@ -1,6 +1,6 @@
 //! The switcher's panel (DESIGN §3: `overlay` over the scrim, radius 12, the overlay shadow):
 //! the filter field, the repositories and their rows, and a footer with "Open folder…" and the
-//! keys.
+//! keys. A repository's header shows its remove button while the pointer is over it.
 
 use gpui::{
     AnyElement, Context, ElementId, FontWeight, InteractiveElement as _, IntoElement,
@@ -12,7 +12,9 @@ use gpui_component::input::Input;
 use super::items::{Entry, Item, ItemKind, RepoHeader, RepoSummary, TargetKind};
 use super::{SWITCHER_WIDTH, Switcher};
 use crate::automation::AutomationTargetExt as _;
-use crate::components::{count_badge, icon, kbd, location_chip, skeleton, status_chip, totals};
+use crate::components::{
+    count_badge, icon, kbd, location_chip, skeleton, status_chip, tooltip, totals,
+};
 use crate::icons::DvIcon;
 use crate::keymap;
 use crate::theme::{ActiveTheme as _, DvTheme, StyledText as _};
@@ -28,6 +30,7 @@ impl Render for Switcher {
             .on_action(cx.listener(Self::select_next))
             .on_action(cx.listener(Self::select_previous))
             .on_action(cx.listener(Self::confirm))
+            .on_action(cx.listener(Self::remove_selected))
             .on_action(cx.listener(Self::dismiss))
             .w(SWITCHER_WIDTH)
             .max_h(max_height)
@@ -126,7 +129,7 @@ impl Switcher {
                     .listing
                     .repos
                     .get(repo)
-                    .map(|header| repo_header(header, line == 0, theme)),
+                    .map(|header| self.repo_header(repo, header, line == 0, theme, cx)),
                 Entry::Item(ix) => self
                     .listing
                     .items
@@ -277,100 +280,139 @@ impl Switcher {
             )
             .into_any_element()
     }
-}
 
-/// A repository's header: its name, its path dimmed, its location chip, and a line on its
-/// uncommitted changes or why it can't be opened.
-fn repo_header(header: &RepoHeader, first: bool, theme: &DvTheme) -> AnyElement {
-    let c = &theme.colors;
-    let summary: AnyElement = match &header.summary {
-        RepoSummary::Loading => skeleton(px(160.), px(10.), theme),
-        RepoSummary::Unreachable(reason) => {
-            let text = match &header.distro {
-                Some(distro) => format!("{distro} · {reason}"),
-                None => reason.clone(),
-            };
-            problem(&text, c.yellow, theme)
-        }
-        RepoSummary::Stopped(distro) => {
-            problem(&format!("{distro} isn't running"), c.yellow, theme)
-        }
-        RepoSummary::Starting(line) => div()
-            .text_color(c.fg3)
-            .child(SharedString::from(line.clone()))
-            .into_any_element(),
-        RepoSummary::Error(message) => problem(message, c.red, theme),
-        RepoSummary::Clean => div()
-            .text_color(c.fg3)
-            .child("Working tree clean")
-            .into_any_element(),
-        RepoSummary::Changes(working) => div()
-            .flex()
-            .items_center()
-            .gap(theme.spacing.md)
-            .child(div().text_color(c.fg2).child(format!(
-                "uncommitted changes · {}",
-                if working.files == 1 {
-                    "1 file".to_string()
-                } else {
-                    format!("{} files", working.files)
-                }
-            )))
-            .child(totals(
-                working.additions,
-                working.deletions,
-                px(11.5),
-                theme,
-            ))
-            .into_any_element(),
-    };
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(3.))
-        .pt(if first { theme.spacing.xs } else { px(10.) })
-        .pb(theme.spacing.xs)
-        .px(theme.spacing.md)
-        .child(
-            div()
+    /// A repository's header: its name, its path dimmed, its location chip, its remove button
+    /// while the pointer is over it, and a line on its uncommitted changes or why it can't be
+    /// opened.
+    fn repo_header(
+        &self,
+        repo: usize,
+        header: &RepoHeader,
+        first: bool,
+        theme: &DvTheme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let c = &theme.colors;
+        let summary: AnyElement = match &header.summary {
+            RepoSummary::Loading => skeleton(px(160.), px(10.), theme),
+            RepoSummary::Unreachable(reason) => {
+                let text = match &header.distro {
+                    Some(distro) => format!("{distro} · {reason}"),
+                    None => reason.clone(),
+                };
+                problem(&text, c.yellow, theme)
+            }
+            RepoSummary::Stopped(distro) => {
+                problem(&format!("{distro} isn't running"), c.yellow, theme)
+            }
+            RepoSummary::Starting(line) => div()
+                .text_color(c.fg3)
+                .child(SharedString::from(line.clone()))
+                .into_any_element(),
+            RepoSummary::Error(message) => problem(message, c.red, theme),
+            RepoSummary::Clean => div()
+                .text_color(c.fg3)
+                .child("Working tree clean")
+                .into_any_element(),
+            RepoSummary::Changes(working) => div()
                 .flex()
                 .items_center()
                 .gap(theme.spacing.md)
-                .child(icon(DvIcon::Folder, px(14.), c.fg2))
-                .child(
-                    div()
-                        .flex_none()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(SharedString::from(header.name.clone())),
-                )
-                .children(
-                    header
-                        .distro
-                        .as_deref()
-                        .map(|distro| location_chip(distro, theme)),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis_start()
-                        .text_spec(&theme.text.secondary)
-                        .text_color(c.fg3)
-                        .child(SharedString::from(header.shown_path.clone())),
-                ),
-        )
-        .child(
-            div()
-                .pl(px(22.))
-                .h(px(16.))
-                .flex()
-                .items_center()
-                .text_spec(&theme.text.secondary)
-                .child(summary),
-        )
-        .automation_target(format!("switcher/repo/{}", header.key))
+                .child(div().text_color(c.fg2).child(format!(
+                    "uncommitted changes · {}",
+                    if working.files == 1 {
+                        "1 file".to_string()
+                    } else {
+                        format!("{} files", working.files)
+                    }
+                )))
+                .child(totals(
+                    working.additions,
+                    working.deletions,
+                    px(11.5),
+                    theme,
+                ))
+                .into_any_element(),
+        };
+        let group: SharedString = format!("switcher-repo-{repo}").into();
+        let remove = div()
+            .id(ElementId::NamedInteger(
+                "switcher-remove".into(),
+                repo as u64,
+            ))
+            .debug_selector({
+                let key = header.key.clone();
+                move || format!("switcher-remove-{key}")
+            })
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .size(px(20.))
+            .rounded(theme.radii.control)
+            .cursor_pointer()
+            .invisible()
+            .group_hover(group.clone(), |style| style.visible())
+            .hover({
+                let hover = c.control_hover;
+                move |style| style.bg(hover)
+            })
+            .tooltip(tooltip(
+                "Remove from the list (Shift Delete); its reviews stay in the repository",
+            ))
+            .on_click(cx.listener(move |this, _, _, cx| this.remove(repo, cx)))
+            .child(icon(DvIcon::X, px(13.), c.fg2))
+            .automation_target(format!("switcher/repo/{}/remove", header.key));
+        div()
+            .group(group)
+            .flex()
+            .flex_col()
+            .gap(px(3.))
+            .pt(if first { theme.spacing.xs } else { px(10.) })
+            .pb(theme.spacing.xs)
+            .px(theme.spacing.md)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme.spacing.md)
+                    .child(icon(DvIcon::Folder, px(14.), c.fg2))
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(SharedString::from(header.name.clone())),
+                    )
+                    .children(
+                        header
+                            .distro
+                            .as_deref()
+                            .map(|distro| location_chip(distro, theme)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis_start()
+                            .text_spec(&theme.text.secondary)
+                            .text_color(c.fg3)
+                            .child(SharedString::from(header.shown_path.clone())),
+                    )
+                    .child(remove),
+            )
+            .child(
+                div()
+                    .pl(px(22.))
+                    .h(px(16.))
+                    .flex()
+                    .items_center()
+                    .text_spec(&theme.text.secondary)
+                    .child(summary),
+            )
+            .automation_target(format!("switcher/repo/{}", header.key))
+    }
 }
 
 /// A one-line problem with its glyph.

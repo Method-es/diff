@@ -758,3 +758,53 @@ fn an_open_switcher_follows_a_connection_going_down_and_coming_back(cx: &mut Tes
     });
     assert_eq!(connection.state(), ConnectionState::Connected);
 }
+
+#[gpui::test]
+fn shift_delete_removes_the_selected_rows_repository_and_its_neighbour_takes_the_selection(
+    cx: &mut TestAppContext,
+) {
+    let (dir, shell, cx) = open_shell(cx);
+    let repos = tempfile::tempdir().unwrap();
+    let api = fixture_at(&repos.path().join("api-server"));
+    let web = fixture_at(&repos.path().join("web"));
+    add_repo(&api, &shell, cx);
+    add_repo(&web, &shell, cx);
+
+    // The most recently added first: web's row is selected; Shift Delete removes web.
+    cx.simulate_keystrokes("secondary-o");
+    settle(cx, &shell, "the rows", |_, _| true);
+    assert_eq!(selected(&shell, cx).as_deref(), Some("web/working"));
+    cx.simulate_keystrokes("shift-delete");
+    settle(cx, &shell, "the removal", |_, _| true);
+    let view = switcher(&shell, cx).expect("the switcher stays open");
+    view.read_with(cx, |view, _| {
+        assert!(view.listing().repos.iter().all(|repo| repo.name != "web"));
+        assert_eq!(view.query(), "", "the filter keeps its text");
+    });
+    assert_eq!(selected(&shell, cx).as_deref(), Some("api-server/working"));
+    let file = std::fs::read_to_string(dir.path().join("known_repos.json")).unwrap();
+    let known: serde_json::Value = serde_json::from_str(&file).unwrap();
+    assert_eq!(known["repos"].as_array().map(Vec::len), Some(1), "{file}");
+    assert!(file.contains("api-server"), "{file}");
+
+    // Its reviews stay in the repository: it lists again once added back.
+    cx.simulate_keystrokes("escape");
+    add_repo(&web, &shell, cx);
+    let rows = cx.update(|_, cx| {
+        crate::ActiveServices::services(cx)
+            .reviews
+            .read(cx)
+            .rows()
+            .len()
+    });
+    assert_eq!(rows, 2);
+
+    // The last repository goes too: the list says there are none.
+    cx.simulate_keystrokes("secondary-o");
+    settle(cx, &shell, "the rows", |_, _| true);
+    cx.simulate_keystrokes("shift-delete");
+    settle(cx, &shell, "the removal", |_, _| true);
+    cx.simulate_keystrokes("shift-delete");
+    settle(cx, &shell, "the removal", |_, _| true);
+    view.read_with(cx, |view, _| assert!(view.listing().repos.is_empty()));
+}

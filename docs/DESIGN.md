@@ -202,7 +202,12 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   changes** and, with a branch other than the default checked out, **Branch `feat` vs `main`**, each
   beside its open review (status chip, "round n", open-comment badge; "New review" on the selected row
   without one), then the repo's other open reviews by their target label. Picking a row opens or
-  resumes that review (PLAN §2.4). A repo that can't be opened offers no rows. The footer holds **Open
+  resumes that review (PLAN §2.4). A repo that can't be opened offers no rows. While the pointer is
+  over a header, an `x` (13, `fg2`, a 20-square hover target at its right) removes the repo from
+  the list (tooltip "Remove from the list (Shift Delete); its reviews stay in the repository");
+  `Shift Delete` removes the selected row's repo. Nothing in the repo changes, so adding it again
+  lists its reviews as before; the switcher stays open, the selection kept, or on the first row
+  of the repo that took the removed one's place. The footer holds **Open
   folder…** (the system's folder picker; the folder's repo is added and selected) and the keys.
   Opened over the "Finish round" sheet (§4.2), it and the source picker hang above the sheet, which
   the scrim then covers too; closing them returns to the sheet as it was. Status
@@ -879,6 +884,7 @@ Setup unchanged.
 | `Ctrl F` | the find bar, its field focused (the selected text in it when that is one line); again, the field focused with its text selected (§4.1 "Find") |
 | `Enter` / `Shift Enter`, `Esc` | in the find bar: the next / previous match, wrapping; close it (the keyboard back to the stream) |
 | `↑` / `↓`, `Enter` | in the switcher, the source picker, the file finder and the palette: move (wrapping), open |
+| `Shift Delete` | in the switcher: remove the selected row's repo from the list (its reviews stay in the repo) |
 | `Enter` / `Esc` | in the file filter: show the first file left / clear the filter (both return to the diff) |
 | `Ctrl Enter` / `Esc` | in the composer: post / discard (both return to the diff; `Enter` is a newline) |
 | `↑` / `↓`, `1` / `2`, `Tab` | in the "Finish round" sheet: choose the verdict (Approve, Request changes) / move between the verdicts and the summary; `Ctrl Enter` finishes the round, `Esc` closes |
