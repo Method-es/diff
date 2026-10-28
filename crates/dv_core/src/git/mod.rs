@@ -4,6 +4,7 @@
 //! Revisions from users and reviews are passed after `--end-of-options`, so a revision that
 //! starts with `-` is looked up as a revision and never read as an option.
 
+pub mod branches;
 pub mod command;
 pub(crate) mod temp_index;
 

@@ -3,12 +3,15 @@ use dv_core::{Location, Target};
 use gpui::{Entity, TestAppContext, VisualTestContext};
 use pretty_assertions::assert_eq;
 
-use super::items::{Entry, RepoSummary, build};
+use super::branches::{Mode, build_bases, build_branches, has_branches};
+use super::items::{Entry, ItemKind, RepoSummary, build};
 use super::*;
 use crate::failure::Failure;
 use crate::services::reviews::{RepoRow, ReviewRow, WorkingSummary};
 use crate::shell::Shell;
 use crate::test_support::{add_repo, fixture_at, open_shell, settle};
+use dv_core::Oid;
+use dv_core::git::branches::Branch;
 use dv_core::label::LabelContext;
 
 fn row(name: &str, path: &str) -> RepoRow {
@@ -35,6 +38,7 @@ fn row(name: &str, path: &str) -> RepoRow {
             branch: Some("feat".into()),
             default_base: Some("main".into()),
         },
+        branches: Vec::new(),
         last_used: 0,
     }
 }
@@ -511,7 +515,11 @@ fn the_source_picker_switches_the_target_by_keyboard(cx: &mut TestAppContext) {
             Some("working")
         );
     });
+    // "Compare branches…" follows the targets: the repository has a branch to compare.
+    assert!(picker.read_with(cx, |picker, _| picker.offers_compare()));
     cx.simulate_keystrokes("down down down");
+    assert!(picker.read_with(cx, |picker, _| picker.compare_selected()));
+    cx.simulate_keystrokes("down");
     picker.read_with(cx, |picker, _| {
         assert_eq!(
             picker.selected().map(|offer| offer.kind.key()),
@@ -519,7 +527,7 @@ fn the_source_picker_switches_the_target_by_keyboard(cx: &mut TestAppContext) {
             "wraps"
         )
     });
-    cx.simulate_keystrokes("up enter");
+    cx.simulate_keystrokes("up up enter");
     settle(cx, &shell, "the branch review", |shell, cx| {
         shell.session().is_some_and(|session| {
             matches!(session.read(cx).review().target, Target::Branch { .. })
@@ -757,4 +765,293 @@ fn an_open_switcher_follows_a_connection_going_down_and_coming_back(cx: &mut Tes
         })
     });
     assert_eq!(connection.state(), ConnectionState::Connected);
+}
+
+fn branch(name: &str, stack_base: Option<&str>) -> Branch {
+    Branch {
+        name: name.to_string(),
+        tip: Oid::parse(&"a".repeat(40)).unwrap(),
+        committed_at: 0,
+        stack_base: stack_base.map(str::to_string),
+    }
+}
+
+/// A repository with the stack `main → feat-a → feat-b` and an unrelated `side`.
+fn stacked_row() -> RepoRow {
+    let mut api = row("api-server", "D:\\code\\api-server");
+    api.branches = vec![
+        branch("feat-b", Some("feat-a")),
+        branch("side", None),
+        branch("feat-a", None),
+        branch("main", None),
+    ];
+    api
+}
+
+fn details(listing: &items::Listing) -> Vec<(&str, Option<String>)> {
+    listing
+        .items
+        .iter()
+        .map(|item| (item.key.as_str(), item.detail()))
+        .collect()
+}
+
+#[test]
+fn a_repo_with_branches_offers_compare_branches_last() {
+    let api = stacked_row();
+    let listing = build(&[&api], "");
+    assert_eq!(
+        keys(&listing),
+        [
+            "api-server/working",
+            "api-server/staged",
+            "api-server/branch",
+            "api-server/compare",
+            "open_folder",
+        ]
+    );
+    assert_eq!(listing.items[3].label(), "Compare branches…");
+    assert_eq!(listing.request(3), None, "it leads to the branch picker");
+    // Only the default branch: nothing to compare.
+    let mut lone = row("web", "D:\\code\\web");
+    lone.branches = vec![branch("main", None)];
+    assert!(!has_branches(&lone));
+    assert!(!keys(&build(&[&lone], "")).contains(&"web/compare"));
+}
+
+#[test]
+fn the_branch_picker_offers_each_branch_against_its_stack_base() {
+    let mut api = stacked_row();
+    let stacked = summary(
+        Target::Branch {
+            branch: "feat-b".into(),
+            base: Some("feat-a".into()),
+        },
+        "D:\\code\\api-server",
+        ReviewStatus::ChangesRequested,
+    );
+    api.reviews.push(ReviewRow::Ok {
+        summary: Box::new(stacked.clone()),
+        label: "feat-b vs feat-a".into(),
+    });
+    let listing = build_branches(&[&api], &api.location, "");
+    // Newest first, the default branch left out.
+    assert_eq!(
+        details(&listing),
+        [
+            ("api-server/pick/feat-b", Some("vs feat-a".to_string())),
+            ("api-server/pick/side", Some("vs main".to_string())),
+            ("api-server/pick/feat-a", Some("vs main".to_string())),
+        ]
+    );
+    assert_eq!(
+        listing.items[0].review().map(|badge| &badge.id),
+        Some(&stacked.id)
+    );
+    assert_eq!(listing.items[1].review(), None);
+    assert_eq!(listing.request(0), None, "a branch leads to its bases");
+    assert_eq!(listing.repos.len(), 1);
+    // The filter keeps the branches holding every word.
+    assert_eq!(
+        keys(&build_branches(&[&api], &api.location, "feat")),
+        ["api-server/pick/feat-b", "api-server/pick/feat-a"]
+    );
+}
+
+#[test]
+fn the_bases_list_the_stack_base_then_the_default_branch_then_the_rest() {
+    let api = stacked_row();
+    let listing = build_bases(&[&api], &api.location, "feat-b", "");
+    assert_eq!(
+        details(&listing),
+        [
+            ("api-server/base/feat-a", Some("stack base".to_string())),
+            ("api-server/base/main", Some("default branch".to_string())),
+            ("api-server/base/side", None),
+        ]
+    );
+    // Against its stack base the target names the base; against the default branch it is the
+    // target with no base, the switcher's own Branch row's and `dv review new --branch`'s.
+    assert_eq!(
+        listing.request(0),
+        Some((
+            api.location.clone(),
+            OpenRequest::Target(Target::Branch {
+                branch: "feat-b".into(),
+                base: Some("feat-a".into()),
+            })
+        ))
+    );
+    assert_eq!(
+        listing.request(1),
+        Some((
+            api.location.clone(),
+            OpenRequest::Target(Target::Branch {
+                branch: "feat-b".into(),
+                base: None,
+            })
+        ))
+    );
+    // A branch with no stack base starts with the default branch.
+    let listing = build_bases(&[&api], &api.location, "feat-a", "");
+    assert_eq!(
+        keys(&listing),
+        [
+            "api-server/base/main",
+            "api-server/base/feat-b",
+            "api-server/base/side"
+        ]
+    );
+    assert!(matches!(
+        listing.items[0].kind,
+        ItemKind::Base {
+            note: Some("default branch"),
+            ..
+        }
+    ));
+}
+
+/// A repository with the stack `main → feat-a → feat-b`, `feat-b` checked out.
+fn stacked_fixture(path: &std::path::Path) -> dv_test_support::FixtureRepo {
+    let repo = fixture_at(path);
+    repo.commit("wip");
+    repo.branch("feat-a")
+        .checkout("feat-a")
+        .write("a.txt", "a\n");
+    repo.commit("a1");
+    repo.branch("feat-b")
+        .checkout("feat-b")
+        .write("b.txt", "b\n");
+    repo.commit("b1");
+    repo
+}
+
+fn mode(shell: &Entity<Shell>, cx: &mut VisualTestContext) -> Option<Mode> {
+    let switcher = switcher(shell, cx)?;
+    switcher.read_with(cx, |switcher, _| Some(switcher.mode().clone()))
+}
+
+#[gpui::test]
+fn the_branch_picker_opens_a_stacked_branch_against_its_base(cx: &mut TestAppContext) {
+    let (_dir, shell, cx) = open_shell(cx);
+    let repos = tempfile::tempdir().unwrap();
+    let api = stacked_fixture(&repos.path().join("api-server"));
+    add_repo(&api, &shell, cx);
+    let location = Location::Local(api.path().to_path_buf());
+
+    cx.simulate_keystrokes("secondary-o");
+    settle(cx, &shell, "the rows", |_, _| true);
+    let view = switcher(&shell, cx).expect("Ctrl O opens the switcher");
+    assert!(view.update(cx, |view, cx| view.select_key("api-server/compare", cx)));
+
+    // Enter on "Compare branches…" lists the branches, the checked-out one stacked on feat-a.
+    cx.simulate_keystrokes("enter");
+    assert_eq!(
+        mode(&shell, cx),
+        Some(Mode::Branches {
+            location: location.clone()
+        })
+    );
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            details(view.listing()),
+            [
+                ("api-server/pick/feat-b", Some("vs feat-a".to_string())),
+                ("api-server/pick/feat-a", Some("vs main".to_string())),
+            ]
+        );
+    });
+    assert_eq!(
+        selected(&shell, cx).as_deref(),
+        Some("api-server/pick/feat-b")
+    );
+
+    // Enter lists its bases, the stack base first; Esc steps back to the branches, and again
+    // to the repositories, where "Compare branches…" keeps the selection.
+    cx.simulate_keystrokes("enter");
+    assert_eq!(
+        mode(&shell, cx),
+        Some(Mode::Bases {
+            location: location.clone(),
+            branch: "feat-b".into()
+        })
+    );
+    assert_eq!(
+        selected(&shell, cx).as_deref(),
+        Some("api-server/base/feat-a")
+    );
+    cx.simulate_keystrokes("escape");
+    assert_eq!(
+        selected(&shell, cx).as_deref(),
+        Some("api-server/pick/feat-b")
+    );
+    cx.simulate_keystrokes("escape");
+    assert_eq!(mode(&shell, cx), Some(Mode::Repos));
+    assert_eq!(selected(&shell, cx).as_deref(), Some("api-server/compare"));
+
+    // Into the picker again, the filter narrows the branches, and the pair opens.
+    cx.simulate_keystrokes("enter");
+    cx.simulate_input("feat-b");
+    settle(cx, &shell, "the filter", |_, _| true);
+    cx.simulate_keystrokes("enter enter");
+    settle(cx, &shell, "the stacked review", |shell, _| {
+        shell.session().is_some()
+    });
+    shell.read_with(cx, |shell, cx| {
+        assert!(shell.switcher().is_none());
+        let session = shell.session().unwrap().read(cx);
+        assert_eq!(
+            session.review().target,
+            Target::Branch {
+                branch: "feat-b".into(),
+                base: Some("feat-a".into()),
+            }
+        );
+        assert_eq!(session.target_label(), "feat-b vs feat-a");
+        // Only feat-b's own commit, not feat-a's.
+        let files: Vec<&str> = session
+            .target_files()
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect();
+        assert_eq!(files, ["b.txt"]);
+    });
+}
+
+#[gpui::test]
+fn the_source_picker_opens_the_branch_picker_and_esc_closes_it(cx: &mut TestAppContext) {
+    let (_dir, shell, cx) = open_shell(cx);
+    let repos = tempfile::tempdir().unwrap();
+    let api = stacked_fixture(&repos.path().join("api-server"));
+    add_repo(&api, &shell, cx);
+    let location = Location::Local(api.path().to_path_buf());
+    let task = cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| {
+            shell.open(
+                location.clone(),
+                OpenRequest::Target(Target::Working),
+                window,
+                cx,
+            )
+        })
+    });
+    cx.run_until_parked();
+    settle(cx, &shell, "the review", |shell, _| {
+        shell.session().is_some()
+    });
+    cx.foreground_executor().block_test(task).unwrap();
+
+    cx.update(|window, cx| shell.update(cx, |shell, cx| shell.open_source_picker(window, cx)));
+    settle(cx, &shell, "the repo's row", |_, _| true);
+    cx.simulate_keystrokes("up enter");
+    assert!(shell.read_with(cx, |shell, _| shell.source_picker().is_none()));
+    assert_eq!(
+        mode(&shell, cx),
+        Some(Mode::Branches {
+            location: location.clone()
+        })
+    );
+    // Opened on the picker, Esc in its first step closes the switcher.
+    cx.simulate_keystrokes("escape");
+    assert!(switcher(&shell, cx).is_none());
 }

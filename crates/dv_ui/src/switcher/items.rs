@@ -50,7 +50,7 @@ pub struct ReviewBadge {
 }
 
 impl ReviewBadge {
-    fn of(summary: &ReviewSummary) -> Self {
+    pub(super) fn of(summary: &ReviewSummary) -> Self {
         Self {
             id: summary.id.clone(),
             status: summary.status,
@@ -119,14 +119,33 @@ pub enum ItemKind {
     Retry { starting: bool },
     /// The folder picker, to add a repository.
     OpenFolder,
+    /// "Compare branches…": the branch picker over the repository's branches ([`super::branches`]).
+    CompareBranches,
+    /// The branch picker's first step: a branch, compared with `base` unless another is picked.
+    Branch {
+        name: String,
+        /// The base it is offered against: its stack base, else the default branch; `None` with
+        /// neither.
+        base: Option<String>,
+        /// The open review of the branch against `base`.
+        review: Option<ReviewBadge>,
+    },
+    /// The branch picker's second step: a base to compare the picked branch with.
+    Base {
+        offer: TargetOffer,
+        /// Why it is offered first: "stack base" or "default branch".
+        note: Option<&'static str>,
+    },
 }
 
 /// A pickable row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Item {
     /// A stable name for the row: `<repo>/working`, `<repo>/staged`, `<repo>/branch`,
-    /// `<repo>/review/<id>`, `<repo>/start`, `<repo>/retry` or `open_folder`, where `<repo>`
-    /// is the repository's name (its full path when two known repositories share a name).
+    /// `<repo>/review/<id>`, `<repo>/start`, `<repo>/retry`, `<repo>/compare` or
+    /// `open_folder`, where `<repo>` is the repository's name (its full path when two known
+    /// repositories share a name); in the branch picker `<repo>/pick/<branch>` and
+    /// `<repo>/base/<branch>`.
     pub key: String,
     /// Its repository, an index into [`Listing::repos`].
     pub repo: Option<usize>,
@@ -141,6 +160,18 @@ impl Item {
             ItemKind::Review { label, .. } | ItemKind::Start { label, .. } => label,
             ItemKind::Retry { .. } => "Retry",
             ItemKind::OpenFolder => "Open folder…",
+            ItemKind::CompareBranches => "Compare branches…",
+            ItemKind::Branch { name, .. } => name,
+            ItemKind::Base { offer, .. } => &offer.label,
+        }
+    }
+
+    /// What a branch picker's row reads after its label, dimmed: "vs feat-a", "stack base".
+    pub fn detail(&self) -> Option<String> {
+        match &self.kind {
+            ItemKind::Branch { base, .. } => base.as_ref().map(|base| format!("vs {base}")),
+            ItemKind::Base { note, .. } => note.map(str::to_string),
+            _ => None,
         }
     }
 
@@ -158,11 +189,17 @@ impl Item {
         match &self.kind {
             ItemKind::Target(offer) => offer.review.as_ref(),
             ItemKind::Review { badge, .. } => Some(badge),
-            ItemKind::Start { .. } | ItemKind::Retry { .. } | ItemKind::OpenFolder => None,
+            ItemKind::Branch { review, .. } => review.as_ref(),
+            ItemKind::Base { offer, .. } => offer.review.as_ref(),
+            ItemKind::Start { .. }
+            | ItemKind::Retry { .. }
+            | ItemKind::OpenFolder
+            | ItemKind::CompareBranches => None,
         }
     }
 
-    /// `"target"`, `"review"`, `"start"`, `"retry"` or `"open_folder"`, for automation state.
+    /// `"target"`, `"review"`, `"start"`, `"retry"`, `"open_folder"`, `"compare"`, `"branch"`
+    /// or `"base"`, for automation state.
     pub fn kind_key(&self) -> &'static str {
         match self.kind {
             ItemKind::Target(_) => "target",
@@ -170,6 +207,9 @@ impl Item {
             ItemKind::Start { .. } => "start",
             ItemKind::Retry { .. } => "retry",
             ItemKind::OpenFolder => "open_folder",
+            ItemKind::CompareBranches => "compare",
+            ItemKind::Branch { .. } => "branch",
+            ItemKind::Base { .. } => "base",
         }
     }
 }
@@ -240,18 +280,30 @@ impl Listing {
             .position(|entry| *entry == Entry::Item(item))
     }
 
-    /// What picking `item` opens, with its repository; `None` for "Open folder…".
+    /// What picking `item` opens, with its repository; `None` for "Open folder…" and the rows
+    /// that lead to another step of the branch picker.
     pub fn request(&self, item: usize) -> Option<(Location, OpenRequest)> {
         let item = self.items.get(item)?;
         let location = self.repos.get(item.repo?)?.location.clone();
         let request = match &item.kind {
             ItemKind::Target(offer) => OpenRequest::Target(offer.target.clone()),
             ItemKind::Review { badge, .. } => OpenRequest::Review(badge.id.clone()),
-            ItemKind::Start { .. } | ItemKind::Retry { .. } | ItemKind::OpenFolder => {
+            ItemKind::Base { offer, .. } => OpenRequest::Target(offer.target.clone()),
+            ItemKind::Start { .. }
+            | ItemKind::Retry { .. }
+            | ItemKind::OpenFolder
+            | ItemKind::CompareBranches
+            | ItemKind::Branch { .. } => {
                 return None;
             }
         };
         Some((location, request))
+    }
+
+    /// The repository of `item`.
+    pub fn location_of(&self, item: usize) -> Option<&Location> {
+        let item = self.items.get(item)?;
+        Some(&self.repos.get(item.repo?)?.location)
     }
 
     /// The repository picking `item` connects to, when it is a **Start** or **Retry** row
@@ -301,7 +353,7 @@ impl Listing {
 }
 
 /// The `key` of every row of `rows`: their names, or their paths where names repeat.
-fn repo_keys(rows: &[&RepoRow]) -> Vec<String> {
+pub(super) fn repo_keys(rows: &[&RepoRow]) -> Vec<String> {
     rows.iter()
         .map(|row| {
             let shared = rows.iter().filter(|other| other.name == row.name).count() > 1;
@@ -340,8 +392,25 @@ fn summary(row: &RepoRow) -> RepoSummary {
 }
 
 /// Whether every word of `query` is in `haystack` (already lowercase).
-fn matches(haystack: &str, words: &[String]) -> bool {
+pub(super) fn matches(haystack: &str, words: &[String]) -> bool {
     words.iter().all(|word| haystack.contains(word.as_str()))
+}
+
+/// The header of `row`'s repository, keyed `key`.
+pub(super) fn header(row: &RepoRow, key: String) -> RepoHeader {
+    let (distro, shown_path) = match &row.location {
+        Location::Wsl { distro, path } => (Some(distro.clone()), path.clone()),
+        Location::Local(_) => (None, row.path.clone()),
+    };
+    RepoHeader {
+        location: row.location.clone(),
+        key,
+        name: row.name.clone(),
+        path: row.path.clone(),
+        shown_path,
+        distro,
+        summary: summary(row),
+    }
 }
 
 /// The listing for `rows` (most recently used first) under `query`.
@@ -350,10 +419,6 @@ pub fn build(rows: &[&RepoRow], query: &str) -> Listing {
     let keys = repo_keys(rows);
     let mut listing = Listing::default();
     for (row, key) in rows.iter().zip(keys) {
-        let (distro, shown_path) = match &row.location {
-            Location::Wsl { distro, path } => (Some(distro.clone()), path.clone()),
-            Location::Local(_) => (None, row.path.clone()),
-        };
         let repo_text = format!("{} {}", row.name, row.path).to_lowercase();
         let mut items: Vec<Item> = target_offers(row)
             .into_iter()
@@ -409,6 +474,14 @@ pub fn build(rows: &[&RepoRow], query: &str) -> Listing {
                 },
             });
         }
+        // The branch picker, for a repository with a branch to compare (DESIGN §4.1).
+        if row.is_readable() && super::branches::has_branches(row) {
+            items.push(Item {
+                key: format!("{key}/compare"),
+                repo: None,
+                kind: ItemKind::CompareBranches,
+            });
+        }
         items.retain(|item| {
             let status = item
                 .review()
@@ -421,15 +494,7 @@ pub fn build(rows: &[&RepoRow], query: &str) -> Listing {
             continue;
         }
         let repo = listing.repos.len();
-        listing.repos.push(RepoHeader {
-            location: row.location.clone(),
-            key,
-            name: row.name.clone(),
-            path: row.path.clone(),
-            shown_path,
-            distro,
-            summary: summary(row),
-        });
+        listing.repos.push(header(row, key));
         listing.entries.push(Entry::Repo(repo));
         for mut item in items {
             item.repo = Some(repo);
