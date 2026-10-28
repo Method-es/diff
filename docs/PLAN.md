@@ -2352,6 +2352,10 @@ setup**.
   `dv.exe`'s, and `--help` / `--version` show their text in an information box and exit 0. Both carry dv's
   icon (DESIGN §1.7) as resource 1, which gpui loads as the window's icon, and a version
   resource (`crates/dv/build.rs`, `embed-resource`, Windows only).
+  On macOS an app's Dock and app-switcher icon comes from its bundle, which only the packaged app
+  has, so a development build run outside one (`cargo run`, `target/release/dv`) gives AppKit the
+  bundle's icon itself at startup (`dock_icon.rs`: `crates/dv/resources/macos/dv.icns` through
+  `-[NSApplication setApplicationIconImage:]`), leaving a bundled app's alone.
   A Windows child inherits every inheritable handle of its parent, the caller's stdout pipe
   among them, so the first makes its own standard handles non-inheritable before it starts the
   second: a caller capturing the output (`$(dv open .)`, an agent's shell tool) sees its end at
