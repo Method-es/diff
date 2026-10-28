@@ -282,3 +282,29 @@ fn install_switches_the_theme_once(cx: &mut gpui::TestAppContext) {
         assert_eq!(theme.foreground, dv.colors.fg);
     });
 }
+
+#[test]
+fn markdowns_code_takes_dvs_syntax_colours() {
+    use gpui_base::input::HighlightStyleResolver as _;
+    for palette in Palette::ALL {
+        for appearance in [Appearance::Dark, Appearance::Light] {
+            let dv = DvTheme::new(palette, appearance, Material::Opaque);
+            let theme = highlight_theme(&dv);
+            let x = dv.colors.syntax;
+            for (capture, color) in [
+                ("keyword", x.keyword),
+                ("function", x.function),
+                ("string", x.string),
+                ("type", x.ty),
+                ("comment", x.comment),
+            ] {
+                let style = theme.style(capture);
+                assert_eq!(
+                    style.and_then(|style| style.color).map(css),
+                    Some(css(color)),
+                    "{palette:?} {appearance:?} {capture}"
+                );
+            }
+        }
+    }
+}

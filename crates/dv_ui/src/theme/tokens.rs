@@ -112,6 +112,9 @@ pub struct SolidTokens {
     pub scrim: Rgba,
     /// The selected segment of a segmented control.
     pub seg_on: Rgba,
+    /// A segmented control's track, under its segments: in light themes a tint, so the
+    /// white `seg_on` stands out from it.
+    pub seg_track: Rgba,
     /// Keycap fill (`kbd`).
     pub kbd_bg: Rgba,
     /// Selected rows (the cursor's line, a line selection).
@@ -236,6 +239,7 @@ pub const DARK: TokenSet = TokenSet {
         overlay_line: rgba(255, 255, 255, 0.13),
         scrim: rgba(6, 5, 10, 0.56),
         seg_on: rgba(255, 255, 255, 0.12),
+        seg_track: rgba(255, 255, 255, 0.055),
         kbd_bg: rgba(255, 255, 255, 0.06),
         sel: rgba(162, 119, 255, 0.22),
         text_sel: rgba(162, 119, 255, 0.42),
@@ -342,6 +346,7 @@ pub const LIGHT: TokenSet = TokenSet {
         overlay_line: rgba(28, 24, 56, 0.14),
         scrim: rgba(36, 32, 58, 0.30),
         seg_on: hex(0xffffff),
+        seg_track: rgba(28, 24, 56, 0.06),
         kbd_bg: rgba(255, 255, 255, 0.80),
         sel: rgba(109, 67, 224, 0.13),
         text_sel: rgba(109, 67, 224, 0.28),
@@ -413,6 +418,7 @@ pub const DRACULA: TokenSet = TokenSet {
         overlay_line: rgba(255, 255, 255, 0.13),
         scrim: rgba(16, 17, 22, 0.56),
         seg_on: rgba(255, 255, 255, 0.12),
+        seg_track: rgba(255, 255, 255, 0.06),
         kbd_bg: rgba(255, 255, 255, 0.06),
         sel: rgba(189, 147, 249, 0.22),
         text_sel: rgba(189, 147, 249, 0.42),
@@ -443,8 +449,9 @@ pub const DRACULA: TokenSet = TokenSet {
     },
 };
 
-/// Claude Dark (DESIGN §1.3): opaque only; derived from `themes/claude-dark.json`, its text tiers
-/// and hues contrast-corrected to 4.5:1 on every surface.
+/// Claude Dark (DESIGN §1.3): opaque only; selections in its blue, since its orange accent
+/// over an added line reads as a removed one; derived from `themes/claude-dark.json`, its text
+/// tiers and hues contrast-corrected to 4.5:1 on every surface.
 pub const CLAUDE_DARK: TokenSet = TokenSet {
     surfaces: SurfaceTokens {
         chrome: same(hex(0x1f1e1d)),
@@ -484,9 +491,10 @@ pub const CLAUDE_DARK: TokenSet = TokenSet {
         overlay_line: rgba(255, 255, 255, 0.13),
         scrim: rgba(15, 15, 14, 0.56),
         seg_on: rgba(255, 255, 255, 0.12),
+        seg_track: rgba(255, 255, 255, 0.06),
         kbd_bg: rgba(255, 255, 255, 0.06),
-        sel: rgba(217, 119, 87, 0.22),
-        text_sel: rgba(217, 119, 87, 0.42),
+        sel: rgba(132, 159, 183, 0.22),
+        text_sel: rgba(132, 159, 183, 0.42),
         find_match: rgba(210, 165, 76, 0.22),
         find_current: rgba(210, 165, 76, 0.32),
         find_line: rgba(210, 165, 76, 0.62),
@@ -514,8 +522,9 @@ pub const CLAUDE_DARK: TokenSet = TokenSet {
     },
 };
 
-/// Claude Light (DESIGN §1.3): opaque only; derived from `themes/claude-light.json`, its text tiers
-/// and hues contrast-corrected to 4.5:1 on every surface.
+/// Claude Light (DESIGN §1.3): opaque only; selections in its blue, as Claude Dark's; derived
+/// from `themes/claude-light.json`, its text tiers and hues contrast-corrected to 4.5:1 on every
+/// surface.
 pub const CLAUDE_LIGHT: TokenSet = TokenSet {
     surfaces: SurfaceTokens {
         chrome: same(hex(0xf0eee6)),
@@ -555,9 +564,10 @@ pub const CLAUDE_LIGHT: TokenSet = TokenSet {
         overlay_line: rgba(0, 0, 0, 0.14),
         scrim: rgba(16, 15, 14, 0.3),
         seg_on: hex(0xffffff),
+        seg_track: rgba(31, 30, 29, 0.06),
         kbd_bg: rgba(255, 255, 255, 0.8),
-        sel: rgba(198, 97, 63, 0.13),
-        text_sel: rgba(198, 97, 63, 0.28),
+        sel: rgba(76, 110, 144, 0.14),
+        text_sel: rgba(76, 110, 144, 0.28),
         find_match: rgba(137, 100, 34, 0.18),
         find_current: rgba(137, 100, 34, 0.3),
         find_line: rgba(137, 100, 34, 0.58),

@@ -19,8 +19,11 @@ use gpui::{
     App, BoxShadow, FontWeight, Global, Hsla, Pixels, Rgba, SharedString, Styled, WindowAppearance,
     WindowBackgroundAppearance, point, px,
 };
+use gpui_component::highlighter::HighlightTheme;
 use gpui_component::{Theme, ThemeMode, ThemeTokens};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
+use std::sync::Arc;
 
 use crate::assets::fonts;
 use tokens::{Surface, TokenSet};
@@ -263,6 +266,7 @@ pub struct DvColors {
     pub overlay_line: Hsla,
     pub scrim: Hsla,
     pub seg_on: Hsla,
+    pub seg_track: Hsla,
     pub kbd_bg: Hsla,
     pub sel: Hsla,
     pub text_sel: Hsla,
@@ -338,6 +342,7 @@ impl DvColors {
             overlay_line: c(t.overlay_line),
             scrim: c(t.scrim),
             seg_on: c(t.seg_on),
+            seg_track: c(t.seg_track),
             kbd_bg: c(t.kbd_bg),
             sel: c(t.sel),
             text_sel: c(t.text_sel),
@@ -605,8 +610,10 @@ impl Shadows {
             },
             Appearance::Light => Self {
                 card: vec![shadow(ink(0.08), 4., 14., false)],
+                // Softer than dark's: a popover over light code with no scrim under it (the
+                // find bar, the hover card) would otherwise sit in a grey haze (DESIGN §1.5).
                 overlay: vec![
-                    shadow(ink(0.24), 28., 80., false),
+                    shadow(ink(0.14), 20., 56., false),
                     shadow(ink(0.10), 2., 10., false),
                 ],
                 control: vec![shadow(tokens::rgba(28, 24, 56, 0.05), 1., 1., false)],
@@ -722,6 +729,7 @@ fn component_mode(appearance: Appearance) -> ThemeMode {
 /// Writes the palette, fonts and radii of `dv` into a gpui-component [`Theme`].
 pub fn map_component_theme(dv: &DvTheme, theme: &mut Theme) {
     let c = &dv.colors;
+    theme.highlight_theme = Arc::new(highlight_theme(dv));
     theme.mode = component_mode(dv.appearance);
     theme.font_family = dv.fonts.ui.clone();
     // gpui-component sizes its controls in rems from this; dv's views set their own text sizes.
@@ -883,4 +891,43 @@ pub fn contrast_ratio(a: Hsla, b: Hsla) -> f32 {
     let (la, lb) = (relative_luminance(a), relative_luminance(b));
     let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
     (hi + 0.05) / (lo + 0.05)
+}
+
+/// gpui-component's highlight theme in dv's syntax colours, for the code it highlights itself:
+/// a fenced block in Markdown (a hover card's signature, a comment's code). Every capture it
+/// knows takes the colour of its token kind as the stream paints it (`crate::syntax`), plain
+/// text when it has none (DESIGN §1.1).
+fn highlight_theme(dv: &DvTheme) -> HighlightTheme {
+    let syntax = &dv.colors.syntax;
+    let hex = |color: Hsla| serde_json::to_value(color).unwrap_or(Value::Null);
+    let names = match serde_json::to_value(gpui_component::highlighter::SyntaxColors::default()) {
+        Ok(Value::Object(names)) => names,
+        _ => Map::new(),
+    };
+    let captures: Map<String, Value> = names
+        .into_iter()
+        .map(|(name, _)| {
+            let color = crate::syntax::kind_for_capture(&name)
+                .map_or(syntax.plain, |kind| kind.color(syntax));
+            (name, json!({"color": hex(color)}))
+        })
+        .collect();
+    let theme = json!({
+        "name": "dv",
+        "appearance": if dv.appearance.is_light() { "light" } else { "dark" },
+        "style": {
+            "editor.background": hex(dv.colors.code),
+            "editor.foreground": hex(syntax.plain),
+            "syntax": captures,
+        },
+    });
+    serde_json::from_value(theme).unwrap_or_else(|error| {
+        log::warn!("dv's highlight theme didn't build ({error}); using gpui-component's");
+        let fallback = if dv.appearance.is_light() {
+            HighlightTheme::default_light()
+        } else {
+            HighlightTheme::default_dark()
+        };
+        (*fallback).clone()
+    })
 }
