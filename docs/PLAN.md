@@ -2854,6 +2854,13 @@ Each phase ends with its e2e scenarios green and a screenshot review against DES
 
 - **Budgets:** time-to-first-diff < 300 ms on a warm local repo, < 800 ms for a WSL repo with the
   backend connected; scrolling a 20k-line file at 120 fps; opening a 2,000-file PR's file list < 2 s.
+  Measured 2026-10-29 on Windows (the `dist` profile, a background e2e run): the first diff of an
+  eight-file working review 250–280 ms after `Enter`; 2,001 changed working-tree files listed in
+  1.46 s (`git diff --raw --numstat` over them is 1.1 s of it); the stream and a 20k-line file view
+  scroll at ~225 fps. Each git process costs ~40 ms to start on Windows, so the open asks
+  independent questions at once (the labels beside the list, the tracked and untracked files,
+  the review's log beside who the reviewer is) and a resumed review never asks who the reviewer
+  is. `RUST_LOG=dv_core=debug` logs every git command's duration.
 - **`git diff -U<all>` cost on huge files** — bounded by the size cap (§6.2); measure in Phase 1.
 - **Working-tree snapshots** write objects into the user's object store (§2.3). They are unreachable
   except via `refs/dv/**` and removed with the review; `git gc` handles the rest. Acceptable; document
