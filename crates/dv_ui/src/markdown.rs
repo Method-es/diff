@@ -20,7 +20,7 @@ use crate::theme::ActiveTheme as _;
 /// code takes the new palette.
 pub fn view(id: impl Into<ElementId>, text: &str, cx: &App) -> TextView {
     let sanitized: SharedString = sanitize_untrusted(text).into();
-    let keyed = SharedString::from(format!("{}/{}", id.into(), cx.dv_theme().appearance.key()));
+    let keyed = SharedString::from(format!("{}/{}", id.into(), cx.dv_theme().key()));
     TextView::markdown(keyed, sanitized)
         .style(TextViewStyle::default().paragraph_gap(gpui::rems(0.5)))
         .on_link_click(|url, _event, _window, cx| crate::system::open_url(url, cx))

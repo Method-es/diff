@@ -1,7 +1,9 @@
-//! The Glass theme (DESIGN §1): Aura's colours on the window material.
+//! The Glass theme (DESIGN §1): Aura's colours on the window material, or one of the
+//! opaque-only themes (DESIGN §1.3).
 //!
-//! [`DvTheme`] is a gpui global holding every DESIGN token resolved for one [`Appearance`]
-//! (dark/light) and one [`Material`] (Mica/Acrylic/Opaque). Views read it through
+//! [`DvTheme`] is a gpui global holding every DESIGN token resolved for one [`Palette`]
+//! (Aura/Claude/Dracula), one [`Appearance`] (dark/light) and one [`Material`]
+//! (Mica/Acrylic/Opaque). Views read it through
 //! [`ActiveTheme::dv_theme`] and never hard-code colours. [`apply`] installs a first theme at
 //! startup and [`install`] switches it (`crate::appearance` follows the settings and the OS);
 //! both map the tokens onto gpui-component's [`Theme`] so stock components match, including
@@ -51,11 +53,80 @@ impl Appearance {
             WindowAppearance::Dark | WindowAppearance::VibrantDark => Self::Dark,
         }
     }
+}
 
-    fn tokens(self) -> &'static TokenSet {
+/// A theme's family (DESIGN §1.3): Aura (dark and light, on every material), Claude (dark and
+/// light, opaque) or Dracula (dark, opaque).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Palette {
+    #[default]
+    Aura,
+    Claude,
+    Dracula,
+}
+
+impl Palette {
+    pub const ALL: [Palette; 3] = [Self::Aura, Self::Claude, Self::Dracula];
+
+    /// `"aura"`, `"claude"` or `"dracula"`, as settings and automation state spell it.
+    pub fn key(self) -> &'static str {
         match self {
-            Self::Dark => &tokens::DARK,
-            Self::Light => &tokens::LIGHT,
+            Self::Aura => "aura",
+            Self::Claude => "claude",
+            Self::Dracula => "dracula",
+        }
+    }
+
+    /// The name the UI shows.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Aura => "Aura",
+            Self::Claude => "Claude",
+            Self::Dracula => "Dracula",
+        }
+    }
+
+    /// The palette a [`key`](Self::key) names.
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|palette| palette.key() == key)
+    }
+
+    /// Whether it has a light palette; one that hasn't shows dark whatever the mode.
+    pub fn has_light(self) -> bool {
+        self != Self::Dracula
+    }
+
+    /// Whether it is drawn over the window material; the others are opaque only.
+    pub fn is_glass(self) -> bool {
+        self == Self::Aura
+    }
+
+    /// The appearance it shows when `asked` is wanted.
+    pub fn appearance(self, asked: Appearance) -> Appearance {
+        if self.has_light() {
+            asked
+        } else {
+            Appearance::Dark
+        }
+    }
+
+    /// The material it shows when `asked` is what the platform can show.
+    pub fn material(self, asked: Material) -> Material {
+        if self.is_glass() {
+            asked
+        } else {
+            Material::Opaque
+        }
+    }
+
+    fn tokens(self, appearance: Appearance) -> &'static TokenSet {
+        match (self, self.appearance(appearance)) {
+            (Self::Aura, Appearance::Dark) => &tokens::DARK,
+            (Self::Aura, Appearance::Light) => &tokens::LIGHT,
+            (Self::Claude, Appearance::Dark) => &tokens::CLAUDE_DARK,
+            (Self::Claude, Appearance::Light) => &tokens::CLAUDE_LIGHT,
+            (Self::Dracula, _) => &tokens::DRACULA,
         }
     }
 }
@@ -221,12 +292,12 @@ pub struct DvColors {
 }
 
 impl DvColors {
-    pub fn new(appearance: Appearance, material: Material) -> Self {
+    pub fn new(palette: Palette, appearance: Appearance, material: Material) -> Self {
         let TokenSet {
             surfaces: s,
             solid: t,
             syntax: x,
-        } = appearance.tokens();
+        } = palette.tokens(appearance);
         let m = |surface: &Surface| -> Hsla { material.pick(surface).into() };
         let c = |value: Rgba| -> Hsla { value.into() };
         let chrome = m(&s.chrome);
@@ -554,9 +625,10 @@ fn shadow(color: Rgba, y: f32, blur: f32, inset: bool) -> BoxShadow {
     }
 }
 
-/// Every DESIGN token for one appearance and material.
+/// Every DESIGN token for one palette, appearance and material.
 #[derive(Clone, Debug)]
 pub struct DvTheme {
+    pub palette: Palette,
     pub appearance: Appearance,
     pub material: Material,
     pub colors: DvColors,
@@ -571,12 +643,17 @@ pub struct DvTheme {
 impl Global for DvTheme {}
 
 impl DvTheme {
-    pub fn new(appearance: Appearance, material: Material) -> Self {
+    /// The theme for `palette`, showing `appearance` over `material` as far as the palette
+    /// has them ([`Palette::appearance`], [`Palette::material`]).
+    pub fn new(palette: Palette, appearance: Appearance, material: Material) -> Self {
+        let appearance = palette.appearance(appearance);
+        let material = palette.material(material);
         let fonts = Fonts::default();
         Self {
+            palette,
             appearance,
             material,
-            colors: DvColors::new(appearance, material),
+            colors: DvColors::new(palette, appearance, material),
             text: TypeScale::new(&fonts),
             fonts,
             sizes: Sizes::default(),
@@ -584,6 +661,11 @@ impl DvTheme {
             spacing: Spacing::default(),
             shadows: Shadows::new(appearance),
         }
+    }
+
+    /// `"<palette>-<appearance>"`: what a cache of anything drawn in its colours is keyed by.
+    pub fn key(&self) -> String {
+        format!("{}-{}", self.palette.key(), self.appearance.key())
     }
 }
 
@@ -602,19 +684,23 @@ impl ActiveTheme for App {
 /// Installs the dark, opaque theme: the one in use until `crate::appearance` resolves the
 /// settings. Call after `gpui_component::init`.
 pub fn apply(cx: &mut App) {
-    set(DvTheme::new(Appearance::Dark, Material::Opaque), cx);
+    set(
+        DvTheme::new(Palette::Aura, Appearance::Dark, Material::Opaque),
+        cx,
+    );
 }
 
-/// Switches to the theme for `appearance` over `material` and redraws every window. Nothing
-/// happens when it is already in use.
-pub fn install(appearance: Appearance, material: Material, cx: &mut App) {
-    if cx
-        .try_global::<DvTheme>()
-        .is_some_and(|theme| theme.appearance == appearance && theme.material == material)
-    {
+/// Switches to the theme for `palette`, showing `appearance` over `material` as far as it has
+/// them, and redraws every window. Nothing happens when it is already in use.
+pub fn install(palette: Palette, appearance: Appearance, material: Material, cx: &mut App) {
+    let theme = DvTheme::new(palette, appearance, material);
+    if cx.try_global::<DvTheme>().is_some_and(|current| {
+        (current.palette, current.appearance, current.material)
+            == (theme.palette, theme.appearance, theme.material)
+    }) {
         return;
     }
-    set(DvTheme::new(appearance, material), cx);
+    set(theme, cx);
     cx.refresh_windows();
 }
 

@@ -64,9 +64,14 @@ Full set: the board's `tokens()`.
 
 ### 1.3 Other themes
 Dracula, Claude Dark and Claude Light remain as **opaque-only** themes (their colours from
-`themes/*.json`, contrast-corrected as on the Tidy boards). Glass materials apply to the Aura pair; a
+`themes/*.json`, contrast-corrected: `fg2` at 7:1 and `fg3`, the hues, `accentText` and the syntax
+colours at 4.5:1 on every surface). Glass materials apply to the Aura pair; a
 non-Aura theme forces `Opaque`. Syntax colours, diff colours and surfaces are one token set per theme;
-views never hard-code a colour.
+views never hard-code a colour. The setting is the theme's family: **Aura** (Aura Dark and Aura
+Light, by the mode), **Claude** (Claude Dark and Claude Light, by the mode) and **Dracula** (dark
+only, whatever the mode). Each family's surfaces are its JSON's: `chrome` its title bar, `panel` its
+sidebar, `code` its editor background, `overlay` its popover (a lift of `code` where the popover is
+the sidebar's colour), the cards lifted from `code` toward `fg` (dark) or white (light).
 
 ### 1.4 Typography
 - **UI:** Geist (bundled, OFL), fallback Segoe UI Variable / system-ui. 13px/18px body; 12px
@@ -719,8 +724,13 @@ Setup unchanged.
   sheet (`overlay`, radius 12, up to 900 wide, hung as §4.2's), its header "Settings" with a
   close button. Its body scrolls through two pages, each a 13/600 title over its cards:
   **Appearance**, one card with a row per setting (its name in 600, what it does in `fg2`
-  secondary, its control on the right, a header-style segmented control): **Mode** System |
-  Dark | Light and **Material** Mica | Acrylic | Opaque, each applied as it is clicked. A
+  secondary, its control on the right, a header-style segmented control): **Theme** Aura |
+  Claude | Dracula (§1.3), **Mode** System | Dark | Light and **Material** Mica | Acrylic |
+  Opaque, each applied as it is clicked. With Dracula the mode row's `yellow` line says
+  "Dracula has no light palette: dv shows it dark, keeping the mode for the other themes". With
+  Claude or Dracula Mica and Acrylic are disabled segments and the material row's line says
+  "Mica and Acrylic are Aura's: Claude is opaque" (Dracula likewise), keeping the setting for
+  Aura. A
   material the platform can't show is a disabled segment in `fg3`, and a `yellow` line under
   the row says why ("Mica and Acrylic need Windows 11 with Transparency effects on…"; on macOS
   and Linux, that dv is Opaque there) and, when the setting is one of them, that dv shows
