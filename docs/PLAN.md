@@ -2071,7 +2071,9 @@ at all and the worktree root its reviews name; a known repo is a worktree root, 
 spelled WSL's way, and one added before it could be resolved (a subfolder added while its
 connection was down, so its row could say why) or under another spelling of its distro becomes
 that root, row and `known_repos.json` re-keyed (or dropped when the root is known already), the
-first time a listing or an open resolves it; repos compare with the distro folded
+first time a listing or an open resolves it; "Remove from list" (`remove_repo`, DESIGN §4.1) forgets
+one, its row, any refresh of it and its entry in `known_repos.json` going, nothing in the repo
+touched, and never the open review's, whose targets the source picker lists; repos compare with the distro folded
 (`Location::same_place`), so a spelling WSL couldn't confirm never makes a second row; so the switcher shows each target beside its open
 review by the rule `open_review` resumes by (`review::ops::is_review_of`); it watches nothing
 itself), `ReviewUi` (what the reviewer chose per review: split or unified), `GitHub` (gh calls, the

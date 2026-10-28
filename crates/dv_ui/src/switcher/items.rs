@@ -254,6 +254,26 @@ impl Listing {
         Some((location, request))
     }
 
+    /// The repository of `item`; `None` for "Open folder…".
+    pub fn location_of(&self, item: usize) -> Option<&Location> {
+        let item = self.items.get(item)?;
+        Some(&self.repos.get(item.repo?)?.location)
+    }
+
+    /// The first row of the repository listed after `location`'s, else of the one before it,
+    /// else "Open folder…": where the selection goes when `location` is removed.
+    pub fn row_after_removing(&self, location: &Location) -> Option<&str> {
+        let repo = self
+            .repos
+            .iter()
+            .position(|repo| &repo.location == location)?;
+        let first_of = |repo: usize| self.items.iter().find(|item| item.repo == Some(repo));
+        first_of(repo + 1)
+            .or_else(|| repo.checked_sub(1).and_then(first_of))
+            .or_else(|| self.items.last())
+            .map(|item| item.key.as_str())
+    }
+
     /// The repository picking `item` connects to, when it is a **Start** or **Retry** row
     /// (whose start doesn't run already).
     pub fn start(&self, item: usize) -> Option<Location> {

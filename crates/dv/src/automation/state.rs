@@ -84,7 +84,7 @@ fn badge(badge: Option<&ReviewBadge>) -> Value {
 /// `state.switcher`.
 pub fn switcher(shell: &Shell, cx: &App) -> Value {
     let Some(switcher) = shell.switcher() else {
-        return json!({"open": false, "query": null, "selected": null, "items": []});
+        return json!({"open": false, "query": null, "selected": null, "items": [], "menu": null});
     };
     let switcher = switcher.read(cx);
     let listing = switcher.listing();
@@ -107,11 +107,18 @@ pub fn switcher(shell: &Shell, cx: &App) -> Value {
             })
         })
         .collect();
+    let menu = switcher.menu().map(|menu| {
+        json!({
+            "repo": menu.location.display_name(),
+            "removable": switcher.can_remove(&menu.location),
+        })
+    });
     json!({
         "open": true,
         "query": switcher.query(),
         "selected": switcher.selected_key(),
         "items": items,
+        "menu": menu,
     })
 }
 

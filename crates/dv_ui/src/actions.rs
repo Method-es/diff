@@ -112,6 +112,8 @@ pub mod switcher {
             SelectPrevious,
             /// Open what the selected row stands for (`Enter`).
             Confirm,
+            /// Remove the selected row's repository from the list (`Ctrl Shift Backspace`).
+            RemoveRepo,
             /// Close without opening anything (`Esc`).
             Dismiss,
         ]

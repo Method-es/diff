@@ -150,6 +150,14 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("down", SWITCHER, switcher::SelectNext, AheadOfInputs),
     shortcut!("up", SWITCHER, switcher::SelectPrevious, AheadOfInputs),
     shortcut!("enter", SWITCHER, switcher::Confirm),
+    // The filter field deletes text with Backspace and its Ctrl, Alt and Shift forms, never
+    // with Ctrl Shift Backspace, which the field would otherwise swallow.
+    shortcut!(
+        "secondary-shift-backspace",
+        SWITCHER,
+        switcher::RemoveRepo,
+        AheadOfInputs
+    ),
     shortcut!("escape", SWITCHER, switcher::Dismiss),
     // The file finder: as the switcher, its filter field has the keyboard.
     shortcut!("down", FILE_FINDER, file_finder::SelectNext, AheadOfInputs),

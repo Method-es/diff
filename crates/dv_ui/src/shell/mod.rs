@@ -841,7 +841,11 @@ impl Shell {
             .session
             .as_ref()
             .map(|session| session.read(cx).review_id().clone());
-        let view = cx.new(|cx| Switcher::new(reviews, focus, current.as_ref(), window, cx));
+        let in_use = self
+            .session
+            .as_ref()
+            .map(|session| session.read(cx).origin().clone());
+        let view = cx.new(|cx| Switcher::new(reviews, focus, current.as_ref(), in_use, window, cx));
         let subscription = cx.subscribe_in(&view, window, Self::on_switcher_event);
         view.update(cx, |switcher, cx| switcher.focus(window, cx));
         self.switcher = Some(Overlay {
@@ -1145,6 +1149,10 @@ impl Shell {
                 reviews
                     .update(cx, |reviews, cx| reviews.start(location.clone(), cx))
                     .detach();
+            }
+            SwitcherEvent::Remove { location } => {
+                let reviews = cx.services().reviews.clone();
+                reviews.update(cx, |reviews, cx| reviews.remove_repo(location, cx));
             }
             SwitcherEvent::Dismiss => {
                 self.close_menu(window, cx);

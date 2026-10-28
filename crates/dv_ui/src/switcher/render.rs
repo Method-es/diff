@@ -3,16 +3,21 @@
 //! keys.
 
 use gpui::{
-    AnyElement, Context, ElementId, FontWeight, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-    div, prelude::FluentBuilder as _, px,
+    AnyElement, Context, ElementId, FontWeight, InteractiveElement as _, IntoElement, MouseButton,
+    MouseDownEvent, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window, anchored, deferred, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::input::Input;
 
 use super::items::{Entry, Item, ItemKind, RepoHeader, RepoSummary, TargetKind};
-use super::{SWITCHER_WIDTH, Switcher};
+use super::{RepoMenu, SWITCHER_WIDTH, Switcher};
+
+/// The header menu's layer: above the switcher, itself at the shell's menu priority (4).
+const REPO_MENU_PRIORITY: usize = 5;
 use crate::automation::AutomationTargetExt as _;
-use crate::components::{count_badge, icon, kbd, location_chip, skeleton, status_chip, totals};
+use crate::components::{
+    count_badge, icon, kbd, location_chip, menu_item, menu_panel, skeleton, status_chip, totals,
+};
 use crate::icons::DvIcon;
 use crate::keymap;
 use crate::theme::{ActiveTheme as _, DvTheme, StyledText as _};
@@ -29,6 +34,7 @@ impl Render for Switcher {
             .on_action(cx.listener(Self::select_previous))
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::dismiss))
+            .on_action(cx.listener(Self::remove_selected))
             .w(SWITCHER_WIDTH)
             .max_h(max_height)
             .flex()
@@ -45,6 +51,11 @@ impl Render for Switcher {
             .child(self.render_filter(&theme))
             .child(self.render_list(&theme, cx))
             .child(self.render_footer(&theme, cx))
+            .children(
+                self.menu
+                    .clone()
+                    .map(|menu| self.render_menu(menu, &theme, cx)),
+            )
             .automation_target("switcher")
     }
 }
@@ -126,7 +137,7 @@ impl Switcher {
                     .listing
                     .repos
                     .get(repo)
-                    .map(|header| repo_header(header, line == 0, theme)),
+                    .map(|header| self.repo_header(header, line == 0, theme, cx)),
                 Entry::Item(ix) => self
                     .listing
                     .items
@@ -271,17 +282,137 @@ impl Switcher {
                     .pr(theme.spacing.sm)
                     .text_spec(&theme.text.secondary)
                     .text_color(c.fg3)
+                    .when(self.removable().is_some(), |this| {
+                        this.child(hint(vec!["secondary-shift-backspace"], "remove"))
+                    })
                     .child(hint(vec!["up", "down"], "move"))
                     .child(hint(vec!["enter"], "open"))
                     .child(hint(vec!["escape"], "close")),
             )
             .into_any_element()
     }
+
+    /// A repository header's menu at the pointer: **Remove from list**, disabled for the open
+    /// review's repository with the reason under it.
+    fn render_menu(&self, menu: RepoMenu, theme: &DvTheme, cx: &mut Context<Self>) -> AnyElement {
+        let c = &theme.colors;
+        let removable = self.can_remove(&menu.location);
+        let location = menu.location.clone();
+        let remove = menu_item(
+            "switcher-menu-remove",
+            "Remove from list",
+            DvIcon::X,
+            removable,
+            theme,
+        )
+        .when(removable, |this| {
+            this.on_click(cx.listener(move |this, _, _, cx| this.remove(&location, cx)))
+        })
+        .automation_target("switcher/menu/remove");
+        let panel = menu_panel("switcher-menu", theme)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_menu(cx)))
+            .child(remove)
+            .when(!removable, |this| {
+                this.child(
+                    div()
+                        .px(theme.spacing.md)
+                        .pb(theme.spacing.xs)
+                        .text_spec(&theme.text.secondary)
+                        .text_color(c.fg3)
+                        .child("Its review is open"),
+                )
+            })
+            .automation_target("switcher/menu");
+        deferred(
+            anchored()
+                .position(menu.position)
+                .snap_to_window_with_margin(px(8.))
+                .child(panel),
+        )
+        .with_priority(REPO_MENU_PRIORITY)
+        .into_any_element()
+    }
+
+    /// A repository's header: its name, its path dimmed, its location chip, and a line on its
+    /// uncommitted changes or why it can't be opened; a right-click, or its `⋯` under the
+    /// pointer, opens its menu.
+    fn repo_header(
+        &self,
+        header: &RepoHeader,
+        first: bool,
+        theme: &DvTheme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let group = SharedString::from(format!("switcher-repo-{}", header.key));
+        let menu_open = self
+            .menu
+            .as_ref()
+            .is_some_and(|menu| menu.location == header.location);
+        let c = &theme.colors;
+        let hover = c.control_hover;
+        let more = div()
+            .id(ElementId::Name(
+                format!("switcher-more-{}", header.key).into(),
+            ))
+            .flex_none()
+            .size(px(22.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(theme.radii.control)
+            .cursor_pointer()
+            .hover(move |style| style.bg(hover))
+            .when(!menu_open, |this| {
+                this.opacity(0.)
+                    .group_hover(group.clone(), |style| style.opacity(1.))
+            })
+            .when(menu_open, |this| this.bg(hover))
+            .child(icon(DvIcon::Ellipsis, px(14.), c.fg2))
+            .on_mouse_down(MouseButton::Left, {
+                let location = header.location.clone();
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    if this
+                        .menu
+                        .as_ref()
+                        .is_some_and(|menu| menu.location == location)
+                    {
+                        this.close_menu(cx);
+                    } else {
+                        this.open_menu(location.clone(), event.position, cx);
+                    }
+                })
+            })
+            .automation_target(format!("switcher/repo/{}/more", header.key));
+        let location = header.location.clone();
+        div()
+            .id(ElementId::Name(group.clone()))
+            .group(group)
+            .child(repo_header(
+                header,
+                first,
+                Some(more.into_any_element()),
+                theme,
+            ))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.open_menu(location.clone(), event.position, cx);
+                }),
+            )
+            .into_any_element()
+    }
 }
 
-/// A repository's header: its name, its path dimmed, its location chip, and a line on its
-/// uncommitted changes or why it can't be opened.
-fn repo_header(header: &RepoHeader, first: bool, theme: &DvTheme) -> AnyElement {
+/// A repository's header: its name, its path dimmed, its location chip, `more` at the end of
+/// its first line, and a line on its uncommitted changes or why it can't be opened.
+fn repo_header(
+    header: &RepoHeader,
+    first: bool,
+    more: Option<AnyElement>,
+    theme: &DvTheme,
+) -> AnyElement {
     let c = &theme.colors;
     let summary: AnyElement = match &header.summary {
         RepoSummary::Loading => skeleton(px(160.), px(10.), theme),
@@ -359,7 +490,8 @@ fn repo_header(header: &RepoHeader, first: bool, theme: &DvTheme) -> AnyElement 
                         .text_spec(&theme.text.secondary)
                         .text_color(c.fg3)
                         .child(SharedString::from(header.shown_path.clone())),
-                ),
+                )
+                .children(more),
         )
         .child(
             div()

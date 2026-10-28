@@ -13,10 +13,17 @@
 //! recomputes them (it does when the switcher opens, and when a connection a row goes through
 //! starts reconnecting, stops or fails, or comes back), keeping the selected row.
 //!
+//! A repository's header has a menu (a right-click, or its `⋯` under the pointer) with **Remove
+//! from list**, which `Ctrl Shift Backspace` does for the selected row's repository: the
+//! repository leaves the known ones (`Reviews::remove_repo`), the selection moving to the next
+//! one's first row. The open review's repository can't be removed (its menu item is disabled,
+//! the key does nothing): the title bar's source picker lists its targets.
+//!
 //! [`source`] is the title bar's other menu, the current repository's targets.
 //!
-//! Automation targets: `switcher`, `switcher/filter`, `switcher/repo/<repo>`, `switcher/<key>`
-//! for each row ([`items::Item::key`]).
+//! Automation targets: `switcher`, `switcher/filter`, `switcher/repo/<repo>`,
+//! `switcher/repo/<repo>/more` (the header's `⋯`), `switcher/menu`, `switcher/menu/remove`,
+//! `switcher/<key>` for each row ([`items::Item::key`]).
 
 pub mod items;
 mod render;
@@ -33,7 +40,7 @@ use gpui::{
 };
 use gpui_component::input::{InputEvent, InputState};
 
-use crate::actions::switcher::{Confirm, Dismiss, SelectNext, SelectPrevious};
+use crate::actions::switcher::{Confirm, Dismiss, RemoveRepo, SelectNext, SelectPrevious};
 use crate::services::reviews::{OpenRequest, Reviews};
 use items::Listing;
 
@@ -55,8 +62,17 @@ pub enum SwitcherEvent {
     /// **Start** on the repository at `location`, whose WSL distro isn't running, or **Retry**
     /// on one whose connection failed: both connect explicitly (`Reviews::start`).
     Start { location: Location },
+    /// **Remove from list** on the repository at `location` (`Reviews::remove_repo`).
+    Remove { location: Location },
     /// Closed without picking (`Esc`).
     Dismiss,
+}
+
+/// A repository header's menu: whose, and where it opened.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RepoMenu {
+    pub location: Location,
+    pub position: gpui::Point<gpui::Pixels>,
 }
 
 /// The switcher (see the module docs).
@@ -70,6 +86,12 @@ pub struct Switcher {
     /// The repository a **Start** or **Retry** was picked on: its first row takes the
     /// selection once it lists one.
     started: Option<Location>,
+    /// The open review's repository (the one it was opened from), which can't be removed.
+    in_use: Option<Location>,
+    /// A repository header's menu, while open.
+    menu: Option<RepoMenu>,
+    /// The row a removal moves the selection to, once the listing drops the repository.
+    after_remove: Option<String>,
     scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -79,10 +101,12 @@ impl EventEmitter<SwitcherEvent> for Switcher {}
 impl Switcher {
     /// A switcher over the known repositories, its selection on `focus`'s first row (the
     /// repository `dv open` named), else on the open review `current`, else on the first row.
+    /// `in_use` is the open review's repository, which it won't remove.
     pub fn new(
         reviews: Entity<Reviews>,
         focus: Option<&Location>,
         current: Option<&ReviewId>,
+        in_use: Option<Location>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -104,6 +128,9 @@ impl Switcher {
             listing: Listing::default(),
             selected: 0,
             started: None,
+            in_use,
+            menu: None,
+            after_remove: None,
             scroll: ScrollHandle::new(),
             _subscriptions: subscriptions,
         };
@@ -142,6 +169,63 @@ impl Switcher {
             .map(|item| item.key.as_str())
     }
 
+    /// The open header menu.
+    pub fn menu(&self) -> Option<&RepoMenu> {
+        self.menu.as_ref()
+    }
+
+    /// Whether the repository at `location` can be removed: it isn't the open review's.
+    pub fn can_remove(&self, location: &Location) -> bool {
+        self.in_use.as_ref() != Some(location)
+    }
+
+    /// The repository `Ctrl Shift Backspace` would remove: the selected row's, when it can be.
+    pub fn removable(&self) -> Option<&Location> {
+        self.listing
+            .location_of(self.selected)
+            .filter(|location| self.can_remove(location))
+    }
+
+    /// Opens the header menu of the repository at `location`, at `position`.
+    pub fn open_menu(
+        &mut self,
+        location: Location,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = Some(RepoMenu { location, position });
+        cx.notify();
+    }
+
+    pub fn close_menu(&mut self, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Removes the repository at `location` from the list, when it can be (module docs).
+    pub fn remove(&mut self, location: &Location, cx: &mut Context<Self>) {
+        self.menu = None;
+        if !self.can_remove(location) {
+            cx.notify();
+            return;
+        }
+        self.after_remove = self
+            .listing
+            .row_after_removing(location)
+            .map(str::to_string);
+        cx.emit(SwitcherEvent::Remove {
+            location: location.clone(),
+        });
+        cx.notify();
+    }
+
+    fn remove_selected(&mut self, _: &RemoveRepo, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(location) = self.removable().cloned() {
+            self.remove(&location, cx);
+        }
+    }
+
     /// Selects the row `key`; `false` when it isn't listed.
     pub fn select_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
         match self.listing.position(key) {
@@ -177,7 +261,12 @@ impl Switcher {
         if started.is_some() {
             self.started = None;
         }
+        let removed_to = self
+            .after_remove
+            .take()
+            .and_then(|key| self.listing.position(&key));
         self.selected = started
+            .or(removed_to)
             .or_else(|| keep.and_then(|key| self.listing.position(&key)))
             .unwrap_or(0);
         self.scroll_to_selected();
@@ -226,7 +315,12 @@ impl Switcher {
         self.pick(self.selected, cx);
     }
 
+    /// `Esc`: closes the header menu when it is open, else the switcher.
     fn dismiss(&mut self, _: &Dismiss, _: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+            cx.notify();
+            return;
+        }
         cx.emit(SwitcherEvent::Dismiss);
     }
 
