@@ -875,3 +875,73 @@ fn a_known_repo_spelled_otherwise_becomes_the_spelling_wsl_resolves(cx: &mut Tes
     });
     assert_eq!(reviews.read_with(cx, |reviews, _| reviews.rows().len()), 1);
 }
+
+#[gpui::test]
+async fn a_removed_repo_leaves_the_list_and_the_file_keeping_its_reviews(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let repo = fixture();
+    let other = fixture();
+    let (locations, reviews) = services(cx, data.path());
+    locations.update(cx, |locations, _| {
+        locations.register_env(repo.path().to_path_buf(), repo.env_overlay());
+        locations.register_env(other.path().to_path_buf(), other.env_overlay());
+    });
+    let location = Location::Local(repo.path().to_path_buf());
+    let kept = Location::Local(other.path().to_path_buf());
+    for added in [&location, &kept] {
+        reviews
+            .update(cx, |reviews, cx| reviews.add_repo(added.clone(), cx))
+            .await
+            .expect("a repo");
+    }
+    let opened = reviews
+        .update(cx, |reviews, cx| {
+            reviews.open_review(location.clone(), Target::Working, cx)
+        })
+        .await
+        .expect("a review");
+    settle(cx, &reviews);
+
+    // Removed while a refresh of it runs: the row goes at once, and the refresh lands nowhere.
+    let removed = reviews.update(cx, |reviews, cx| {
+        reviews.refresh(location.clone(), cx);
+        reviews.remove_repo(&location, cx)
+    });
+    assert!(removed);
+    settle(cx, &reviews);
+    reviews.read_with(cx, |reviews, _| {
+        assert!(reviews.row(&location).is_none());
+        assert!(reviews.known().get(&location).is_none());
+        assert_eq!(reviews.rows().len(), 1);
+        assert_eq!(reviews.rows()[0].location, kept);
+    });
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(data.path().join(KNOWN_REPOS_FILE)).unwrap())
+            .unwrap();
+    assert_eq!(
+        saved["repos"].as_array().unwrap().len(),
+        1,
+        "saved without it"
+    );
+    assert_eq!(
+        saved["repos"][0]["location"],
+        serde_json::to_value(&kept).unwrap()
+    );
+    // Not known any more, so nothing to remove.
+    assert!(!reviews.update(cx, |reviews, cx| reviews.remove_repo(&location, cx)));
+
+    // Added again, it lists its review: nothing in the repository was touched.
+    reviews
+        .update(cx, |reviews, cx| reviews.add_repo(location.clone(), cx))
+        .await
+        .expect("added again");
+    settle(cx, &reviews);
+    reviews.read_with(cx, |reviews, _| {
+        let row = reviews.row(&location).expect("listed again");
+        assert_eq!(
+            row.open_review_of(&Target::Working)
+                .map(|summary| &summary.id),
+            Some(&opened.loaded.review.id)
+        );
+    });
+}

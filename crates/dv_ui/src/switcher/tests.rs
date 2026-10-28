@@ -965,6 +965,13 @@ fn the_branch_picker_opens_a_stacked_branch_against_its_base(cx: &mut TestAppCon
         selected(&shell, cx).as_deref(),
         Some("api-server/pick/feat-b")
     );
+    // The branch picker removes nothing: Ctrl Shift Backspace leaves the repository listed.
+    cx.simulate_keystrokes("secondary-shift-backspace");
+    assert!(view.read_with(cx, |view, _| view.removable().is_none()));
+    shell.read_with(cx, |_, cx| {
+        use crate::services::ActiveServices as _;
+        assert_eq!(cx.services().reviews.read(cx).rows().len(), 1);
+    });
 
     // Enter lists its bases, the stack base first; Esc steps back to the branches, and again
     // to the repositories, where "Compare branches…" keeps the selection.
@@ -1054,4 +1061,115 @@ fn the_source_picker_opens_the_branch_picker_and_esc_closes_it(cx: &mut TestAppC
     // Opened on the picker, Esc in its first step closes the switcher.
     cx.simulate_keystrokes("escape");
     assert!(switcher(&shell, cx).is_none());
+}
+
+#[gpui::test]
+fn a_repo_is_removed_by_key_or_menu_but_not_the_open_reviews(cx: &mut TestAppContext) {
+    use crate::services::ActiveServices as _;
+    let (_dir, shell, cx) = open_shell(cx);
+    let repos = tempfile::tempdir().unwrap();
+    let api = fixture_at(&repos.path().join("api-server"));
+    let web = fixture_at(&repos.path().join("web"));
+    let docs = fixture_at(&repos.path().join("docs"));
+    for repo in [&api, &web, &docs] {
+        add_repo(repo, &shell, cx);
+    }
+    let api_location = Location::Local(api.path().to_path_buf());
+    let task = cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| {
+            shell.open(
+                api_location.clone(),
+                OpenRequest::Target(Target::Working),
+                window,
+                cx,
+            )
+        })
+    });
+    cx.run_until_parked();
+    settle(cx, &shell, "the review", |shell, _| {
+        shell.session().is_some()
+    });
+    cx.foreground_executor().block_test(task).unwrap();
+    let known = |shell: &Entity<Shell>, cx: &mut VisualTestContext| {
+        shell.read_with(cx, |_, cx| {
+            let mut names: Vec<String> = cx
+                .services()
+                .reviews
+                .read(cx)
+                .rows()
+                .iter()
+                .map(|row| row.name.clone())
+                .collect();
+            names.sort();
+            names
+        })
+    };
+
+    cx.simulate_keystrokes("secondary-o");
+    settle(cx, &shell, "the rows", |_, _| true);
+    let view = switcher(&shell, cx).expect("Ctrl O opens the switcher");
+    // The open review's repository: the key does nothing, and its menu's item is disabled.
+    assert_eq!(selected(&shell, cx).as_deref(), Some("api-server/working"));
+    cx.simulate_keystrokes("secondary-shift-backspace");
+    assert_eq!(known(&shell, cx), ["api-server", "docs", "web"]);
+    view.update(cx, |view, cx| {
+        assert_eq!(view.removable(), None);
+        view.open_menu(
+            api_location.clone(),
+            gpui::point(gpui::px(10.), gpui::px(10.)),
+            cx,
+        );
+        view.remove(&api_location, cx);
+        assert!(view.menu().is_none(), "the menu closes");
+    });
+    cx.run_until_parked();
+    assert_eq!(known(&shell, cx), ["api-server", "docs", "web"]);
+
+    // From the filter field, Ctrl Shift Backspace removes the selected row's repository; the
+    // selection moves to the next repository's first row.
+    let order: Vec<String> = view.read_with(cx, |view, _| {
+        view.listing()
+            .repos
+            .iter()
+            .map(|repo| repo.key.clone())
+            .collect()
+    });
+    let (middle, after) = (order[1].clone(), order[2].clone());
+    assert!(view.update(cx, |view, cx| {
+        view.select_key(&format!("{middle}/staged"), cx)
+    }));
+    assert!(cx.update(|window, cx| view.read(cx).is_focused(window, cx)));
+    cx.simulate_keystrokes("secondary-shift-backspace");
+    settle(cx, &shell, "the removal", |_, _| true);
+    let mut left = vec!["api-server".to_string(), after.clone()];
+    left.sort();
+    assert_eq!(known(&shell, cx), left);
+    assert_eq!(selected(&shell, cx), Some(format!("{after}/working")));
+
+    // The menu's Remove from list does the same; Esc closes an open menu first.
+    let after_location = view.read_with(cx, |view, _| {
+        view.listing()
+            .repos
+            .iter()
+            .find(|repo| repo.key == after)
+            .unwrap()
+            .location
+            .clone()
+    });
+    view.update(cx, |view, cx| {
+        view.open_menu(
+            after_location.clone(),
+            gpui::point(gpui::px(10.), gpui::px(10.)),
+            cx,
+        )
+    });
+    cx.simulate_keystrokes("escape");
+    assert!(view.read_with(cx, |view, _| view.menu().is_none()));
+    assert!(
+        switcher(&shell, cx).is_some(),
+        "Esc closed the menu, not the switcher"
+    );
+    view.update(cx, |view, cx| view.remove(&after_location, cx));
+    settle(cx, &shell, "the removal", |_, _| true);
+    assert_eq!(known(&shell, cx), ["api-server"]);
 }

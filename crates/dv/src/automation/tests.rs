@@ -228,7 +228,7 @@ fn state_describes_the_empty_shell(cx: &mut TestAppContext) {
     assert_eq!(state["backends"], json!([]));
     assert_eq!(
         state["switcher"],
-        json!({"open": false, "mode": null, "query": null, "selected": null, "items": []})
+        json!({"open": false, "mode": null, "query": null, "selected": null, "items": [], "menu": null})
     );
     assert_eq!(
         state["source_picker"],

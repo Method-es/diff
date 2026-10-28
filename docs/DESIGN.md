@@ -203,7 +203,18 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   beside its open review (status chip, "round n", open-comment badge; "New review" on the selected row
   without one), then the repo's other open reviews by their target label, then, when it has a branch
   other than the default one, **Compare branches…** (arrows glyph). Picking a row opens or
-  resumes that review (PLAN §2.4). A repo that can't be opened offers no rows.
+  resumes that review (PLAN §2.4). A repo that can't be opened offers no rows. A header's menu
+  (a right-click on it, or its `⋯`, a 22-square ghost button at the end of its first line shown
+  under the pointer and while its menu is open; the menu panel at the pointer, as the comments
+  row menu's) holds **Remove from list** (x glyph): the repo leaves the switcher and
+  `known_repos.json`, nothing in it changing (its reviews show again once it is opened again), and
+  the selection moves to the next repo's first row, else the previous one's, else **Open
+  folder…**. For the open review's repo the item is disabled, "Its review is open" in `fg3` under
+  it. `Ctrl Shift Backspace` removes the selected row's repo the same way, from the filter field
+  too (which deletes text with Backspace's other forms), and does nothing on the open review's;
+  the footer's hints start with it ("remove") while the selected row's repo can be removed. `Esc`
+  closes an open menu before the switcher. The branch picker (below) has neither the menu nor the
+  key.
   **Compare branches…** turns the switcher into the branch picker for that repo, in the same panel:
   the field cleared, its placeholder "Pick a branch to review", the repo's header over one row per
   local branch but the default one (branch glyph, the most recently committed first): the name, then
@@ -878,6 +889,7 @@ Setup unchanged.
 | `Ctrl Enter` | finish review / submit: the "Finish round" sheet, while no text field has the keyboard (in the composer: post comment) |
 | `Ctrl K` | the palette: commands, reviews and, as you type, the review's files (§4.1; again, or `Esc`, closes it) |
 | `Ctrl O` | switch repo / review (the switcher; again, or `Esc`, closes it) |
+| `Ctrl Shift Backspace` | in the switcher: remove the selected row's repo from the list (not the open review's, §4.1) |
 | `Ctrl G` | the PR picker (§4.5) |
 | `Ctrl R` | on a PR review: refresh it from GitHub (fetch, threads, checks, Viewed; PLAN §9.4) |
 | `Ctrl B` | toggle panel |

@@ -755,6 +755,22 @@ impl Reviews {
         location
     }
 
+    /// Forgets the known repository at `location` ("Remove from list", DESIGN §4.1): its row
+    /// and any refresh of it go, and `known_repos.json` is saved without it. Nothing in the
+    /// repository changes, its reviews included; opening it again adds it back with them. A
+    /// refresh still running for it finds no row and is dropped. `false` when it wasn't known.
+    pub fn remove_repo(&mut self, location: &Location, cx: &mut Context<Self>) -> bool {
+        if !self.known.remove(location) {
+            return false;
+        }
+        self.rows.remove(location);
+        self.refreshing.remove(location);
+        self.save(cx);
+        cx.emit(ReviewsEvent::Changed);
+        cx.notify();
+        true
+    }
+
     /// A listing or an open of `given` reached the repository whose worktree root is `root`
     /// (`RepoInfo::location`, its distro spelled WSL's way): every known location that names
     /// it otherwise — `given` (a subfolder, another spelling of the distro) and any other
