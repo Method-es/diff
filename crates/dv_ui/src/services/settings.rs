@@ -1,7 +1,9 @@
-//! dv's settings (PLAN §11 `Settings`): the window material, the light/dark mode, the panel's
-//! width and the language servers' commands, kept in `<data dir>/settings.json` as `{"v": 1,
-//! "material": …, "mode": …, "panel_width": …, "lsp": …}` (`panel_width` only once it was
-//! changed, `lsp` only when the file has it: the reviewer writes it by hand, PLAN §18.4).
+//! dv's settings (PLAN §11 `Settings`): the theme's palette, the window material, the light/dark
+//! mode, the panel's width and the language servers' commands, kept in `<data dir>/settings.json`
+//! as `{"v": 1, "palette": …, "material": …, "mode": …, "panel_width": …, "lsp": …}` (`palette`
+//! and `panel_width` only once they were changed, `lsp` only when the file has it: the reviewer
+//! writes it by hand, PLAN §18.4). The palette has a key of its own: the first implementation's
+//! `theme` (`"Aura Dark"`) is one of the keys kept as they are.
 //!
 //! The default data dir is `%APPDATA%\dv` on Windows, which also holds the first
 //! implementation's `settings.json`, so reading is lenient: a missing key takes its default, an
@@ -15,7 +17,7 @@
 //!
 //! **Edits by hand while dv runs.** The reviewer edits `lsp` (and keeps other programs' keys)
 //! in the file while dv runs, so every write reads the file again first and takes `lsp` and the
-//! keys dv doesn't know from it, writing only the keys dv owns (`material`, `mode`,
+//! keys dv doesn't know from it, writing only the keys dv owns (`palette`, `material`, `mode`,
 //! `panel_width`) from memory ([`write_merged`]); a file that isn't a JSON object at that
 //! moment (an edit saved half-way) is left alone and the write fails, saying why. `lsp` is also
 //! read again on its own ([`Settings::reload_lsp`]: **Check again** on a missing server, and
@@ -29,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::persist::Writer;
-use crate::theme::{Appearance, Material};
+use crate::theme::{Appearance, Material, Palette};
 
 /// The settings file in the data dir.
 pub const SETTINGS_FILE: &str = "settings.json";
@@ -90,6 +92,8 @@ impl Mode {
 /// The settings file's contents.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SettingsFile {
+    /// The theme's family (DESIGN §1.3); `None` until it is chosen, which is Aura.
+    pub palette: Option<Palette>,
     /// The material asked for; the platform may show Opaque instead (`crate::appearance`).
     pub material: Material,
     pub mode: Mode,
@@ -107,6 +111,7 @@ pub struct SettingsFile {
 impl Default for SettingsFile {
     fn default() -> Self {
         Self {
+            palette: None,
             material: Material::platform_default(),
             mode: Mode::default(),
             panel_width: None,
@@ -120,6 +125,8 @@ impl Default for SettingsFile {
 #[derive(Serialize)]
 struct Written<'a> {
     v: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    palette: Option<Palette>,
     material: Material,
     mode: Mode,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -154,6 +161,15 @@ impl SettingsFile {
                 )),
                 Some(_) => {}
                 None => problems.push(format!("\"v\" is {v}, not a version number")),
+            }
+        }
+        if let Some(value) = object.remove("palette") {
+            match serde_json::from_value(value.clone()) {
+                Ok(palette) => file.palette = Some(palette),
+                Err(_) => problems.push(format!(
+                    "\"palette\" is {value}, not one of \"aura\", \"claude\", \"dracula\"; \
+                     using \"aura\""
+                )),
             }
         }
         if let Some(value) = object.remove("material") {
@@ -199,6 +215,7 @@ impl SettingsFile {
     pub fn to_json(&self) -> String {
         let written = Written {
             v: SETTINGS_VERSION,
+            palette: self.palette,
             material: self.material,
             mode: self.mode,
             panel_width: self.panel_width,
@@ -337,6 +354,11 @@ impl Settings {
         &self.file
     }
 
+    /// The theme's family: Aura until another is chosen.
+    pub fn palette(&self) -> Palette {
+        self.file.palette.unwrap_or_default()
+    }
+
     pub fn material(&self) -> Material {
         self.file.material
     }
@@ -363,6 +385,13 @@ impl Settings {
     /// No save is waiting or running (a failed one counts as done): automation's `settled`.
     pub fn is_settled(&self) -> bool {
         self.saving.is_none() && self.attempted >= self.generation
+    }
+
+    pub fn set_palette(&mut self, palette: Palette, cx: &mut Context<Self>) {
+        if self.file.palette != Some(palette) {
+            self.file.palette = Some(palette);
+            self.changed(cx);
+        }
     }
 
     pub fn set_material(&mut self, material: Material, cx: &mut Context<Self>) {
@@ -550,6 +579,28 @@ mod tests {
         let (again, problems) = SettingsFile::parse(&file.to_json());
         assert!(problems.is_empty());
         assert_eq!(again, file);
+    }
+
+    #[test]
+    fn the_palette_is_written_once_chosen_beside_the_first_implementations_theme() {
+        let (mut file, problems) = SettingsFile::parse(r#"{"theme": "Claude Light"}"#);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(file.palette, None);
+        let written: Value = serde_json::from_str(&file.to_json()).unwrap();
+        assert!(written.get("palette").is_none(), "{written}");
+        file.palette = Some(Palette::Dracula);
+        let written: Value = serde_json::from_str(&file.to_json()).unwrap();
+        assert_eq!(written["palette"], "dracula");
+        assert_eq!(written["theme"], "Claude Light");
+        let (again, _) = SettingsFile::parse(&file.to_json());
+        assert_eq!(again, file);
+
+        let (file, problems) = SettingsFile::parse(r#"{"palette": "Aura Dark"}"#);
+        assert_eq!(file.palette, None);
+        assert!(
+            problems[0].contains("\"palette\" is \"Aura Dark\""),
+            "{problems:?}"
+        );
     }
 
     #[test]

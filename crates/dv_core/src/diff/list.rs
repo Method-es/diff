@@ -30,9 +30,20 @@ use crate::target::{DiffSpec, Side};
 /// a temporary index ([`super::strays`]) and listed once, as modified when it changed, marked
 /// [`FileEntry::new_untracked`].
 pub fn file_list(repo: &GitRepo, spec: &DiffSpec) -> Result<Vec<FileEntry>, DiffError> {
-    let mut entries = tracked(repo, spec, None, None)?;
-    if spec.new == Side::Worktree {
-        let mut untracked = untracked(repo)?;
+    // The tracked and the untracked files are listed at once: two git processes that don't
+    // wait on each other (PLAN §17's budgets).
+    let (listed, others) = std::thread::scope(|scope| {
+        let others = (spec.new == Side::Worktree).then(|| scope.spawn(|| untracked(repo)));
+        let listed = tracked(repo, spec, None, None);
+        let others = others.map(|job| {
+            job.join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        });
+        (listed, others)
+    });
+    let mut entries = listed?;
+    if let Some(others) = others {
+        let mut untracked = others?;
         let found = {
             let names: HashSet<&str> = untracked.iter().map(|entry| entry.path.as_str()).collect();
             strays::find(&entries, &names)

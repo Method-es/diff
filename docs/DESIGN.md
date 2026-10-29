@@ -40,7 +40,10 @@ selection); `textSel rgba(162,119,255,.42)` (text selected in code); `findMatch
 rgba(255,202,133,.22)` and `findCurrent rgba(255,202,133,.32)` (find matches in code, the
 current one outlined in `yellow`, the others in `findLine rgba(255,202,133,.62)`, so a match on
 an intraline word's fill still reads as a match); `popover` = `overlay`'s Opaque value on every
-material (popovers with no scrim under them, §3).
+material (popovers with no scrim under them, §3). A segmented control's track is `segTrack`
+(`rgba(255,255,255,.055)` dark, `rgba(28,24,56,.06)` light), its chosen segment on `segOn`
+(`rgba(255,255,255,.12)` dark, white light): in light the track is a tint, so a white chosen
+segment stands out from it.
 
 Diff: `addBg rgba(97,255,202,.085)`, `addGut .15`, `addWord .30`; `delBg rgba(255,103,103,.09)`,
 `delGut .16`, `delWord .34`; `hunk rgba(130,226,255,.06)`. Added and removed rows differ in lightness
@@ -48,7 +51,8 @@ as well as hue.
 
 Syntax: `kw #a277ff`, `fn #ffca85`, `str #61ffca`, `num #61ffca`, `type #a277ff`, `cst #82e2ff`,
 `prop #f694ff`, `punc`/`plain #edecee`, `comment` = `fg3` (`#9d9ab3`). Highlighting produces these
-token kinds, never colours (PLAN §6 step 4); each paints in its token.
+token kinds, never colours (PLAN §6 step 4); each paints in its token, the code gpui-component
+highlights itself (a fenced block in Markdown: a hover card's signature, a comment's code) too.
 
 ### 1.2 Light (new; "Aura Light")
 
@@ -64,9 +68,15 @@ Full set: the board's `tokens()`.
 
 ### 1.3 Other themes
 Dracula, Claude Dark and Claude Light remain as **opaque-only** themes (their colours from
-`themes/*.json`, contrast-corrected as on the Tidy boards). Glass materials apply to the Aura pair; a
+`themes/*.json`, selections in Claude's blue rather than its orange accent, which over an added
+line reads as a removed one; contrast-corrected: `fg2` at 7:1 and `fg3`, the hues, `accentText` and the syntax
+colours at 4.5:1 on every surface). Glass materials apply to the Aura pair; a
 non-Aura theme forces `Opaque`. Syntax colours, diff colours and surfaces are one token set per theme;
-views never hard-code a colour.
+views never hard-code a colour. The setting is the theme's family: **Aura** (Aura Dark and Aura
+Light, by the mode), **Claude** (Claude Dark and Claude Light, by the mode) and **Dracula** (dark
+only, whatever the mode). Each family's surfaces are its JSON's: `chrome` its title bar, `panel` its
+sidebar, `code` its editor background, `overlay` its popover (a lift of `code` where the popover is
+the sidebar's colour), the cards lifted from `code` toward `fg` (dark) or white (light).
 
 ### 1.4 Typography
 - **UI:** Geist (bundled, OFL), fallback Segoe UI Variable / system-ui. 13px/18px body; 12px
@@ -80,7 +90,9 @@ Spacing scale 4 / 6 / 8 / 12 / 16 / 24. Radii: 4 (keycaps, inline code), 5–6 (
 inputs), 7 (segmented control), 10 (thread cards), 12 (sheets). Heights: controls 28, small controls
 24/22, title bar 40, status bar 28, file rows 28, code rows 20. Shadows: cards `0 6px 20px
 rgba(0,0,0,.28)`; overlays `0 28px 80px rgba(0,0,0,.55), 0 2px 10px rgba(0,0,0,.35)` plus a 1px
-inner top highlight `rgba(255,255,255,.06)`.
+inner top highlight `rgba(255,255,255,.06)`. Light themes: cards `0 4px 14px rgba(30,22,70,.08)`,
+overlays `0 20px 56px rgba(30,22,70,.14), 0 2px 10px rgba(30,22,70,.10)` (softer, so a popover
+over code with no scrim under it, the find bar or the hover card, doesn't sit in a grey haze).
 
 ### 1.6 Icons
 Inline stroke icons at 14–16px, 1.5–1.6 stroke, `currentColor`, from one set (Lucide-compatible
@@ -279,7 +291,7 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   commented on a file the review never changed, from the file view) head the stream, in
   a section before the first file: a 44-high `codeHead` bar like a file header's — chevron, a
   file-diff glyph in `fg3`, "Not in the diff" at 600, the count badge, and "comments on files
-  the review doesn't change now" in `fg3` (truncating) — then one full thread card per
+  the review doesn't change now" ("comment" for one) in `fg3` (truncating) — then one full thread card per
   thread, in the order they were added, each as an outdated card heading a file looks (the
   "Outdated" chip, its original lines in the `recess` block, Resolve / Reopen, the reply field)
   with its anchor naming the path it was written on (`src/hooks/use-can.ts · new · line 12`,
@@ -525,7 +537,7 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   the agent's own additions follow, each over a hairline under its name and time in `fg3`. The
   file view draws it at its lines as the stream does. **Ask** (or `R`) opens the reply composer in the card, its field reading "Ask
   claude-code about this…" and its footer saying "claude-code reads it with the round"
-  in `fg3` beside "Markdown" (the question goes to the agent when the round is finished); posting turns the card into a thread card,
+  in `fg3` in place of "Markdown", which a narrow card would otherwise cut it for (the question goes to the agent when the round is finished); posting turns the card into a thread card,
   `open`, whose first comment keeps a quiet "annotation" tag beside the agent tag. Hidden with
   `A`, annotations aren't drawn at all (the status bar says they are hidden). In an interdiff
   only the annotations written since its round are drawn; an outdated one, or one whose file
@@ -724,8 +736,13 @@ Setup unchanged.
   sheet (`overlay`, radius 12, up to 900 wide, hung as §4.2's), its header "Settings" with a
   close button. Its body scrolls through two pages, each a 13/600 title over its cards:
   **Appearance**, one card with a row per setting (its name in 600, what it does in `fg2`
-  secondary, its control on the right, a header-style segmented control): **Mode** System |
-  Dark | Light and **Material** Mica | Acrylic | Opaque, each applied as it is clicked. A
+  secondary, its control on the right, a header-style segmented control): **Theme** Aura |
+  Claude | Dracula (§1.3), **Mode** System | Dark | Light and **Material** Mica | Acrylic |
+  Opaque, each applied as it is clicked. With Dracula the mode row's `yellow` line says
+  "Dracula has no light palette: dv shows it dark, keeping the mode for the other themes". With
+  Claude or Dracula Mica and Acrylic are disabled segments and the material row's line says
+  "Mica and Acrylic are Aura's: Claude is opaque" (Dracula likewise), keeping the setting for
+  Aura. A
   material the platform can't show is a disabled segment in `fg3`, and a `yellow` line under
   the row says why ("Mica and Acrylic need Windows 11 with Transparency effects on…"; on macOS
   and Linux, that dv is Opaque there) and, when the setting is one of them, that dv shows

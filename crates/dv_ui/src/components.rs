@@ -341,7 +341,7 @@ pub fn segmented(theme: &DvTheme) -> Div {
         .rounded(theme.radii.segmented)
         .border_1()
         .border_color(c.ctrl_line)
-        .bg(c.ctrl)
+        .bg(c.seg_track)
 }
 
 /// One segment of a [`segmented`] control: the chosen one lifted on `seg_on` with the control

@@ -2,7 +2,7 @@ use dv_core::diff::{DiffLine, LineKind, TextDiff};
 use pretty_assertions::assert_eq;
 
 use super::*;
-use crate::theme::{Appearance, DvColors, Material};
+use crate::theme::{Appearance, DvColors, Material, Palette};
 
 #[test]
 fn capture_names_map_to_kinds() {
@@ -91,12 +91,12 @@ fn capture_names_map_to_kinds() {
 
 #[test]
 fn kinds_resolve_to_the_themes_syntax_colours() {
-    let colors = DvColors::new(Appearance::Dark, Material::Opaque);
+    let colors = DvColors::new(Palette::Aura, Appearance::Dark, Material::Opaque);
     let syntax = &colors.syntax;
     assert_eq!(TokenKind::Keyword.color(syntax), syntax.keyword);
     assert_eq!(TokenKind::Comment.color(syntax), colors.fg3);
     assert_eq!(TokenKind::Plain.color(syntax), syntax.plain);
-    let light = DvColors::new(Appearance::Light, Material::Mica);
+    let light = DvColors::new(Palette::Aura, Appearance::Light, Material::Mica);
     assert_eq!(TokenKind::Comment.color(&light.syntax), light.fg3);
 }
 

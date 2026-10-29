@@ -1,7 +1,9 @@
-//! The Glass theme (DESIGN §1): Aura's colours on the window material.
+//! The Glass theme (DESIGN §1): Aura's colours on the window material, or one of the
+//! opaque-only themes (DESIGN §1.3).
 //!
-//! [`DvTheme`] is a gpui global holding every DESIGN token resolved for one [`Appearance`]
-//! (dark/light) and one [`Material`] (Mica/Acrylic/Opaque). Views read it through
+//! [`DvTheme`] is a gpui global holding every DESIGN token resolved for one [`Palette`]
+//! (Aura/Claude/Dracula), one [`Appearance`] (dark/light) and one [`Material`]
+//! (Mica/Acrylic/Opaque). Views read it through
 //! [`ActiveTheme::dv_theme`] and never hard-code colours. [`apply`] installs a first theme at
 //! startup and [`install`] switches it (`crate::appearance` follows the settings and the OS);
 //! both map the tokens onto gpui-component's [`Theme`] so stock components match, including
@@ -17,8 +19,11 @@ use gpui::{
     App, BoxShadow, FontWeight, Global, Hsla, Pixels, Rgba, SharedString, Styled, WindowAppearance,
     WindowBackgroundAppearance, point, px,
 };
+use gpui_component::highlighter::HighlightTheme;
 use gpui_component::{Theme, ThemeMode, ThemeTokens};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
+use std::sync::Arc;
 
 use crate::assets::fonts;
 use tokens::{Surface, TokenSet};
@@ -51,11 +56,80 @@ impl Appearance {
             WindowAppearance::Dark | WindowAppearance::VibrantDark => Self::Dark,
         }
     }
+}
 
-    fn tokens(self) -> &'static TokenSet {
+/// A theme's family (DESIGN §1.3): Aura (dark and light, on every material), Claude (dark and
+/// light, opaque) or Dracula (dark, opaque).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Palette {
+    #[default]
+    Aura,
+    Claude,
+    Dracula,
+}
+
+impl Palette {
+    pub const ALL: [Palette; 3] = [Self::Aura, Self::Claude, Self::Dracula];
+
+    /// `"aura"`, `"claude"` or `"dracula"`, as settings and automation state spell it.
+    pub fn key(self) -> &'static str {
         match self {
-            Self::Dark => &tokens::DARK,
-            Self::Light => &tokens::LIGHT,
+            Self::Aura => "aura",
+            Self::Claude => "claude",
+            Self::Dracula => "dracula",
+        }
+    }
+
+    /// The name the UI shows.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Aura => "Aura",
+            Self::Claude => "Claude",
+            Self::Dracula => "Dracula",
+        }
+    }
+
+    /// The palette a [`key`](Self::key) names.
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|palette| palette.key() == key)
+    }
+
+    /// Whether it has a light palette; one that hasn't shows dark whatever the mode.
+    pub fn has_light(self) -> bool {
+        self != Self::Dracula
+    }
+
+    /// Whether it is drawn over the window material; the others are opaque only.
+    pub fn is_glass(self) -> bool {
+        self == Self::Aura
+    }
+
+    /// The appearance it shows when `asked` is wanted.
+    pub fn appearance(self, asked: Appearance) -> Appearance {
+        if self.has_light() {
+            asked
+        } else {
+            Appearance::Dark
+        }
+    }
+
+    /// The material it shows when `asked` is what the platform can show.
+    pub fn material(self, asked: Material) -> Material {
+        if self.is_glass() {
+            asked
+        } else {
+            Material::Opaque
+        }
+    }
+
+    fn tokens(self, appearance: Appearance) -> &'static TokenSet {
+        match (self, self.appearance(appearance)) {
+            (Self::Aura, Appearance::Dark) => &tokens::DARK,
+            (Self::Aura, Appearance::Light) => &tokens::LIGHT,
+            (Self::Claude, Appearance::Dark) => &tokens::CLAUDE_DARK,
+            (Self::Claude, Appearance::Light) => &tokens::CLAUDE_LIGHT,
+            (Self::Dracula, _) => &tokens::DRACULA,
         }
     }
 }
@@ -192,6 +266,7 @@ pub struct DvColors {
     pub overlay_line: Hsla,
     pub scrim: Hsla,
     pub seg_on: Hsla,
+    pub seg_track: Hsla,
     pub kbd_bg: Hsla,
     pub sel: Hsla,
     pub text_sel: Hsla,
@@ -221,12 +296,12 @@ pub struct DvColors {
 }
 
 impl DvColors {
-    pub fn new(appearance: Appearance, material: Material) -> Self {
+    pub fn new(palette: Palette, appearance: Appearance, material: Material) -> Self {
         let TokenSet {
             surfaces: s,
             solid: t,
             syntax: x,
-        } = appearance.tokens();
+        } = palette.tokens(appearance);
         let m = |surface: &Surface| -> Hsla { material.pick(surface).into() };
         let c = |value: Rgba| -> Hsla { value.into() };
         let chrome = m(&s.chrome);
@@ -267,6 +342,7 @@ impl DvColors {
             overlay_line: c(t.overlay_line),
             scrim: c(t.scrim),
             seg_on: c(t.seg_on),
+            seg_track: c(t.seg_track),
             kbd_bg: c(t.kbd_bg),
             sel: c(t.sel),
             text_sel: c(t.text_sel),
@@ -534,8 +610,10 @@ impl Shadows {
             },
             Appearance::Light => Self {
                 card: vec![shadow(ink(0.08), 4., 14., false)],
+                // Softer than dark's: a popover over light code with no scrim under it (the
+                // find bar, the hover card) would otherwise sit in a grey haze (DESIGN §1.5).
                 overlay: vec![
-                    shadow(ink(0.24), 28., 80., false),
+                    shadow(ink(0.14), 20., 56., false),
                     shadow(ink(0.10), 2., 10., false),
                 ],
                 control: vec![shadow(tokens::rgba(28, 24, 56, 0.05), 1., 1., false)],
@@ -554,9 +632,10 @@ fn shadow(color: Rgba, y: f32, blur: f32, inset: bool) -> BoxShadow {
     }
 }
 
-/// Every DESIGN token for one appearance and material.
+/// Every DESIGN token for one palette, appearance and material.
 #[derive(Clone, Debug)]
 pub struct DvTheme {
+    pub palette: Palette,
     pub appearance: Appearance,
     pub material: Material,
     pub colors: DvColors,
@@ -571,12 +650,17 @@ pub struct DvTheme {
 impl Global for DvTheme {}
 
 impl DvTheme {
-    pub fn new(appearance: Appearance, material: Material) -> Self {
+    /// The theme for `palette`, showing `appearance` over `material` as far as the palette
+    /// has them ([`Palette::appearance`], [`Palette::material`]).
+    pub fn new(palette: Palette, appearance: Appearance, material: Material) -> Self {
+        let appearance = palette.appearance(appearance);
+        let material = palette.material(material);
         let fonts = Fonts::default();
         Self {
+            palette,
             appearance,
             material,
-            colors: DvColors::new(appearance, material),
+            colors: DvColors::new(palette, appearance, material),
             text: TypeScale::new(&fonts),
             fonts,
             sizes: Sizes::default(),
@@ -584,6 +668,11 @@ impl DvTheme {
             spacing: Spacing::default(),
             shadows: Shadows::new(appearance),
         }
+    }
+
+    /// `"<palette>-<appearance>"`: what a cache of anything drawn in its colours is keyed by.
+    pub fn key(&self) -> String {
+        format!("{}-{}", self.palette.key(), self.appearance.key())
     }
 }
 
@@ -602,19 +691,23 @@ impl ActiveTheme for App {
 /// Installs the dark, opaque theme: the one in use until `crate::appearance` resolves the
 /// settings. Call after `gpui_component::init`.
 pub fn apply(cx: &mut App) {
-    set(DvTheme::new(Appearance::Dark, Material::Opaque), cx);
+    set(
+        DvTheme::new(Palette::Aura, Appearance::Dark, Material::Opaque),
+        cx,
+    );
 }
 
-/// Switches to the theme for `appearance` over `material` and redraws every window. Nothing
-/// happens when it is already in use.
-pub fn install(appearance: Appearance, material: Material, cx: &mut App) {
-    if cx
-        .try_global::<DvTheme>()
-        .is_some_and(|theme| theme.appearance == appearance && theme.material == material)
-    {
+/// Switches to the theme for `palette`, showing `appearance` over `material` as far as it has
+/// them, and redraws every window. Nothing happens when it is already in use.
+pub fn install(palette: Palette, appearance: Appearance, material: Material, cx: &mut App) {
+    let theme = DvTheme::new(palette, appearance, material);
+    if cx.try_global::<DvTheme>().is_some_and(|current| {
+        (current.palette, current.appearance, current.material)
+            == (theme.palette, theme.appearance, theme.material)
+    }) {
         return;
     }
-    set(DvTheme::new(appearance, material), cx);
+    set(theme, cx);
     cx.refresh_windows();
 }
 
@@ -636,6 +729,7 @@ fn component_mode(appearance: Appearance) -> ThemeMode {
 /// Writes the palette, fonts and radii of `dv` into a gpui-component [`Theme`].
 pub fn map_component_theme(dv: &DvTheme, theme: &mut Theme) {
     let c = &dv.colors;
+    theme.highlight_theme = Arc::new(highlight_theme(dv));
     theme.mode = component_mode(dv.appearance);
     theme.font_family = dv.fonts.ui.clone();
     // gpui-component sizes its controls in rems from this; dv's views set their own text sizes.
@@ -797,4 +891,43 @@ pub fn contrast_ratio(a: Hsla, b: Hsla) -> f32 {
     let (la, lb) = (relative_luminance(a), relative_luminance(b));
     let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
     (hi + 0.05) / (lo + 0.05)
+}
+
+/// gpui-component's highlight theme in dv's syntax colours, for the code it highlights itself:
+/// a fenced block in Markdown (a hover card's signature, a comment's code). Every capture it
+/// knows takes the colour of its token kind as the stream paints it (`crate::syntax`), plain
+/// text when it has none (DESIGN §1.1).
+fn highlight_theme(dv: &DvTheme) -> HighlightTheme {
+    let syntax = &dv.colors.syntax;
+    let hex = |color: Hsla| serde_json::to_value(color).unwrap_or(Value::Null);
+    let names = match serde_json::to_value(gpui_component::highlighter::SyntaxColors::default()) {
+        Ok(Value::Object(names)) => names,
+        _ => Map::new(),
+    };
+    let captures: Map<String, Value> = names
+        .into_iter()
+        .map(|(name, _)| {
+            let color = crate::syntax::kind_for_capture(&name)
+                .map_or(syntax.plain, |kind| kind.color(syntax));
+            (name, json!({"color": hex(color)}))
+        })
+        .collect();
+    let theme = json!({
+        "name": "dv",
+        "appearance": if dv.appearance.is_light() { "light" } else { "dark" },
+        "style": {
+            "editor.background": hex(dv.colors.code),
+            "editor.foreground": hex(syntax.plain),
+            "syntax": captures,
+        },
+    });
+    serde_json::from_value(theme).unwrap_or_else(|error| {
+        log::warn!("dv's highlight theme didn't build ({error}); using gpui-component's");
+        let fallback = if dv.appearance.is_light() {
+            HighlightTheme::default_light()
+        } else {
+            HighlightTheme::default_dark()
+        };
+        (*fallback).clone()
+    })
 }

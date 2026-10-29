@@ -21,17 +21,26 @@ pub struct LabelContext {
 impl LabelContext {
     /// Reads them from `repo` (blocking). A part that can't be read stays `None`.
     pub fn read(repo: &GitRepo) -> Self {
-        let branch = repo.current_branch().ok().flatten();
-        let head = branch.clone().or_else(|| {
-            repo.head()
-                .ok()
-                .flatten()
-                .map(|oid| oid.short().to_string())
+        // Two independent questions, each a git call or two: asked at once, they cost one wait
+        // where a git process takes tens of milliseconds to start (PLAN §17's budgets).
+        let (branch, head, default_base) = std::thread::scope(|scope| {
+            let default_base = scope.spawn(|| repo.default_branch().ok().flatten());
+            let branch = repo.current_branch().ok().flatten();
+            let head = branch.clone().or_else(|| {
+                repo.head()
+                    .ok()
+                    .flatten()
+                    .map(|oid| oid.short().to_string())
+            });
+            let default_base = default_base
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            (branch, head, default_base)
         });
         Self {
             head,
             branch,
-            default_base: repo.default_branch().ok().flatten(),
+            default_base,
         }
     }
 

@@ -200,9 +200,15 @@ fn rows_say_why_a_repo_has_nothing_to_offer() {
         )),
         label: "abc".into(),
     });
+    // A folder that is no longer a repository: a read error, without the path again.
+    let mut gone = row("gone", r"D:\gone");
+    gone.working = None;
+    gone.unreachable = Some(r"not a git repository: D:\gone".into());
+    gone.error = Some(Failure::new(r"not a git repository: D:\gone"));
 
     let listing = build(
         &[
+            &gone,
             &wsl,
             &clean,
             &loading,
@@ -219,6 +225,7 @@ fn rows_say_why_a_repo_has_nothing_to_offer() {
     assert_eq!(
         summaries,
         [
+            &RepoSummary::Error("not a git repository".into()),
             &RepoSummary::Stopped("Ubuntu".into()),
             &RepoSummary::Clean,
             &RepoSummary::Loading,
@@ -230,9 +237,9 @@ fn rows_say_why_a_repo_has_nothing_to_offer() {
             &RepoSummary::Unreachable("reconnecting…".into()),
         ]
     );
-    assert_eq!(listing.repos[0].distro.as_deref(), Some("Ubuntu"));
+    assert_eq!(listing.repos[1].distro.as_deref(), Some("Ubuntu"));
     assert_eq!(
-        listing.repos[0].shown_path, "/home/kyle/web",
+        listing.repos[1].shown_path, "/home/kyle/web",
         "the chip names the distro; the path is the distro's"
     );
     // A stopped distro's repository offers to start it, and nothing else.

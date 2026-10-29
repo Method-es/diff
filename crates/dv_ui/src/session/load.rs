@@ -125,14 +125,26 @@ fn list_blocking(
             Err(error) => return Err(Failure::from(&error)),
         },
     };
-    let files = file_list(repo, &spec).map_err(|error| Failure::from(&error))?;
-    let target_files = match comparison {
-        Comparison::SinceRound(_) => {
-            Some(file_list(repo, &resolved).map_err(|error| Failure::from(&error))?)
-        }
-        Comparison::All => None,
-    };
-    let labels = (read_labels || previous != Some(&resolved)).then(|| LabelContext::read(repo));
+    // The labels are read while the files are listed: neither waits on the other's git calls
+    // (PLAN §17's budgets).
+    let read_labels = read_labels || previous != Some(&resolved);
+    let (files, target_files, labels) = std::thread::scope(|scope| {
+        let labels = read_labels.then(|| scope.spawn(|| LabelContext::read(repo)));
+        let files = file_list(repo, &spec);
+        let target_files = match comparison {
+            Comparison::SinceRound(_) => Some(file_list(repo, &resolved)),
+            Comparison::All => None,
+        };
+        let labels = labels.map(|job| {
+            job.join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        });
+        (files, target_files, labels)
+    });
+    let files = files.map_err(|error| Failure::from(&error))?;
+    let target_files = target_files
+        .transpose()
+        .map_err(|error| Failure::from(&error))?;
     Ok(Listed {
         spec,
         resolved,

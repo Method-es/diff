@@ -797,8 +797,8 @@ pub struct ComposerBox {
     posting: bool,
     error: Option<Failure>,
     compact: bool,
-    /// Beside "Markdown" in the footer: what happens to the text ("claude-code reads it with
-    /// the round", asking about an annotation).
+    /// In place of "Markdown" in the footer: what happens to the text ("claude-code reads it
+    /// with the round", asking about an annotation), which matters more in a narrow card.
     hint: Option<String>,
     on_post: Handler,
     on_cancel: Handler,
@@ -844,7 +844,7 @@ impl ComposerBox {
         self
     }
 
-    /// Words beside "Markdown" in the footer.
+    /// Words in place of "Markdown" in the footer.
     pub fn hint(mut self, hint: Option<String>) -> Self {
         self.hint = hint;
         self
@@ -897,10 +897,7 @@ impl RenderOnce for ComposerBox {
                     .truncate()
                     .text_spec(&theme.text.secondary)
                     .text_color(c.fg3)
-                    .child(match &self.hint {
-                        Some(hint) => format!("Markdown · {hint}"),
-                        None => "Markdown".to_string(),
-                    }),
+                    .child(self.hint.unwrap_or_else(|| "Markdown".to_string())),
             )
             .child(
                 small_button("composer-cancel", "Cancel", &theme)

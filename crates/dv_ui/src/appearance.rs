@@ -1,5 +1,6 @@
-//! Which theme is on screen: the settings' material and mode (PLAN D8, DESIGN §1, §3), narrowed by
-//! what the platform can show and, for `Mode::System`, the OS's light/dark setting.
+//! Which theme is on screen: the settings' palette, material and mode (PLAN D8, DESIGN §1, §3),
+//! narrowed by what the platform can show, what the palette has (DESIGN §1.3: Claude and
+//! Dracula are opaque, Dracula dark) and, for `Mode::System`, the OS's light/dark setting.
 //!
 //! [`init`] runs after [`crate::services::init`] and before the first window, so the first frame
 //! already uses the resolved theme, and from then on follows every settings change. The shell
@@ -12,7 +13,7 @@ use gpui::{App, Global, Subscription, WindowAppearance};
 
 use crate::platform::MaterialSupport;
 use crate::services::{ActiveServices as _, SettingsEvent};
-use crate::theme::{self, Appearance, Material};
+use crate::theme::{self, Appearance, Material, Palette};
 
 struct AppearanceState {
     /// The OS's light/dark setting.
@@ -27,6 +28,7 @@ impl Global for AppearanceState {}
 /// The settings resolved against the platform and the OS.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Resolved {
+    pub palette: Palette,
     pub appearance: Appearance,
     pub material: Material,
 }
@@ -102,18 +104,21 @@ pub fn system(cx: &App) -> Appearance {
 /// The settings resolved now.
 pub fn resolved(cx: &App) -> Resolved {
     let settings = cx.services().settings.read(cx);
+    let palette = settings.palette();
     Resolved {
-        appearance: settings.mode().resolve(system(cx)),
-        material: support(cx).resolve(settings.material()),
+        palette,
+        appearance: palette.appearance(settings.mode().resolve(system(cx))),
+        material: palette.material(support(cx).resolve(settings.material())),
     }
 }
 
 fn sync(cx: &mut App) {
     let Resolved {
+        palette,
         appearance,
         material,
     } = resolved(cx);
-    theme::install(appearance, material, cx);
+    theme::install(palette, appearance, material, cx);
 }
 
 #[cfg(test)]

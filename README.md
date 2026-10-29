@@ -22,6 +22,8 @@ submitting large GitHub PRs, which github.com handles badly, comes next.
 The design is in [docs/PLAN.md](docs/PLAN.md) and the visual spec in
 [docs/DESIGN.md](docs/DESIGN.md). The first implementation stays in `legacy/` as a reference.
 
+Entirely vibecoded for personal use, no support will be provided at all.
+
 ## Building
 
 Needs Rust (the toolchain is pinned in `rust-toolchain.toml`; rustup installs it), `git`, and `gh`
