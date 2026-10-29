@@ -36,5 +36,7 @@
 {"cmd": "settle"}
 {"cmd": "screenshot", "name": "dracula"}
 {"cmd": "set_setting", "key": "palette", "value": "aura"}
-{"cmd": "settle", "expect": [{"pointer": "/settings/resolved_mode", "equals": "light"}, {"pointer": "/settings/resolved_material", "equals": "mica"}, {"pointer": "/shell/window_material", "equals": "mica"}]}
+{"cmd": "settle", "expect": [{"pointer": "/settings/resolved_mode", "equals": "light"}]}
+{"cmd": "settle", "platforms": ["windows"], "expect": [{"pointer": "/settings/resolved_material", "equals": "mica"}, {"pointer": "/shell/window_material", "equals": "mica"}]}
+{"cmd": "settle", "platforms": ["linux", "macos"], "expect": [{"pointer": "/settings/resolved_material", "equals": "opaque"}, {"pointer": "/shell/window_material", "equals": "opaque"}]}
 {"cmd": "quit"}
