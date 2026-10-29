@@ -1,0 +1,30 @@
+{"scenario": {"window_size": "1440x900", "description": "Remove from list (DESIGN §4.1): a repo header's `⋯` opens its menu, and Remove from list drops the repo from the switcher and `known_repos.json`, the selection moving on; the open review's repo has the item disabled (\"Its review is open\") and Ctrl Shift Backspace does nothing on it; Esc closes the menu before the switcher; screenshots of both menus."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "settle"}
+{"cmd": "seed_repo", "name": "api", "steps": [{"write": "app.ts", "text": "export const app = 1;\n"}, {"commit": "base"}, {"write": "app.ts", "text": "export const app = 2;\n"}], "save": {"api_repo": "/path"}}
+{"cmd": "seed_repo", "name": "web", "steps": [{"write": "index.ts", "text": "export const web = 1;\n"}, {"commit": "base"}], "save": {"web_repo": "/path"}}
+{"cmd": "open", "path": "${web_repo}"}
+{"cmd": "open_review", "path": "${api_repo}"}
+{"cmd": "settle", "expect": [{"pointer": "/session/total", "equals": 1}, {"pointer": "/repos", "len": 2}]}
+
+// The switcher; web's `⋯` opens its menu, Remove from list enabled.
+{"cmd": "key", "keystroke": "secondary-o"}
+{"cmd": "settle", "expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/switcher/menu", "equals": null}, {"pointer": "/switcher/selected", "equals": "api/working"}]}
+{"cmd": "click", "target": "switcher/repo/web/more"}
+{"cmd": "settle", "expect": [{"pointer": "/switcher/menu/repo", "equals": "${web_repo}"}, {"pointer": "/switcher/menu/removable", "equals": true}]}
+{"cmd": "screenshot", "name": "menu"}
+{"cmd": "click", "target": "switcher/menu/remove"}
+{"cmd": "settle", "expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/switcher/menu", "equals": null}, {"pointer": "/repos", "len": 1}, {"pointer": "/repos/0/name", "equals": "api"}, {"pointer": "/switcher/items", "contains": {"key": "api/working"}}, {"pointer": "/switcher/selected", "equals": "api/working"}]}
+
+// The open review's repo: a right-click opens its menu with the item disabled, Esc closes the
+// menu and leaves the switcher open, and Ctrl Shift Backspace does nothing.
+{"cmd": "click", "target": "switcher/repo/api", "button": "right"}
+{"cmd": "settle", "expect": [{"pointer": "/switcher/menu/repo", "equals": "${api_repo}"}, {"pointer": "/switcher/menu/removable", "equals": false}]}
+{"cmd": "screenshot", "name": "menu-open-review"}
+{"cmd": "key", "keystroke": "escape"}
+{"cmd": "settle", "expect": [{"pointer": "/switcher/menu", "equals": null}, {"pointer": "/switcher/open", "equals": true}]}
+{"cmd": "key", "keystroke": "secondary-shift-backspace"}
+{"cmd": "settle", "expect": [{"pointer": "/repos", "len": 1}, {"pointer": "/switcher/open", "equals": true}]}
+{"cmd": "key", "keystroke": "escape"}
+{"cmd": "settle", "expect": [{"pointer": "/switcher/open", "equals": false}]}

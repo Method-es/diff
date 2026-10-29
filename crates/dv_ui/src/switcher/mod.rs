@@ -5,12 +5,10 @@
 //! stopped WSL distro's **Start** row starts it, and a failed connection's **Retry** row
 //! connects again, the switcher staying open while it lists the repository, which then has
 //! the selection. Meanwhile the Start or Retry row stays, inert, with the selection: picking
-//! it again does nothing. A repository's header has a remove button (`Shift Delete` removes the
-//! selected row's): it leaves the list, its reviews staying in the repository, and the
-//! selection moves to the repository that took its place.
+//! it again does nothing.
 //!
 //! A filter field has the keyboard while it is open: typing filters ([`items::build`]), `↑`/`↓`
-//! move the selection (wrapping), `Enter` picks, `Shift Delete` removes, `Esc` closes. The switcher only reports what
+//! move the selection (wrapping), `Enter` picks, `Esc` closes. The switcher only reports what
 //! was picked ([`SwitcherEvent`]); the shell opens it. Rows refresh as the reviews service
 //! recomputes them (it does when the switcher opens, and when a connection a row goes through
 //! starts reconnecting, stops or fails, or comes back), keeping the selected row.
@@ -20,10 +18,17 @@
 //! opening or resuming its `branch` review. There `Esc` steps back (bases → branches → the
 //! repositories, when the picker was entered from them) before it closes.
 //!
+//! A repository's header has a menu (a right-click, or its `⋯` under the pointer) with **Remove
+//! from list**, which `Ctrl Shift Backspace` does for the selected row's repository: the
+//! repository leaves the known ones (`Reviews::remove_repo`), the selection moving to the next
+//! one's first row. The open review's repository can't be removed (its menu item is disabled,
+//! the key does nothing): the title bar's source picker lists its targets.
+//!
 //! [`source`] is the title bar's other menu, the current repository's targets.
 //!
-//! Automation targets: `switcher`, `switcher/filter`, `switcher/repo/<repo>` and its
-//! `switcher/repo/<repo>/remove`, `switcher/<key>` for each row ([`items::Item::key`]).
+//! Automation targets: `switcher`, `switcher/filter`, `switcher/repo/<repo>`,
+//! `switcher/repo/<repo>/more` (the header's `⋯`), `switcher/menu`, `switcher/menu/remove`,
+//! `switcher/<key>` for each row ([`items::Item::key`]).
 
 pub mod branches;
 pub mod items;
@@ -64,10 +69,17 @@ pub enum SwitcherEvent {
     /// **Start** on the repository at `location`, whose WSL distro isn't running, or **Retry**
     /// on one whose connection failed: both connect explicitly (`Reviews::start`).
     Start { location: Location },
-    /// Remove the repository at `location` from the list (`Reviews::remove_repo`).
+    /// **Remove from list** on the repository at `location` (`Reviews::remove_repo`).
     Remove { location: Location },
     /// Closed without picking (`Esc`).
     Dismiss,
+}
+
+/// A repository header's menu: whose, and where it opened.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RepoMenu {
+    pub location: Location,
+    pub position: gpui::Point<gpui::Pixels>,
 }
 
 /// The switcher (see the module docs).
@@ -85,9 +97,12 @@ pub struct Switcher {
     /// The repository a **Start** or **Retry** was picked on: its first row takes the
     /// selection once it lists one.
     started: Option<Location>,
-    /// The repository that takes a removed one's place: its first row takes the selection
-    /// once the removed one has left the list.
-    after_remove: Option<Location>,
+    /// The open review's repository (the one it was opened from), which can't be removed.
+    in_use: Option<Location>,
+    /// A repository header's menu, while open.
+    menu: Option<RepoMenu>,
+    /// The row a removal moves the selection to, once the listing drops the repository.
+    after_remove: Option<String>,
     scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -97,10 +112,12 @@ impl EventEmitter<SwitcherEvent> for Switcher {}
 impl Switcher {
     /// A switcher over the known repositories, its selection on `focus`'s first row (the
     /// repository `dv open` named), else on the open review `current`, else on the first row.
+    /// `in_use` is the open review's repository, which it won't remove.
     pub fn new(
         reviews: Entity<Reviews>,
         focus: Option<&Location>,
         current: Option<&ReviewId>,
+        in_use: Option<Location>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -124,6 +141,8 @@ impl Switcher {
             listing: Listing::default(),
             selected: 0,
             started: None,
+            in_use,
+            menu: None,
             after_remove: None,
             scroll: ScrollHandle::new(),
             _subscriptions: subscriptions,
@@ -203,6 +222,68 @@ impl Switcher {
             .map(|item| item.key.as_str())
     }
 
+    /// The open header menu.
+    pub fn menu(&self) -> Option<&RepoMenu> {
+        self.menu.as_ref()
+    }
+
+    /// Whether the repository at `location` can be removed: it isn't the open review's.
+    pub fn can_remove(&self, location: &Location) -> bool {
+        self.in_use.as_ref() != Some(location)
+    }
+
+    /// The repository `Ctrl Shift Backspace` would remove: the selected row's, when it can be.
+    /// Only the repositories' list removes: the branch picker's header is the repository it
+    /// compares in.
+    pub fn removable(&self) -> Option<&Location> {
+        if self.mode != Mode::Repos {
+            return None;
+        }
+        self.listing
+            .location_of(self.selected)
+            .filter(|location| self.can_remove(location))
+    }
+
+    /// Opens the header menu of the repository at `location`, at `position`.
+    pub fn open_menu(
+        &mut self,
+        location: Location,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = Some(RepoMenu { location, position });
+        cx.notify();
+    }
+
+    pub fn close_menu(&mut self, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Removes the repository at `location` from the list, when it can be (module docs).
+    pub fn remove(&mut self, location: &Location, cx: &mut Context<Self>) {
+        self.menu = None;
+        if self.mode != Mode::Repos || !self.can_remove(location) {
+            cx.notify();
+            return;
+        }
+        self.after_remove = self
+            .listing
+            .row_after_removing(location)
+            .map(str::to_string);
+        cx.emit(SwitcherEvent::Remove {
+            location: location.clone(),
+        });
+        cx.notify();
+    }
+
+    fn remove_selected(&mut self, _: &RemoveRepo, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(location) = self.removable().cloned() {
+            self.remove(&location, cx);
+        }
+    }
+
     /// Selects the row `key`; `false` when it isn't listed.
     pub fn select_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
         match self.listing.position(key) {
@@ -245,15 +326,14 @@ impl Switcher {
         if started.is_some() {
             self.started = None;
         }
-        let kept = keep.and_then(|key| self.listing.position(&key));
-        let replaced = match kept {
-            Some(_) => None,
-            None => self
-                .after_remove
-                .take()
-                .and_then(|location| self.listing.first_of(&location)),
-        };
-        self.selected = started.or(kept).or(replaced).unwrap_or(0);
+        let removed_to = self
+            .after_remove
+            .take()
+            .and_then(|key| self.listing.position(&key));
+        self.selected = started
+            .or(removed_to)
+            .or_else(|| keep.and_then(|key| self.listing.position(&key)))
+            .unwrap_or(0);
         self.scroll_to_selected();
         cx.notify();
     }
@@ -300,37 +380,13 @@ impl Switcher {
         self.pick(self.selected, window, cx);
     }
 
-    fn remove_selected(&mut self, _: &RemoveRepo, _: &mut Window, cx: &mut Context<Self>) {
-        let repo = self
-            .listing
-            .items
-            .get(self.selected)
-            .and_then(|item| item.repo);
-        if let Some(repo) = repo {
-            self.remove(repo, cx);
-        }
-    }
-
-    /// Asks for the repository `listing.repos[repo]` to be removed, the one after it (else the
-    /// one before) to have the selection once it has gone. Only the repositories' list removes:
-    /// the branch picker's header is the repository it compares in.
-    fn remove(&mut self, repo: usize, cx: &mut Context<Self>) {
-        if self.mode != Mode::Repos {
-            return;
-        }
-        let repos = &self.listing.repos;
-        let Some(location) = repos.get(repo).map(|header| header.location.clone()) else {
-            return;
-        };
-        self.after_remove = repos
-            .get(repo + 1)
-            .or_else(|| repo.checked_sub(1).and_then(|before| repos.get(before)))
-            .map(|header| header.location.clone());
-        cx.emit(SwitcherEvent::Remove { location });
-    }
-
-    /// `Esc`: a step back in the branch picker (module docs), else closes.
+    /// `Esc`: closes the header menu when it is open, else a step back in the branch picker
+    /// (module docs), else closes.
     fn dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+            cx.notify();
+            return;
+        }
         let repo_key = self.listing.repos.first().map(|repo| repo.key.clone());
         match self.mode.clone() {
             Mode::Bases { location, branch } => {

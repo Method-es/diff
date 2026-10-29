@@ -150,9 +150,10 @@ pub const SHORTCUTS: &[Shortcut] = &[
     shortcut!("down", SWITCHER, switcher::SelectNext, AheadOfInputs),
     shortcut!("up", SWITCHER, switcher::SelectPrevious, AheadOfInputs),
     shortcut!("enter", SWITCHER, switcher::Confirm),
-    // Ahead of the field too, which would otherwise cut its text.
+    // The filter field deletes text with Backspace and its Ctrl, Alt and Shift forms, never
+    // with Ctrl Shift Backspace, which the field would otherwise swallow.
     shortcut!(
-        "shift-delete",
+        "secondary-shift-backspace",
         SWITCHER,
         switcher::RemoveRepo,
         AheadOfInputs

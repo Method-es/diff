@@ -738,22 +738,6 @@ impl Reviews {
         })
     }
 
-    /// Forgets the repository at `location` (the switcher's remove, DESIGN §4.1): its row
-    /// leaves the switcher and `known_repos.json`, and a refresh running for it is dropped.
-    /// Nothing in the repository changes: its reviews stay under `.git/dv`, and adding it again
-    /// (or opening a review in it) lists them as before. `false` when it wasn't known.
-    pub fn remove_repo(&mut self, location: &Location, cx: &mut Context<Self>) -> bool {
-        if !self.known.remove(location) {
-            return false;
-        }
-        self.rows.remove(location);
-        self.refreshing.remove(location);
-        self.save(cx);
-        cx.emit(ReviewsEvent::Changed);
-        cx.notify();
-        true
-    }
-
     /// Knows `location` from now on, unless it is known already however its WSL distro is
     /// spelled (module docs); the location as known.
     fn add_known(&mut self, location: Location, cx: &mut Context<Self>) -> Location {
@@ -769,6 +753,22 @@ impl Reviews {
             cx.emit(ReviewsEvent::Changed);
         }
         location
+    }
+
+    /// Forgets the known repository at `location` ("Remove from list", DESIGN §4.1): its row
+    /// and any refresh of it go, and `known_repos.json` is saved without it. Nothing in the
+    /// repository changes, its reviews included; opening it again adds it back with them. A
+    /// refresh still running for it finds no row and is dropped. `false` when it wasn't known.
+    pub fn remove_repo(&mut self, location: &Location, cx: &mut Context<Self>) -> bool {
+        if !self.known.remove(location) {
+            return false;
+        }
+        self.rows.remove(location);
+        self.refreshing.remove(location);
+        self.save(cx);
+        cx.emit(ReviewsEvent::Changed);
+        cx.notify();
+        true
     }
 
     /// A listing or an open of `given` reached the repository whose worktree root is `root`
