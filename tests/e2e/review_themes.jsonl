@@ -1,0 +1,42 @@
+{"scenario": {"window_size": "1440x900", "description": "The themes (DESIGN §1.3): Settings › Appearance's Theme row (palette) picks Aura, Claude or Dracula; Claude and Dracula are opaque, their Mica and Acrylic disabled with the note keeping the material for Aura, and Dracula is dark whatever the mode, the mode row saying so; a review with an annotation, a reply and a selected line in Claude Dark, Claude Light and Dracula, and Settings in Claude Light and Dracula; back to Aura, the material and mode are as they were."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "set_setting", "key": "material", "value": "mica"}
+{"cmd": "settle"}
+{"cmd": "seed_repo", "name": "api-server", "steps": [{"write": "src/routes/users.ts", "text": "import { db } from \"../db\";\nimport type { User } from \"../types\";\n\nexport const users = Router();\n\nusers.get(\"/:id\", async (req, res) => {\n  const user = await db.users.find(req.params.id);\n  if (!user) return res.status(404).end();\n  res.json({ id: user.id, name: user.name });\n});\n"}, {"write": "README.md", "text": "# api-server\n"}, {"commit": "base"}, {"write": "src/routes/users.ts", "text": "import { db } from \"../db\";\nimport { cache } from \"../lib/cache\";\nimport type { User } from \"../types\";\n\nexport const users = Router();\n\nexport async function fetchUser(id: string): Promise<User | null> {\n  const key = `user:${id.toLowerCase()}`;\n  const hit = cache.get<User>(key);\n  if (hit) return hit;\n  const user = await db.users.find(id);\n  if (user) cache.set(key, user, 60_000); // a minute\n  return user;\n}\n\nusers.get(\"/:id\", async (req, res) => {\n  const user = await fetchUser(req.params.id);\n  if (!user) return res.status(404).json({ error: \"not_found\" });\n  res.json({ id: user.id, name: user.name, email: user.email });\n});\n"}, {"write": "README.md", "text": "# api-server\n\nThe users API, with a cache in front of the database.\n"}]}
+{"cmd": "cli", "args": ["review", "new", "--author", "claude-code", "--json"], "cwd": "repos/api-server", "save": {"review": "/json/review/id"}, "expect_result": [{"pointer": "/exit", "equals": 0}]}
+{"cmd": "cli", "args": ["comment", "annotate", "--review", "${review}", "--author", "claude-code", "--file", "src/routes/users.ts", "--lines", "7:14", "--body-file", "-", "--json"], "cwd": "repos/api-server", "stdin": "Pulled out of the route so the test can call it. The key is lower-cased: ids arrive in both cases.\n", "expect_result": [{"pointer": "/exit", "equals": 0}]}
+{"cmd": "open_review", "path": "${data_dir}/repos/api-server"}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/session/total", "equals": 2}]}
+{"cmd": "key", "keystroke": "j"}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "aura-dark"}
+{"cmd": "key", "keystroke": "secondary-,"}
+{"cmd": "settle", "expect": [{"pointer": "/setup/settings_open", "equals": true}]}
+{"cmd": "click", "target": "settings/palette/claude"}
+{"cmd": "settle", "expect": [{"pointer": "/settings/palette", "equals": "claude"}, {"pointer": "/settings/material", "equals": "mica"}, {"pointer": "/settings/resolved_material", "equals": "opaque"}, {"pointer": "/settings/resolved_mode", "equals": "dark"}, {"pointer": "/shell/window_material", "equals": "opaque"}]}
+{"cmd": "screenshot", "name": "settings-claude-dark"}
+{"cmd": "click", "target": "settings/material/acrylic", "expect": {"pointer": "/settings/material", "equals": "mica"}}
+{"cmd": "click", "target": "settings/mode/light"}
+{"cmd": "settle", "expect": [{"pointer": "/settings/resolved_mode", "equals": "light"}]}
+{"cmd": "screenshot", "name": "settings-claude-light"}
+{"cmd": "key", "keystroke": "escape"}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "claude-light"}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "claude-dark"}
+{"cmd": "set_setting", "key": "mode", "value": "light"}
+{"cmd": "key", "keystroke": "secondary-,"}
+{"cmd": "settle"}
+{"cmd": "click", "target": "settings/palette/dracula"}
+{"cmd": "settle", "expect": [{"pointer": "/settings/palette", "equals": "dracula"}, {"pointer": "/settings/mode", "equals": "light"}, {"pointer": "/settings/resolved_mode", "equals": "dark"}, {"pointer": "/settings/resolved_material", "equals": "opaque"}]}
+{"cmd": "screenshot", "name": "settings-dracula"}
+{"cmd": "key", "keystroke": "escape"}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "dracula"}
+{"cmd": "set_setting", "key": "palette", "value": "aura"}
+{"cmd": "settle", "expect": [{"pointer": "/settings/resolved_mode", "equals": "light"}]}
+{"cmd": "settle", "platforms": ["windows"], "expect": [{"pointer": "/settings/resolved_material", "equals": "mica"}, {"pointer": "/shell/window_material", "equals": "mica"}]}
+{"cmd": "settle", "platforms": ["linux", "macos"], "expect": [{"pointer": "/settings/resolved_material", "equals": "opaque"}, {"pointer": "/shell/window_material", "equals": "opaque"}]}
+{"cmd": "quit"}

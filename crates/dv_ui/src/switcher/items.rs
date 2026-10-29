@@ -381,6 +381,15 @@ fn summary(row: &RepoRow) -> RepoSummary {
         return RepoSummary::Unreachable("reconnecting…".to_string());
     }
     if let Some(reason) = &row.unreachable {
+        // A repository reached without a connection (no Retry to offer) has none to be down:
+        // what kept it from opening (its folder gone, no longer a repository) is a read error,
+        // in `red` (DESIGN §4.1), and the header shows its path already.
+        if !row.retry {
+            let reason = reason
+                .strip_suffix(&format!(": {}", row.path))
+                .unwrap_or(reason);
+            return RepoSummary::Error(reason.to_string());
+        }
         return RepoSummary::Unreachable(reason.clone());
     }
     match (row.working, &row.error) {

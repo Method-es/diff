@@ -23,8 +23,10 @@ pub fn settings(cx: &App) -> Value {
         .map(Material::key)
         .collect();
     json!({
+        "palette": settings.palette().key(),
         "material": settings.material().key(),
         "mode": settings.mode().key(),
+        "resolved_palette": resolved.palette.key(),
         "resolved_material": resolved.material.key(),
         "resolved_mode": resolved.appearance.key(),
         "available_materials": available,

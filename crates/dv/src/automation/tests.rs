@@ -129,6 +129,10 @@ fn setting_changes_parse() {
         parse(json!({"key": "mode", "value": "light"})).unwrap(),
         SettingChange::Mode(Mode::Light)
     );
+    assert_eq!(
+        parse(json!({"key": "palette", "value": "dracula"})).unwrap(),
+        SettingChange::Palette(dv_ui::theme::Palette::Dracula)
+    );
     for (args, error) in [
         (json!({}), "needs \"key\""),
         (json!({"key": "material"}), "needs a string \"value\""),
@@ -137,6 +141,10 @@ fn setting_changes_parse() {
             "material must be",
         ),
         (json!({"key": "mode", "value": "auto"}), "mode must be"),
+        (
+            json!({"key": "palette", "value": "Aura Dark"}),
+            "palette must be",
+        ),
         (json!({"key": "theme", "value": "dark"}), "unknown setting"),
     ] {
         let message = parse(args.clone()).unwrap_err().to_string();

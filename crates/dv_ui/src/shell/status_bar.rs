@@ -401,6 +401,12 @@ impl Shell {
                             .rounded_full()
                             .bg(line.health.color(theme)),
                     )
+                    // A connection in trouble says so in its colour too ("· reconnecting…" in
+                    // `yellow`, "· disconnected" in `red`, DESIGN §4.4); a healthy one in `fg2`.
+                    .when(
+                        matches!(line.health, Health::Degraded | Health::Failing),
+                        |this| this.text_color(line.health.color(theme)),
+                    )
                     .child(line.location)
                     .automation_target("statusbar/location"),
             )

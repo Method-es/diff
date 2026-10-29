@@ -5,10 +5,12 @@
 //! stopped WSL distro's **Start** row starts it, and a failed connection's **Retry** row
 //! connects again, the switcher staying open while it lists the repository, which then has
 //! the selection. Meanwhile the Start or Retry row stays, inert, with the selection: picking
-//! it again does nothing.
+//! it again does nothing. A repository's header has a remove button (`Shift Delete` removes the
+//! selected row's): it leaves the list, its reviews staying in the repository, and the
+//! selection moves to the repository that took its place.
 //!
 //! A filter field has the keyboard while it is open: typing filters ([`items::build`]), `↑`/`↓`
-//! move the selection (wrapping), `Enter` picks, `Esc` closes. The switcher only reports what
+//! move the selection (wrapping), `Enter` picks, `Shift Delete` removes, `Esc` closes. The switcher only reports what
 //! was picked ([`SwitcherEvent`]); the shell opens it. Rows refresh as the reviews service
 //! recomputes them (it does when the switcher opens, and when a connection a row goes through
 //! starts reconnecting, stops or fails, or comes back), keeping the selected row.
@@ -20,8 +22,8 @@
 //!
 //! [`source`] is the title bar's other menu, the current repository's targets.
 //!
-//! Automation targets: `switcher`, `switcher/filter`, `switcher/repo/<repo>`, `switcher/<key>`
-//! for each row ([`items::Item::key`]).
+//! Automation targets: `switcher`, `switcher/filter`, `switcher/repo/<repo>` and its
+//! `switcher/repo/<repo>/remove`, `switcher/<key>` for each row ([`items::Item::key`]).
 
 pub mod branches;
 pub mod items;
@@ -39,7 +41,7 @@ use gpui::{
 };
 use gpui_component::input::{InputEvent, InputState};
 
-use crate::actions::switcher::{Confirm, Dismiss, SelectNext, SelectPrevious};
+use crate::actions::switcher::{Confirm, Dismiss, RemoveRepo, SelectNext, SelectPrevious};
 use crate::services::reviews::{OpenRequest, Reviews};
 use branches::Mode;
 use items::{ItemKind, Listing};
@@ -62,6 +64,8 @@ pub enum SwitcherEvent {
     /// **Start** on the repository at `location`, whose WSL distro isn't running, or **Retry**
     /// on one whose connection failed: both connect explicitly (`Reviews::start`).
     Start { location: Location },
+    /// Remove the repository at `location` from the list (`Reviews::remove_repo`).
+    Remove { location: Location },
     /// Closed without picking (`Esc`).
     Dismiss,
 }
@@ -81,6 +85,9 @@ pub struct Switcher {
     /// The repository a **Start** or **Retry** was picked on: its first row takes the
     /// selection once it lists one.
     started: Option<Location>,
+    /// The repository that takes a removed one's place: its first row takes the selection
+    /// once the removed one has left the list.
+    after_remove: Option<Location>,
     scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -117,6 +124,7 @@ impl Switcher {
             listing: Listing::default(),
             selected: 0,
             started: None,
+            after_remove: None,
             scroll: ScrollHandle::new(),
             _subscriptions: subscriptions,
         };
@@ -237,9 +245,15 @@ impl Switcher {
         if started.is_some() {
             self.started = None;
         }
-        self.selected = started
-            .or_else(|| keep.and_then(|key| self.listing.position(&key)))
-            .unwrap_or(0);
+        let kept = keep.and_then(|key| self.listing.position(&key));
+        let replaced = match kept {
+            Some(_) => None,
+            None => self
+                .after_remove
+                .take()
+                .and_then(|location| self.listing.first_of(&location)),
+        };
+        self.selected = started.or(kept).or(replaced).unwrap_or(0);
         self.scroll_to_selected();
         cx.notify();
     }
@@ -284,6 +298,35 @@ impl Switcher {
 
     fn confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
         self.pick(self.selected, window, cx);
+    }
+
+    fn remove_selected(&mut self, _: &RemoveRepo, _: &mut Window, cx: &mut Context<Self>) {
+        let repo = self
+            .listing
+            .items
+            .get(self.selected)
+            .and_then(|item| item.repo);
+        if let Some(repo) = repo {
+            self.remove(repo, cx);
+        }
+    }
+
+    /// Asks for the repository `listing.repos[repo]` to be removed, the one after it (else the
+    /// one before) to have the selection once it has gone. Only the repositories' list removes:
+    /// the branch picker's header is the repository it compares in.
+    fn remove(&mut self, repo: usize, cx: &mut Context<Self>) {
+        if self.mode != Mode::Repos {
+            return;
+        }
+        let repos = &self.listing.repos;
+        let Some(location) = repos.get(repo).map(|header| header.location.clone()) else {
+            return;
+        };
+        self.after_remove = repos
+            .get(repo + 1)
+            .or_else(|| repo.checked_sub(1).and_then(|before| repos.get(before)))
+            .map(|header| header.location.clone());
+        cx.emit(SwitcherEvent::Remove { location });
     }
 
     /// `Esc`: a step back in the branch picker (module docs), else closes.

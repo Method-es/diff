@@ -1162,6 +1162,10 @@ impl Shell {
                     .update(cx, |reviews, cx| reviews.start(location.clone(), cx))
                     .detach();
             }
+            SwitcherEvent::Remove { location } => {
+                let reviews = cx.services().reviews.clone();
+                reviews.update(cx, |reviews, cx| reviews.remove_repo(location, cx));
+            }
             SwitcherEvent::Dismiss => {
                 self.close_menu(window, cx);
             }

@@ -204,9 +204,15 @@ fn rows_say_why_a_repo_has_nothing_to_offer() {
         )),
         label: "abc".into(),
     });
+    // A folder that is no longer a repository: a read error, without the path again.
+    let mut gone = row("gone", r"D:\gone");
+    gone.working = None;
+    gone.unreachable = Some(r"not a git repository: D:\gone".into());
+    gone.error = Some(Failure::new(r"not a git repository: D:\gone"));
 
     let listing = build(
         &[
+            &gone,
             &wsl,
             &clean,
             &loading,
@@ -223,6 +229,7 @@ fn rows_say_why_a_repo_has_nothing_to_offer() {
     assert_eq!(
         summaries,
         [
+            &RepoSummary::Error("not a git repository".into()),
             &RepoSummary::Stopped("Ubuntu".into()),
             &RepoSummary::Clean,
             &RepoSummary::Loading,
@@ -234,9 +241,9 @@ fn rows_say_why_a_repo_has_nothing_to_offer() {
             &RepoSummary::Unreachable("reconnecting…".into()),
         ]
     );
-    assert_eq!(listing.repos[0].distro.as_deref(), Some("Ubuntu"));
+    assert_eq!(listing.repos[1].distro.as_deref(), Some("Ubuntu"));
     assert_eq!(
-        listing.repos[0].shown_path, "/home/kyle/web",
+        listing.repos[1].shown_path, "/home/kyle/web",
         "the chip names the distro; the path is the distro's"
     );
     // A stopped distro's repository offers to start it, and nothing else.
@@ -965,6 +972,17 @@ fn the_branch_picker_opens_a_stacked_branch_against_its_base(cx: &mut TestAppCon
         selected(&shell, cx).as_deref(),
         Some("api-server/pick/feat-b")
     );
+    // Shift Delete removes repositories from their own list only.
+    cx.simulate_keystrokes("shift-delete");
+    settle(cx, &shell, "nothing removed", |_, _| true);
+    let rows = cx.update(|_, cx| {
+        crate::ActiveServices::services(cx)
+            .reviews
+            .read(cx)
+            .rows()
+            .len()
+    });
+    assert_eq!(rows, 1);
 
     // Enter lists its bases, the stack base first; Esc steps back to the branches, and again
     // to the repositories, where "Compare branches…" keeps the selection.
@@ -1054,4 +1072,54 @@ fn the_source_picker_opens_the_branch_picker_and_esc_closes_it(cx: &mut TestAppC
     // Opened on the picker, Esc in its first step closes the switcher.
     cx.simulate_keystrokes("escape");
     assert!(switcher(&shell, cx).is_none());
+}
+
+#[gpui::test]
+fn shift_delete_removes_the_selected_rows_repository_and_its_neighbour_takes_the_selection(
+    cx: &mut TestAppContext,
+) {
+    let (dir, shell, cx) = open_shell(cx);
+    let repos = tempfile::tempdir().unwrap();
+    let api = fixture_at(&repos.path().join("api-server"));
+    let web = fixture_at(&repos.path().join("web"));
+    add_repo(&api, &shell, cx);
+    add_repo(&web, &shell, cx);
+
+    // The most recently added first: web's row is selected; Shift Delete removes web.
+    cx.simulate_keystrokes("secondary-o");
+    settle(cx, &shell, "the rows", |_, _| true);
+    assert_eq!(selected(&shell, cx).as_deref(), Some("web/working"));
+    cx.simulate_keystrokes("shift-delete");
+    settle(cx, &shell, "the removal", |_, _| true);
+    let view = switcher(&shell, cx).expect("the switcher stays open");
+    view.read_with(cx, |view, _| {
+        assert!(view.listing().repos.iter().all(|repo| repo.name != "web"));
+        assert_eq!(view.query(), "", "the filter keeps its text");
+    });
+    assert_eq!(selected(&shell, cx).as_deref(), Some("api-server/working"));
+    let file = std::fs::read_to_string(dir.path().join("known_repos.json")).unwrap();
+    let known: serde_json::Value = serde_json::from_str(&file).unwrap();
+    assert_eq!(known["repos"].as_array().map(Vec::len), Some(1), "{file}");
+    assert!(file.contains("api-server"), "{file}");
+
+    // Its reviews stay in the repository: it lists again once added back.
+    cx.simulate_keystrokes("escape");
+    add_repo(&web, &shell, cx);
+    let rows = cx.update(|_, cx| {
+        crate::ActiveServices::services(cx)
+            .reviews
+            .read(cx)
+            .rows()
+            .len()
+    });
+    assert_eq!(rows, 2);
+
+    // The last repository goes too: the list says there are none.
+    cx.simulate_keystrokes("secondary-o");
+    settle(cx, &shell, "the rows", |_, _| true);
+    cx.simulate_keystrokes("shift-delete");
+    settle(cx, &shell, "the removal", |_, _| true);
+    cx.simulate_keystrokes("shift-delete");
+    settle(cx, &shell, "the removal", |_, _| true);
+    view.read_with(cx, |view, _| assert!(view.listing().repos.is_empty()));
 }

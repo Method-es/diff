@@ -1,11 +1,13 @@
-//! Settings › Appearance (DESIGN §4.3): the light/dark mode and the window material, each a
-//! segmented control that changes the setting at once (`services::Settings`, which
-//! `crate::appearance` follows). A material the platform can't show is drawn disabled, and a
-//! line under the control says why; a setting it can't show (Mica with transparency effects
-//! since turned off) stays chosen, the window showing Opaque meanwhile (DESIGN §3).
+//! Settings › Appearance (DESIGN §4.3): the theme's palette, the light/dark mode and the window
+//! material, each a segmented control that changes the setting at once (`services::Settings`,
+//! which `crate::appearance` follows). A material the platform or the palette can't show
+//! (Claude and Dracula are opaque, DESIGN §1.3) is drawn disabled, and a line under the control
+//! says why; a setting it can't show (Mica with transparency effects since turned off, or with
+//! Claude chosen) stays chosen, the window showing Opaque meanwhile (DESIGN §3). With Dracula,
+//! which has no light palette, the mode row says so.
 //!
-//! Automation targets: `settings/appearance`, `settings/mode/<key>` and
-//! `settings/material/<key>` (the settings' keys, `system`, `mica`, …).
+//! Automation targets: `settings/appearance`, `settings/palette/<key>`, `settings/mode/<key>`
+//! and `settings/material/<key>` (the settings' keys, `aura`, `system`, `mica`, …).
 
 use gpui::{
     AnyElement, App, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
@@ -17,14 +19,37 @@ use crate::automation::AutomationTargetExt as _;
 use crate::components::{segment, segmented};
 use crate::platform::MaterialSupport;
 use crate::services::{ActiveServices as _, Mode};
-use crate::theme::{DvTheme, Material, StyledText as _};
+use crate::theme::{DvTheme, Material, Palette, StyledText as _};
 
 /// The page: its heading over one card with a row per setting.
 pub fn page(theme: &DvTheme, cx: &App) -> AnyElement {
     let c = &theme.colors;
     let settings = cx.services().settings.read(cx);
-    let (mode, material) = (settings.mode(), settings.material());
+    let (palette, mode, material) = (settings.palette(), settings.mode(), settings.material());
     let support = crate::appearance::support(cx);
+
+    let palettes = Palette::ALL
+        .into_iter()
+        .fold(segmented(theme), |control, each| {
+            let on = each == palette;
+            control.child(
+                segment(
+                    SharedString::from(format!("settings-palette-{}", each.key())),
+                    on,
+                    true,
+                    theme,
+                )
+                .debug_selector(move || format!("settings-palette-{}", each.key()))
+                .child(each.label())
+                .when(!on, |this| {
+                    this.on_click(move |_, _, cx| {
+                        let settings = cx.services().settings.clone();
+                        settings.update(cx, |settings, cx| settings.set_palette(each, cx));
+                    })
+                })
+                .automation_target(format!("settings/palette/{}", each.key())),
+            )
+        });
 
     let modes = Mode::ALL
         .into_iter()
@@ -52,7 +77,7 @@ pub fn page(theme: &DvTheme, cx: &App) -> AnyElement {
         .into_iter()
         .fold(segmented(theme), |control, each| {
             let on = each == material;
-            let enabled = support.supports(each);
+            let enabled = palette.material(each) == each && support.supports(each);
             control.child(
                 segment(
                     SharedString::from(format!("settings-material-{}", each.key())),
@@ -80,19 +105,33 @@ pub fn page(theme: &DvTheme, cx: &App) -> AnyElement {
         .border_color(c.line)
         .bg(c.layer)
         .child(row(
-            "Mode",
-            mode_detail().into(),
+            "Theme",
+            "Aura is drawn on the window material; Claude and Dracula are opaque.".into(),
             None,
-            modes.into_any_element(),
+            palettes.into_any_element(),
             theme,
         ))
+        .child(div().border_t_1().border_color(c.line).child(row(
+            "Mode",
+            mode_detail().into(),
+            (!palette.has_light()).then(|| {
+                format!(
+                    "{} has no light palette: dv shows it dark, keeping the mode for the other \
+                     themes.",
+                    palette.label()
+                )
+                .into()
+            }),
+            modes.into_any_element(),
+            theme,
+        )))
         .child(
             div().border_t_1().border_color(c.line).child(row(
                 "Material",
                 "What shows through behind dv's surfaces: Mica tints them with the wallpaper, \
                  Acrylic blurs the windows behind dv."
                     .into(),
-                material_note(support, material),
+                material_note(support, palette, material),
                 materials.into_any_element(),
                 theme,
             )),
@@ -174,8 +213,26 @@ fn mode_detail() -> &'static str {
 }
 
 /// Why a material can't be chosen here, and what the window shows when the setting is one of
-/// those (`platform`'s rules, PLAN D8).
-fn material_note(support: MaterialSupport, chosen: Material) -> Option<SharedString> {
+/// those (`platform`'s rules, PLAN D8; an opaque palette's, DESIGN §1.3).
+fn material_note(
+    support: MaterialSupport,
+    palette: Palette,
+    chosen: Material,
+) -> Option<SharedString> {
+    if !palette.is_glass() {
+        let keeping = if chosen == Material::Opaque {
+            String::new()
+        } else {
+            format!(", keeping {} for Aura", chosen.label())
+        };
+        return Some(
+            format!(
+                "Mica and Acrylic are Aura's: {} is opaque{keeping}.",
+                palette.label()
+            )
+            .into(),
+        );
+    }
     let showing = (!support.supports(chosen)).then(|| {
         format!(
             " dv shows Opaque until then, keeping {} for when it can.",
@@ -210,10 +267,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_opaque_palette_says_so_keeping_the_material_for_aura() {
+        assert_eq!(
+            material_note(MaterialSupport::ALL, Palette::Claude, Material::Mica).as_deref(),
+            Some("Mica and Acrylic are Aura's: Claude is opaque, keeping Mica for Aura.")
+        );
+        assert_eq!(
+            material_note(MaterialSupport::ALL, Palette::Dracula, Material::Opaque).as_deref(),
+            Some("Mica and Acrylic are Aura's: Dracula is opaque.")
+        );
+    }
+
+    #[test]
     fn the_note_says_why_a_material_is_missing() {
-        assert_eq!(material_note(MaterialSupport::ALL, Material::Mica), None);
+        assert_eq!(
+            material_note(MaterialSupport::ALL, Palette::Aura, Material::Mica),
+            None
+        );
         if cfg!(windows) {
-            let off = material_note(MaterialSupport::OPAQUE_ONLY, Material::Acrylic).unwrap();
+            let off = material_note(
+                MaterialSupport::OPAQUE_ONLY,
+                Palette::Aura,
+                Material::Acrylic,
+            )
+            .unwrap();
             assert!(off.contains("Transparency effects"), "{off}");
             assert!(off.contains("keeping Acrylic"), "{off}");
             let no_mica = MaterialSupport {
@@ -221,13 +298,18 @@ mod tests {
                 acrylic: true,
             };
             assert_eq!(
-                material_note(no_mica, Material::Acrylic).as_deref(),
+                material_note(no_mica, Palette::Aura, Material::Acrylic).as_deref(),
                 Some("Mica needs Windows 11 22H2 or later.")
             );
-            let showing = material_note(no_mica, Material::Mica).unwrap();
+            let showing = material_note(no_mica, Palette::Aura, Material::Mica).unwrap();
             assert!(showing.contains("keeping Mica"), "{showing}");
         } else {
-            let note = material_note(MaterialSupport::OPAQUE_ONLY, Material::Opaque).unwrap();
+            let note = material_note(
+                MaterialSupport::OPAQUE_ONLY,
+                Palette::Aura,
+                Material::Opaque,
+            )
+            .unwrap();
             assert!(note.contains("dv is Opaque"), "{note}");
         }
     }

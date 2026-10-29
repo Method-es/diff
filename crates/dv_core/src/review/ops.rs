@@ -94,6 +94,16 @@ pub struct Opened {
 /// (two openers raced), the most recently updated one wins. Logs that fail to load are passed
 /// over.
 pub fn open_review(store: &ReviewStore, target: Target, author: Author) -> Result<Opened, OpError> {
+    open_review_as(store, target, || author)
+}
+
+/// [`open_review`], asking `author` who opens it only when it creates the review: resuming one
+/// then reads nothing more (the app's open, where who the reviewer is costs a git call).
+pub fn open_review_as(
+    store: &ReviewStore,
+    target: Target,
+    author: impl FnOnce() -> Author,
+) -> Result<Opened, OpError> {
     let worktree = store.worktree();
     let existing = store
         .list()?
@@ -112,7 +122,7 @@ pub fn open_review(store: &ReviewStore, target: Target, author: Author) -> Resul
         });
     }
     Ok(Opened {
-        review: store.create(target, author)?,
+        review: store.create(target, author())?,
         created: true,
     })
 }

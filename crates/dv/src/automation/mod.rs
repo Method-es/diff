@@ -58,6 +58,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use dv_test_support::FixtureRepo;
 use dv_ui::services::locations::EnvOverlay;
 use dv_ui::services::{Mode, Route};
+use dv_ui::theme::Palette;
 use dv_ui::{ActiveServices as _, Material, Shell};
 use gpui::{App, AppContext as _, Context, Entity, Subscription, Task, Window};
 use gpui_automation::AutomationHost;
@@ -252,6 +253,7 @@ impl AutomationHost for DvAutomation {
 /// A `set_setting` request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SettingChange {
+    Palette(Palette),
     Material(Material),
     Mode(Mode),
 }
@@ -261,12 +263,15 @@ impl SettingChange {
         let key = args
             .get("key")
             .and_then(Value::as_str)
-            .context("set_setting needs \"key\": \"material\" or \"mode\"")?;
+            .context("set_setting needs \"key\": \"palette\", \"material\" or \"mode\"")?;
         let value = args
             .get("value")
             .and_then(Value::as_str)
             .with_context(|| format!("set_setting {key:?} needs a string \"value\""))?;
         match key {
+            "palette" => Palette::from_key(value).map(Self::Palette).ok_or_else(|| {
+                anyhow!("palette must be \"aura\", \"claude\" or \"dracula\", not {value:?}")
+            }),
             "material" => Material::from_key(value)
                 .map(Self::Material)
                 .ok_or_else(|| {
@@ -275,7 +280,9 @@ impl SettingChange {
             "mode" => Mode::from_key(value).map(Self::Mode).ok_or_else(|| {
                 anyhow!("mode must be \"system\", \"dark\" or \"light\", not {value:?}")
             }),
-            other => bail!("unknown setting {other:?}; dv has \"material\" and \"mode\""),
+            other => {
+                bail!("unknown setting {other:?}; dv has \"palette\", \"material\" and \"mode\"")
+            }
         }
     }
 }
@@ -286,6 +293,7 @@ fn set_setting(args: &Value, cx: &mut Context<DvAutomation>) -> Result<Value> {
     let change = SettingChange::parse(args)?;
     let settings = cx.services().settings.clone();
     settings.update(cx, |settings, cx| match change {
+        SettingChange::Palette(palette) => settings.set_palette(palette, cx),
         SettingChange::Material(material) => settings.set_material(material, cx),
         SettingChange::Mode(mode) => settings.set_mode(mode, cx),
     });

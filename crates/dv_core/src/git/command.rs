@@ -177,6 +177,7 @@ pub fn run_with_index(
     opts: &GitOpts,
 ) -> Result<GitOutput, BackendError> {
     let owned_args = || args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+    let started = Instant::now();
     let deadline = opts
         .timeout_ms
         .map(|ms| (Instant::now() + Duration::from_millis(ms), ms));
@@ -241,6 +242,13 @@ pub fn run_with_index(
     };
     let stdout = drain(&stdout)?;
     let stderr = drain(&stderr)?;
+    // Where the time goes on a large review (PLAN §17's budgets): `RUST_LOG=dv_core=debug`.
+    log::debug!(
+        "git {} ({} bytes out) in {:?}",
+        args.join(" "),
+        stdout.len(),
+        started.elapsed()
+    );
     match status.code() {
         Some(code) if opts.ok_codes.contains(&code) => Ok(GitOutput {
             code,

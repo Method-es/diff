@@ -738,6 +738,22 @@ impl Reviews {
         })
     }
 
+    /// Forgets the repository at `location` (the switcher's remove, DESIGN §4.1): its row
+    /// leaves the switcher and `known_repos.json`, and a refresh running for it is dropped.
+    /// Nothing in the repository changes: its reviews stay under `.git/dv`, and adding it again
+    /// (or opening a review in it) lists them as before. `false` when it wasn't known.
+    pub fn remove_repo(&mut self, location: &Location, cx: &mut Context<Self>) -> bool {
+        if !self.known.remove(location) {
+            return false;
+        }
+        self.rows.remove(location);
+        self.refreshing.remove(location);
+        self.save(cx);
+        cx.emit(ReviewsEvent::Changed);
+        cx.notify();
+        true
+    }
+
     /// Knows `location` from now on, unless it is known already however its WSL distro is
     /// spelled (module docs); the location as known.
     fn add_known(&mut self, location: Location, cx: &mut Context<Self>) -> Location {
@@ -836,8 +852,9 @@ fn find_blocking(backend: Arc<dyn Backend>, request: OpenRequest) -> Result<Foun
     let store = ReviewStore::new(backend.clone());
     let (review, created) = match request {
         OpenRequest::Target(target) => {
-            let opened = ops::open_review(&store, target, reviewer_identity(backend.as_ref()))
-                .map_err(|e| Failure::from(&e))?;
+            let opened =
+                ops::open_review_as(&store, target, || reviewer_identity(backend.as_ref()))
+                    .map_err(|e| Failure::from(&e))?;
             (opened.review, opened.created)
         }
         OpenRequest::Review(id) => (
@@ -873,18 +890,27 @@ struct Loading {
 }
 
 /// The review's full load (warnings included) through `backend`, its home worktree's, with
-/// who the reviewer is there and that worktree's labels (blocking).
+/// who the reviewer is there and that worktree's labels (blocking): the three at once, since
+/// none waits on another's git calls (PLAN §17's budgets).
 fn load_blocking(backend: Arc<dyn Backend>, id: &ReviewId) -> Result<Loading, Failure> {
-    let reviewer = reviewer_identity(backend.as_ref());
-    let labels = LabelContext::read(&GitRepo::new(backend.clone()));
-    let loaded = ReviewStore::new(backend)
-        .load(id)
-        .map_err(|e| Failure::from(&e))?;
+    let (reviewer, labels, loaded) = std::thread::scope(|scope| {
+        let reviewer = scope.spawn(|| reviewer_identity(backend.as_ref()));
+        let labels = scope.spawn(|| LabelContext::read(&GitRepo::new(backend.clone())));
+        let loaded = ReviewStore::new(backend.clone()).load(id);
+        (joined(reviewer), joined(labels), loaded)
+    });
+    let loaded = loaded.map_err(|e| Failure::from(&e))?;
     Ok(Loading {
         loaded,
         reviewer,
         labels,
     })
+}
+
+/// A scoped thread's result; its panic, if it panicked, goes on in the caller.
+fn joined<T>(job: std::thread::ScopedJoinHandle<'_, T>) -> T {
+    job.join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
 /// One run of [`Reviews::open`]: `open` (the location's own, begun) and then the review found,

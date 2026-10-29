@@ -1,0 +1,42 @@
+{"scenario": {"window_size": "1440x900", "description": "Removing repositories from the switcher (DESIGN §4.1): a header's remove button shows under the pointer and removes its repository, the next one taking the selection; Shift Delete removes the selected row's; the last one gone, the list says there are none. Screenshots of the button under the pointer and the empty list."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "settle"}
+
+// Three repositories, each with a change; dv open on the last opens the switcher on it.
+{"cmd": "seed_repo", "name": "api-server", "steps": [{"write": "a.txt", "text": "one\n"}, {"commit": "base"}, {"write": "a.txt", "text": "two\n"}], "save": {"api": "/path"}}
+{"cmd": "seed_repo", "name": "web", "steps": [{"write": "b.txt", "text": "one\n"}, {"commit": "base"}, {"write": "b.txt", "text": "two\n"}], "save": {"web": "/path"}}
+{"cmd": "seed_repo", "name": "docs", "steps": [{"write": "c.txt", "text": "one\n"}, {"commit": "base"}, {"write": "c.txt", "text": "two\n"}], "save": {"docs": "/path"}}
+{"cmd": "open", "path": "${api}"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"cmd": "key", "keystroke": "escape"}
+{"cmd": "open", "path": "${web}"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"cmd": "key", "keystroke": "escape"}
+{"cmd": "open", "path": "${docs}"}
+{"cmd": "wait_for", "pointer": "/repos/2/working/files", "equals": 1, "timeout_ms": 20000}
+{"cmd": "settle", "timeout_ms": 20000}
+{"cmd": "state", "expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/switcher/selected", "equals": "docs/working"}, {"pointer": "/repos", "len": 3}]}
+
+// The pointer over web's header shows its remove button; a click removes web, the switcher
+// staying open with the selection where it was.
+{"cmd": "mouse_move", "target": "switcher/repo/web"}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "remove-button"}
+{"cmd": "click", "target": "switcher/repo/web/remove"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"cmd": "state", "expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/switcher/selected", "equals": "docs/working"}, {"pointer": "/repos", "len": 2}]}
+{"cmd": "query", "prefix": "switcher/repo/web", "expect_result": {"pointer": "", "len": 0}}
+
+// Shift Delete removes the selected row's repository, docs; api-server takes the selection.
+{"cmd": "key", "keystroke": "shift-delete"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"cmd": "state", "expect": [{"pointer": "/switcher/selected", "equals": "api-server/working"}, {"pointer": "/repos", "len": 1}]}
+
+// The last one: the list says there are none, "Open folder…" still there.
+{"cmd": "key", "keystroke": "shift-delete"}
+{"cmd": "settle", "timeout_ms": 20000}
+{"cmd": "state", "expect": [{"pointer": "/switcher/selected", "equals": "open_folder"}, {"pointer": "/repos", "len": 0}]}
+{"cmd": "bounds", "target": "switcher/empty", "expect_result": {"pointer": "/visible", "not_equals": null}}
+{"cmd": "screenshot", "name": "no-repositories"}
+{"cmd": "quit"}
