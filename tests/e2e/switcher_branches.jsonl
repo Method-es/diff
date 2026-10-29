@@ -1,0 +1,37 @@
+{"scenario": {"window_size": "1440x900", "description": "The branch picker (DESIGN §4.1 \"Compare branches…\"): a stacked repo's switcher row \"Compare branches…\" lists its branches, each against its stack base (`feat-b` vs `feat-a`), then the picked branch's bases (stack base first, then the default branch); Esc steps back, Enter on a base opens the stacked `branch` review with only that branch's own changes, and the source picker's \"Compare branches…\" opens the picker again, Esc closing it; screenshots of both steps in dark and the branches in light."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "settle"}
+{"cmd": "seed_repo", "name": "stack", "steps": [{"write": "README.md", "text": "# stack\n"}, {"commit": "base"}, {"branch": "feat-a"}, {"checkout": "feat-a"}, {"write": "a.txt", "text": "a\n"}, {"commit": "a1"}, {"branch": "feat-b"}, {"checkout": "feat-b"}, {"write": "b.txt", "text": "b\n"}, {"commit": "b1"}, {"checkout": "main"}, {"branch": "side"}, {"checkout": "side"}, {"write": "s.txt", "text": "s\n"}, {"commit": "s1"}, {"checkout": "feat-b"}]}
+{"cmd": "open", "path": "${data_dir}/repos/stack", "expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/switcher/mode", "equals": "repos"}]}
+{"cmd": "settle", "expect": [{"pointer": "/switcher/items/3/key", "equals": "stack/compare"}, {"pointer": "/switcher/items/3/kind", "equals": "compare"}, {"pointer": "/switcher/items/3/label", "equals": "Compare branches…"}]}
+
+// "Compare branches…" lists the branches, the newest first, each against its stack base.
+{"cmd": "click", "target": "switcher/stack/compare"}
+{"cmd": "settle", "expect": [{"pointer": "/switcher/mode", "equals": "branches"}, {"pointer": "/switcher/query", "equals": ""}, {"pointer": "/switcher/selected", "equals": "stack/pick/side"}, {"pointer": "/switcher/items/0/key", "equals": "stack/pick/side"}, {"pointer": "/switcher/items/0/detail", "equals": "vs main"}, {"pointer": "/switcher/items/1/key", "equals": "stack/pick/feat-b"}, {"pointer": "/switcher/items/1/detail", "equals": "vs feat-a"}, {"pointer": "/switcher/items/2/key", "equals": "stack/pick/feat-a"}, {"pointer": "/switcher/items/2/detail", "equals": "vs main"}, {"pointer": "/switcher/items", "len": 3}]}
+{"cmd": "screenshot", "name": "branches"}
+
+// A click on feat-b lists its bases, the stack base first; Esc steps back to the branches.
+{"cmd": "click", "target": "switcher/stack/pick/feat-b"}
+{"cmd": "settle", "expect": [{"pointer": "/switcher/mode", "equals": "bases"}, {"pointer": "/switcher/selected", "equals": "stack/base/feat-a"}, {"pointer": "/switcher/items/0/detail", "equals": "stack base"}, {"pointer": "/switcher/items/1/key", "equals": "stack/base/main"}, {"pointer": "/switcher/items/1/detail", "equals": "default branch"}, {"pointer": "/switcher/items/2/key", "equals": "stack/base/side"}, {"pointer": "/switcher/items", "len": 3}]}
+{"cmd": "screenshot", "name": "bases"}
+{"cmd": "key", "keystroke": "escape"}
+{"cmd": "settle", "expect": [{"pointer": "/switcher/mode", "equals": "branches"}, {"pointer": "/switcher/selected", "equals": "stack/pick/feat-b"}]}
+
+// Enter twice opens feat-b against feat-a: only feat-b's own commit.
+{"cmd": "key", "keystroke": "enter"}
+{"cmd": "key", "keystroke": "enter"}
+{"cmd": "settle", "expect": [{"pointer": "/switcher/open", "equals": false}, {"pointer": "/session/target", "equals": {"branch": {"branch": "feat-b", "base": "feat-a"}}}, {"pointer": "/session/target_label", "equals": "feat-b vs feat-a"}, {"pointer": "/session/total", "equals": 1}, {"pointer": "/file_list/current_file", "equals": "b.txt"}]}
+{"cmd": "screenshot", "name": "stacked-review"}
+
+// The source picker offers "Compare branches…" after its targets; it opens the picker, which
+// lists the open review beside its branch, and Esc closes it.
+{"cmd": "click", "target": "titlebar/source"}
+{"cmd": "settle", "expect": [{"pointer": "/source_picker/open", "equals": true}, {"pointer": "/source_picker/compare", "equals": true}]}
+{"cmd": "click", "target": "source_picker/compare"}
+{"cmd": "settle", "expect": [{"pointer": "/source_picker/open", "equals": false}, {"pointer": "/switcher/mode", "equals": "branches"}, {"pointer": "/switcher/items/1/review/status", "equals": "open"}]}
+{"cmd": "set_setting", "key": "mode", "value": "light"}
+{"cmd": "settle"}
+{"cmd": "screenshot", "name": "branches-light"}
+{"cmd": "key", "keystroke": "escape"}
+{"cmd": "settle", "expect": [{"pointer": "/switcher/open", "equals": false}]}

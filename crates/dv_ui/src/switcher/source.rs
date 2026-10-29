@@ -1,11 +1,14 @@
 //! The source picker (DESIGN §4.1, the title bar's `[source ▾]`): a menu of the open review's
 //! repository's targets — uncommitted changes, staged changes and the branch against the
 //! default branch ([`super::items::target_offers`]) — each opening or resuming that target's
-//! review. The current review's target is checked.
+//! review. The current review's target is checked. Below them, "Compare branches…" opens the
+//! switcher's branch picker on the repository ([`super::branches`]) when it has a branch to
+//! compare.
 //!
 //! It has the keyboard itself while open: `↑`/`↓` (wrapping), `Enter`, `Esc`.
 //!
-//! Automation targets: `source_picker`, `source_picker/<working|staged|branch>`.
+//! Automation targets: `source_picker`, `source_picker/<working|staged|branch>`,
+//! `source_picker/compare`.
 
 use dv_core::{Location, Target};
 use gpui::{
@@ -29,7 +32,14 @@ pub const SOURCE_PICKER_WIDTH: gpui::Pixels = gpui::px(340.);
 /// What was picked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourcePickerEvent {
-    Open { location: Location, target: Target },
+    Open {
+        location: Location,
+        target: Target,
+    },
+    /// "Compare branches…": the switcher's branch picker on `location`.
+    CompareBranches {
+        location: Location,
+    },
     Dismiss,
 }
 
@@ -42,6 +52,9 @@ pub struct SourcePicker {
     /// repository's own (one homed in another worktree, PLAN §2.4).
     current: Option<Target>,
     offers: Vec<TargetOffer>,
+    /// Whether "Compare branches…" is offered, after the offers.
+    compare: bool,
+    /// Into the offers, then "Compare branches…".
     selected: usize,
     _subscription: Subscription,
 }
@@ -70,10 +83,11 @@ impl SourcePicker {
             location,
             current,
             offers: Vec::new(),
+            compare: false,
             selected: 0,
             _subscription: subscription,
         };
-        this.offers = this.build(cx);
+        (this.offers, this.compare) = this.build(cx);
         this.selected = this
             .offers
             .iter()
@@ -90,35 +104,58 @@ impl SourcePicker {
         self.offers.get(self.selected)
     }
 
-    fn build(&self, cx: &gpui::App) -> Vec<TargetOffer> {
-        self.reviews
-            .read(cx)
-            .row(&self.location)
-            .map(target_offers)
-            .unwrap_or_default()
+    /// Whether "Compare branches…" is offered.
+    pub fn offers_compare(&self) -> bool {
+        self.compare
+    }
+
+    /// Whether "Compare branches…" is selected.
+    pub fn compare_selected(&self) -> bool {
+        self.compare && self.selected == self.offers.len()
+    }
+
+    /// The rows: the offers, then "Compare branches…" when offered.
+    fn len(&self) -> usize {
+        self.offers.len() + usize::from(self.compare)
+    }
+
+    fn build(&self, cx: &gpui::App) -> (Vec<TargetOffer>, bool) {
+        let reviews = self.reviews.read(cx);
+        let Some(row) = reviews.row(&self.location) else {
+            return (Vec::new(), false);
+        };
+        let offers = target_offers(row);
+        let compare = !offers.is_empty() && super::branches::has_branches(row);
+        (offers, compare)
     }
 
     fn rebuild(&mut self, cx: &mut Context<Self>) {
+        let compare_selected = self.compare_selected();
         let keep = self.selected().map(|offer| offer.kind);
-        let offers = self.build(cx);
-        if offers != self.offers {
+        let (offers, compare) = self.build(cx);
+        if offers != self.offers || compare != self.compare {
             self.offers = offers;
-            self.selected = keep
-                .and_then(|kind| self.offers.iter().position(|offer| offer.kind == kind))
-                .unwrap_or(0);
+            self.compare = compare;
+            self.selected = if compare_selected && compare {
+                self.offers.len()
+            } else {
+                keep.and_then(|kind| self.offers.iter().position(|offer| offer.kind == kind))
+                    .unwrap_or(0)
+            };
             cx.notify();
         }
     }
 
     fn select_next(&mut self, _: &SelectNext, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.offers.is_empty() {
-            self.selected = (self.selected + 1) % self.offers.len();
+        let len = self.len();
+        if len > 0 {
+            self.selected = (self.selected + 1) % len;
             cx.notify();
         }
     }
 
     fn select_previous(&mut self, _: &SelectPrevious, _: &mut Window, cx: &mut Context<Self>) {
-        let len = self.offers.len();
+        let len = self.len();
         if len > 0 {
             self.selected = (self.selected + len - 1) % len;
             cx.notify();
@@ -134,6 +171,13 @@ impl SourcePicker {
     }
 
     fn pick(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if self.compare && ix == self.offers.len() {
+            self.selected = ix;
+            cx.emit(SourcePickerEvent::CompareBranches {
+                location: self.location.clone(),
+            });
+            return;
+        }
         if let Some(offer) = self.offers.get(ix) {
             self.selected = ix;
             cx.emit(SourcePickerEvent::Open {
@@ -193,19 +237,62 @@ impl SourcePicker {
             }))
             .automation_target(format!("source_picker/{}", offer.kind.key()))
     }
+
+    /// "Compare branches…", after the offers (module docs).
+    fn render_compare(&self, theme: &DvTheme, cx: &mut Context<Self>) -> AnyElement {
+        let c = &theme.colors;
+        let ix = self.offers.len();
+        let selected = self.selected == ix;
+        let hover = c.control_hover;
+        div()
+            .id("source-compare")
+            .flex()
+            .items_center()
+            .gap(theme.spacing.md)
+            .h(px(30.))
+            .px(theme.spacing.md)
+            .rounded(theme.radii.control)
+            .cursor_pointer()
+            .map(|this| {
+                if selected {
+                    this.bg(c.sel)
+                } else {
+                    this.hover(move |style| style.bg(hover))
+                }
+            })
+            .on_click(cx.listener(move |this, _, _, cx| this.pick(ix, cx)))
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(14.))
+                    .child(icon(DvIcon::ArrowLeftRight, px(13.), c.fg2)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child("Compare branches…"),
+            )
+            .automation_target("source_picker/compare")
+            .into_any_element()
+    }
 }
 
 impl Render for SourcePicker {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.dv_theme().clone();
         let c = &theme.colors;
-        let rows: Vec<AnyElement> = self
+        let mut rows: Vec<AnyElement> = self
             .offers
             .clone()
             .iter()
             .enumerate()
             .map(|(ix, offer)| self.render_offer(ix, offer, &theme, cx))
             .collect();
+        if self.compare {
+            rows.push(self.render_compare(&theme, cx));
+        }
         div()
             .key_context(keymap::SOURCE_PICKER)
             .track_focus(&self.focus_handle)

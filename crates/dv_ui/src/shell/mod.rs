@@ -856,6 +856,22 @@ impl Shell {
         cx.notify();
     }
 
+    /// Opens the switcher as the branch picker on the repository at `location` (the source
+    /// picker's "Compare branches…"), in place of the open menu.
+    pub fn open_branch_picker(
+        &mut self,
+        location: Location,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_switcher(Some(&location), window, cx);
+        if let Some(switcher) = &self.switcher {
+            switcher.view.update(cx, |switcher, cx| {
+                switcher.compare_branches(location, window, cx)
+            });
+        }
+    }
+
     /// Opens the source picker over the open review's repository. Like the switcher, it
     /// replaces an open menu and opens over an open sheet.
     pub fn open_source_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1176,6 +1192,9 @@ impl Shell {
                     cx,
                 )
                 .detach();
+            }
+            SourcePickerEvent::CompareBranches { location } => {
+                self.open_branch_picker(location.clone(), window, cx);
             }
             SourcePickerEvent::Dismiss => {
                 self.close_menu(window, cx);

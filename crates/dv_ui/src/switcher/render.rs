@@ -9,6 +9,7 @@ use gpui::{
 };
 use gpui_component::input::Input;
 
+use super::branches::Mode;
 use super::items::{Entry, Item, ItemKind, RepoHeader, RepoSummary, TargetKind};
 use super::{RepoMenu, SWITCHER_WIDTH, Switcher};
 
@@ -96,6 +97,25 @@ impl Switcher {
             .flex()
             .flex_col()
             .p(theme.spacing.sm);
+        let branch_rows = self.listing.items.is_empty() && !self.listing.entries.is_empty();
+        if branch_rows && self.mode != Mode::Repos {
+            let title = if self.query.trim().is_empty() {
+                "No branches to compare".to_string()
+            } else {
+                format!("No branches match “{}”", self.query.trim())
+            };
+            return list
+                .child(repo_header(&self.listing.repos[0], true, None, theme))
+                .child(
+                    div()
+                        .flex()
+                        .justify_center()
+                        .py(theme.spacing.xl)
+                        .text_color(c.fg2)
+                        .child(title),
+                )
+                .automation_target("switcher/empty");
+        }
         if self.listing.entries.is_empty() {
             let known = !self.reviews.read(cx).rows().is_empty();
             let (title, note) = if known {
@@ -168,6 +188,8 @@ impl Switcher {
             ItemKind::Start { .. } => DvIcon::Play,
             ItemKind::Retry { .. } => DvIcon::RotateCw,
             ItemKind::OpenFolder => DvIcon::FolderOpen,
+            ItemKind::CompareBranches => DvIcon::ArrowLeftRight,
+            ItemKind::Branch { .. } | ItemKind::Base { .. } => DvIcon::GitBranch,
         };
         let right: Option<AnyElement> = match item.review() {
             Some(badge) => Some(
@@ -191,13 +213,17 @@ impl Switcher {
                     })
                     .into_any_element(),
             ),
-            None if matches!(item.kind, ItemKind::Target(_)) && selected => Some(
-                div()
-                    .text_spec(&theme.text.secondary)
-                    .text_color(c.fg3)
-                    .child("New review")
-                    .into_any_element(),
-            ),
+            None if matches!(item.kind, ItemKind::Target(_) | ItemKind::Base { .. })
+                && selected =>
+            {
+                Some(
+                    div()
+                        .text_spec(&theme.text.secondary)
+                        .text_color(c.fg3)
+                        .child("New review")
+                        .into_any_element(),
+                )
+            }
             None => None,
         };
         let footer = item.kind == ItemKind::OpenFolder;
@@ -229,7 +255,7 @@ impl Switcher {
                     this.hover(move |style| style.bg(hover))
                 }
             })
-            .on_click(cx.listener(move |this, _, _, cx| this.pick(ix, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| this.pick(ix, window, cx)))
             .child(icon(glyph, px(14.), glyph_color))
             .child(
                 div()
@@ -239,6 +265,13 @@ impl Switcher {
                     .when(inert, |this| this.text_color(c.fg3))
                     .child(SharedString::from(item.label().to_string())),
             )
+            .children(item.detail().map(|detail| {
+                div()
+                    .flex_none()
+                    .text_spec(&theme.text.secondary)
+                    .text_color(c.fg3)
+                    .child(SharedString::from(detail))
+            }))
             .child(div().flex_1())
             .children(right)
             .automation_target(format!("switcher/{}", item.key))
@@ -286,8 +319,22 @@ impl Switcher {
                         this.child(hint(vec!["secondary-shift-backspace"], "remove"))
                     })
                     .child(hint(vec!["up", "down"], "move"))
-                    .child(hint(vec!["enter"], "open"))
-                    .child(hint(vec!["escape"], "close")),
+                    .child(hint(
+                        vec!["enter"],
+                        if matches!(self.mode, Mode::Branches { .. }) {
+                            "next"
+                        } else {
+                            "open"
+                        },
+                    ))
+                    .child(hint(
+                        vec!["escape"],
+                        match self.mode {
+                            Mode::Repos => "close",
+                            Mode::Branches { .. } if !self.back_to_repos => "close",
+                            _ => "back",
+                        },
+                    )),
             )
             .into_any_element()
     }
@@ -334,8 +381,8 @@ impl Switcher {
     }
 
     /// A repository's header: its name, its path dimmed, its location chip, and a line on its
-    /// uncommitted changes or why it can't be opened; a right-click, or its `⋯` under the
-    /// pointer, opens its menu.
+    /// uncommitted changes or why it can't be opened; in the repositories' list a right-click,
+    /// or its `⋯` under the pointer, opens its menu (the branch picker's header has none).
     fn repo_header(
         &self,
         header: &RepoHeader,
@@ -343,6 +390,9 @@ impl Switcher {
         theme: &DvTheme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if self.mode != Mode::Repos {
+            return repo_header(header, first, None, theme);
+        }
         let group = SharedString::from(format!("switcher-repo-{}", header.key));
         let menu_open = self
             .menu

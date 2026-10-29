@@ -13,6 +13,11 @@
 //! recomputes them (it does when the switcher opens, and when a connection a row goes through
 //! starts reconnecting, stops or fails, or comes back), keeping the selected row.
 //!
+//! A repository's "Compare branches…" row turns the switcher into the branch picker
+//! ([`branches`]): its branches, then the bases the picked one can be compared with, each pair
+//! opening or resuming its `branch` review. There `Esc` steps back (bases → branches → the
+//! repositories, when the picker was entered from them) before it closes.
+//!
 //! A repository's header has a menu (a right-click, or its `⋯` under the pointer) with **Remove
 //! from list**, which `Ctrl Shift Backspace` does for the selected row's repository: the
 //! repository leaves the known ones (`Reviews::remove_repo`), the selection moving to the next
@@ -25,6 +30,7 @@
 //! `switcher/repo/<repo>/more` (the header's `⋯`), `switcher/menu`, `switcher/menu/remove`,
 //! `switcher/<key>` for each row ([`items::Item::key`]).
 
+pub mod branches;
 pub mod items;
 mod render;
 pub mod source;
@@ -42,7 +48,8 @@ use gpui_component::input::{InputEvent, InputState};
 
 use crate::actions::switcher::{Confirm, Dismiss, RemoveRepo, SelectNext, SelectPrevious};
 use crate::services::reviews::{OpenRequest, Reviews};
-use items::Listing;
+use branches::Mode;
+use items::{ItemKind, Listing};
 
 /// The panel's width (one-off, like the board's sheets: wide enough for a path and a review).
 pub const SWITCHER_WIDTH: gpui::Pixels = gpui::px(560.);
@@ -80,6 +87,10 @@ pub struct Switcher {
     reviews: Entity<Reviews>,
     input: Entity<InputState>,
     query: String,
+    mode: Mode,
+    /// Whether `Esc` in the branch picker's first step returns to the repositories: it was
+    /// entered from their "Compare branches…" row, not opened on it (the source picker's).
+    back_to_repos: bool,
     listing: Listing,
     /// Into `listing.items`.
     selected: usize,
@@ -125,6 +136,8 @@ impl Switcher {
             reviews,
             input,
             query: String::new(),
+            mode: Mode::Repos,
+            back_to_repos: false,
             listing: Listing::default(),
             selected: 0,
             started: None,
@@ -161,6 +174,46 @@ impl Switcher {
         &self.listing
     }
 
+    pub fn mode(&self) -> &Mode {
+        &self.mode
+    }
+
+    /// Opens the branch picker on the repository at `location` (the source picker's "Compare
+    /// branches…"): `Esc` in its first step then closes the switcher.
+    pub fn compare_branches(
+        &mut self,
+        location: Location,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.back_to_repos = false;
+        self.set_mode(Mode::Branches { location }, None, window, cx);
+    }
+
+    /// Shows `mode`'s rows with the filter cleared, the selection on `select` (a row's key)
+    /// when it is listed, else on the first row.
+    fn set_mode(
+        &mut self,
+        mode: Mode,
+        select: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.mode = mode;
+        self.query.clear();
+        let placeholder = self.mode.placeholder();
+        self.input.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            input.set_placeholder(placeholder, window, cx);
+        });
+        self.listing = self.build(cx);
+        self.selected = select
+            .and_then(|key| self.listing.position(&key))
+            .unwrap_or(0);
+        self.scroll_to_selected();
+        cx.notify();
+    }
+
     /// The selected row's key.
     pub fn selected_key(&self) -> Option<&str> {
         self.listing
@@ -180,7 +233,12 @@ impl Switcher {
     }
 
     /// The repository `Ctrl Shift Backspace` would remove: the selected row's, when it can be.
+    /// Only the repositories' list removes: the branch picker's header is the repository it
+    /// compares in.
     pub fn removable(&self) -> Option<&Location> {
+        if self.mode != Mode::Repos {
+            return None;
+        }
         self.listing
             .location_of(self.selected)
             .filter(|location| self.can_remove(location))
@@ -206,7 +264,7 @@ impl Switcher {
     /// Removes the repository at `location` from the list, when it can be (module docs).
     pub fn remove(&mut self, location: &Location, cx: &mut Context<Self>) {
         self.menu = None;
-        if !self.can_remove(location) {
+        if self.mode != Mode::Repos || !self.can_remove(location) {
             cx.notify();
             return;
         }
@@ -239,7 +297,14 @@ impl Switcher {
 
     fn build(&self, cx: &gpui::App) -> Listing {
         let reviews = self.reviews.read(cx);
-        items::build(&reviews.rows(), &self.query)
+        let rows = reviews.rows();
+        match &self.mode {
+            Mode::Repos => items::build(&rows, &self.query),
+            Mode::Branches { location } => branches::build_branches(&rows, location, &self.query),
+            Mode::Bases { location, branch } => {
+                branches::build_bases(&rows, location, branch, &self.query)
+            }
+        }
     }
 
     /// Lists the rows again (the reviews changed, or the filter), keeping the selected row
@@ -311,24 +376,53 @@ impl Switcher {
         }
     }
 
-    fn confirm(&mut self, _: &Confirm, _: &mut Window, cx: &mut Context<Self>) {
-        self.pick(self.selected, cx);
+    fn confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
+        self.pick(self.selected, window, cx);
     }
 
-    /// `Esc`: closes the header menu when it is open, else the switcher.
-    fn dismiss(&mut self, _: &Dismiss, _: &mut Window, cx: &mut Context<Self>) {
+    /// `Esc`: closes the header menu when it is open, else a step back in the branch picker
+    /// (module docs), else closes.
+    fn dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
         if self.menu.take().is_some() {
             cx.notify();
             return;
         }
-        cx.emit(SwitcherEvent::Dismiss);
+        let repo_key = self.listing.repos.first().map(|repo| repo.key.clone());
+        match self.mode.clone() {
+            Mode::Bases { location, branch } => {
+                let select = repo_key.map(|key| format!("{key}/pick/{branch}"));
+                self.set_mode(Mode::Branches { location }, select, window, cx);
+            }
+            Mode::Branches { .. } if self.back_to_repos => {
+                let select = repo_key.map(|key| format!("{key}/compare"));
+                self.set_mode(Mode::Repos, select, window, cx);
+            }
+            Mode::Branches { .. } | Mode::Repos => cx.emit(SwitcherEvent::Dismiss),
+        }
     }
 
     /// Picks row `ix` (Enter on it, or a click); a start that runs already does nothing.
-    fn pick(&mut self, ix: usize, cx: &mut Context<Self>) {
+    fn pick(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(item) = self.listing.items.get(ix) else {
             return;
         };
+        match &item.kind {
+            ItemKind::CompareBranches => {
+                if let Some(location) = self.listing.location_of(ix).cloned() {
+                    self.back_to_repos = true;
+                    self.set_mode(Mode::Branches { location }, None, window, cx);
+                }
+                return;
+            }
+            ItemKind::Branch { name, .. } => {
+                let branch = name.clone();
+                if let Some(location) = self.listing.location_of(ix).cloned() {
+                    self.set_mode(Mode::Bases { location, branch }, None, window, cx);
+                }
+                return;
+            }
+            _ => {}
+        }
         self.selected = ix;
         if item.is_starting() {
             cx.notify();

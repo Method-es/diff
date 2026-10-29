@@ -86,7 +86,7 @@ fn badge(badge: Option<&ReviewBadge>) -> Value {
 /// `state.switcher`.
 pub fn switcher(shell: &Shell, cx: &App) -> Value {
     let Some(switcher) = shell.switcher() else {
-        return json!({"open": false, "query": null, "selected": null, "items": [], "menu": null});
+        return json!({"open": false, "mode": null, "query": null, "selected": null, "items": [], "menu": null});
     };
     let switcher = switcher.read(cx);
     let listing = switcher.listing();
@@ -99,10 +99,11 @@ pub fn switcher(shell: &Shell, cx: &App) -> Value {
                 "key": item.key,
                 "kind": item.kind_key(),
                 "target": match &item.kind {
-                    ItemKind::Target(offer) => Some(offer.kind.key()),
+                    ItemKind::Target(offer) | ItemKind::Base { offer, .. } => Some(offer.kind.key()),
                     _ => None,
                 },
                 "label": item.label(),
+                "detail": item.detail(),
                 "starting": item.is_starting(),
                 "repo": repo.map(|repo| repo.path.clone()),
                 "review": badge(item.review()),
@@ -117,6 +118,7 @@ pub fn switcher(shell: &Shell, cx: &App) -> Value {
     });
     json!({
         "open": true,
+        "mode": switcher.mode().key(),
         "query": switcher.query(),
         "selected": switcher.selected_key(),
         "items": items,
@@ -127,7 +129,7 @@ pub fn switcher(shell: &Shell, cx: &App) -> Value {
 /// `state.source_picker`.
 pub fn source_picker(shell: &Shell, cx: &App) -> Value {
     let Some(picker) = shell.source_picker() else {
-        return json!({"open": false, "selected": null, "items": []});
+        return json!({"open": false, "selected": null, "items": [], "compare": false});
     };
     let picker = picker.read(cx);
     let items: Vec<Value> = picker
@@ -141,10 +143,16 @@ pub fn source_picker(shell: &Shell, cx: &App) -> Value {
             })
         })
         .collect();
+    let selected = if picker.compare_selected() {
+        Some("compare")
+    } else {
+        picker.selected().map(|offer| offer.kind.key())
+    };
     json!({
         "open": true,
-        "selected": picker.selected().map(|offer| offer.kind.key()),
+        "selected": selected,
         "items": items,
+        "compare": picker.offers_compare(),
     })
 }
 
