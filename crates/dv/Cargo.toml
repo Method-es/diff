@@ -47,6 +47,7 @@ gui = [
     "dep:gpui",
     "dep:gpui_platform",
     "dep:libc",
+    "dep:objc2",
     "dep:velopack",
     "dep:windows-sys",
 ]
@@ -118,6 +119,9 @@ gpui_platform = { workspace = true, optional = true, features = ["wayland", "x11
 # Metal toolchain (Xcode's is a separate download).
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_platform = { workspace = true, optional = true, features = ["font-kit", "runtime_shaders"] }
+# The app's icon in the Dock and the app switcher when it runs outside an app bundle
+# (`dock_icon.rs`, PLAN §13.1): the app's, never the headless build's.
+objc2 = { workspace = true, optional = true }
 
 # dv.exe's and dv-gui.exe's icon and version resource on Windows (`build.rs`); a no-op elsewhere.
 [build-dependencies]

@@ -159,6 +159,9 @@ fn start(startup: StartOptions, cx: &mut App) -> Result<()> {
     // An installed copy's updates, in the background (PLAN D9); none under automation.
     #[cfg(any(windows, target_os = "macos"))]
     crate::updates::start(automation, main.shell.clone(), cx);
+    // A development build has no bundle to take its Dock icon from.
+    #[cfg(target_os = "macos")]
+    crate::dock_icon::set_unless_bundled();
     // A background run must never take the foreground from the person at the machine.
     if !dv_ui::automation::is_background() {
         cx.activate(true);

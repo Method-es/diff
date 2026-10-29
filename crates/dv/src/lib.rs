@@ -25,6 +25,8 @@ mod cli;
 mod crash;
 #[cfg(feature = "gui")]
 mod data_dir;
+#[cfg(all(target_os = "macos", feature = "gui"))]
+mod dock_icon;
 #[cfg(feature = "gui")]
 mod fatal;
 #[cfg(all(any(windows, target_os = "macos"), feature = "gui"))]
