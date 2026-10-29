@@ -151,7 +151,13 @@ pub fn build(
         let target = match &item.kind {
             ItemKind::Target(offer) => Some(offer.kind),
             ItemKind::Review { .. } => None,
-            ItemKind::Start { .. } | ItemKind::Retry { .. } | ItemKind::OpenFolder => continue,
+            // The branch picker is the switcher's: the palette lists the reviews it opens.
+            ItemKind::Start { .. }
+            | ItemKind::Retry { .. }
+            | ItemKind::OpenFolder
+            | ItemKind::CompareBranches
+            | ItemKind::Branch { .. }
+            | ItemKind::Base { .. } => continue,
         };
         let (Some((location, request)), Some(repo)) = (
             listing.request(ix),

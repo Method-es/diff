@@ -11,7 +11,7 @@
 {"cmd": "open", "path": "${repo}", "expect_result": {"pointer": "/path", "equals": "${repo}"}}
 {"cmd": "wait_for", "pointer": "/repos/0/working/files", "equals": 7, "timeout_ms": 20000}
 {"cmd": "settle", "timeout_ms": 20000}
-{"expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/switcher/query", "equals": ""}, {"pointer": "/switcher/selected", "equals": "api-server/working"}, {"pointer": "/switcher/items/0", "equals": {"key": "api-server/working", "kind": "target", "target": "working", "label": "Uncommitted changes", "starting": false, "repo": "${repo}", "review": null}}, {"pointer": "/switcher/items/1/key", "equals": "api-server/staged"}, {"pointer": "/switcher/items/2/key", "equals": "open_folder"}, {"pointer": "/repos/0/working", "equals": {"files": 7, "additions": 34, "deletions": 6}}]}
+{"expect": [{"pointer": "/switcher/open", "equals": true}, {"pointer": "/switcher/query", "equals": ""}, {"pointer": "/switcher/selected", "equals": "api-server/working"}, {"pointer": "/switcher/items/0", "equals": {"key": "api-server/working", "kind": "target", "target": "working", "label": "Uncommitted changes", "detail": null, "starting": false, "repo": "${repo}", "review": null}}, {"pointer": "/switcher/items/1/key", "equals": "api-server/staged"}, {"pointer": "/switcher/items/2/key", "equals": "open_folder"}, {"pointer": "/repos/0/working", "equals": {"files": 7, "additions": 34, "deletions": 6}}]}
 {"cmd": "bounds", "target": "switcher/repo/api-server", "expect_result": {"pointer": "/visible", "not_equals": null}}
 {"cmd": "bounds", "target": "switcher", "expect_result": [{"pointer": "/w", "equals": 560}, {"pointer": "/y", "gte": 40}, {"pointer": "/y", "lte": 46}]}
 {"cmd": "screenshot", "name": "switcher-dark-mica"}

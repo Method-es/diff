@@ -241,6 +241,17 @@ local `main`, else `master`. `<b>` is the ref its name stands for however it is 
 `heads/feat`, `refs/heads/feat`; a local branch before a tag of the same name, as `git switch`
 picks), and that one ref gives both the tip and the checked-out test. Unrelated histories (no merge
 base) are an error, not an empty diff.
+**Branches and stack bases** (`dv_core::git::branches`): the switcher's branch picker (DESIGN §4.1)
+offers every local branch against its *stack base*, the nearest branch tip among its first-parent
+ancestors outside the default branch's history (`main → feat-a → feat-b`: `feat-b`'s is `feat-a`),
+else against the default branch, and lets the reviewer pick any other base. One `git log --branches
+--simplify-by-decoration ^<default>` finds every branch's: it keeps only commits a branch points at,
+outside the default branch, and rewrites each one's parents to its nearest such commit, so a branch's
+first rewritten parent is its stack base's tip; a parent left out means the default branch, and a
+branch merged into the default one has none. It and `git for-each-ref refs/heads/` run with every
+listing of a repo's row (§11), two commands whatever the number of branches. A suggestion only: a
+lower branch rewritten without restacking the ones above it leaves them stacked on its old commits,
+which the walk can't name, so they are offered against the default branch.
 `dv_core::target::Target::resolve` turns a target into a `DiffSpec` of two sides — a commit id, the
 empty tree, the index or the working tree. A target stores its spec *and* the resolved oids at each
 round, so a review never silently changes meaning (the first implementation froze `base` but left
@@ -2053,7 +2064,8 @@ canonical paths in that open's background job. A distro is named as WSL spells i
 `\\wsl.localhost\Ubuntu\…` are one repo through one connection, which is named from `wsl.exe
 --list` — an explicit open of a distro dv hasn't seen lists WSL's distros first, off the UI
 thread — so every location it hands back is spelled WSL's way), `Reviews` (the known repos and, per repo, its
-reviews (`ReviewStore::list`, an unreadable log a row of its own) and its uncommitted changes,
+reviews (`ReviewStore::list`, an unreadable log a row of its own), its uncommitted changes and its
+local branches with their stack bases (§2.2, for the branch picker),
 computed in the background when a repo is added, when the switcher opens, and when a
 connection a row goes through goes down or comes back, whether or not the switcher is open (one
 that comes back clears what its rows said about it at once), through `Locations::reach`: a

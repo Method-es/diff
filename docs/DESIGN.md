@@ -213,13 +213,28 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   whether or not the switcher is open, so it never opens on a stale Start or "reconnecting…". Then its rows (30 high, indented): **Uncommitted changes**, **Staged
   changes** and, with a branch other than the default checked out, **Branch `feat` vs `main`**, each
   beside its open review (status chip, "round n", open-comment badge; "New review" on the selected row
-  without one), then the repo's other open reviews by their target label. Picking a row opens or
+  without one), then the repo's other open reviews by their target label, then, when it has a branch
+  other than the default one, **Compare branches…** (arrows glyph). Picking a row opens or
   resumes that review (PLAN §2.4). A repo that can't be opened offers no rows. While the pointer is
   over a header, an `x` (13, `fg2`, a 20-square hover target at its right) removes the repo from
   the list (tooltip "Remove from the list (Shift Delete); its reviews stay in the repository");
   `Shift Delete` removes the selected row's repo. Nothing in the repo changes, so adding it again
   lists its reviews as before; the switcher stays open, the selection kept, or on the first row
-  of the repo that took the removed one's place. The footer holds **Open
+  of the repo that took the removed one's place. The branch picker's header has no `x`, and
+  `Shift Delete` removes nothing there.
+  **Compare branches…** turns the switcher into the branch picker for that repo, in the same panel:
+  the field cleared, its placeholder "Pick a branch to review", the repo's header over one row per
+  local branch but the default one (branch glyph, the most recently committed first): the name, then
+  "vs feat-a" in `fg3`, the base it is offered against (its stack base, PLAN §2.2, else the default
+  branch), and that pair's open review as on the switcher's rows. `Enter` on one lists its bases,
+  the placeholder "Compare feat-b with…": the stack base first ("stack base" in `fg3`), then the
+  default branch ("default branch"), then every other local branch; `Enter` on one opens or resumes
+  the `branch` review of the pair ("New review" on the selected row without one), against the
+  default branch the target with no base, the switcher's own **Branch** row's. Typing filters
+  either step by name; `Esc` steps back (bases → branches → the repos, the selection back on the row
+  picked) and closes from the branches when the picker was opened from the source picker. The
+  footer's hints read "next" for `Enter` on the branches and "back" for `Esc` where it steps back. With
+  nothing to list it reads "No branches to compare" ("No branches match “…”" for a filter). The footer holds **Open
   folder…** (the system's folder picker; the folder's repo is added and selected) and the keys.
   Opened over the "Finish round" sheet (§4.2), it and the source picker hang above the sheet, which
   the scrim then covers too; closing them returns to the sheet as it was. Status
@@ -227,8 +242,9 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   working": the agent's first reply, address or comment after changes were requested, PLAN §2.4)
   blue, `approved`/`submitted` green, `closed` grey; always worded.
 - **Source picker** (`⇄ ▾`): a 340-wide menu under its button with the open review's repo's targets
-  (the switcher's three rows) and their open reviews; the current target is checked. `↑`/`↓`/`Enter`/
-  `Esc`; picking one opens or resumes its review.
+  (the switcher's three rows) and their open reviews; the current target is checked; then, when the
+  repo has a branch to compare, **Compare branches…**, which opens the switcher as the branch picker
+  on that repo (above). `↑`/`↓`/`Enter`/`Esc`; picking one opens or resumes its review.
 - **Panel:** "Changes", the file count and the review's `+n −m`; under it, while the review offers
   it (a live target — `working`, `staged`, a branch — not finished, with a closed round; or a
   draft PR review whose PR has an earlier submitted review, reading **Since your last review**;
