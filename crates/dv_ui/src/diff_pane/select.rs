@@ -10,7 +10,8 @@
 //! one side (the column the press was in); in unified view it takes the file's rows in order,
 //! removed and added lines alike. Dragging past the file's first or last row clamps there, and
 //! dragging near the stream's top or bottom edge (or past it) scrolls ([`AUTOSCROLL_EDGE`]) while
-//! the stream can still move. A press anywhere else in the stream, `Esc`, switching split /
+//! the stream can still move; near the code column's left or right edge (or past it) the code
+//! scrolls sideways the same way, while the lines in view run on past it. A press anywhere else in the stream, `Esc`, switching split /
 //! unified or the comparison, and the file's diff changing (the agent's edit) clear it; so does
 //! the window going inactive for a drag in progress.
 //!
@@ -294,21 +295,29 @@ impl DiffPane {
     /// 16-wide marker per side, both numbers then the marker in unified view), less the
     /// sideways scroll.
     pub(super) fn pointer_column(&self, x: Pixels, side: AnchorSide) -> f32 {
-        let bounds = self.list.viewport_bounds();
-        let width = f32::from(bounds.size.width);
-        let cell = match self.mode {
-            ViewMode::Unified => self.number_columns() * NUMBER_WIDTH + MARKER_WIDTH,
-            ViewMode::Split => {
-                let half = if side == AnchorSide::New {
-                    width / 2.
-                } else {
-                    0.
-                };
-                half + NUMBER_WIDTH + MARKER_WIDTH
-            }
-        };
-        let left = f32::from(bounds.origin.x) + cell + TEXT_INSET;
+        let (left, _) = self.text_extent(side);
         (f32::from(x) - left + self.h_offset) / self.char_width.unwrap_or(7.2).max(1.)
+    }
+
+    /// Where the text of a line drawn on `side` shows, in window x: from its left edge (after
+    /// the numbers and the marker) to the right edge of its column (split view's half, or the
+    /// stream).
+    fn text_extent(&self, side: AnchorSide) -> (f32, f32) {
+        let bounds = self.list.viewport_bounds();
+        let origin = f32::from(bounds.origin.x);
+        let width = f32::from(bounds.size.width);
+        let (start, end, cell) = match self.mode {
+            ViewMode::Unified => (
+                0.,
+                width,
+                self.number_columns() * NUMBER_WIDTH + MARKER_WIDTH,
+            ),
+            ViewMode::Split if side == AnchorSide::New => {
+                (width / 2., width, NUMBER_WIDTH + MARKER_WIDTH)
+            }
+            ViewMode::Split => (0., width / 2., NUMBER_WIDTH + MARKER_WIDTH),
+        };
+        (origin + start + cell + TEXT_INSET, origin + end)
     }
 
     /// Where a pointer at window x `x` is in `path`'s line `line` drawn on `side`: the caret's
@@ -422,7 +431,7 @@ impl DiffPane {
         drag.position = position;
         let drag = drag.clone();
         self.move_head(&drag, cx);
-        if self.autoscroll_delta(position) != 0. && self.autoscroll.is_none() {
+        if self.autoscroll_delta(&drag) != (0., 0.) && self.autoscroll.is_none() {
             self.autoscroll = Some(cx.spawn(async move |this, cx| {
                 loop {
                     cx.background_executor().timer(AUTOSCROLL_TICK).await;
@@ -605,23 +614,41 @@ impl DiffPane {
         }
     }
 
-    /// How far, and which way, a pointer at `position` scrolls a drag: up (negative) within
-    /// [`AUTOSCROLL_EDGE`] of the stream's top below the pinned header's bar or above it, down
-    /// near or past its bottom; 0 elsewhere.
-    fn autoscroll_delta(&self, position: Point<Pixels>) -> f32 {
-        let bounds = self.list.viewport_bounds();
-        let y = f32::from(position.y) - f32::from(bounds.origin.y);
-        let height = self.viewport_height();
-        let top = heights::HEADER_BAR + AUTOSCROLL_EDGE;
-        let bottom = height - AUTOSCROLL_EDGE;
+    /// How far one autoscroll tick moves for the drag's pointer: sideways (pixels, positive to
+    /// the right) near the drag's code column's left or right edge or past it, and down (pixels,
+    /// positive down) near the stream's top (below the pinned header's bar) or bottom edge or past
+    /// it; `(0, 0)` away from them. The closer to the edge, or the further past it, the faster.
+    fn autoscroll_delta(&self, drag: &TextDrag) -> (f32, f32) {
         let step = |into: f32| (into / 2.).clamp(2., AUTOSCROLL_MAX_STEP);
-        if y < top {
-            -step(top - y)
-        } else if y > bottom {
-            step(y - bottom)
-        } else {
-            0.
-        }
+        let towards = |at: f32, low: f32, high: f32| {
+            if at < low {
+                -step(low - at)
+            } else if at > high {
+                step(at - high)
+            } else {
+                0.
+            }
+        };
+        let bounds = self.list.viewport_bounds();
+        let y = f32::from(drag.position.y) - f32::from(bounds.origin.y);
+        let height = self.viewport_height();
+        let down = towards(
+            y,
+            heights::HEADER_BAR + AUTOSCROLL_EDGE,
+            height - AUTOSCROLL_EDGE,
+        );
+        let side = drag
+            .side
+            .or_else(|| {
+                self.text_selection
+                    .as_ref()
+                    .map(|selection| selection.head.side)
+            })
+            .unwrap_or(AnchorSide::New);
+        let (left, right) = self.text_extent(side);
+        let x = f32::from(drag.position.x);
+        let across = towards(x, left + AUTOSCROLL_EDGE, right - AUTOSCROLL_EDGE);
+        (across, down)
     }
 
     /// One autoscroll tick: the stream scrolls towards the pointer and the head follows;
@@ -632,22 +659,30 @@ impl DiffPane {
             self.autoscroll = None;
             return false;
         };
-        let delta = self.autoscroll_delta(drag.position);
-        if delta == 0. {
+        let (across, down) = self.autoscroll_delta(&drag);
+        let mut moved = false;
+        if down != 0. {
+            let top = self.list.logical_scroll_top();
+            let target = self.offset_by(top, down);
+            let max = self.max_scroll_top();
+            let past_end = (target.item_ix, f32::from(target.offset_in_item))
+                > (max.item_ix, f32::from(max.offset_in_item));
+            let to = if past_end { max } else { target };
+            if (to.item_ix, to.offset_in_item) != (top.item_ix, top.offset_in_item) {
+                self.list.scroll_to(to);
+                moved = true;
+            }
+        }
+        if across != 0. {
+            let before = self.h_offset;
+            self.h_offset += across;
+            self.clamp_h_offset();
+            moved |= self.h_offset != before;
+        }
+        if !moved {
             self.autoscroll = None;
             return false;
         }
-        let top = self.list.logical_scroll_top();
-        let target = self.offset_by(top, delta);
-        let max = self.max_scroll_top();
-        let past_end = (target.item_ix, f32::from(target.offset_in_item))
-            > (max.item_ix, f32::from(max.offset_in_item));
-        let to = if past_end { max } else { target };
-        if (to.item_ix, to.offset_in_item) == (top.item_ix, top.offset_in_item) {
-            self.autoscroll = None;
-            return false;
-        }
-        self.list.scroll_to(to);
         self.move_head(&drag, cx);
         self.viewport_changed(cx);
         cx.notify();

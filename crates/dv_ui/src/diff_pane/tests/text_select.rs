@@ -427,3 +427,58 @@ fn esc_in_the_code_keeps_a_draft_and_only_esc_in_the_composer_discards_it(cx: &m
     press(cx, &shell, "escape");
     assert_eq!(draft(cx), None);
 }
+
+/// `long.txt`: a line far wider than a split view's side, `tail` at its end.
+fn long_line_fixture() -> FixtureRepo {
+    let repo = FixtureRepo::new();
+    repo.write("long.txt", "short\n");
+    repo.commit("base");
+    let long = format!("start {} tail\n", "x".repeat(400));
+    repo.write("long.txt", format!("short\n{long}"));
+    repo
+}
+
+/// Holds the button down at `at` while `ticks` autoscroll ticks pass.
+fn hold(cx: &mut VisualTestContext, at: Point<Pixels>, ticks: u32) {
+    for _ in 0..ticks {
+        cx.simulate_mouse_move(at, MouseButton::Left, Modifiers::none());
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(16));
+        draw(cx);
+    }
+}
+
+#[gpui::test]
+fn dragging_past_the_codes_right_edge_scrolls_it_sideways_and_back(cx: &mut TestAppContext) {
+    let repo = long_line_fixture();
+    let (_dir, shell, cx) = super::open_target(&repo, Target::Working, 1, cx);
+    let pane = pane(&shell, cx);
+    assert_eq!(pane.read_with(cx, |pane, _| pane.h_offset), 0.);
+    let from = char_point(&pane, "long.txt", "new", 2, 2, cx);
+    let cell = bounds(cx, "code/long.txt/new/2").expect("the long line drew");
+    let past_right = point(cell.origin.x + cell.size.width + px(10.), from.y);
+
+    // Held past the right edge, the code scrolls until the line's end shows, and the selection
+    // follows the pointer there.
+    cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::none());
+    draw(cx);
+    hold(cx, past_right, 200);
+    let (scrolled, text) = pane.read_with(cx, |pane, _| {
+        (pane.h_offset, pane.text_selection().map(|s| s.text))
+    });
+    assert!(scrolled > 0., "scrolled sideways");
+    let text = text.expect("a selection");
+    assert!(text.ends_with("tail"), "{text:?}");
+    // It stops at the end: a longer hold scrolls no further.
+    hold(cx, past_right, 20);
+    assert_eq!(pane.read_with(cx, |pane, _| pane.h_offset), scrolled);
+
+    // Past the left edge, into the numbers, it scrolls back to the start.
+    let past_left = point(cell.origin.x - px(30.), from.y);
+    hold(cx, past_left, 200);
+    assert_eq!(pane.read_with(cx, |pane, _| pane.h_offset), 0.);
+    cx.simulate_mouse_up(past_left, MouseButton::Left, Modifiers::none());
+    draw(cx);
+    assert!(pane.read_with(cx, |pane, _| pane.text_drag.is_none()));
+    assert!(pane.read_with(cx, |pane, _| pane.autoscroll.is_none()));
+}
