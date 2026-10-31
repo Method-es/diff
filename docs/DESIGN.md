@@ -381,7 +381,10 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   (the one the press was in), in unified view the rows in order, removed and added lines alike;
   dragging past the file's first or last row clamps there, onto a card or a gap row takes the
   end of the line before it, and within 24 of the stream's top (below the header's 44px bar) or
-  bottom edge, or past it, scrolls the stream, faster the further, until it can't move. Selected
+  bottom edge, or past it, scrolls the stream, faster the further, until it can't move; within
+  24 of its code column's left edge (where the text starts) or right edge (the column's, the
+  stream's in unified view), or past it, it scrolls the code sideways the same way, until the
+  lines in view can't move further. Selected
   text paints on `textSel` behind the characters, a line the selection goes on past one column
   further; it stays through scrolling either way and gaps opening, and goes with a press
   anywhere else in the stream, `Esc`, switching split / unified or the comparison (`I`), and
