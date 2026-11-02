@@ -26,7 +26,7 @@ use gpui::{
 use super::super::DiffPane;
 use super::super::rows::{self, LinePos, Row, heights, side_number};
 use super::super::select::{Geometry, GeometryKey, LineGeometry, Span};
-use super::super::text::{Visible, visible};
+use super::super::text::{Segment, Visible, visible};
 use super::side_key;
 use crate::automation::AutomationTargetExt as _;
 use crate::components::icon;
@@ -236,7 +236,7 @@ impl DiffPane {
             .relative()
             .group(ROW_GROUP)
             .flex()
-            .h(px(heights::CODE))
+            .h(px(self.row_height(&path, row)))
             .w_full()
             .text_spec(&theme.text.code)
             .font_features(FontFeatures::disable_ligatures())
@@ -323,6 +323,7 @@ impl DiffPane {
                     cursor || selected,
                     c.code,
                     &marks,
+                    self.segments(code.path, side, line),
                 ),
                 code.path,
                 line,
@@ -371,6 +372,7 @@ impl DiffPane {
                     cursor || selected,
                     c.code,
                     &marks,
+                    self.segments(code.path, side, line),
                 ),
                 code.path,
                 line,
@@ -579,12 +581,14 @@ fn marker(kind: LineKind, theme: &DvTheme) -> impl IntoElement {
 
 /// A line's text: the columns in view, coloured by token kind with intraline words on their
 /// tint, shifted by the sideways scroll; `marks` behind it and the caret over it, a fade where it
-/// runs on, and `sel` when its line is selected.
+/// runs on, and `sel` when its line is selected. When lines wrap (`segments`) each visual line
+/// paints as its own slice, [`heights::CODE`] high, one under the other, with no fades.
 ///
 /// The marks, the caret and automation's character targets are placed with the painted slice
 /// shaped as the text paints it (the code font, no ligatures), so a wide character or a
 /// combining mark takes the room it is drawn in; the shaped line is also kept for the pointer
 /// (`select`, [`LineGeometry`]).
+#[allow(clippy::too_many_arguments)]
 fn text_cell(
     code: &CodeCx,
     line: Option<usize>,
@@ -593,6 +597,7 @@ fn text_cell(
     selected: bool,
     surface: Hsla,
     marks: &LineMarks,
+    segments: Option<Rc<Vec<Segment>>>,
 ) -> Div {
     let c = &code.theme.colors;
     let cell = div()
@@ -612,12 +617,86 @@ fn text_cell(
         .zip(number)
         .map(|(side, number)| side.line(number))
         .unwrap_or_default();
+    let behind = {
+        let base = surface.blend(bg);
+        if selected { base.blend(c.sel) } else { base }
+    };
+    // The line's name for automation's character targets and tests' bounds, only made for them.
+    let named = crate::automation::is_active() || cfg!(test);
+    let name = number
+        .filter(|_| named)
+        .map(|number| code.target("code", side, number));
+    let slices: Vec<Slice> = match &segments {
+        Some(segments) => segments
+            .iter()
+            .enumerate()
+            .map(|(index, segment)| Slice {
+                first: segment.first,
+                count: segment.count,
+                shift: 0.,
+                bytes: segment.bytes.clone(),
+                last: index + 1 == segments.len(),
+                top: Some(index as f32 * heights::CODE),
+            })
+            .collect(),
+        None => vec![Slice {
+            first: code.first,
+            count: code.count,
+            shift: code.shift,
+            bytes: 0..diff_line.text.len(),
+            last: true,
+            top: None,
+        }],
+    };
+    let parts: Vec<AnyElement> = slices
+        .into_iter()
+        .map(|slice| {
+            paint_slice(
+                code,
+                (line, diff_line, side),
+                tokens,
+                marks,
+                behind,
+                name.clone(),
+                slice,
+            )
+        })
+        .collect();
+    cell.children(parts)
+        .when_some(name, |this, name| this.debug_selector(move || name))
+}
+
+/// One painted slice of a line: its columns, the pixels of the first scrolled off, the source
+/// bytes it holds, whether it is the line's last, and its top in the cell when lines wrap
+/// (`None`: the line's one slice, the cell's height).
+struct Slice {
+    first: usize,
+    count: usize,
+    shift: f32,
+    bytes: std::ops::Range<usize>,
+    last: bool,
+    top: Option<f32>,
+}
+
+/// Paints `slice` of line `line` (`diff_line`) on `side`: its text, the marks behind it that
+/// fall in it, the caret when it holds it, and the fades where it runs on (a line's one slice
+/// only: a wrapped line never runs on).
+fn paint_slice(
+    code: &CodeCx,
+    (line, diff_line, side): (usize, &DiffLine, AnchorSide),
+    tokens: &[crate::syntax::Token],
+    marks: &LineMarks,
+    behind: Hsla,
+    name: Option<String>,
+    slice: Slice,
+) -> AnyElement {
+    let c = &code.theme.colors;
     let shown = Rc::new(visible(
         &diff_line.text,
         tokens,
         &diff_line.words,
-        code.first,
-        code.count,
+        slice.first,
+        slice.count,
     ));
     let word = match diff_line.kind {
         LineKind::Added => c.add_word,
@@ -636,15 +715,22 @@ fn text_cell(
         )
     });
     let text = StyledText::new(shown.text.clone()).with_highlights(runs);
-    let behind = {
-        let base = surface.blend(bg);
-        if selected { base.blend(c.sel) } else { base }
+    // The marks this slice paints: the caret only in the slice that holds its byte, a mark's
+    // reach past the line's end only in the last.
+    let marks = LineMarks {
+        spans: marks
+            .spans
+            .iter()
+            .cloned()
+            .map(|mut mark| {
+                mark.past_end &= slice.last;
+                mark
+            })
+            .collect(),
+        caret: marks.caret.filter(|&offset| {
+            slice.bytes.contains(&offset) || (slice.last && offset == slice.bytes.end)
+        }),
     };
-    // The line's name for automation's character targets and tests' bounds, only made for them.
-    let named = crate::automation::is_active() || cfg!(test);
-    let name = number
-        .filter(|_| named)
-        .map(|number| code.target("code", side, number));
     let caret_x = Rc::new(Cell::new(None));
     let back = marks_canvas(MarksCx {
         key: (code.path.to_string(), side, line),
@@ -657,11 +743,13 @@ fn text_cell(
             ..gpui::font(code.theme.fonts.mono.clone())
         },
         font_size: code.theme.text.code.size,
-        inset: TEXT_INSET - code.shift,
+        inset: TEXT_INSET - slice.shift,
         char_width: code.char_width,
-        marks: marks.clone(),
         caret_x: caret_x.clone(),
-        targets: name.clone().filter(|_| crate::automation::is_active()),
+        targets: name.filter(|_| crate::automation::is_active()),
+        bytes: slice.bytes.clone(),
+        last: slice.last,
+        marks: marks.clone(),
     });
     let accent = c.accent;
     let caret = marks.caret.map(|_| {
@@ -682,12 +770,21 @@ fn text_cell(
         .left_0()
         .size_full()
     });
-    cell.child(back)
+    let wrapped = slice.top.is_some();
+    div()
+        .absolute()
+        .left_0()
+        .w_full()
+        .map(|this| match slice.top {
+            Some(top) => this.top(px(top)).h(px(heights::CODE)),
+            None => this.top_0().h_full(),
+        })
+        .child(back)
         .child(
             div()
                 .absolute()
                 .top_0()
-                .left(px(TEXT_INSET - code.shift))
+                .left(px(TEXT_INSET - slice.shift))
                 .h_full()
                 .whitespace_nowrap()
                 .text_color(syntax.plain)
@@ -695,7 +792,7 @@ fn text_cell(
         )
         .children(caret)
         // Scrolled sideways, the text slides under a short fade at the left edge too.
-        .when(code.first > 0 || code.shift > 0., |this| {
+        .when(!wrapped && (slice.first > 0 || slice.shift > 0.), |this| {
             this.child(
                 div()
                     .absolute()
@@ -710,7 +807,7 @@ fn text_cell(
                     )),
             )
         })
-        .when(shown.clipped, |this| {
+        .when(!wrapped && shown.clipped, |this| {
             this.child(
                 div()
                     .absolute()
@@ -725,7 +822,7 @@ fn text_cell(
                     )),
             )
         })
-        .when_some(name, |this, name| this.debug_selector(move || name))
+        .into_any_element()
 }
 
 /// What [`marks_canvas`] paints with.
@@ -744,6 +841,9 @@ struct MarksCx {
     caret_x: Rc<Cell<Option<Pixels>>>,
     /// The line's automation name while automation runs: its characters are targets.
     targets: Option<String>,
+    /// The source bytes the slice holds, and whether it is the line's last (`wrap`).
+    bytes: std::ops::Range<usize>,
+    last: bool,
 }
 
 /// The canvas behind a line's text: it shapes the painted slice, keeps the shaped line for the
@@ -764,6 +864,8 @@ fn marks_canvas(cx: MarksCx) -> impl IntoElement {
                 marks,
                 caret_x,
                 targets,
+                bytes,
+                last,
             } = cx;
             let run = TextRun {
                 len: shown.text.len(),
@@ -782,6 +884,8 @@ fn marks_canvas(cx: MarksCx) -> impl IntoElement {
                 origin_x: bounds.origin.x + px(inset),
                 shaped,
                 shown,
+                bytes,
+                last,
             };
             let top = bounds.origin.y;
             let quads: Vec<PaintQuad> = marks
@@ -830,7 +934,7 @@ fn marks_canvas(cx: MarksCx) -> impl IntoElement {
                     );
                 }
             }
-            geometry.borrow_mut().insert(key, line);
+            geometry.borrow_mut().entry(key).or_default().add(line);
             quads
         },
         |_, quads, window, _| {

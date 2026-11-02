@@ -1,0 +1,28 @@
+{"scenario": {"window_size": "1440x900", "description": "Long lines wrapping (DESIGN §4.1 \"Wrap\"): off by default, a long line clips with a fade; Alt Z wraps it at the code column's width, its row as tall as its visual lines and the short removed line beside it as tall, in split and in unified view; Settings › Appearance's Long lines shows Wrap chosen and Scroll turns it off; screenshots of the clipped line, the wrapped split and unified rows, and the settings row."}}
+{"cmd": "wait_ready", "timeout_ms": 20000}
+{"cmd": "set_setting", "key": "mode", "value": "dark"}
+{"cmd": "settle", "expect": [{"pointer": "/settings/wrap", "equals": false}]}
+{"cmd": "seed_repo", "name": "wrap", "steps": [{"write": "src/app.ts", "text": "export const first = 1;\nconst old = 2;\nexport const last = 3;\n"}, {"commit": "base"}, {"write": "src/app.ts", "text": "export const first = 1;\nconst message = buildMessage({ greeting: 'hello', recipient: user.displayName, signature: team.signature, footer: renderFooter(locale, timezone, preferences), attachments: [] });\nexport const last = 3;\n"}], "save": {"repo": "/path"}}
+{"cmd": "open_review", "path": "${repo}"}
+{"cmd": "settle", "timeout_ms": 20000, "expect": [{"pointer": "/session/total", "equals": 1}, {"pointer": "/session/view_mode", "equals": "split"}]}
+{"cmd": "screenshot", "name": "clipped"}
+
+// Alt Z wraps it; again turns it off; once more on, for the screenshots.
+{"cmd": "key", "keystroke": "alt-z"}
+{"cmd": "settle", "expect": [{"pointer": "/settings/wrap", "equals": true}]}
+{"cmd": "screenshot", "name": "wrapped-split"}
+{"cmd": "key", "keystroke": "alt-z"}
+{"cmd": "settle", "expect": [{"pointer": "/settings/wrap", "equals": false}]}
+{"cmd": "key", "keystroke": "alt-z"}
+{"cmd": "key", "keystroke": "s"}
+{"cmd": "settle", "expect": [{"pointer": "/settings/wrap", "equals": true}, {"pointer": "/session/view_mode", "equals": "unified"}]}
+{"cmd": "screenshot", "name": "wrapped-unified"}
+
+// Settings › Appearance: Long lines shows Wrap; Scroll turns it off.
+{"cmd": "key", "keystroke": "secondary-,"}
+{"cmd": "settle", "expect": [{"pointer": "/setup/settings_open", "equals": true}]}
+{"cmd": "screenshot", "name": "settings-long-lines"}
+{"cmd": "click", "target": "settings/wrap/scroll"}
+{"cmd": "settle", "expect": [{"pointer": "/settings/wrap", "equals": false}]}
+{"cmd": "key", "keystroke": "escape"}
+{"cmd": "settle", "expect": [{"pointer": "/setup/settings_open", "equals": false}]}

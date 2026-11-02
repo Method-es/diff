@@ -16,6 +16,7 @@ mod rounds;
 mod section;
 mod text_select;
 mod threads;
+mod wrap;
 
 use super::*;
 use crate::services::reviews::OpenRequest;

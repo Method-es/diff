@@ -1,13 +1,15 @@
-//! Settings › Appearance (DESIGN §4.3): the theme's palette, the light/dark mode and the window
-//! material, each a segmented control that changes the setting at once (`services::Settings`,
+//! Settings › Appearance (DESIGN §4.3): the theme's palette, the light/dark mode, the window
+//! material and whether long lines wrap, each a segmented control that changes the setting at
+//! once (`services::Settings`,
 //! which `crate::appearance` follows). A material the platform or the palette can't show
 //! (Claude and Dracula are opaque, DESIGN §1.3) is drawn disabled, and a line under the control
 //! says why; a setting it can't show (Mica with transparency effects since turned off, or with
 //! Claude chosen) stays chosen, the window showing Opaque meanwhile (DESIGN §3). With Dracula,
 //! which has no light palette, the mode row says so.
 //!
-//! Automation targets: `settings/appearance`, `settings/palette/<key>`, `settings/mode/<key>`
-//! and `settings/material/<key>` (the settings' keys, `aura`, `system`, `mica`, …).
+//! Automation targets: `settings/appearance`, `settings/palette/<key>`, `settings/mode/<key>`,
+//! `settings/material/<key>` (the settings' keys, `aura`, `system`, `mica`, …) and
+//! `settings/wrap/<scroll|wrap>`.
 
 use gpui::{
     AnyElement, App, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
@@ -26,6 +28,7 @@ pub fn page(theme: &DvTheme, cx: &App) -> AnyElement {
     let c = &theme.colors;
     let settings = cx.services().settings.read(cx);
     let (palette, mode, material) = (settings.palette(), settings.mode(), settings.material());
+    let wrap = settings.wrap();
     let support = crate::appearance::support(cx);
 
     let palettes = Palette::ALL
@@ -97,6 +100,29 @@ pub fn page(theme: &DvTheme, cx: &App) -> AnyElement {
             )
         });
 
+    let lines = [(false, "scroll", "Scroll"), (true, "wrap", "Wrap")]
+        .into_iter()
+        .fold(segmented(theme), |control, (each, key, label)| {
+            let on = each == wrap;
+            control.child(
+                segment(
+                    SharedString::from(format!("settings-wrap-{key}")),
+                    on,
+                    true,
+                    theme,
+                )
+                .debug_selector(move || format!("settings-wrap-{key}"))
+                .child(label)
+                .when(!on, |this| {
+                    this.on_click(move |_, _, cx| {
+                        let settings = cx.services().settings.clone();
+                        settings.update(cx, |settings, cx| settings.set_wrap(each, cx));
+                    })
+                })
+                .automation_target(format!("settings/wrap/{key}")),
+            )
+        });
+
     let card = div()
         .flex()
         .flex_col()
@@ -133,6 +159,19 @@ pub fn page(theme: &DvTheme, cx: &App) -> AnyElement {
                     .into(),
                 material_note(support, palette, material),
                 materials.into_any_element(),
+                theme,
+            )),
+        )
+        .child(
+            div().border_t_1().border_color(c.line).child(row(
+                "Long lines",
+                format!(
+                    "Scroll sideways past the code's edge, or wrap at it. {} switches.",
+                    crate::keymap::label("alt-z")
+                )
+                .into(),
+                None,
+                lines.into_any_element(),
                 theme,
             )),
         );

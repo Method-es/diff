@@ -86,7 +86,7 @@ use gpui::{
 use gpui_component::Root;
 
 use crate::actions::field;
-use crate::actions::shell::{FinishReview, TogglePanel, ToggleSwitcher};
+use crate::actions::shell::{FinishReview, TogglePanel, ToggleSwitcher, ToggleWrap};
 use crate::comments_list::CommentsList;
 use crate::diff_pane::{DiffPane, DiffPaneEvent};
 use crate::failure::Failure;
@@ -1208,6 +1208,15 @@ impl Shell {
         } else {
             self.open_switcher(None, window, cx);
         }
+    }
+
+    /// `Alt Z`: long lines wrap, or stop wrapping (the `wrap` setting, DESIGN §4.1 "Wrap").
+    fn toggle_wrap(&mut self, _: &ToggleWrap, _: &mut Window, cx: &mut Context<Self>) {
+        let settings = cx.services().settings.clone();
+        settings.update(cx, |settings, cx| {
+            let wrap = !settings.wrap();
+            settings.set_wrap(wrap, cx);
+        });
     }
 
     fn toggle_panel(&mut self, _: &TogglePanel, window: &mut Window, cx: &mut Context<Self>) {

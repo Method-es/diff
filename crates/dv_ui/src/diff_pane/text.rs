@@ -261,6 +261,60 @@ pub fn visible(
     out
 }
 
+/// One visual line of a wrapped line (DESIGN §4.1 "Wrap"): the columns it shows, as
+/// [`visible`] takes them, and the source bytes they hold.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Segment {
+    pub first: usize,
+    pub count: usize,
+    pub bytes: Range<usize>,
+}
+
+impl Segment {
+    /// Whether byte `offset` of the source line is drawn in this segment: in its bytes, or at
+    /// the end of the line for the last one.
+    pub fn holds(&self, offset: usize, last: bool) -> bool {
+        self.bytes.contains(&offset) || (last && offset == self.bytes.end)
+    }
+}
+
+/// `text` wrapped at `width` columns (a tab taking [`TAB_WIDTH`]): after the last whitespace
+/// that keeps a visual line within `width`, else wherever it runs out (a word longer than a
+/// line); never inside a character, so a tab is never split. An empty line is one segment.
+pub fn wrap(text: &str, width: usize) -> Vec<Segment> {
+    let width = width.max(1);
+    let mut segments = Vec::new();
+    let (mut start_byte, mut start_column) = (0, 0);
+    let mut column = 0;
+    // Where the segment may end: just after the last whitespace in it.
+    let mut after_space: Option<(usize, usize)> = None;
+    for (at, ch) in text.char_indices() {
+        let cells = if ch == '\t' { TAB_WIDTH } else { 1 };
+        while column + cells - start_column > width && column > start_column {
+            let (end_byte, end_column) = after_space
+                .filter(|&(byte, _)| byte > start_byte)
+                .unwrap_or((at, column));
+            segments.push(Segment {
+                first: start_column,
+                count: end_column - start_column,
+                bytes: start_byte..end_byte,
+            });
+            (start_byte, start_column) = (end_byte, end_column);
+            after_space = None;
+        }
+        column += cells;
+        if ch.is_whitespace() {
+            after_space = Some((at + ch.len_utf8(), column));
+        }
+    }
+    segments.push(Segment {
+        first: start_column,
+        count: column - start_column,
+        bytes: start_byte..text.len(),
+    });
+    segments
+}
+
 #[cfg(test)]
 mod tests {
     use pretty_assertions::assert_eq;
@@ -489,5 +543,67 @@ mod tests {
         assert_eq!(char_offset(text, 7), Some(text.len()));
         assert_eq!(char_offset(text, 8), None);
         assert_eq!(char_offset(text, 0), None);
+    }
+
+    fn wrapped(text: &str, width: usize) -> Vec<&str> {
+        wrap(text, width)
+            .into_iter()
+            .map(|segment| &text[segment.bytes])
+            .collect()
+    }
+
+    #[test]
+    fn wrap_breaks_after_whitespace_within_the_width() {
+        assert_eq!(wrapped("", 10), [""]);
+        assert_eq!(wrapped("short", 10), ["short"]);
+        assert_eq!(wrapped("exactly10!", 10), ["exactly10!"]);
+        assert_eq!(
+            wrapped("let total = price * quantity;", 12),
+            ["let total = ", "price * ", "quantity;"]
+        );
+        // A word longer than a line breaks where it runs out.
+        assert_eq!(wrapped("abcdefghijkl mn", 5), ["abcde", "fghij", "kl mn"]);
+    }
+
+    #[test]
+    fn wrap_counts_a_tab_as_four_columns_and_never_splits_one_or_a_character() {
+        // `\tx` is five columns: the tab doesn't fit after `ab`, so it starts the next line.
+        let segments = wrap("ab\txy", 4);
+        let texts: Vec<&str> = segments
+            .iter()
+            .map(|s| &"ab\txy"[s.bytes.clone()])
+            .collect();
+        assert_eq!(texts, ["ab", "\t", "xy"]);
+        assert_eq!(
+            segments
+                .iter()
+                .map(|s| (s.first, s.count))
+                .collect::<Vec<_>>(),
+            [(0, 2), (2, 4), (6, 2)]
+        );
+        assert_eq!(wrapped("éééé", 2), ["éé", "éé"]);
+    }
+
+    #[test]
+    fn segments_cover_the_line_and_hold_its_end_in_the_last() {
+        let text = "one two three four";
+        let segments = wrap(text, 8);
+        assert_eq!(segments.first().map(|s| s.bytes.start), Some(0));
+        assert_eq!(segments.last().map(|s| s.bytes.end), Some(text.len()));
+        for pair in segments.windows(2) {
+            assert_eq!(pair[0].bytes.end, pair[1].bytes.start);
+            assert_eq!(pair[0].first + pair[0].count, pair[1].first);
+        }
+        let last = segments.len() - 1;
+        let holding = |offset| {
+            segments
+                .iter()
+                .enumerate()
+                .position(|(index, s)| s.holds(offset, index == last))
+        };
+        assert_eq!(holding(0), Some(0));
+        assert_eq!(holding(text.len()), Some(last));
+        // A break's byte starts the next segment.
+        assert_eq!(holding(segments[1].bytes.start), Some(1));
     }
 }

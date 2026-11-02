@@ -91,6 +91,13 @@ pub const COMMANDS: &[Command] = &[
         SHELL,
         true
     ),
+    command!(
+        "Wrap long lines",
+        "word soft wrap unwrap scroll sideways",
+        shell::ToggleWrap,
+        SHELL,
+        false
+    ),
     command!("Next file", "", diff_pane::NextFile, DIFF_PANE, true),
     command!(
         "Previous file",
