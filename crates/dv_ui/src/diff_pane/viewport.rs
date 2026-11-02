@@ -307,6 +307,11 @@ impl DiffPane {
     }
 
     pub(super) fn clamp_h_offset(&mut self) {
+        // Wrapped lines never run on past the edge (`wrap`).
+        if self.wraps() {
+            self.h_offset = 0.;
+            return;
+        }
         let width = self.char_width.unwrap_or(7.2);
         let max = (self.view_columns as f32 - self.code_columns as f32 + 2.).max(0.) * width;
         self.h_offset = self.h_offset.clamp(0., max);

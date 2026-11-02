@@ -171,12 +171,14 @@ impl DiffPane {
             let geometry = self.geometry.borrow();
             let ((path, side, line), _) = geometry
                 .iter()
-                .find(|(_, drawn)| drawn.bounds.contains(&position))?;
+                .find(|(_, drawn)| drawn.contains(&position))?;
             let text = self.line(path, *line)?.text.clone();
             (path.clone(), *side, *line, text)
         };
         let geometry = self.geometry.borrow();
-        let drawn = geometry.get(&(path.clone(), side, line))?;
+        let drawn = geometry
+            .get(&(path.clone(), side, line))?
+            .at_y(position.y)?;
         let x = f32::from(position.x);
         let x_of = |at| f32::from(drawn.x_of(at));
         let unit = unit_at(&text, x, x_of)?;
@@ -247,6 +249,7 @@ impl DiffPane {
             .geometry
             .borrow()
             .get(&(caret.path.clone(), caret.side, line))
+            .and_then(|drawn| drawn.holding(range.start))
             .map(|drawn| {
                 Bounds::from_corners(
                     point(drawn.x_of(range.start), drawn.bounds.top()),
@@ -273,7 +276,9 @@ impl DiffPane {
     ) -> Option<Point<Pixels>> {
         let line = line_index(self.lines(path)?, side, number)?;
         let geometry = self.geometry.borrow();
-        let drawn = geometry.get(&(path.to_string(), side, line))?;
+        let drawn = geometry
+            .get(&(path.to_string(), side, line))?
+            .holding(offset)?;
         let (left, right) = (drawn.x_of(offset), drawn.x_of(offset + 1));
         Some(point((left + right) / 2., drawn.bounds.center().y))
     }
@@ -689,7 +694,9 @@ fn span_bounds(
         at
     };
     let geometry = geometry.borrow();
-    let drawn = geometry.get(&(card.at.path.clone(), card.at.side, line))?;
+    let drawn = geometry
+        .get(&(card.at.path.clone(), card.at.side, line))?
+        .holding(clamp(card.span.start))?;
     Some(Bounds::from_corners(
         point(drawn.x_of(clamp(card.span.start)), drawn.bounds.top()),
         point(drawn.x_of(clamp(card.span.end)), drawn.bounds.bottom()),

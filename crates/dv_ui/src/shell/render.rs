@@ -67,6 +67,7 @@ impl Render for Shell {
             .key_context(keymap::SHELL)
             .on_action(cx.listener(Self::toggle_switcher))
             .on_action(cx.listener(Self::toggle_panel))
+            .on_action(cx.listener(Self::toggle_wrap))
             .on_action(cx.listener(Self::finish_review))
             .on_action(cx.listener(Self::toggle_file_finder))
             .on_action(cx.listener(Self::toggle_palette))

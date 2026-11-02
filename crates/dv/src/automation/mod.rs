@@ -256,14 +256,14 @@ enum SettingChange {
     Palette(Palette),
     Material(Material),
     Mode(Mode),
+    Wrap(bool),
 }
 
 impl SettingChange {
     fn parse(args: &Value) -> Result<Self> {
-        let key = args
-            .get("key")
-            .and_then(Value::as_str)
-            .context("set_setting needs \"key\": \"palette\", \"material\" or \"mode\"")?;
+        let key = args.get("key").and_then(Value::as_str).context(
+            "set_setting needs \"key\": \"palette\", \"material\", \"mode\" or \"wrap\"",
+        )?;
         let value = args
             .get("value")
             .and_then(Value::as_str)
@@ -280,9 +280,14 @@ impl SettingChange {
             "mode" => Mode::from_key(value).map(Self::Mode).ok_or_else(|| {
                 anyhow!("mode must be \"system\", \"dark\" or \"light\", not {value:?}")
             }),
-            other => {
-                bail!("unknown setting {other:?}; dv has \"palette\", \"material\" and \"mode\"")
-            }
+            "wrap" => match value {
+                "on" => Ok(Self::Wrap(true)),
+                "off" => Ok(Self::Wrap(false)),
+                _ => Err(anyhow!("wrap must be \"on\" or \"off\", not {value:?}")),
+            },
+            other => bail!(
+                "unknown setting {other:?}; dv has \"palette\", \"material\", \"mode\" and \"wrap\""
+            ),
         }
     }
 }
@@ -296,6 +301,7 @@ fn set_setting(args: &Value, cx: &mut Context<DvAutomation>) -> Result<Value> {
         SettingChange::Palette(palette) => settings.set_palette(palette, cx),
         SettingChange::Material(material) => settings.set_material(material, cx),
         SettingChange::Mode(mode) => settings.set_mode(mode, cx),
+        SettingChange::Wrap(wrap) => settings.set_wrap(wrap, cx),
     });
     Ok(json!({"settings": state::settings(cx)}))
 }

@@ -26,6 +26,7 @@ pub fn settings(cx: &App) -> Value {
         "palette": settings.palette().key(),
         "material": settings.material().key(),
         "mode": settings.mode().key(),
+        "wrap": settings.wrap(),
         "resolved_palette": resolved.palette.key(),
         "resolved_material": resolved.material.key(),
         "resolved_mode": resolved.appearance.key(),

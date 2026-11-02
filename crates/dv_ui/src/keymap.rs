@@ -145,6 +145,8 @@ pub const SHORTCUTS: &[Shortcut] = &[
     // Finishing the round stays out of text fields: in the composer `Ctrl Enter` posts, in the
     // sheet it submits (both bound in their own contexts, below).
     shortcut!("secondary-enter", SHELL, shell::FinishReview, OutsideInputs),
+    // Alt Z types a character in a text field on macOS (`Ω`), so the field keeps it.
+    shortcut!("alt-z", SHELL, shell::ToggleWrap, OutsideInputs),
     // The switcher: its filter field has the keyboard and takes ↑/↓ itself, so those rows sit
     // ahead of it; Enter and an idle Esc pass through the field to the plain rows.
     shortcut!("down", SWITCHER, switcher::SelectNext, AheadOfInputs),

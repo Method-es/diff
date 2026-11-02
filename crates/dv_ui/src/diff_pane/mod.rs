@@ -28,7 +28,8 @@
 //!
 //! **Viewed files** collapse to their header (DESIGN §4.1); the header's chevron opens one
 //! again. Long lines clip with a fade and scroll sideways together, one offset for the whole
-//! stream (`Shift`+wheel, a trackpad).
+//! stream (`Shift`+wheel, a trackpad); with the `wrap` setting on they wrap at the code column's
+//! width instead, a code row as high as its longer side's visual lines (`wrap`).
 //!
 //! **Threads** (`threads`, cards from [`crate::thread`]): a thread's card follows the last line
 //! of its range on its side, an outdated one heads its file, one whose file left the diff heads
@@ -74,11 +75,13 @@ mod select;
 pub mod text;
 mod threads;
 mod viewport;
+mod wrap;
 
 #[cfg(test)]
 mod tests;
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -269,6 +272,13 @@ pub struct DiffPane {
     char_width: Option<f32>,
     /// The code cell's width in columns, from the last frame.
     code_columns: usize,
+    /// Whether long lines wrap (the `wrap` setting), and at how many columns (`wrap`).
+    wrap: bool,
+    wrap_width: usize,
+    /// Each wrapped line's visual lines at `wrap_width`, by file, side and line, worked out as
+    /// rows are measured or drawn and forgotten when the width, the setting or the file's
+    /// diff changes.
+    segments: std::cell::RefCell<HashMap<select::GeometryKey, Rc<Vec<text::Segment>>>>,
     /// The list's bounds in the last frame (read before the list lays its rows out): the area a
     /// hover card stays in, and the room the file view's header has.
     view_bounds: gpui::Bounds<Pixels>,
@@ -377,6 +387,9 @@ impl DiffPane {
             line_maps: HashMap::new(),
             char_width: None,
             code_columns: 80,
+            wrap: false,
+            wrap_width: 0,
+            segments: std::cell::RefCell::new(HashMap::new()),
             view_bounds: gpui::Bounds::default(),
             loading_since: HashMap::new(),
             loading_timer: None,
@@ -968,7 +981,11 @@ impl DiffPane {
     /// are measured (an estimate until they are).
     fn item_height(&self, item: usize) -> f32 {
         match self.row(item) {
-            Some(row) if row.has_fixed_height() => row.height(),
+            Some(row) if row.has_fixed_height() => {
+                self.locate(item).map_or(row.height(), |(block, _)| {
+                    self.row_height(&self.blocks[block].path, row)
+                })
+            }
             Some(row) => self.measured_height(item).unwrap_or(row.height()),
             None => self.spacer_height,
         }

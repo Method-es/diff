@@ -133,7 +133,7 @@ lines) and on light and dark taskbars alike. The source is `crates/dv/resources/
   they never take a permanent column. The panel is resizable 220–420 (its width is remembered, in
   `settings.json`) and collapsible (`Ctrl B`).
 - Split view gets ≈575px per side at 1440px; long lines clip with a fade and scroll horizontally
-  together (`Shift`+wheel). Unified is offered and remembered per review.
+  together (`Shift`+wheel), or wrap with the Long lines setting (§4.1 "Wrap"). Unified is offered and remembered per review.
 - The diff is one stream over all files (PLAN §6.7); the panel's file rows scroll the stream.
 - Below 1100px window width the panel auto-collapses into an overlay.
 - **Linux** (PLAN §13.1): dv draws the window's decorations where the platform lets it (Wayland,
@@ -348,7 +348,15 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   syntax colours, intraline words on `addWord`/`delWord`, tabs as four spaces and no ligatures
   (`=>` stays two characters). Long lines clip with a fade at the right edge and scroll sideways
   together, one offset for every row and both sides (`Shift`+wheel, a trackpad); scrolled, the
-  left edge fades too. Gaps are one 28-high row on `hunk`: the next hunk's `@@ -a,b +c,d @@` in
+  left edge fades too. **Wrap** (the Long lines setting, §4.3, or `Alt Z`; off until it is turned
+  on, kept in `settings.json`): long lines wrap at the code column's width (a side's in split
+  view, a column's room kept at the end) instead, after the last whitespace that keeps a visual
+  line within it, else where it runs out, never inside a character or a tab; each visual line is
+  20 high, the line's number, marker and comment `+` on its first, and a row is as tall as its
+  longer side's visual lines, the shorter side's tint filling the room under its text. Nothing
+  scrolls sideways and nothing fades while lines wrap; the selection, the caret, find matches and
+  the hover card's token sit on the visual line that holds their text, and a press or a drag
+  picks the visual line under the pointer. Gaps are one 28-high row on `hunk`: the next hunk's `@@ -a,b +c,d @@` in
   `blue`, "··· 27 unchanged lines", "Expand 20 · Expand all" (a click reveals 20 lines next to
   the hunk below, or above for the end of the file); the board's separate hunk header and
   "Expand context below" bar are this one row. Files without lines show one notice row instead:
@@ -756,8 +764,9 @@ Setup unchanged.
   close button. Its body scrolls through two pages, each a 13/600 title over its cards:
   **Appearance**, one card with a row per setting (its name in 600, what it does in `fg2`
   secondary, its control on the right, a header-style segmented control): **Theme** Aura |
-  Claude | Dracula (§1.3), **Mode** System | Dark | Light and **Material** Mica | Acrylic |
-  Opaque, each applied as it is clicked. With Dracula the mode row's `yellow` line says
+  Claude | Dracula (§1.3), **Mode** System | Dark | Light, **Material** Mica | Acrylic |
+  Opaque and **Long lines** Scroll | Wrap ("Scroll sideways past the code's edge, or wrap at it.
+  `Alt Z` switches.", §4.1 "Wrap"), each applied as it is clicked. With Dracula the mode row's `yellow` line says
   "Dracula has no light palette: dv shows it dark, keeping the mode for the other themes". With
   Claude or Dracula Mica and Acrylic are disabled segments and the material row's line says
   "Mica and Acrylic are Aura's: Claude is opaque" (Dracula likewise), keeping the setting for
@@ -913,6 +922,7 @@ Setup unchanged.
 | `Ctrl G` | the PR picker (§4.5) |
 | `Ctrl R` | on a PR review: refresh it from GitHub (fetch, threads, checks, Viewed; PLAN §9.4) |
 | `Ctrl B` | toggle panel |
+| `Alt Z` | long lines wrap, or stop wrapping (the Long lines setting, §4.1 "Wrap"); outside text fields, where it types a character on macOS |
 | `Ctrl ,` | Settings: Appearance and Setup (§4.3); again, or `Esc`, closes it |
 | `Enter` | on the first-run screen: Continue |
 | `Esc` | close the top overlay, else a comments row's menu, else the language server's details, else the hover card, else the file menu, else close an empty composer (one holding a draft is passed over: only `Esc` in the composer discards a draft, so a press in the code to select text to quote, `Ctrl C` and `Esc` never lose it), else close the find bar, else clear the selection (the lines and the text both), else the code notice (a place that can't be shown), else, in the file view, close it (back to the stream where it was); in the find field it closes the bar first, and in the composer it discards the draft once a comments row's menu or a language server's details over it have closed (the field has the keyboard, so the stream's chain doesn't run) |
