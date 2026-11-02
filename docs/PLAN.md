@@ -2089,7 +2089,7 @@ touched, and never the open review's, whose targets the source picker lists; rep
 (`Location::same_place`), so a spelling WSL couldn't confirm never makes a second row; so the switcher shows each target beside its open
 review by the rule `open_review` resumes by (`review::ops::is_review_of`); it watches nothing
 itself), `ReviewUi` (what the reviewer chose per review: split or unified), `GitHub` (gh calls, the
-PR mirrors' refresh and the picker's lists, §9), `Settings` (material, mode, panel width, and the language servers' `lsp`, which the
+PR mirrors' refresh and the picker's lists, §9), `Settings` (material, mode, panel width, whether long lines wrap, and the language servers' `lsp`, which the
 reviewer writes by hand and which is read again on **Check again** and when the window comes
 back to the front, §18.5), `LanguageServers` (every worktree's language servers, shared by the
 reviews open on it, §18.5). The **system seam**

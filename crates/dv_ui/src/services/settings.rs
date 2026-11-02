@@ -1,8 +1,8 @@
 //! dv's settings (PLAN §11 `Settings`): the theme's palette, the window material, the light/dark
-//! mode, the panel's width and the language servers' commands, kept in `<data dir>/settings.json`
-//! as `{"v": 1, "palette": …, "material": …, "mode": …, "panel_width": …, "lsp": …}` (`palette`
-//! and `panel_width` only once they were changed, `lsp` only when the file has it: the reviewer
-//! writes it by hand, PLAN §18.4). The palette has a key of its own: the first implementation's
+//! mode, the panel's width, whether long lines wrap and the language servers' commands, kept in
+//! `<data dir>/settings.json` as `{"v": 1, "palette": …, "material": …, "mode": …, "panel_width":
+//! …, "wrap": …, "lsp": …}` (`palette`, `panel_width` and `wrap` only once they were changed,
+//! `lsp` only when the file has it: the reviewer writes it by hand, PLAN §18.4). The palette has a key of its own: the first implementation's
 //! `theme` (`"Aura Dark"`) is one of the keys kept as they are.
 //!
 //! The default data dir is `%APPDATA%\dv` on Windows, which also holds the first
@@ -18,7 +18,7 @@
 //! **Edits by hand while dv runs.** The reviewer edits `lsp` (and keeps other programs' keys)
 //! in the file while dv runs, so every write reads the file again first and takes `lsp` and the
 //! keys dv doesn't know from it, writing only the keys dv owns (`palette`, `material`, `mode`,
-//! `panel_width`) from memory ([`write_merged`]); a file that isn't a JSON object at that
+//! `panel_width`, `wrap`) from memory ([`write_merged`]); a file that isn't a JSON object at that
 //! moment (an edit saved half-way) is left alone and the write fails, saying why. `lsp` is also
 //! read again on its own ([`Settings::reload_lsp`]: **Check again** on a missing server, and
 //! the window coming back to the front), so an edit reaches the language servers without a
@@ -100,6 +100,9 @@ pub struct SettingsFile {
     /// The panel's width in logical pixels, within [`PANEL_WIDTH_RANGE`]; `None` until the
     /// reviewer resizes it ([`PANEL_WIDTH_DEFAULT`]).
     pub panel_width: Option<f32>,
+    /// Whether long lines of code wrap at the code column's width instead of clipping and
+    /// scrolling sideways (DESIGN §4.1); `None` until it is changed, which is off.
+    pub wrap: Option<bool>,
     /// `lsp` as written (`{"typescript": {"command": ["/x/tsc", "--lsp", "--stdio"]}}`):
     /// written back as it was read, its keys dv doesn't know included; read leniently through
     /// [`SettingsFile::lsp_settings`] (PLAN §18.4).
@@ -115,6 +118,7 @@ impl Default for SettingsFile {
             material: Material::platform_default(),
             mode: Mode::default(),
             panel_width: None,
+            wrap: None,
             lsp: None,
             extra: Map::new(),
         }
@@ -131,6 +135,8 @@ struct Written<'a> {
     mode: Mode,
     #[serde(skip_serializing_if = "Option::is_none")]
     panel_width: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wrap: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     lsp: Option<&'a Value>,
     #[serde(flatten)]
@@ -199,6 +205,14 @@ impl SettingsFile {
                 )),
             }
         }
+        if let Some(value) = object.remove("wrap") {
+            match value.as_bool() {
+                Some(wrap) => file.wrap = Some(wrap),
+                None => problems.push(format!(
+                    "\"wrap\" is {value}, not true or false; using false"
+                )),
+            }
+        }
         if let Some(value) = object.remove("lsp") {
             if !value.is_object() {
                 problems.push(format!(
@@ -219,6 +233,7 @@ impl SettingsFile {
             material: self.material,
             mode: self.mode,
             panel_width: self.panel_width,
+            wrap: self.wrap,
             lsp: self.lsp.as_ref(),
             extra: &self.extra,
         };
@@ -372,6 +387,11 @@ impl Settings {
         self.file.panel_width.unwrap_or(PANEL_WIDTH_DEFAULT)
     }
 
+    /// Whether long lines of code wrap (DESIGN §4.1): off until it is turned on.
+    pub fn wrap(&self) -> bool {
+        self.file.wrap.unwrap_or(false)
+    }
+
     /// Where the settings are saved.
     pub fn path(&self) -> &Path {
         self.writer.path()
@@ -414,6 +434,13 @@ impl Settings {
         let width = clamp_panel_width(width);
         if self.file.panel_width != Some(width) {
             self.file.panel_width = Some(width);
+            self.changed(cx);
+        }
+    }
+
+    pub fn set_wrap(&mut self, wrap: bool, cx: &mut Context<Self>) {
+        if self.file.wrap != Some(wrap) {
+            self.file.wrap = Some(wrap);
             self.changed(cx);
         }
     }
@@ -539,6 +566,21 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    #[test]
+    fn wrap_is_read_leniently_and_written_once_set() {
+        let (file, problems) = SettingsFile::parse("{}");
+        assert_eq!(file.wrap, None);
+        assert!(problems.is_empty());
+        assert!(!file.to_json().contains("wrap"));
+        let (file, problems) = SettingsFile::parse(r#"{"wrap": true}"#);
+        assert_eq!(file.wrap, Some(true));
+        assert!(problems.is_empty());
+        assert!(file.to_json().contains("\"wrap\": true"));
+        let (file, problems) = SettingsFile::parse(r#"{"wrap": "yes"}"#);
+        assert_eq!(file.wrap, None);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+    }
 
     #[test]
     fn a_missing_or_empty_object_gives_the_defaults() {

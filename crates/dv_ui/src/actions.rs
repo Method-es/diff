@@ -49,6 +49,8 @@ pub mod shell {
             TogglePalette,
             /// Add a repository through the folder picker (the switcher's "Open folder…").
             OpenFolder,
+            /// Turn the wrapping of long lines on or off (`Alt Z`, DESIGN §4.1 "Wrap").
+            ToggleWrap,
         ]
     );
 }

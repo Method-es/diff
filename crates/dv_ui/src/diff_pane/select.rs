@@ -96,15 +96,21 @@ pub(super) struct TextDrag {
     pub granularity: Granularity,
 }
 
-/// Where a line drawn this frame is: the window x its painted slice starts at, the slice shaped
-/// as it paints, and how the slice's bytes map to the source line's.
+/// Where a line (one visual line of it, when lines wrap) drawn this frame is: the window x its
+/// painted slice starts at, the slice shaped as it paints, how the slice's bytes map to the
+/// source line's, and which of the source line's bytes it holds.
 #[derive(Clone)]
 pub(super) struct LineGeometry {
-    /// The text cell's bounds: the pointer is on this line's code within them.
+    /// The visual line's bounds in the text cell: the pointer is on this line's code within
+    /// them.
     pub bounds: gpui::Bounds<Pixels>,
     pub origin_x: Pixels,
     pub shaped: ShapedLine,
     pub shown: Rc<Visible>,
+    /// The source bytes this visual line holds (all of them unless the line wraps), and
+    /// whether it is the line's last, which holds its end too.
+    pub bytes: Range<usize>,
+    pub last: bool,
 }
 
 impl LineGeometry {
@@ -118,8 +124,50 @@ impl LineGeometry {
 /// A drawn line's key: its file, side and line (an index into the file's lines).
 pub(super) type GeometryKey = (String, AnchorSide, usize);
 
+/// A line drawn this frame: each of its visual lines, top first (one unless it wraps).
+#[derive(Clone, Default)]
+pub(super) struct DrawnLine {
+    pub segments: Vec<LineGeometry>,
+}
+
+impl DrawnLine {
+    /// Adds a visual line as it is drawn, keeping them top first.
+    pub fn add(&mut self, segment: LineGeometry) {
+        let at = self
+            .segments
+            .partition_point(|drawn| drawn.bytes.start < segment.bytes.start);
+        self.segments.insert(at, segment);
+    }
+
+    /// Whether `position` is on one of its visual lines.
+    pub fn contains(&self, position: &Point<Pixels>) -> bool {
+        self.segments
+            .iter()
+            .any(|drawn| drawn.bounds.contains(position))
+    }
+
+    /// The visual line at window y `y`: the one it is in, else the nearest (the first above
+    /// them, the last below).
+    pub fn at_y(&self, y: Pixels) -> Option<&LineGeometry> {
+        self.segments
+            .iter()
+            .find(|drawn| y < drawn.bounds.bottom())
+            .or(self.segments.last())
+    }
+
+    /// The visual line that draws byte `offset` of the source line.
+    pub fn holding(&self, offset: usize) -> Option<&LineGeometry> {
+        self.segments
+            .iter()
+            .find(|drawn| {
+                drawn.bytes.contains(&offset) || (drawn.last && offset >= drawn.bytes.end)
+            })
+            .or(self.segments.last())
+    }
+}
+
 /// The geometry of every line drawn this frame, which the pointer maps through.
-pub(super) type Geometry = Rc<RefCell<HashMap<GeometryKey, LineGeometry>>>;
+pub(super) type Geometry = Rc<RefCell<HashMap<GeometryKey, DrawnLine>>>;
 
 /// A selection resolved against its file's loaded lines: `(line, offset)` pairs, the line an
 /// index into the lines, `start` before `end`.
@@ -311,28 +359,36 @@ impl DiffPane {
         (f32::from(x) - left + self.h_offset) / self.char_width.unwrap_or(7.2).max(1.)
     }
 
-    /// Where a pointer at window x `x` is in `path`'s line `line` drawn on `side`: the caret's
+    /// Where a pointer at `position` is in `path`'s line `line` drawn on `side`: the caret's
     /// byte offset and the unit ([`super::text::units`]) under it, through the line's geometry
-    /// this frame ([`LineGeometry`]), else the code font's advance.
-    fn at_x(
+    /// this frame ([`LineGeometry`]: the visual line at the pointer's height when it wraps),
+    /// else the code font's advance on its first visual line.
+    fn at_point(
         &self,
         path: &str,
         line: usize,
         side: AnchorSide,
-        x: Pixels,
+        position: Point<Pixels>,
     ) -> (usize, Option<Range<usize>>) {
         let Some(text) = self.line(path, line).map(|line| line.text.as_str()) else {
             return (0, None);
         };
         let geometry = self.geometry.borrow();
-        match geometry.get(&(path.to_string(), side, line)) {
+        match geometry
+            .get(&(path.to_string(), side, line))
+            .and_then(|drawn| drawn.at_y(position.y))
+        {
             Some(drawn) => {
-                let x_of = |at| f32::from(drawn.x_of(at));
-                let x = f32::from(x);
-                (caret_at(text, x, x_of), unit_at(text, x, x_of))
+                // Within its visual line only: the bytes outside it all map to its edges.
+                let start = drawn.bytes.start;
+                let slice = text.get(drawn.bytes.clone()).unwrap_or(text);
+                let x_of = |at: usize| f32::from(drawn.x_of(start + at));
+                let x = f32::from(position.x);
+                let unit = unit_at(slice, x, x_of).map(|unit| start + unit.start..start + unit.end);
+                (start + caret_at(slice, x, x_of), unit)
             }
             None => {
-                let column = self.pointer_column(x, side);
+                let column = self.pointer_column(position.x, side);
                 let x_of = |at| column_at(text, at) as f32;
                 (caret_at(text, column, x_of), unit_at(text, column, x_of))
             }
@@ -362,7 +418,7 @@ impl DiffPane {
             return;
         }
         self.close_hover(cx);
-        let (caret, unit) = self.at_x(path, line, side, event.position.x);
+        let (caret, unit) = self.at_point(path, line, side, event.position);
         let point = |offset: usize| TextPoint {
             path: path.to_string(),
             side,
@@ -593,7 +649,7 @@ impl DiffPane {
         match rows.get(row).and_then(cell) {
             Some(line) => {
                 let side = drag.side.unwrap_or_else(|| natural_side(&lines[line]));
-                let (offset, unit) = self.at_x(&drag.path, line, side, drag.position.x);
+                let (offset, unit) = self.at_point(&drag.path, line, side, drag.position);
                 Some((line, offset, unit))
             }
             None => rows[..row.min(rows.len())]
@@ -669,8 +725,10 @@ impl DiffPane {
     /// Forgets the selection and the caret in `path`, whose diff was replaced: their line
     /// numbers and offsets named the text it had.
     pub(super) fn forget_text_in(&mut self, path: &str) {
-        // A hover card on the file named its text too (`intel`).
+        // A hover card on the file named its text too (`intel`), and its lines wrapped as
+        // other lines did (`wrap`).
         self.hover_ui.file_replaced(path);
+        self.forget_segments(path);
         if self
             .text_selection
             .as_ref()
