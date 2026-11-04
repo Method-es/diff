@@ -226,6 +226,47 @@ impl Switcher {
             }
             None => None,
         };
+        // A row standing for an open review has a menu (Close review): a right-click, or its
+        // `⋯` under the pointer.
+        let group = SharedString::from(format!("switcher-row-{ix}"));
+        let menu_open = self.menu.as_ref().is_some_and(|menu| {
+            menu.review.is_some() && menu.review.as_ref() == item.review().map(|badge| &badge.id)
+        });
+        let more = item.review().map(|_| {
+            let hover = c.control_hover;
+            div()
+                .id(ElementId::NamedInteger(
+                    "switcher-row-more".into(),
+                    ix as u64,
+                ))
+                .flex_none()
+                .size(px(22.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(theme.radii.control)
+                .cursor_pointer()
+                .hover(move |style| style.bg(hover))
+                .when(!menu_open, |this| {
+                    this.opacity(0.)
+                        .group_hover(group.clone(), |style| style.opacity(1.))
+                })
+                .when(menu_open, |this| this.bg(hover))
+                .child(icon(DvIcon::Ellipsis, px(14.), c.fg2))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        if menu_open {
+                            this.close_menu(cx);
+                        } else {
+                            this.open_review_menu(ix, event.position, cx);
+                        }
+                    }),
+                )
+                .automation_target(format!("switcher/{}/more", item.key))
+        });
+        let has_review = item.review().is_some();
         let footer = item.kind == ItemKind::OpenFolder;
         // A Start or Retry whose start runs is inert (DESIGN §4.1): dimmed, no hover, and a
         // click (like Enter) does nothing.
@@ -255,7 +296,17 @@ impl Switcher {
                     this.hover(move |style| style.bg(hover))
                 }
             })
+            .group(group.clone())
             .on_click(cx.listener(move |this, _, window, cx| this.pick(ix, window, cx)))
+            .when(has_review, |this| {
+                this.on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.open_review_menu(ix, event.position, cx);
+                    }),
+                )
+            })
             .child(icon(glyph, px(14.), glyph_color))
             .child(
                 div()
@@ -274,6 +325,7 @@ impl Switcher {
             }))
             .child(div().flex_1())
             .children(right)
+            .children(more)
             .automation_target(format!("switcher/{}", item.key))
     }
 
@@ -339,34 +391,57 @@ impl Switcher {
             .into_any_element()
     }
 
-    /// A repository header's menu at the pointer: **Remove from list**, disabled for the open
-    /// review's repository with the reason under it.
+    /// The menu at the pointer: a repository header's **Remove from list**, disabled for the
+    /// open review's repository, or an open review's row's **Close review**, disabled for the
+    /// review open in the window; a disabled item has the reason under it.
     fn render_menu(&self, menu: RepoMenu, theme: &DvTheme, cx: &mut Context<Self>) -> AnyElement {
         let c = &theme.colors;
-        let removable = self.can_remove(&menu.location);
         let location = menu.location.clone();
-        let remove = menu_item(
-            "switcher-menu-remove",
-            "Remove from list",
-            DvIcon::X,
-            removable,
-            theme,
-        )
-        .when(removable, |this| {
-            this.on_click(cx.listener(move |this, _, _, cx| this.remove(&location, cx)))
-        })
-        .automation_target("switcher/menu/remove");
+        let (item, enabled, reason) = match menu.review {
+            Some(id) => {
+                let closable = self.can_close(&id);
+                let item = menu_item(
+                    "switcher-menu-close",
+                    "Close review",
+                    DvIcon::CircleMinus,
+                    closable,
+                    theme,
+                )
+                .when(closable, |this| {
+                    this.on_click(
+                        cx.listener(move |this, _, _, cx| this.close_review(&location, &id, cx)),
+                    )
+                })
+                .automation_target("switcher/menu/close");
+                (item, closable, "It's open in this window")
+            }
+            None => {
+                let removable = self.can_remove(&menu.location);
+                let item = menu_item(
+                    "switcher-menu-remove",
+                    "Remove from list",
+                    DvIcon::X,
+                    removable,
+                    theme,
+                )
+                .when(removable, |this| {
+                    this.on_click(cx.listener(move |this, _, _, cx| this.remove(&location, cx)))
+                })
+                .automation_target("switcher/menu/remove");
+                (item, removable, "Its review is open")
+            }
+        };
         let panel = menu_panel("switcher-menu", theme)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_menu(cx)))
-            .child(remove)
-            .when(!removable, |this| {
+            .child(item)
+            .when(!enabled, |this| {
                 this.child(
                     div()
                         .px(theme.spacing.md)
                         .pb(theme.spacing.xs)
                         .text_spec(&theme.text.secondary)
                         .text_color(c.fg3)
-                        .child("Its review is open"),
+                        .child(reason),
                 )
             })
             .automation_target("switcher/menu");
@@ -397,7 +472,7 @@ impl Switcher {
         let menu_open = self
             .menu
             .as_ref()
-            .is_some_and(|menu| menu.location == header.location);
+            .is_some_and(|menu| menu.review.is_none() && menu.location == header.location);
         let c = &theme.colors;
         let hover = c.control_hover;
         let more = div()
@@ -425,7 +500,7 @@ impl Switcher {
                     if this
                         .menu
                         .as_ref()
-                        .is_some_and(|menu| menu.location == location)
+                        .is_some_and(|menu| menu.review.is_none() && menu.location == location)
                     {
                         this.close_menu(cx);
                     } else {

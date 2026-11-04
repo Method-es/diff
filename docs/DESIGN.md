@@ -226,7 +226,13 @@ inactive: material falls back to its inactive appearance (OS-managed); dv dims n
   too (which deletes text with Backspace's other forms), and does nothing on the open review's;
   the footer's hints start with it ("remove") while the selected row's repo can be removed. `Esc`
   closes an open menu before the switcher. The branch picker's header has
-  no menu, and `Ctrl Shift Backspace` removes nothing there.
+  no menu, and `Ctrl Shift Backspace` removes nothing there. A row beside an open review (a
+  target's, another open review's, a branch or base row's) has a menu the same way (a
+  right-click, or its `⋯` after the review's chip, shown under the pointer and while its menu is
+  open) holding **Close review** (circle-minus glyph): the review is closed without approving it,
+  as `dv review close` closes it (PLAN §2.4: `closed` is final, its comments kept), and its row
+  drops it, the selection staying in place. For the review open in the window the item is
+  disabled, "It's open in this window" in `fg3` under it.
   **Compare branches…** turns the switcher into the branch picker for that repo, in the same panel:
   the field cleared, its placeholder "Pick a branch to review", the repo's header over one row per
   local branch but the default one (branch glyph, the most recently committed first): the name, then

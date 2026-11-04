@@ -22,13 +22,17 @@
 //! from list**, which `Ctrl Shift Backspace` does for the selected row's repository: the
 //! repository leaves the known ones (`Reviews::remove_repo`), the selection moving to the next
 //! one's first row. The open review's repository can't be removed (its menu item is disabled,
-//! the key does nothing): the title bar's source picker lists its targets.
+//! the key does nothing): the title bar's source picker lists its targets. A row that stands
+//! for an open review has a menu the same way with **Close review**, which closes the review
+//! without approving it (`Reviews::close_review`, as `dv review close` does), so the row drops
+//! it; the review open in the window can't be closed from here (its item is disabled).
 //!
 //! [`source`] is the title bar's other menu, the current repository's targets.
 //!
 //! Automation targets: `switcher`, `switcher/filter`, `switcher/repo/<repo>`,
 //! `switcher/repo/<repo>/more` (the header's `⋯`), `switcher/menu`, `switcher/menu/remove`,
-//! `switcher/<key>` for each row ([`items::Item::key`]).
+//! `switcher/menu/close`, `switcher/<key>` for each row ([`items::Item::key`]) and
+//! `switcher/<key>/more` for a row's `⋯`.
 
 pub mod branches;
 pub mod items;
@@ -71,14 +75,19 @@ pub enum SwitcherEvent {
     Start { location: Location },
     /// **Remove from list** on the repository at `location` (`Reviews::remove_repo`).
     Remove { location: Location },
+    /// **Close review** on the open review `id` of the repository at `location`
+    /// (`Reviews::close_review`).
+    CloseReview { location: Location, id: ReviewId },
     /// Closed without picking (`Esc`).
     Dismiss,
 }
 
-/// A repository header's menu: whose, and where it opened.
+/// A menu at the pointer: a repository header's (`review` is `None`), or a row's that stands
+/// for an open review (`review`), and where it opened.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RepoMenu {
     pub location: Location,
+    pub review: Option<ReviewId>,
     pub position: gpui::Point<gpui::Pixels>,
 }
 
@@ -99,6 +108,8 @@ pub struct Switcher {
     started: Option<Location>,
     /// The open review's repository (the one it was opened from), which can't be removed.
     in_use: Option<Location>,
+    /// The open review, which can't be closed from here.
+    current: Option<ReviewId>,
     /// A repository header's menu, while open.
     menu: Option<RepoMenu>,
     /// The row a removal moves the selection to, once the listing drops the repository.
@@ -142,6 +153,7 @@ impl Switcher {
             selected: 0,
             started: None,
             in_use,
+            current: current.cloned(),
             menu: None,
             after_remove: None,
             scroll: ScrollHandle::new(),
@@ -244,6 +256,11 @@ impl Switcher {
             .filter(|location| self.can_remove(location))
     }
 
+    /// Whether the open review `id` can be closed: it isn't the one open in the window.
+    pub fn can_close(&self, id: &ReviewId) -> bool {
+        self.current.as_ref() != Some(id)
+    }
+
     /// Opens the header menu of the repository at `location`, at `position`.
     pub fn open_menu(
         &mut self,
@@ -251,7 +268,32 @@ impl Switcher {
         position: gpui::Point<gpui::Pixels>,
         cx: &mut Context<Self>,
     ) {
-        self.menu = Some(RepoMenu { location, position });
+        self.menu = Some(RepoMenu {
+            location,
+            review: None,
+            position,
+        });
+        cx.notify();
+    }
+
+    /// Opens the menu of row `ix`, at `position`, when the row stands for an open review.
+    pub fn open_review_menu(
+        &mut self,
+        ix: usize,
+        position: gpui::Point<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(item) = self.listing.items.get(ix) else {
+            return;
+        };
+        let (Some(badge), Some(location)) = (item.review(), self.listing.location_of(ix)) else {
+            return;
+        };
+        self.menu = Some(RepoMenu {
+            location: location.clone(),
+            review: Some(badge.id.clone()),
+            position,
+        });
         cx.notify();
     }
 
@@ -275,6 +317,19 @@ impl Switcher {
         cx.emit(SwitcherEvent::Remove {
             location: location.clone(),
         });
+        cx.notify();
+    }
+
+    /// Closes the open review `id` of the repository at `location`, when it can be (module
+    /// docs); the listing drops it once the reviews service lists the repository again.
+    pub fn close_review(&mut self, location: &Location, id: &ReviewId, cx: &mut Context<Self>) {
+        self.menu = None;
+        if self.can_close(id) {
+            cx.emit(SwitcherEvent::CloseReview {
+                location: location.clone(),
+                id: id.clone(),
+            });
+        }
         cx.notify();
     }
 
@@ -311,6 +366,8 @@ impl Switcher {
     /// when it is still there; a new filter selects its first row.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         let keep = self.selected_key().map(str::to_string);
+        // A selected row that leaves (a review closed) leaves the selection where it was.
+        let at = self.selected;
         let listing = self.build(cx);
         if listing == self.listing {
             return;
@@ -333,7 +390,7 @@ impl Switcher {
         self.selected = started
             .or(removed_to)
             .or_else(|| keep.and_then(|key| self.listing.position(&key)))
-            .unwrap_or(0);
+            .unwrap_or_else(|| at.min(self.listing.items.len().saturating_sub(1)));
         self.scroll_to_selected();
         cx.notify();
     }

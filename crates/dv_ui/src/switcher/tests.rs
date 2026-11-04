@@ -1184,3 +1184,99 @@ fn a_repo_is_removed_by_key_or_menu_but_not_the_open_reviews(cx: &mut TestAppCon
     settle(cx, &shell, "the removal", |_, _| true);
     assert_eq!(known(&shell, cx), ["api-server"]);
 }
+
+#[gpui::test]
+fn a_rows_menu_closes_its_review_but_not_the_one_open_in_the_window(cx: &mut TestAppContext) {
+    let (_dir, shell, cx) = open_shell(cx);
+    let repos = tempfile::tempdir().unwrap();
+    let api = fixture_at(&repos.path().join("api-server"));
+    let web = fixture_at(&repos.path().join("web"));
+    for repo in [&api, &web] {
+        add_repo(repo, &shell, cx);
+    }
+    let open = |location: &Location, shell: &Entity<Shell>, cx: &mut VisualTestContext| {
+        let task = cx.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.open(
+                    location.clone(),
+                    OpenRequest::Target(Target::Working),
+                    window,
+                    cx,
+                )
+            })
+        });
+        cx.run_until_parked();
+        cx.foreground_executor().block_test(task).unwrap();
+        shell.read_with(cx, |shell, cx| {
+            shell.session().unwrap().read(cx).review_id().clone()
+        })
+    };
+    // web's review, then api's, which stays open in the window.
+    let web_location = Location::Local(web.path().to_path_buf());
+    let web_review = open(&web_location, &shell, cx);
+    let api_review = open(&Location::Local(api.path().to_path_buf()), &shell, cx);
+    assert_ne!(web_review, api_review);
+
+    cx.simulate_keystrokes("secondary-o");
+    settle(cx, &shell, "the rows", |_, _| true);
+    let view = switcher(&shell, cx).expect("Ctrl O opens the switcher");
+    let row_of = |key: &str, view: &Entity<Switcher>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |view, _| view.listing().position(key))
+    };
+
+    // The open review's row: its menu's Close review is disabled and does nothing.
+    let api_row = row_of("api-server/working", &view, cx).unwrap();
+    view.update(cx, |view, cx| {
+        view.open_review_menu(api_row, gpui::point(gpui::px(10.), gpui::px(10.)), cx);
+        let menu = view.menu().cloned().expect("the row's menu");
+        assert_eq!(menu.review.as_ref(), Some(&api_review));
+        assert!(!view.can_close(&api_review));
+        view.close_review(&menu.location, &api_review, cx);
+        assert!(view.menu().is_none(), "the menu closes");
+    });
+    settle(cx, &shell, "nothing closed", |_, _| true);
+    let badge = |key: &str, view: &Entity<Switcher>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |view, _| {
+            let ix = view.listing().position(key).unwrap();
+            view.listing().items[ix]
+                .review()
+                .map(|badge| badge.id.clone())
+        })
+    };
+    assert_eq!(
+        badge("api-server/working", &view, cx),
+        Some(api_review.clone())
+    );
+
+    // Another repository's open review: Close review closes it, and its row drops it.
+    let web_row = row_of("web/working", &view, cx).unwrap();
+    view.update(cx, |view, cx| {
+        view.open_review_menu(web_row, gpui::point(gpui::px(10.), gpui::px(10.)), cx);
+        let menu = view.menu().cloned().expect("the row's menu");
+        assert_eq!(menu.location, web_location);
+        assert_eq!(menu.review.as_ref(), Some(&web_review));
+        assert!(view.can_close(&web_review));
+        view.close_review(&menu.location, &web_review, cx);
+    });
+    settle(cx, &shell, "the close", |shell, cx| {
+        shell.switcher().is_some_and(|view| {
+            let view = view.read(cx);
+            let ix = view.listing().position("web/working").unwrap();
+            view.listing().items[ix].review().is_none()
+        })
+    });
+    let store = dv_core::review::ReviewStore::new(std::sync::Arc::new(
+        dv_core::LocalBackend::open_with(
+            web.path(),
+            dv_core::LocalBackendOptions {
+                env: web.env_overlay(),
+            },
+        )
+        .unwrap(),
+    ));
+    assert_eq!(
+        store.load(&web_review).unwrap().review.status,
+        ReviewStatus::Closed
+    );
+    assert_eq!(badge("api-server/working", &view, cx), Some(api_review));
+}

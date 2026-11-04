@@ -1170,6 +1170,28 @@ impl Shell {
                 let reviews = cx.services().reviews.clone();
                 reviews.update(cx, |reviews, cx| reviews.remove_repo(location, cx));
             }
+            SwitcherEvent::CloseReview { location, id } => {
+                let reviews = cx.services().reviews.clone();
+                let closed = reviews.update(cx, |reviews, cx| {
+                    reviews.close_review(location.clone(), id.clone(), cx)
+                });
+                // A close that fails says why in the main area's banner.
+                cx.spawn(async move |this, cx| {
+                    if let Err(failure) = closed.await {
+                        this.update(cx, |this, cx| {
+                            this.banner = Some(MainBanner {
+                                failure,
+                                retry: None,
+                                expanded: false,
+                                pick: false,
+                            });
+                            cx.notify();
+                        })
+                        .ok();
+                    }
+                })
+                .detach();
+            }
             SwitcherEvent::Dismiss => {
                 self.close_menu(window, cx);
             }
