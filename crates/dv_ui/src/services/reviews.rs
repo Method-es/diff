@@ -51,8 +51,8 @@ use dv_core::diff::file_list;
 use dv_core::git::branches::Branch;
 use dv_core::label::{LabelContext, Labels};
 use dv_core::review::{
-    Author, Home, HomeError, ListEntry, LoadedReview, ReviewId, ReviewStore, ReviewSummary, home,
-    ops, reviewer_identity,
+    Author, Home, HomeError, ListEntry, LoadedReview, ReviewId, ReviewStatus, ReviewStore,
+    ReviewSummary, home, ops, reviewer_identity,
 };
 use dv_core::{Backend, BackendError, GitRepo, Location, Target};
 use futures::channel::oneshot;
@@ -769,6 +769,38 @@ impl Reviews {
         cx.emit(ReviewsEvent::Changed);
         cx.notify();
         true
+    }
+
+    /// Closes the open review `id` of the repository at `location` without approving it
+    /// ("Close review", DESIGN §4.1), as `dv review close` does: the reviewer sets `closed`
+    /// (`ops::set_status`), which is final. The row is listed again either way, so it drops
+    /// the review once it is closed.
+    pub fn close_review(
+        &mut self,
+        location: Location,
+        id: ReviewId,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), Failure>> {
+        let open = self
+            .locations
+            .update(cx, |locations, cx| locations.open(location.clone(), cx));
+        detached(cx, async move |this, cx| {
+            let closed = match open.await {
+                Ok(backend) => {
+                    cx.background_spawn(async move {
+                        let store = ReviewStore::new(backend.clone());
+                        let reviewer = reviewer_identity(backend.as_ref());
+                        ops::set_status(&store, &id, ReviewStatus::Closed, &reviewer, None)
+                            .map(|_| ())
+                            .map_err(|error| Failure::from(&error))
+                    })
+                    .await
+                }
+                Err(error) => Err(Failure::from(&*error)),
+            };
+            this.update(cx, |this, cx| this.refresh(location, cx)).ok();
+            closed
+        })
     }
 
     /// A listing or an open of `given` reached the repository whose worktree root is `root`

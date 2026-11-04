@@ -115,6 +115,8 @@ pub fn switcher(shell: &Shell, cx: &App) -> Value {
         json!({
             "repo": menu.location.display_name(),
             "removable": switcher.can_remove(&menu.location),
+            "review": menu.review.as_ref().map(ToString::to_string),
+            "closable": menu.review.as_ref().map(|id| switcher.can_close(id)),
         })
     });
     json!({
